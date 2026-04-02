@@ -1,0 +1,68 @@
+import { NextResponse, type NextRequest } from "next/server";
+import { createServerClient } from "@supabase/ssr";
+
+export async function middleware(request: NextRequest) {
+  let supabaseResponse = NextResponse.next({ request });
+
+  const supabase = createServerClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_DEFAULT_KEY!,
+    {
+      cookies: {
+        getAll() {
+          return request.cookies.getAll();
+        },
+        setAll(cookiesToSet) {
+          cookiesToSet.forEach(({ name, value }) =>
+            request.cookies.set(name, value)
+          );
+          supabaseResponse = NextResponse.next({ request });
+          cookiesToSet.forEach(({ name, value, options }) =>
+            supabaseResponse.cookies.set(name, value, options)
+          );
+        },
+      },
+    }
+  );
+
+  // Refresh the session so it doesn't expire while the user is active.
+  // IMPORTANT: getUser() sends a request to Supabase Auth to revalidate the
+  // session. Do NOT replace with getSession() — that only reads the JWT
+  // without revalidating, which could allow expired sessions through.
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  const { pathname } = request.nextUrl;
+
+  // Allow unauthenticated access to login and auth callback
+  const isPublicRoute =
+    pathname === "/login" || pathname.startsWith("/auth/callback");
+
+  if (!user && !isPublicRoute) {
+    const loginUrl = request.nextUrl.clone();
+    loginUrl.pathname = "/login";
+    return NextResponse.redirect(loginUrl);
+  }
+
+  // Authenticated user visiting /login → send them to the app
+  if (user && pathname === "/login") {
+    const captureUrl = request.nextUrl.clone();
+    captureUrl.pathname = "/capture";
+    return NextResponse.redirect(captureUrl);
+  }
+
+  return supabaseResponse;
+}
+
+export const config = {
+  matcher: [
+    /*
+     * Match all routes except:
+     * - _next/static (static files)
+     * - _next/image (image optimisation)
+     * - favicon.ico, sitemap.xml, robots.txt
+     */
+    "/((?!_next/static|_next/image|favicon\\.ico|sitemap\\.xml|robots\\.txt).*)",
+  ],
+};
