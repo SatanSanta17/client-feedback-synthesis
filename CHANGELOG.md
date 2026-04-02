@@ -6,6 +6,14 @@ All notable changes to this project are documented here, grouped by PRD and part
 
 ## [Unreleased]
 
+### PRD-008 Part 1: Remove Email Domain Restriction — 2026-04-02
+- Removed `ALLOWED_EMAIL_DOMAIN` environment variable and email domain check from the OAuth callback — any Google account can now sign in
+- Simplified `app/auth/callback/route.ts` — after successful code exchange, redirects straight to `/capture`
+- Removed `domain_restricted` error block from the login page
+- Deleted `lib/constants.ts` (its only export was `ALLOWED_EMAIL_DOMAIN`)
+- Removed unused `useSearchParams` / `Suspense` from login page
+- Updated `.env.example`, `ARCHITECTURE.md`, `CLAUDE.md`
+
 ### Rebrand: Accelerate Synthesis → Synthesiser — 2026-04-02
 - Renamed product from "Accelerate Synthesis" to "Synthesiser" across all UI, metadata, and PDF output
 - Removed InMobi and ad-tech specific context from all AI prompts (signal extraction, master signal cold start, master signal incremental) — prompts are now industry-agnostic

@@ -59,7 +59,6 @@ Open [http://localhost:3000](http://localhost:3000).
 | `ANTHROPIC_API_KEY` | Claude API key (server only) |
 | `CLAUDE_MODEL` | Claude model identifier (e.g. `claude-sonnet-4-20250514`) |
 | `NEXT_PUBLIC_APP_URL` | Application base URL |
-| `ALLOWED_EMAIL_DOMAIN` | Email domain restriction for sign-in |
 
 See `.env.example` for the full template.
 

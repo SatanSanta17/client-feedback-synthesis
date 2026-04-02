@@ -1,13 +1,9 @@
 "use client";
 
-import { useSearchParams } from "next/navigation";
-import { Suspense } from "react";
 import { createClient } from "@/lib/supabase/client";
 import { Button } from "@/components/ui/button";
 
 function LoginCard() {
-  const searchParams = useSearchParams();
-  const error = searchParams.get("error");
   const supabase = createClient();
 
   async function handleSignIn() {
@@ -30,12 +26,6 @@ function LoginCard() {
             Sign in to capture and synthesise client feedback.
           </p>
         </div>
-
-        {error === "domain_restricted" && (
-          <div className="mb-6 rounded-md border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
-            Access restricted to authorised email domains.
-          </div>
-        )}
 
         <Button
           onClick={handleSignIn}
@@ -69,15 +59,5 @@ function LoginCard() {
 }
 
 export default function LoginPage() {
-  return (
-    <Suspense
-      fallback={
-        <div className="flex min-h-screen items-center justify-center">
-          <p className="text-sm text-[var(--text-secondary)]">Loading...</p>
-        </div>
-      }
-    >
-      <LoginCard />
-    </Suspense>
-  );
+  return <LoginCard />;
 }

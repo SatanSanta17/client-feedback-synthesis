@@ -1,6 +1,5 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
-import { ALLOWED_EMAIL_DOMAIN } from "@/lib/constants";
 
 export async function GET(request: Request) {
   const { searchParams, origin } = new URL(request.url);
@@ -20,31 +19,5 @@ export async function GET(request: Request) {
     return NextResponse.redirect(`${origin}/login?error=exchange_failed`);
   }
 
-  // Verify the user's email domain
-  const {
-    data: { user },
-    error: userError,
-  } = await supabase.auth.getUser();
-
-  if (userError || !user?.email) {
-    console.error(
-      "Auth callback: could not retrieve user",
-      userError?.message
-    );
-    await supabase.auth.signOut();
-    return NextResponse.redirect(`${origin}/login?error=no_email`);
-  }
-
-  const emailDomain = user.email.split("@")[1];
-
-  if (emailDomain !== ALLOWED_EMAIL_DOMAIN) {
-    console.warn(
-      `Auth callback: domain mismatch — ${emailDomain} is not ${ALLOWED_EMAIL_DOMAIN}`
-    );
-    await supabase.auth.signOut();
-    return NextResponse.redirect(`${origin}/login?error=domain_restricted`);
-  }
-
-  // Domain matches — redirect to the app
   return NextResponse.redirect(`${origin}/capture`);
 }

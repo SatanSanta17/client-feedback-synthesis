@@ -113,7 +113,7 @@ These rules apply to every file under `app/`, `components/`, and `lib/`.
 ## Authentication — Google OAuth via Supabase Auth
 
 - **Supabase Auth handles the OAuth flow.** No custom OAuth implementation. Use `supabase.auth.signInWithOAuth({ provider: 'google' })` on the client and Supabase's built-in session management.
-- **Domain restriction is enforced server-side.** After authentication, verify the user's email domain matches the allowed domain (configured via `ALLOWED_EMAIL_DOMAIN` env var). Block non-matching users with a clear error message. This check happens in middleware, not just on the client.
+- **Open authentication.** Any Google account can sign in. There is no email domain restriction. The OAuth callback exchanges the code for a session and redirects to `/capture`.
 - **Auth state is provided via a React context.** A single `AuthProvider` wraps the app and exposes `user`, `isAuthenticated`, `isLoading`, and `signOut`. Components read auth state from context.
 - **Middleware protects all routes.** Next.js middleware checks for a valid Supabase session on every request. Unauthenticated users are redirected to the sign-in page.
 - **Session persistence.** Supabase Auth handles session refresh via cookies. The user is not forced to re-authenticate on every visit.
