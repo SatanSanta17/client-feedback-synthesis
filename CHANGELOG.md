@@ -6,6 +6,16 @@ All notable changes to this project are documented here, grouped by PRD and part
 
 ## [Unreleased]
 
+### PRD-008 Part 2: Per-User Data Isolation — 2026-04-02
+- Added `created_by` column to `clients` table with per-user RLS policies and unique index `(LOWER(name), created_by)`
+- Updated RLS policies on `sessions` — SELECT and UPDATE now scoped to `created_by = auth.uid()`
+- Updated RLS policy on `master_signals` — SELECT now scoped to `created_by = auth.uid()`
+- Added `created_by` column to `prompt_versions` table with per-user RLS policies and unique index `(prompt_key, created_by)`
+- `taintLatestMasterSignal` now accepts a `userId` parameter to target the correct user's master signal
+- `deleteSession` passes the session's `created_by` to the taint function
+- `getActivePrompt` and `savePromptVersion` switched from service role client to user-scoped `createClient()` — RLS handles per-user scoping
+- System-seeded prompt rows (`created_by = NULL`) are no longer visible via RLS; users fall back to hardcoded defaults
+
 ### PRD-008 Part 1: Remove Email Domain Restriction — 2026-04-02
 - Removed `ALLOWED_EMAIL_DOMAIN` environment variable and email domain check from the OAuth callback — any Google account can now sign in
 - Simplified `app/auth/callback/route.ts` — after successful code exchange, redirects straight to `/capture`

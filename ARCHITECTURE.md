@@ -20,7 +20,7 @@ Synthesiser is a web application for teams to capture structured client session 
 
 ## Current State
 
-**Status:** PRD-002 Parts 1, 2, and 3 (Database Schema, Client Management, Session Capture Form, Past Sessions Table) implemented. PRD-003 Parts 1, 2, 3, and 4 (Database Schema Update, Signal Extraction via Claude API, Capture Form Extract Signals UX, Past Sessions Side-by-Side View) implemented. PRD-004 Part 1 Increments 1.1–1.5 (Master Signal database table, service layer, AI prompts, synthesis function, API routes, frontend page, tab navigation, and PDF download) implemented. PRD-005 Parts 1–4 (Admin Role System, Prompt Storage & Versioning, Prompt Editor UI, Version History & Revert) implemented. PRD-006 Part 1 Increments 1.1–1.3 (Master Signal Cleanup on Session Deletion — tainted flag, auto cold-start, frontend banners, settings prompt selection) implemented. PRD-007 Part 1 (Prompt Editor — contextual note, inline toggle between cold-start and incremental prompts, active badge, dirty-state guard) implemented. PRD-008 Part 1 (Remove Email Domain Restriction — open authentication) implemented. The app shell is live with tab navigation, Google OAuth login (open to any Google account), a working capture form with signal extraction, and a full past sessions table with filters, expandable inline editing, signal extraction, and soft delete. Database tables (`clients`, `sessions`, `master_signals`, `profiles`, `prompt_versions`) are live with RLS. The `sessions` table includes `structured_notes` (TEXT, nullable) for storing signal extraction output. The `master_signals` table stores immutable snapshots of AI-synthesised master signal documents — each generation inserts a new row, latest by `generated_at` is the current one. The `master_signals` table includes an `is_tainted` flag (BOOLEAN, default false) that is set when a session with extracted signals is soft-deleted; when tainted, the next master signal generation forces a cold-start rebuild instead of an incremental merge, ensuring deleted session data is purged. The `profiles` table stores user metadata with an `is_admin` flag, auto-created via a trigger on `auth.users`. The `prompt_versions` table stores versioned AI system prompts with `is_active` flag, partial unique index, and full version history. The Master Signal page (`/m-signals`) displays the latest AI-synthesised cross-client analysis, supports cold start and incremental generation via Claude, shows a staleness banner when new sessions exist, shows a tainted banner when a session with signals has been deleted, and offers a client-side PDF download powered by pdf-lib. The capture form includes an "Extract Signals" button that calls Claude to generate a structured markdown signal report, displayed in a renderable/editable markdown panel. Both raw notes and structured notes are saved together. Expanded rows in the past sessions table show a side-by-side view of raw notes and structured notes using MarkdownPanel, with inline signal extraction and re-extraction support. The Settings page (`/settings`) is admin-only and provides a prompt editor UI with two tabs — Signal Extraction and Master Signal — full dirty tracking, save/reset-to-default, a collapsible version history panel, and a version view dialog with revert capability. The Master Signal tab dynamically resolves to the cold start or incremental prompt based on whether a master signal already exists and whether it is tainted (tainted = cold start). A contextual note above the editor explains which prompt variant is loaded and when it's used, with an inline toggle link to switch to the alternate variant (e.g., view the cold-start prompt while the incremental prompt is auto-selected). Both variants are fully editable, and the auto-selected prompt shows an "(active)" badge. Toggling respects the existing dirty-state guard. The AI service reads active prompts from the database with hardcoded fallback.
+**Status:** PRD-002 Parts 1, 2, and 3 (Database Schema, Client Management, Session Capture Form, Past Sessions Table) implemented. PRD-003 Parts 1, 2, 3, and 4 (Database Schema Update, Signal Extraction via Claude API, Capture Form Extract Signals UX, Past Sessions Side-by-Side View) implemented. PRD-004 Part 1 Increments 1.1–1.5 (Master Signal database table, service layer, AI prompts, synthesis function, API routes, frontend page, tab navigation, and PDF download) implemented. PRD-005 Parts 1–4 (Admin Role System, Prompt Storage & Versioning, Prompt Editor UI, Version History & Revert) implemented. PRD-006 Part 1 Increments 1.1–1.3 (Master Signal Cleanup on Session Deletion — tainted flag, auto cold-start, frontend banners, settings prompt selection) implemented. PRD-007 Part 1 (Prompt Editor — contextual note, inline toggle between cold-start and incremental prompts, active badge, dirty-state guard) implemented. PRD-008 Part 1 (Remove Email Domain Restriction — open authentication) implemented. PRD-008 Part 2 (Per-User Data Isolation — RLS policies, `created_by` columns on `clients` and `prompt_versions`, user-scoped prompt service, user-scoped taint function) implemented. The app shell is live with tab navigation, Google OAuth login (open to any Google account), a working capture form with signal extraction, and a full past sessions table with filters, expandable inline editing, signal extraction, and soft delete. Database tables (`clients`, `sessions`, `master_signals`, `profiles`, `prompt_versions`) are live with RLS. The `sessions` table includes `structured_notes` (TEXT, nullable) for storing signal extraction output. The `master_signals` table stores immutable snapshots of AI-synthesised master signal documents — each generation inserts a new row, latest by `generated_at` is the current one. The `master_signals` table includes an `is_tainted` flag (BOOLEAN, default false) that is set when a session with extracted signals is soft-deleted; when tainted, the next master signal generation forces a cold-start rebuild instead of an incremental merge, ensuring deleted session data is purged. The `profiles` table stores user metadata with an `is_admin` flag, auto-created via a trigger on `auth.users`. The `prompt_versions` table stores versioned AI system prompts with `is_active` flag, partial unique index, and full version history. The Master Signal page (`/m-signals`) displays the latest AI-synthesised cross-client analysis, supports cold start and incremental generation via Claude, shows a staleness banner when new sessions exist, shows a tainted banner when a session with signals has been deleted, and offers a client-side PDF download powered by pdf-lib. The capture form includes an "Extract Signals" button that calls Claude to generate a structured markdown signal report, displayed in a renderable/editable markdown panel. Both raw notes and structured notes are saved together. Expanded rows in the past sessions table show a side-by-side view of raw notes and structured notes using MarkdownPanel, with inline signal extraction and re-extraction support. The Settings page (`/settings`) is admin-only and provides a prompt editor UI with two tabs — Signal Extraction and Master Signal — full dirty tracking, save/reset-to-default, a collapsible version history panel, and a version view dialog with revert capability. The Master Signal tab dynamically resolves to the cold start or incremental prompt based on whether a master signal already exists and whether it is tainted (tainted = cold start). A contextual note above the editor explains which prompt variant is loaded and when it's used, with an inline toggle link to switch to the alternate variant (e.g., view the cold-start prompt while the incremental prompt is auto-selected). Both variants are fully editable, and the auto-selected prompt shows an "(active)" badge. Toggling respects the existing dirty-state guard. The AI service reads active prompts from the database with hardcoded fallback.
 
 ---
 
@@ -116,7 +116,7 @@ synthesiser/
 │   │   ├── client-service.ts    # Client search (with hasSession filter) and creation (searchClients, createNewClient)
 │   │   ├── master-signal-service.ts # Master signal CRUD — get latest, stale count, fetch signal sessions, save
 │   │   ├── profile-service.ts   # Server-side profile fetch (getCurrentProfile) and admin check (isCurrentUserAdmin)
-│   │   ├── prompt-service.ts    # Prompt CRUD — getActivePrompt (service role), getPromptHistory (anon), savePromptVersion (service role, atomic swap)
+│   │   ├── prompt-service.ts    # Prompt CRUD — getActivePrompt (user-scoped), getPromptHistory (user-scoped), savePromptVersion (user-scoped, atomic swap)
 │   │   └── session-service.ts   # Session CRUD — create, list with filters/pagination, update, soft delete
 │   ├── utils/
 │   │   └── format-relative-time.ts # Relative time formatting ("just now", "5m ago", "3d ago")
@@ -160,18 +160,19 @@ synthesiser/
 
 ### `clients`
 
-Stores known client names for the autocomplete and cross-session querying.
+Stores known client names for the autocomplete and cross-session querying. Each client belongs to a user.
 
 | Column | Type | Notes |
 |--------|------|-------|
 | `id` | UUID (PK) | `gen_random_uuid()` |
-| `name` | TEXT | Unique (case-insensitive) among non-deleted rows |
+| `name` | TEXT | Unique per user (case-insensitive) among non-deleted rows |
+| `created_by` | UUID | NOT NULL, default `auth.uid()` — owning user |
 | `created_at` | TIMESTAMPTZ | Default `now()` |
 | `updated_at` | TIMESTAMPTZ | Auto-updated via trigger |
 | `deleted_at` | TIMESTAMPTZ | Soft delete |
 
-**Indexes:** `clients_name_unique` — unique on `LOWER(name)` where `deleted_at IS NULL`.
-**RLS:** Authenticated users can SELECT (non-deleted), INSERT, and UPDATE.
+**Indexes:** `clients_name_unique` — unique on `(LOWER(name), created_by)` where `deleted_at IS NULL`.
+**RLS:** Users can SELECT and UPDATE their own non-deleted clients. INSERT allowed for authenticated users.
 
 ### `sessions`
 
@@ -190,7 +191,7 @@ Stores captured client feedback sessions.
 | `deleted_at` | TIMESTAMPTZ | Soft delete |
 
 **Indexes:** `sessions_client_id_idx` (filtered), `sessions_session_date_idx` (desc, filtered).
-**RLS:** Authenticated users can SELECT (non-deleted), INSERT, and UPDATE.
+**RLS:** Users can SELECT and UPDATE their own non-deleted sessions. INSERT allowed for authenticated users.
 
 ### `master_signals`
 
@@ -207,7 +208,7 @@ Stores immutable snapshots of the AI-synthesised master signal document. Each ge
 | `created_at` | TIMESTAMPTZ | Default `now()` |
 
 **Indexes:** `master_signals_generated_at_idx` — DESC on `generated_at`.
-**RLS:** Authenticated users can SELECT and INSERT. No UPDATE or DELETE (except service role client sets `is_tainted` on the latest row).
+**RLS:** Users can SELECT their own master signals. INSERT allowed for authenticated users. No UPDATE or DELETE (except service role client sets `is_tainted` on the user's latest row).
 
 ### `profiles`
 
@@ -226,7 +227,7 @@ Stores user metadata, auto-created by a trigger on `auth.users`. Used for admin 
 
 ### `prompt_versions`
 
-Stores versioned AI system prompts. Each save/reset/revert creates a new row. Only one row per `prompt_key` can be active at a time.
+Stores versioned AI system prompts per user. Each save/reset/revert creates a new row. Only one row per `(prompt_key, created_by)` can be active at a time. Users who have not customised their prompts fall back to hardcoded defaults in `lib/prompts/`.
 
 | Column | Type | Notes |
 |--------|------|-------|
@@ -235,17 +236,18 @@ Stores versioned AI system prompts. Each save/reset/revert creates a new row. On
 | `content` | TEXT | NOT NULL, full prompt body |
 | `author_id` | UUID (FK → auth.users.id) | Nullable. NULL for system-seeded rows. SET NULL on user delete. |
 | `author_email` | TEXT | NOT NULL, default `'system'`. Denormalised for display. |
-| `is_active` | BOOLEAN | NOT NULL, default `false`. Partial unique index enforces one active per key. |
+| `is_active` | BOOLEAN | NOT NULL, default `false`. Partial unique index enforces one active per key per user. |
+| `created_by` | UUID (FK → auth.users.id) | Nullable. NULL for system-seeded rows. Default `auth.uid()`. |
 | `created_at` | TIMESTAMPTZ | Default `now()` |
 
-**Indexes:** `prompt_versions_active_unique` — unique on `(prompt_key) WHERE is_active = true`. `prompt_versions_key_created_idx` — on `(prompt_key, created_at DESC)`.
-**RLS:** Authenticated users can SELECT active prompts. Admins (via `is_admin()`) can SELECT all, INSERT, and UPDATE.
+**Indexes:** `prompt_versions_active_unique` — unique on `(prompt_key, created_by) WHERE is_active = true AND created_by IS NOT NULL`. `prompt_versions_key_created_idx` — on `(prompt_key, created_at DESC)`.
+**RLS:** Users can SELECT, INSERT, and UPDATE their own prompt versions only.
 
 ### Shared functions and triggers
 
 - `update_updated_at()` — BEFORE UPDATE trigger on `clients`, `sessions`, and `profiles` tables, sets `updated_at = now()`.
 - `handle_new_user()` — SECURITY DEFINER function, triggered AFTER INSERT on `auth.users`, creates a `profiles` row.
-- `is_admin()` — SECURITY DEFINER function, returns `true` if the current user's profile has `is_admin = true`. Used in RLS policies for `prompt_versions` to avoid recursive self-referencing on `profiles`.
+- `is_admin()` — SECURITY DEFINER function, returns `true` if the current user's profile has `is_admin = true`. Retained in the database but no longer referenced by any RLS policy or application code.
 
 ---
 

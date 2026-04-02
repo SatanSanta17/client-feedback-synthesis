@@ -221,7 +221,7 @@ export async function deleteSession(id: string): Promise<void> {
     .update({ deleted_at: new Date().toISOString() })
     .eq("id", id)
     .is("deleted_at", null)
-    .select("id, structured_notes")
+    .select("id, structured_notes, created_by")
     .single();
 
   if (error) {
@@ -235,12 +235,11 @@ export async function deleteSession(id: string): Promise<void> {
 
   console.log("[session-service] deleteSession success:", data.id);
 
-  // Taint master signal if the deleted session had extracted signals
+  // Taint the deleting user's master signal if the session had extracted signals
   if (data.structured_notes) {
     try {
-      await taintLatestMasterSignal();
+      await taintLatestMasterSignal(data.created_by);
     } catch (taintErr) {
-      // Log but don't fail the deletion — tainting is best-effort
       console.error(
         "[session-service] failed to taint master signal:",
         taintErr instanceof Error ? taintErr.message : taintErr

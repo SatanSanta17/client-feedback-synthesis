@@ -1,4 +1,4 @@
-import { createServiceRoleClient, createClient } from "@/lib/supabase/server";
+import { createClient } from "@/lib/supabase/server";
 
 // Valid prompt keys
 export type PromptKey =
@@ -18,13 +18,13 @@ export interface PromptVersion {
 
 /**
  * Fetches the currently active prompt for a given key.
- * Uses the service role client — called from AI service (server-side, no user context).
- * Returns null if no active prompt is found or on error.
+ * Uses the user-scoped client — RLS returns only the current user's prompts.
+ * Returns null if no active prompt is found (falls back to hardcoded default).
  */
 export async function getActivePrompt(
   promptKey: PromptKey
 ): Promise<string | null> {
-  const supabase = createServiceRoleClient();
+  const supabase = await createClient();
 
   const { data, error } = await supabase
     .from("prompt_versions")
@@ -46,7 +46,7 @@ export async function getActivePrompt(
 
 /**
  * Fetches the version history for a given prompt key, newest first.
- * Uses the anon client (respects RLS — admin-only for non-active versions).
+ * Uses the user-scoped client — RLS returns only the current user's versions.
  */
 export async function getPromptHistory(
   promptKey: PromptKey
@@ -73,7 +73,7 @@ export async function getPromptHistory(
 /**
  * Saves a new prompt version and makes it active.
  * Atomically deactivates the previous active version.
- * Uses the service role client for the deactivation (bypasses RLS).
+ * Uses the user-scoped client — RLS ensures the user only touches their own rows.
  */
 export async function savePromptVersion(input: {
   promptKey: PromptKey;
@@ -82,7 +82,7 @@ export async function savePromptVersion(input: {
   authorEmail: string;
 }): Promise<PromptVersion> {
   const { promptKey, content, authorId, authorEmail } = input;
-  const supabase = createServiceRoleClient();
+  const supabase = await createClient();
 
   // Step 1: Deactivate the current active version
   const { error: deactivateError } = await supabase

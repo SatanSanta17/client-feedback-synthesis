@@ -217,19 +217,21 @@ export async function saveMasterSignal(
 // ---------------------------------------------------------------------------
 
 /**
- * Mark the latest master signal as tainted (contains data from a now-deleted
- * session). No-op if no master signal exists or if already tainted.
- * Uses the service role client to bypass RLS.
+ * Mark the latest master signal for a specific user as tainted (contains data
+ * from a now-deleted session). No-op if no master signal exists or if already
+ * tainted. Uses the service role client to bypass RLS (called from deleteSession
+ * which also uses the service role client).
  */
-export async function taintLatestMasterSignal(): Promise<void> {
-  console.log("[master-signal-service] taintLatestMasterSignal");
+export async function taintLatestMasterSignal(userId: string): Promise<void> {
+  console.log("[master-signal-service] taintLatestMasterSignal — userId:", userId);
 
   const supabase = createServiceRoleClient();
 
-  // Find the latest master signal
+  // Find the latest master signal belonging to this user
   const { data: latest, error: fetchError } = await supabase
     .from("master_signals")
     .select("id, is_tainted")
+    .eq("created_by", userId)
     .order("generated_at", { ascending: false })
     .limit(1)
     .maybeSingle();

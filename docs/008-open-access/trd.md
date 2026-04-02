@@ -65,9 +65,19 @@
 **Migration 1: Add `created_by` to `clients` + update RLS and index**
 
 ```sql
--- Add created_by column to clients
+-- Step 1: Add column as nullable (auth.uid() is NULL in migration context)
 ALTER TABLE clients
-  ADD COLUMN created_by UUID NOT NULL DEFAULT auth.uid();
+  ADD COLUMN created_by UUID DEFAULT auth.uid();
+
+-- Step 2: Backfill existing rows with the current user's ID
+-- Replace <your-user-uuid> with: SELECT id FROM auth.users WHERE email = 'your@email.com';
+UPDATE clients
+  SET created_by = '<your-user-uuid>'
+  WHERE created_by IS NULL;
+
+-- Step 3: Enforce NOT NULL now that all rows are backfilled
+ALTER TABLE clients
+  ALTER COLUMN created_by SET NOT NULL;
 
 -- Drop old unique index (global name uniqueness)
 DROP INDEX clients_name_unique;
