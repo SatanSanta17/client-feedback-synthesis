@@ -142,8 +142,8 @@ export async function generateMasterSignalPdf(
     minute: "2-digit",
   })
   const metaText = sessionsIncluded
-    ? `Accelerate Synthesis  |  Generated ${formattedDate}  |  Based on ${sessionsIncluded} session${sessionsIncluded === 1 ? "" : "s"}`
-    : `Accelerate Synthesis  |  Generated ${formattedDate}`
+    ? `Synthesiser  |  Generated ${formattedDate}  |  Based on ${sessionsIncluded} session${sessionsIncluded === 1 ? "" : "s"}`
+    : `Synthesiser  |  Generated ${formattedDate}`
   page.drawText(metaText, {
     x: MARGIN_LEFT,
     y,

@@ -4,7 +4,7 @@
 
 ## Purpose
 
-The sales and account team runs structured discovery sessions with prospective and existing clients. Notes from these sessions are the primary raw material for understanding client needs, identifying product gaps, and prioritising the roadmap.
+Teams run structured discovery sessions with prospective and existing clients. Notes from these sessions are the primary raw material for understanding client needs, identifying product gaps, and prioritising the roadmap.
 
 Today this process is entirely manual and fragmented: session notes live in personal documents, Notion pages, and email threads. Synthesising themes across clients requires someone to manually read all notes and write a summary — a task that takes hours and is done infrequently. There is no cross-client signal index, no way to answer "how many clients raised attribution?", and no visible mapping between client concerns and roadmap coverage.
 
@@ -16,7 +16,7 @@ The byproduct: the feature-advisor agent eventually gets a database query tool t
 
 ## User Story
 
-As a sales or account team member, I want to paste raw session notes into a tool that structures them automatically and saves them to a shared database, so that I don't have to manually format notes and the team can see cross-client themes and roadmap gaps in real time.
+As a team member, I want to paste raw session notes into a tool that structures them automatically and saves them to a shared database, so that I don't have to manually format notes and the team can see cross-client themes and roadmap gaps in real time.
 
 ---
 
@@ -87,9 +87,7 @@ Master PRD (this file)
 
 ## Out of Scope
 
-- Integration with accelerate-ui (this is a separate app)
-- Advertiser-facing feedback (internal tool only)
-- Real-time collaboration / multiplayer editing
+- Real-time collaboration / multiplayer editing (planned for future)
 - Automatic theme extraction at save time (themes are manually tagged)
 - Roadmap integration (no Jira tickets or spec file creation)
 - Client-facing session summaries

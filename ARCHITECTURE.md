@@ -1,4 +1,4 @@
-# Accelerate Synthesis — Architecture
+# Synthesiser — Architecture
 
 > **This document reflects what is actually built — not what is planned.** It is the source of truth for the current state of the system. It is updated *after* every change that modifies file structure, routes, services, database tables, or environment variables. Read this before making any changes.
 >
@@ -6,7 +6,7 @@
 
 ## Overview
 
-Accelerate Synthesis is a standalone internal web application for the sales and account team to capture structured client session notes and view a live synthesis dashboard of cross-client themes, signal strength, and roadmap gaps.
+Synthesiser is a web application for teams to capture structured client session notes and view a live synthesis dashboard of cross-client themes, signal strength, and roadmap gaps.
 
 **Tech Stack:**
 - Frontend & API: Next.js (App Router, TypeScript)
@@ -27,7 +27,7 @@ Accelerate Synthesis is a standalone internal web application for the sales and 
 ## File Map
 
 ```
-accelerate-synthesis/
+synthesiser/
 ├── ARCHITECTURE.md              # This file — reflects current state
 ├── CLAUDE.md                    # Development rules and conventions
 ├── CHANGELOG.md                 # Change log grouped by PRD/part
@@ -296,7 +296,7 @@ Stores versioned AI system prompts. Each save/reset/revert creates a new row. On
 | `ANTHROPIC_API_KEY` | Server only | Claude API key |
 | `CLAUDE_MODEL` | Server only | Claude model identifier |
 | `NEXT_PUBLIC_APP_URL` | Client + Server | Application base URL |
-| `ALLOWED_EMAIL_DOMAIN` | Server only | Email domain restriction for sign-in (default: `inmobi.com`) |
+| `ALLOWED_EMAIL_DOMAIN` | Server only | Email domain restriction for sign-in (must be set in production) |
 
 See `.env.example` for the full template.
 
@@ -304,7 +304,7 @@ See `.env.example` for the full template.
 
 ## Key Design Decisions
 
-1. **Standalone app, not part of accelerate-ui.** Separate deployment, separate auth, separate database. No shared components.
+1. **Standalone app.** Separate deployment, separate auth, separate database. No shared components.
 2. **Supabase for auth and database.** Provides Google OAuth, PostgreSQL, RLS, and auto-generated types out of the box. Reduces infrastructure overhead.
 3. **Server-side Claude calls only.** API key never touches the browser. All AI operations go through Next.js API routes.
 4. **Manual theme tagging (not AI-driven).** Users explicitly link sessions to themes. Automatic theme extraction is deferred to backlog.

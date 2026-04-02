@@ -24,16 +24,16 @@ function LoginCard() {
       <div className="w-full max-w-sm rounded-lg border border-[var(--border-default)] bg-white p-8 shadow-sm">
         <div className="mb-8 text-center">
           <h1 className="text-xl font-semibold text-[var(--text-primary)]">
-            Accelerate Synthesis
+            Synthesiser
           </h1>
           <p className="mt-2 text-sm text-[var(--text-secondary)]">
-            Sign in to capture and synthesise client session notes.
+            Sign in to capture and synthesise client feedback.
           </p>
         </div>
 
         {error === "domain_restricted" && (
           <div className="mb-6 rounded-md border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
-            Access restricted to <strong>@inmobi.com</strong> accounts.
+            Access restricted to authorised email domains.
           </div>
         )}
 

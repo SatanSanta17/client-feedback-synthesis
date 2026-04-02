@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import { MasterSignalPageContent } from "./_components/master-signal-page-content";
 
 export const metadata: Metadata = {
-  title: "Master Signals | Accelerate Synthesis",
+  title: "Master Signals | Synthesiser",
   description:
     "AI-synthesised cross-client signal analysis from all session extractions",
 };

@@ -15,11 +15,11 @@ This is deliberately scoped as **signal capture, not signal interpretation.** Th
 
 ### Context
 
-InMobi is an ad tech company building a performance marketing platform where customers can run ads across Google, Bing, Meta, and other platforms from a single interface. The product is pre-revenue and most client interactions are onboarding or requirements-gathering calls with prospective customers. The signals extracted from these sessions are critical for understanding what the market needs before it commits.
+Synthesiser is used by teams that run client-facing sessions — discovery, onboarding, or requirements-gathering calls. The signals extracted from these sessions are critical for understanding what the market needs and informing product strategy.
 
 ## User Story
 
-As a sales or account team member, I want to extract structured signals from my raw session notes so that the team can quickly understand what the customer communicated — their pain points, requirements, urgency, competitive context, and blockers — without reading through the entire raw text.
+As a team member, I want to extract structured signals from my raw session notes so that the team can quickly understand what the customer communicated — their pain points, requirements, urgency, competitive context, and blockers — without reading through the entire raw text.
 
 ---
 

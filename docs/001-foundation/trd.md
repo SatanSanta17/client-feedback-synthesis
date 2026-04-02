@@ -35,7 +35,7 @@
 
 **Steps:**
 1. Define CSS custom properties in `globals.css`: brand colours (`--color-primary`, `--color-primary-foreground`), neutral greys, typography tokens, status badge colours.
-2. Modify `app/layout.tsx`: import `AppHeader`, set metadata (title: "Accelerate Synthesis", description), wrap children in a main content area with appropriate padding.
+2. Modify `app/layout.tsx`: import `AppHeader`, set metadata (title: "Synthesiser", description), wrap children in a main content area with appropriate padding.
 3. Create `components/layout/app-header.tsx`: flex container with `TabNav` on the left and `UserMenu` on the right. Full-width, border-bottom for visual separation.
 4. Create `components/layout/tab-nav.tsx`: renders a list of tab links. Each tab is a `next/link` with an icon and label. Uses `usePathname()` to determine the active tab and applies the indigo underline indicator. Tab config is a simple array so adding future tabs is a one-line addition.
 5. Create `components/layout/user-menu.tsx`: static placeholder — a grey avatar circle and "Sign in" text. No interactivity in this increment.
@@ -47,7 +47,7 @@
 - Tab nav visible with Capture tab highlighted (indigo underline)
 - User menu placeholder visible in top-right
 - No horizontal overflow at 375px viewport width
-- Page title reads "Accelerate Synthesis"
+- Page title reads "Synthesiser"
 
 ---
 
@@ -93,16 +93,16 @@ These are done by the developer in the Supabase dashboard before the auth code w
 **Steps:**
 1. Create `lib/supabase/server.ts`: export `createClient()` that uses `createServerClient` from `@supabase/ssr` with cookie helpers from `next/headers`.
 2. Create `lib/supabase/client.ts`: export `createClient()` that uses `createBrowserClient` from `@supabase/ssr` with `NEXT_PUBLIC_SUPABASE_URL` and `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY`.
-3. Create `lib/constants.ts`: export `ALLOWED_EMAIL_DOMAIN` (read from `process.env.ALLOWED_EMAIL_DOMAIN`, fallback to `'inmobi.com'`).
+3. Create `lib/constants.ts`: export `ALLOWED_EMAIL_DOMAIN` (read from `process.env.ALLOWED_EMAIL_DOMAIN`).
 4. Create `app/login/page.tsx`: centered card with app logo/name, "Sign in with Google" button. On click, calls `supabase.auth.signInWithOAuth({ provider: 'google', options: { redirectTo: '<APP_URL>/auth/callback' } })`. This is a `'use client'` component.
 5. Create `app/auth/callback/route.ts`: GET handler that reads the `code` query param, exchanges it via `supabase.auth.exchangeCodeForSession(code)`, reads the user's email, checks domain against `ALLOWED_EMAIL_DOMAIN`. On match → redirect to `/capture`. On mismatch → sign out, redirect to `/login?error=domain_restricted`.
-6. Update `app/login/page.tsx` to read the `error` query param and display "Access restricted to @inmobi.com accounts" if `error=domain_restricted`.
+6. Update `app/login/page.tsx` to read the `error` query param and display "Access restricted to authorised email domains." if `error=domain_restricted`.
 
 **Verify:**
 - Login page renders with "Sign in with Google" button
 - Clicking the button redirects to Google OAuth consent screen
-- After consent with `@inmobi.com` account, user lands on `/capture`
-- After consent with non-`@inmobi.com` account, user sees error and is signed out
+- After consent with an allowed-domain account, user lands on `/capture`
+- After consent with a non-allowed-domain account, user sees error and is signed out
 - `.env.local` has correct Supabase and Google OAuth values
 
 ### Increment 2.2: Middleware, AuthProvider, and User Menu

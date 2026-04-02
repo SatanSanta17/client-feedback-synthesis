@@ -2,7 +2,7 @@ import { isCurrentUserAdmin } from "@/lib/services/profile-service";
 import { PromptEditorPageContent } from "./_components/prompt-editor-page-content";
 
 export const metadata = {
-  title: "Settings — Accelerate Synthesis",
+  title: "Settings — Synthesiser",
 };
 
 export default async function SettingsPage() {

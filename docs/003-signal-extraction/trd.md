@@ -290,7 +290,7 @@ export const buildSignalExtractionUserMessage: (rawNotes: string) => string;
 ```
 
 **System prompt** defines:
-1. Claude's role — a signal extraction analyst for an ad tech performance marketing platform (InMobi context)
+1. Claude's role — a signal extraction analyst for client feedback
 2. The exact output structure with markdown formatting rules
 3. Each signal category with its definition and examples
 4. Explicit instructions on what NOT to do (no fabrication, no filler, no JSON)
@@ -299,9 +299,9 @@ export const buildSignalExtractionUserMessage: (rawNotes: string) => string;
 **System prompt content:**
 
 ```
-You are a signal extraction analyst for InMobi, an ad tech company building a performance marketing platform. Your job is to read raw session notes from client calls and extract structured signals into a consistent markdown report.
+You are a signal extraction analyst. Your job is to read raw session notes from client calls and extract structured signals into a consistent markdown report.
 
-The platform allows customers to run ads across Google, Bing, Meta, and other platforms from a single interface. Most sessions are onboarding or requirements-gathering calls with prospective customers.
+Sessions are typically discovery, onboarding, or requirements-gathering calls with prospective or existing customers.
 
 ## Output Format
 

@@ -1,4 +1,4 @@
-# Accelerate Synthesis — Development Rules
+# Synthesiser — Development Rules
 
 ## First Steps Every Session
 
@@ -82,7 +82,7 @@ These rules apply to every file under `app/`, `components/`, and `lib/`.
 
 ### Styling Rules
 
-- **Tailwind CSS with a clean, utilitarian design.** This is an internal tool. White background, neutral greys, single brand accent colour (indigo/purple to match Accelerate). No unnecessary visual complexity.
+- **Tailwind CSS with a clean, utilitarian design.** White background, neutral greys, single brand accent colour (indigo/purple). No unnecessary visual complexity.
 - **Use a utility function for conditional classes.** Never concatenate class strings manually. Always use `cn()` (clsx + tailwind-merge) that handles Tailwind class conflicts.
 - **Mobile-readable, desktop-first.** The app is designed for desktop use. It should be legible on mobile but is not optimised for it.
 - **Consistent spacing and sizing.** Use Tailwind's spacing scale consistently. Don't mix arbitrary pixel values with Tailwind units.
@@ -113,7 +113,7 @@ These rules apply to every file under `app/`, `components/`, and `lib/`.
 ## Authentication — Google OAuth via Supabase Auth
 
 - **Supabase Auth handles the OAuth flow.** No custom OAuth implementation. Use `supabase.auth.signInWithOAuth({ provider: 'google' })` on the client and Supabase's built-in session management.
-- **Domain restriction is enforced server-side.** After authentication, verify the user's email domain matches the allowed domain (e.g., `@inmobi.com`). Block non-matching users with a clear error message. This check happens in middleware, not just on the client.
+- **Domain restriction is enforced server-side.** After authentication, verify the user's email domain matches the allowed domain (configured via `ALLOWED_EMAIL_DOMAIN` env var). Block non-matching users with a clear error message. This check happens in middleware, not just on the client.
 - **Auth state is provided via a React context.** A single `AuthProvider` wraps the app and exposes `user`, `isAuthenticated`, `isLoading`, and `signOut`. Components read auth state from context.
 - **Middleware protects all routes.** Next.js middleware checks for a valid Supabase session on every request. Unauthenticated users are redirected to the sign-in page.
 - **Session persistence.** Supabase Auth handles session refresh via cookies. The user is not forced to re-authenticate on every visit.

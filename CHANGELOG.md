@@ -1,10 +1,17 @@
-# Changelog — Accelerate Synthesis
+# Changelog — Synthesiser
 
 All notable changes to this project are documented here, grouped by PRD and part number.
 
 ---
 
 ## [Unreleased]
+
+### Rebrand: Accelerate Synthesis → Synthesiser — 2026-04-02
+- Renamed product from "Accelerate Synthesis" to "Synthesiser" across all UI, metadata, and PDF output
+- Removed InMobi and ad-tech specific context from all AI prompts (signal extraction, master signal cold start, master signal incremental) — prompts are now industry-agnostic
+- Made login page domain restriction error message generic ("Access restricted to authorised email domains") instead of hardcoded "@inmobi.com"
+- Updated package name from "accelerate-synthesis" to "synthesiser"
+- Updated all documentation (ARCHITECTURE.md, CLAUDE.md, master PRD, section PRDs/TRDs, seed SQL)
 
 ### PRD-007 Part 1: Prompt Editor — View Alternate Master Signal Prompt — 2026-03-30
 - Added contextual note above the editor on the Master Signal tab explaining which prompt variant is loaded (cold-start or incremental) and when it's used
@@ -219,7 +226,7 @@ All notable changes to this project are documented here, grouped by PRD and part
 - Created `TabNav` with route-based active state and indigo underline indicator
 - Created placeholder `UserMenu` (avatar + "Sign in" text)
 - Created `/capture` placeholder page ("Coming soon")
-- Updated root layout with proper metadata ("Accelerate Synthesis") and `AppHeader`
+- Updated root layout with proper metadata ("Synthesiser") and `AppHeader`
 - Root `/` now redirects to `/capture`
 
 ### Project Setup — 2026-03-23

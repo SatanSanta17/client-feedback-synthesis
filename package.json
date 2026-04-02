@@ -1,5 +1,5 @@
 {
-  "name": "accelerate-synthesis",
+  "name": "synthesiser",
   "version": "0.1.0",
   "private": true,
   "scripts": {
@@ -12,7 +12,7 @@
     "@anthropic-ai/sdk": "^0.80.0",
     "@hookform/resolvers": "^5.2.2",
     "@supabase/ssr": "^0.9.0",
-    "@supabase/supabase-js": "^2.99.3",
+    "@supabase/supabase-js": "^2.101.1",
     "@tailwindcss/typography": "^0.5.19",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",

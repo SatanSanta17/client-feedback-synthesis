@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import { CapturePageContent } from "./_components/capture-page-content";
 
 export const metadata: Metadata = {
-  title: "Capture | Accelerate Synthesis",
+  title: "Capture | Synthesiser",
   description: "Capture and structure client session notes",
 };
 

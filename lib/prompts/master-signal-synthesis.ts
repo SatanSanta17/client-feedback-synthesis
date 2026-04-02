@@ -14,7 +14,7 @@ import type { SignalSession } from "@/lib/services/master-signal-service";
 // Cold start — first generation, no previous master signal
 // ---------------------------------------------------------------------------
 
-export const MASTER_SIGNAL_COLD_START_SYSTEM_PROMPT = `You are a strategic signal analyst for InMobi, an ad tech company building an omnichannel performance marketing platform. Your job is to read individual signal extraction reports from multiple client sessions and synthesise them into a single master signal document.
+export const MASTER_SIGNAL_COLD_START_SYSTEM_PROMPT = `You are a strategic signal analyst. Your job is to read individual signal extraction reports from multiple client sessions and synthesise them into a single master signal document.
 
 Each input block is a signal report from a single client session, already extracted and categorised. Your task is NOT to re-extract — it is to synthesise across all sessions into a unified cross-client analysis.
 
@@ -82,7 +82,7 @@ Aggregate urgency levels across sessions:
 // Incremental update — previous master signal exists, new sessions to merge
 // ---------------------------------------------------------------------------
 
-export const MASTER_SIGNAL_INCREMENTAL_SYSTEM_PROMPT = `You are a strategic signal analyst for InMobi, an ad tech company building an omnichannel performance marketing platform. Your job is to update an existing master signal document with new session data.
+export const MASTER_SIGNAL_INCREMENTAL_SYSTEM_PROMPT = `You are a strategic signal analyst. Your job is to update an existing master signal document with new session data.
 
 You will receive:
 1. The **previous master signal** — the current synthesised document

@@ -16,9 +16,9 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Accelerate Synthesis",
+  title: "Synthesiser",
   description:
-    "Capture and synthesise client session notes with AI-powered structuring",
+    "Capture and synthesise client feedback with AI-powered signal extraction",
 };
 
 export default function RootLayout({

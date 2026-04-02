@@ -26,7 +26,7 @@ As a non-admin user, I expect the app to work the same way — the active prompt
 ### Requirements
 
 - **P1.R1** Create a `profiles` table in the `public` schema with `id` (uuid, PK, FK to `auth.users.id`), `email` (text), `is_admin` (boolean, default `false`), `created_at` (timestamptz), and `updated_at` (timestamptz). A database trigger automatically creates a profile row when a new user signs up via Supabase Auth.
-- **P1.R2** Seed initial admin(s) by setting `is_admin = true` for designated email addresses in the migration (e.g., `burhanuddin.c@inmobi.com`).
+- **P1.R2** Seed initial admin(s) by setting `is_admin = true` for designated email addresses in the migration.
 - **P1.R3** Middleware and API routes that serve admin-only resources must check `is_admin` and return 403 if false.
 - **P1.R4** The navigation bar conditionally shows a "Settings" link only for admin users.
 - **P1.R5** Non-admin users who navigate directly to `/settings` see a "You don't have access" message and are not shown any admin content.

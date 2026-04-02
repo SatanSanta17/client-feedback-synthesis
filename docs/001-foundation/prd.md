@@ -44,15 +44,15 @@ As a team member, I want to sign in with my Google account and see the app's mai
 
 ## Part 2: Authentication
 
-**Scope:** Google OAuth login restricted to `@inmobi.com`, session persistence, user menu with sign-out, route protection.
+**Scope:** Google OAuth login restricted to a configurable domain, session persistence, user menu with sign-out, route protection.
 
 ### Requirements
 
-- **P2.R1** Authentication uses Google OAuth, restricted to the `@inmobi.com` domain.
+- **P2.R1** Authentication uses Google OAuth, restricted to a configurable email domain.
 - **P2.R2** On first visit (unauthenticated), the user is redirected to a login page with a "Sign in with Google" button.
 - **P2.R3** After successful Google sign-in, the user is redirected to `/capture`.
-- **P2.R4** After authentication, the user's email domain is verified against the allowed domain (`@inmobi.com`). This check must happen server-side, not just on the client.
-- **P2.R5** Users outside the allowed domain see a clear error: "Access restricted to @inmobi.com accounts." They are signed out and cannot proceed.
+- **P2.R4** After authentication, the user's email domain is verified against the allowed domain (configured via `ALLOWED_EMAIL_DOMAIN` env var). This check must happen server-side, not just on the client.
+- **P2.R5** Users outside the allowed domain see a clear error: "Access restricted to authorised email domains." They are signed out and cannot proceed.
 - **P2.R6** The auth session is persisted across browser refreshes. The user is not forced to re-authenticate on every visit.
 - **P2.R7** The user menu placeholder from Part 1 is replaced with the real user menu: signed-in user's Google avatar and email, with a dropdown containing a "Sign Out" option.
 - **P2.R8** Clicking "Sign Out" clears the session and redirects to the login page.
@@ -64,8 +64,8 @@ As a team member, I want to sign in with my Google account and see the app's mai
 - [ ] Visiting any protected route while unauthenticated redirects to the login page
 - [ ] The login page shows a "Sign in with Google" button
 - [ ] Clicking "Sign in with Google" initiates the Google OAuth flow
-- [ ] After sign-in with an `@inmobi.com` account, the user lands on `/capture` with the tab layout
-- [ ] After sign-in with a non-`@inmobi.com` account, the user sees the "Access restricted" error and is signed out
+- [ ] After sign-in with an allowed-domain account, the user lands on `/capture` with the tab layout
+- [ ] After sign-in with a non-allowed-domain account, the user sees the "Access restricted" error and is signed out
 - [ ] Refreshing the page after sign-in does not require re-authentication
 - [ ] The user menu shows the user's avatar and email
 - [ ] Clicking "Sign Out" clears the session and shows the login page
