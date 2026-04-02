@@ -169,7 +169,7 @@ async function callModel(options: CallModelOptions): Promise<string> {
         model,
         system: systemPrompt,
         prompt: userMessage,
-        maxTokens,
+        maxOutputTokens: maxTokens,
       });
 
       if (!text.trim()) {
