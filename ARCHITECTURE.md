@@ -20,7 +20,7 @@ Synthesiser is a web application for teams to capture structured client session 
 
 ## Current State
 
-**Status:** PRD-002 Parts 1, 2, and 3 (Database Schema, Client Management, Session Capture Form, Past Sessions Table) implemented. PRD-003 Parts 1, 2, 3, and 4 (Database Schema Update, Signal Extraction via Claude API, Capture Form Extract Signals UX, Past Sessions Side-by-Side View) implemented. PRD-004 Part 1 Increments 1.1–1.5 (Master Signal database table, service layer, AI prompts, synthesis function, API routes, frontend page, tab navigation, and PDF download) implemented. PRD-005 Parts 1–4 (Admin Role System, Prompt Storage & Versioning, Prompt Editor UI, Version History & Revert) implemented. PRD-006 Part 1 Increments 1.1–1.3 (Master Signal Cleanup on Session Deletion — tainted flag, auto cold-start, frontend banners, settings prompt selection) implemented. PRD-007 Part 1 (Prompt Editor — contextual note, inline toggle between cold-start and incremental prompts, active badge, dirty-state guard) implemented. PRD-008 Part 1 (Remove Email Domain Restriction — open authentication) implemented. PRD-008 Part 2 (Per-User Data Isolation — RLS policies, `created_by` columns on `clients` and `prompt_versions`, user-scoped prompt service, user-scoped taint function) implemented. The app shell is live with tab navigation, Google OAuth login (open to any Google account), a working capture form with signal extraction, and a full past sessions table with filters, expandable inline editing, signal extraction, and soft delete. Database tables (`clients`, `sessions`, `master_signals`, `profiles`, `prompt_versions`) are live with RLS. The `sessions` table includes `structured_notes` (TEXT, nullable) for storing signal extraction output. The `master_signals` table stores immutable snapshots of AI-synthesised master signal documents — each generation inserts a new row, latest by `generated_at` is the current one. The `master_signals` table includes an `is_tainted` flag (BOOLEAN, default false) that is set when a session with extracted signals is soft-deleted; when tainted, the next master signal generation forces a cold-start rebuild instead of an incremental merge, ensuring deleted session data is purged. The `profiles` table stores user metadata with an `is_admin` flag, auto-created via a trigger on `auth.users`. The `prompt_versions` table stores versioned AI system prompts with `is_active` flag, partial unique index, and full version history. The Master Signal page (`/m-signals`) displays the latest AI-synthesised cross-client analysis, supports cold start and incremental generation via Claude, shows a staleness banner when new sessions exist, shows a tainted banner when a session with signals has been deleted, and offers a client-side PDF download powered by pdf-lib. The capture form includes an "Extract Signals" button that calls Claude to generate a structured markdown signal report, displayed in a renderable/editable markdown panel. Both raw notes and structured notes are saved together. Expanded rows in the past sessions table show a side-by-side view of raw notes and structured notes using MarkdownPanel, with inline signal extraction and re-extraction support. The Settings page (`/settings`) is admin-only and provides a prompt editor UI with two tabs — Signal Extraction and Master Signal — full dirty tracking, save/reset-to-default, a collapsible version history panel, and a version view dialog with revert capability. The Master Signal tab dynamically resolves to the cold start or incremental prompt based on whether a master signal already exists and whether it is tainted (tainted = cold start). A contextual note above the editor explains which prompt variant is loaded and when it's used, with an inline toggle link to switch to the alternate variant (e.g., view the cold-start prompt while the incremental prompt is auto-selected). Both variants are fully editable, and the auto-selected prompt shows an "(active)" badge. Toggling respects the existing dirty-state guard. The AI service reads active prompts from the database with hardcoded fallback.
+**Status:** PRD-002 Parts 1, 2, and 3 (Database Schema, Client Management, Session Capture Form, Past Sessions Table) implemented. PRD-003 Parts 1, 2, 3, and 4 (Database Schema Update, Signal Extraction via Claude API, Capture Form Extract Signals UX, Past Sessions Side-by-Side View) implemented. PRD-004 Part 1 Increments 1.1–1.5 (Master Signal database table, service layer, AI prompts, synthesis function, API routes, frontend page, tab navigation, and PDF download) implemented. PRD-005 Parts 1–4 (Admin Role System, Prompt Storage & Versioning, Prompt Editor UI, Version History & Revert) implemented. PRD-006 Part 1 Increments 1.1–1.3 (Master Signal Cleanup on Session Deletion — tainted flag, auto cold-start, frontend banners, settings prompt selection) implemented. PRD-007 Part 1 (Prompt Editor — contextual note, inline toggle between cold-start and incremental prompts, active badge, dirty-state guard) implemented. PRD-008 Part 1 (Remove Email Domain Restriction — open authentication) implemented. PRD-008 Part 2 (Per-User Data Isolation — RLS policies, `created_by` columns on `clients` and `prompt_versions`, user-scoped prompt service, user-scoped taint function) implemented. PRD-008 Part 3 (Remove Admin Role System — admin gating removed from settings page, tab nav, prompt API routes, and AuthProvider; `use-profile` hook deleted; `isCurrentUserAdmin` removed) implemented. The app shell is live with tab navigation, Google OAuth login (open to any Google account), a working capture form with signal extraction, and a full past sessions table with filters, expandable inline editing, signal extraction, and soft delete. Database tables (`clients`, `sessions`, `master_signals`, `profiles`, `prompt_versions`) are live with RLS. The `sessions` table includes `structured_notes` (TEXT, nullable) for storing signal extraction output. The `master_signals` table stores immutable snapshots of AI-synthesised master signal documents — each generation inserts a new row, latest by `generated_at` is the current one. The `master_signals` table includes an `is_tainted` flag (BOOLEAN, default false) that is set when a session with extracted signals is soft-deleted; when tainted, the next master signal generation forces a cold-start rebuild instead of an incremental merge, ensuring deleted session data is purged. The `profiles` table stores user metadata with an `is_admin` flag, auto-created via a trigger on `auth.users`. The `prompt_versions` table stores versioned AI system prompts with `is_active` flag, partial unique index, and full version history. The Master Signal page (`/m-signals`) displays the latest AI-synthesised cross-client analysis, supports cold start and incremental generation via Claude, shows a staleness banner when new sessions exist, shows a tainted banner when a session with signals has been deleted, and offers a client-side PDF download powered by pdf-lib. The capture form includes an "Extract Signals" button that calls Claude to generate a structured markdown signal report, displayed in a renderable/editable markdown panel. Both raw notes and structured notes are saved together. Expanded rows in the past sessions table show a side-by-side view of raw notes and structured notes using MarkdownPanel, with inline signal extraction and re-extraction support. The Settings page (`/settings`) provides a prompt editor UI with two tabs — Signal Extraction and Master Signal — full dirty tracking, save/reset-to-default, a collapsible version history panel, and a version view dialog with revert capability. The Master Signal tab dynamically resolves to the cold start or incremental prompt based on whether a master signal already exists and whether it is tainted (tainted = cold start). A contextual note above the editor explains which prompt variant is loaded and when it's used, with an inline toggle link to switch to the alternate variant (e.g., view the cold-start prompt while the incremental prompt is auto-selected). Both variants are fully editable, and the auto-selected prompt shows an "(active)" badge. Toggling respects the existing dirty-state guard. The AI service reads active prompts from the database with hardcoded fallback.
 
 ---
 
@@ -50,7 +50,7 @@ synthesiser/
 │   │   ├── master-signal/
 │   │   │   └── route.ts         # GET — fetch current master signal + staleness count
 │   │   ├── prompts/
-│   │   │   └── route.ts         # GET (active + history by key, admin-only) and POST (save new version, admin-only)
+│   │   │   └── route.ts         # GET (active + history by key) and POST (save new version)
 │   │   └── sessions/
 │   │       ├── route.ts         # GET (list with filters/pagination) and POST (create session)
 │   │       └── [id]/
@@ -73,7 +73,7 @@ synthesiser/
 │   │       ├── master-signal-page-content.tsx  # Client component — fetch, generate, display, staleness, PDF download
 │   │       └── master-signal-pdf.ts            # Client-side PDF generation via pdf-lib — parses markdown, renders styled A4 PDF with branded header
 │   ├── settings/
-│   │   ├── page.tsx             # Settings page — server component with admin gate, renders PromptEditorPageContent
+│   │   ├── page.tsx             # Settings page — renders PromptEditorPageContent
 │   │   └── _components/
 │   │       ├── prompt-editor-page-content.tsx  # Client component — dynamic tabs (Signal Extraction + Master Signal), fetch, save, dirty tracking, version history, dialogs
 │   │       ├── prompt-editor.tsx               # Monospace textarea with loading skeleton
@@ -86,10 +86,10 @@ synthesiser/
 │           └── route.ts         # OAuth callback — code exchange, redirect to /capture
 ├── components/
 │   ├── providers/
-│   │   └── auth-provider.tsx    # AuthProvider context — user, isAuthenticated, isLoading, isAdmin, signOut
+│   │   └── auth-provider.tsx    # AuthProvider context — user, isAuthenticated, isLoading, signOut
 │   ├── layout/
 │   │   ├── app-header.tsx       # Top bar — TabNav (left) + UserMenu (right)
-│   │   ├── tab-nav.tsx          # Route-based tab navigation with active indicator (Settings tab for admins)
+│   │   ├── tab-nav.tsx          # Route-based tab navigation with active indicator
 │   │   └── user-menu.tsx        # Auth-aware user menu — avatar, email, sign-out dropdown
 │   └── ui/                      # shadcn/ui primitives (do not modify)
 │       ├── badge.tsx
@@ -109,13 +109,11 @@ synthesiser/
 │   ├── prompts/
 │   │   ├── master-signal-synthesis.ts # System prompts (cold start + incremental) and user message builder for master signal
 │   │   └── signal-extraction.ts # System prompt and user message template for signal extraction
-│   ├── hooks/
-│   │   └── use-profile.ts       # Client-side hook for fetching admin flag from profiles table
 │   ├── services/
 │   │   ├── ai-service.ts        # Claude API wrapper — extractSignals(), synthesiseMasterSignal(), shared retry logic, typed error classes; reads active prompts from DB with hardcoded fallback
 │   │   ├── client-service.ts    # Client search (with hasSession filter) and creation (searchClients, createNewClient)
 │   │   ├── master-signal-service.ts # Master signal CRUD — get latest, stale count, fetch signal sessions, save
-│   │   ├── profile-service.ts   # Server-side profile fetch (getCurrentProfile) and admin check (isCurrentUserAdmin)
+│   │   ├── profile-service.ts   # Server-side profile fetch (getCurrentProfile)
 │   │   ├── prompt-service.ts    # Prompt CRUD — getActivePrompt (user-scoped), getPromptHistory (user-scoped), savePromptVersion (user-scoped, atomic swap)
 │   │   └── session-service.ts   # Session CRUD — create, list with filters/pagination, update, soft delete
 │   ├── utils/
@@ -212,7 +210,7 @@ Stores immutable snapshots of the AI-synthesised master signal document. Each ge
 
 ### `profiles`
 
-Stores user metadata, auto-created by a trigger on `auth.users`. Used for admin role gating.
+Stores user metadata, auto-created by a trigger on `auth.users`.
 
 | Column | Type | Notes |
 |--------|------|-------|
@@ -263,7 +261,7 @@ Stores versioned AI system prompts per user. Each save/reset/revert creates a ne
 4. Google redirects back to `/auth/callback?code=...`.
 5. The callback route handler exchanges the code for a session via `supabase.auth.exchangeCodeForSession(code)`.
 6. On success: redirect to `/capture`. On failure: redirect to `/login?error=exchange_failed`.
-8. **AuthProvider** (`components/providers/auth-provider.tsx`) wraps the app in `layout.tsx`. It reads the initial session on mount and subscribes to `onAuthStateChange`. Exposes `user`, `isAuthenticated`, `isLoading`, `isAdmin`, and `signOut` via React context. The `isAdmin` flag is fetched from the `profiles` table via the `useProfile` hook on auth state change. `isLoading` includes the profile fetch to prevent UI flicker.
+7. **AuthProvider** (`components/providers/auth-provider.tsx`) wraps the app in `layout.tsx`. It reads the initial session on mount and subscribes to `onAuthStateChange`. Exposes `user`, `isAuthenticated`, `isLoading`, and `signOut` via React context.
 9. **UserMenu** consumes the auth context. Shows a loading skeleton while `isLoading`, a "Sign in" link when unauthenticated, and the user's Google avatar + email with a sign-out dropdown when authenticated.
 
 ---
@@ -281,8 +279,8 @@ Stores versioned AI system prompts per user. Each save/reset/revert creates a ne
 | POST | `/api/sessions` | Create a session. Body: `{ clientId, clientName, sessionDate, rawNotes, structuredNotes? }`. Creates client first if `clientId` is null. Returns 201. | Yes (RLS) |
 | PUT | `/api/sessions/[id]` | Update a session. Body: `{ clientId, clientName, sessionDate, rawNotes, structuredNotes? }`. Omitting `structuredNotes` preserves existing value; `null` clears it. Returns 200 or 404/409. | Yes (RLS) |
 | DELETE | `/api/sessions/[id]` | Soft-delete a session (sets `deleted_at`). Returns 200 or 404. | Yes (RLS) |
-| GET | `/api/prompts?key=<prompt_key>` | Fetch active prompt and full version history for the given key. Returns `{ active, history }`. | Yes (admin-only, 403 for non-admins) |
-| POST | `/api/prompts` | Save a new prompt version and make it active. Body: `{ promptKey, content }`. Returns `{ version }`. | Yes (admin-only, 403 for non-admins) |
+| GET | `/api/prompts?key=<prompt_key>` | Fetch active prompt and full version history for the given key. Returns `{ active, history }`. | Yes (RLS — user's own prompts) |
+| POST | `/api/prompts` | Save a new prompt version and make it active. Body: `{ promptKey, content }`. Returns `{ version }`. | Yes (RLS — user's own prompts) |
 
 ---
 
@@ -310,4 +308,4 @@ See `.env.example` for the full template.
 5. **Clients as a first-class entity.** Separate `clients` table (not derived from unique session values) to support future enrichment and enterprise features.
 6. **Architecture follows code, not the other way around.** This document is updated after implementation, never speculatively. If it's in this file, it exists in the codebase.
 7. **AI prompts are DB-first with hardcoded fallback.** Active prompts are read from `prompt_versions` at runtime. If the DB is unreachable, the AI service falls back to the hardcoded constants in `lib/prompts/`. This ensures signal extraction and master signal synthesis never break due to a prompt storage issue.
-8. **Admin gating at page and API level, not middleware.** Middleware checks authentication only. Admin checks happen in server components (settings page) and API route handlers (prompts API) via `isCurrentUserAdmin()`. This avoids a Supabase round-trip on every navigation.
+8. **No admin role system.** All authenticated users have full access to their own data, including prompts. The `is_admin` column on `profiles` and the `is_admin()` SQL function are retained in the database but unused by application code — they may be repurposed for a future team admin role.

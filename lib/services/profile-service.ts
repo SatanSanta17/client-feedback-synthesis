@@ -10,7 +10,7 @@ export interface Profile {
 
 /**
  * Fetches the profile for the currently authenticated user.
- * Uses the anon client (respects RLS — user can only read own profile).
+ * Uses the user-scoped client (respects RLS — user can only read own profile).
  */
 export async function getCurrentProfile(): Promise<Profile | null> {
   const supabase = await createClient();
@@ -32,13 +32,4 @@ export async function getCurrentProfile(): Promise<Profile | null> {
   }
 
   return data;
-}
-
-/**
- * Checks if the currently authenticated user is an admin.
- * Returns false if the user is not authenticated or the query fails.
- */
-export async function isCurrentUserAdmin(): Promise<boolean> {
-  const profile = await getCurrentProfile();
-  return profile?.is_admin ?? false;
 }

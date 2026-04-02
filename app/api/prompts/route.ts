@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { createClient } from "@/lib/supabase/server";
-import { isCurrentUserAdmin } from "@/lib/services/profile-service";
 import {
   getPromptHistory,
   savePromptVersion,
@@ -16,13 +15,12 @@ const VALID_PROMPT_KEYS: PromptKey[] = [
 
 // ---------------------------------------------------------------------------
 // GET /api/prompts?key=<prompt_key>
-// Returns the version history for a given prompt key. Admin-only.
+// Returns the version history for a given prompt key.
 // ---------------------------------------------------------------------------
 
 export async function GET(request: NextRequest) {
   console.log("[api/prompts] GET — fetching prompt history");
 
-  // Auth check
   const supabase = await createClient();
   const {
     data: { user },
@@ -34,13 +32,6 @@ export async function GET(request: NextRequest) {
       { message: "Authentication required" },
       { status: 401 }
     );
-  }
-
-  // Admin check
-  const isAdmin = await isCurrentUserAdmin();
-  if (!isAdmin) {
-    console.warn("[api/prompts] GET — non-admin request");
-    return NextResponse.json({ message: "Forbidden" }, { status: 403 });
   }
 
   // Validate query param
@@ -81,7 +72,7 @@ export async function GET(request: NextRequest) {
 
 // ---------------------------------------------------------------------------
 // POST /api/prompts
-// Saves a new prompt version and makes it active. Admin-only.
+// Saves a new prompt version and makes it active.
 // ---------------------------------------------------------------------------
 
 const savePromptSchema = z.object({
@@ -99,7 +90,6 @@ const savePromptSchema = z.object({
 export async function POST(request: NextRequest) {
   console.log("[api/prompts] POST — saving new prompt version");
 
-  // Auth check
   const supabase = await createClient();
   const {
     data: { user },
@@ -111,13 +101,6 @@ export async function POST(request: NextRequest) {
       { message: "Authentication required" },
       { status: 401 }
     );
-  }
-
-  // Admin check
-  const isAdmin = await isCurrentUserAdmin();
-  if (!isAdmin) {
-    console.warn("[api/prompts] POST — non-admin request");
-    return NextResponse.json({ message: "Forbidden" }, { status: 403 });
   }
 
   // Parse and validate request body

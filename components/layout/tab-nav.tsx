@@ -4,7 +4,6 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { Pencil, BarChart3, Settings } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { useAuth } from "@/components/providers/auth-provider";
 
 interface TabConfig {
   label: string;
@@ -12,7 +11,7 @@ interface TabConfig {
   icon: React.ReactNode;
 }
 
-const baseTabs: TabConfig[] = [
+const tabs: TabConfig[] = [
   {
     label: "Capture",
     href: "/capture",
@@ -23,19 +22,15 @@ const baseTabs: TabConfig[] = [
     href: "/m-signals",
     icon: <BarChart3 className="h-4 w-4" />,
   },
+  {
+    label: "Settings",
+    href: "/settings",
+    icon: <Settings className="h-4 w-4" />,
+  },
 ];
-
-const settingsTab: TabConfig = {
-  label: "Settings",
-  href: "/settings",
-  icon: <Settings className="h-4 w-4" />,
-};
 
 export function TabNav() {
   const pathname = usePathname();
-  const { isAdmin } = useAuth();
-
-  const tabs = isAdmin ? [...baseTabs, settingsTab] : baseTabs;
 
   return (
     <nav className="flex items-center gap-1" aria-label="Main navigation">

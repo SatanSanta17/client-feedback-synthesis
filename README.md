@@ -68,14 +68,13 @@ See `.env.example` for the full template.
 app/
 ├── capture/        # Session capture form + past sessions table
 ├── m-signals/      # Master signal view + PDF export
-├── settings/       # Admin prompt editor with version history
+├── settings/       # Prompt editor with version history
 ├── login/          # Google OAuth sign-in
 └── api/            # Server-side routes (AI, sessions, clients, prompts)
 
 lib/
 ├── services/       # Business logic (AI, sessions, clients, prompts, profiles)
 ├── prompts/        # AI prompt templates (fallback defaults)
-├── hooks/          # Custom React hooks
 └── supabase/       # Supabase client factories
 
 components/

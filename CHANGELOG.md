@@ -6,6 +6,15 @@ All notable changes to this project are documented here, grouped by PRD and part
 
 ## [Unreleased]
 
+### PRD-008 Part 3: Remove Admin Role System — 2026-04-02
+- Removed admin gate from Settings page — all authenticated users can access `/settings` and customise their prompts
+- Settings tab now visible in navigation for all users
+- Removed `isCurrentUserAdmin()` checks from `GET /api/prompts` and `POST /api/prompts` — access control handled by RLS
+- Removed `isAdmin` from `AuthProvider` context and `AuthContextValue` interface
+- Deleted `lib/hooks/use-profile.ts` (only fetched the admin flag)
+- Removed `isCurrentUserAdmin()` from `profile-service.ts` — `getCurrentProfile()` retained
+- `is_admin` column on `profiles` and `is_admin()` SQL function retained in database for potential future use
+
 ### PRD-008 Part 2: Per-User Data Isolation — 2026-04-02
 - Added `created_by` column to `clients` table with per-user RLS policies and unique index `(LOWER(name), created_by)`
 - Updated RLS policies on `sessions` — SELECT and UPDATE now scoped to `created_by = auth.uid()`
