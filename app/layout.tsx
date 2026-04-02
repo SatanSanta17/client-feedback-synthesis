@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import { Toaster } from "sonner";
 import { AppHeader } from "@/components/layout/app-header";
+import { AppFooter } from "@/components/layout/app-footer";
 import { AuthProvider } from "@/components/providers/auth-provider";
 import "./globals.css";
 
@@ -35,6 +36,7 @@ export default function RootLayout({
         <AuthProvider>
           <AppHeader />
           <main className="flex flex-1 flex-col">{children}</main>
+          <AppFooter />
           <Toaster position="bottom-right" richColors />
         </AuthProvider>
       </body>
