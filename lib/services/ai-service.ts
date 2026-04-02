@@ -1,4 +1,8 @@
-import Anthropic from "@anthropic-ai/sdk";
+import { generateText, APICallError } from "ai";
+import { anthropic } from "@ai-sdk/anthropic";
+import { openai } from "@ai-sdk/openai";
+import { google } from "@ai-sdk/google";
+import type { LanguageModel } from "ai";
 import {
   SIGNAL_EXTRACTION_SYSTEM_PROMPT,
   buildSignalExtractionUserMessage,
@@ -14,19 +18,57 @@ import type { SignalSession } from "@/lib/services/master-signal-service";
 const MAX_RETRIES = 3;
 const INITIAL_RETRY_DELAY_MS = 1000;
 
-// Token limits per operation
 const EXTRACT_SIGNALS_MAX_TOKENS = 4096;
 const MASTER_SIGNAL_MAX_TOKENS = 8192;
+
+// ---------------------------------------------------------------------------
+// Provider resolution
+// ---------------------------------------------------------------------------
+
+type SupportedProvider = "anthropic" | "openai" | "google";
+
+const PROVIDER_MAP: Record<SupportedProvider, (modelId: string) => LanguageModel> = {
+  anthropic: (modelId) => anthropic(modelId),
+  openai: (modelId) => openai(modelId),
+  google: (modelId) => google(modelId),
+};
+
+/**
+ * Reads AI_PROVIDER and AI_MODEL from environment variables and returns
+ * the corresponding Vercel AI SDK model instance.
+ */
+function resolveModel(): { model: LanguageModel; label: string } {
+  const provider = process.env.AI_PROVIDER;
+  const modelId = process.env.AI_MODEL;
+
+  if (!provider) {
+    throw new AIConfigError("AI_PROVIDER environment variable is not set");
+  }
+  if (!modelId) {
+    throw new AIConfigError("AI_MODEL environment variable is not set");
+  }
+
+  const factory = PROVIDER_MAP[provider as SupportedProvider];
+  if (!factory) {
+    throw new AIConfigError(
+      `Unsupported AI_PROVIDER: "${provider}". Supported: ${Object.keys(PROVIDER_MAP).join(", ")}`
+    );
+  }
+
+  return {
+    model: factory(modelId),
+    label: `${provider}/${modelId}`,
+  };
+}
 
 // ---------------------------------------------------------------------------
 // Public functions
 // ---------------------------------------------------------------------------
 
 /**
- * Extract signals from raw session notes using Claude.
+ * Extract signals from raw session notes via the configured AI model.
  * Returns a markdown-formatted signal extraction report.
- * Retries transient failures (429, 500, timeout) with exponential backoff.
- * Throws on non-retryable errors or after exhausting retries.
+ * Retries transient failures (429, 5xx, network) with exponential backoff.
  */
 export async function extractSignals(rawNotes: string): Promise<string> {
   const dbPrompt = await getActivePrompt("signal_extraction");
@@ -34,7 +76,7 @@ export async function extractSignals(rawNotes: string): Promise<string> {
 
   const userMessage = buildSignalExtractionUserMessage(rawNotes);
 
-  return callClaude({
+  return callModel({
     systemPrompt,
     userMessage,
     maxTokens: EXTRACT_SIGNALS_MAX_TOKENS,
@@ -87,7 +129,7 @@ export async function synthesiseMasterSignal(
     `[ai-service] synthesiseMasterSignal — mode: ${isIncremental ? "incremental" : "cold start"}, sessions: ${sessions.length}`
   );
 
-  return callClaude({
+  return callModel({
     systemPrompt,
     userMessage,
     maxTokens: MASTER_SIGNAL_MAX_TOKENS,
@@ -96,10 +138,10 @@ export async function synthesiseMasterSignal(
 }
 
 // ---------------------------------------------------------------------------
-// Shared Claude call with retry logic
+// Provider-agnostic model call with retry logic
 // ---------------------------------------------------------------------------
 
-interface CallClaudeOptions {
+interface CallModelOptions {
   systemPrompt: string;
   userMessage: string;
   maxTokens: number;
@@ -107,78 +149,61 @@ interface CallClaudeOptions {
 }
 
 /**
- * Calls the Claude API with retry logic for transient failures.
- * Returns the text content from the response.
+ * Calls the configured AI model via the Vercel AI SDK with retry logic
+ * for transient failures. Returns the text content from the response.
  * Throws typed errors that the API route can map to HTTP status codes.
  */
-async function callClaude(options: CallClaudeOptions): Promise<string> {
+async function callModel(options: CallModelOptions): Promise<string> {
   const { systemPrompt, userMessage, maxTokens, operationName } = options;
-
-  const client = new Anthropic({
-    apiKey: process.env.ANTHROPIC_API_KEY,
-  });
-
-  const model = process.env.CLAUDE_MODEL;
-  if (!model) {
-    throw new AIConfigError("CLAUDE_MODEL environment variable is not set");
-  }
+  const { model, label } = resolveModel();
 
   let lastError: Error | null = null;
 
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
     try {
       console.log(
-        `[ai-service] ${operationName} — attempt ${attempt + 1}/${MAX_RETRIES + 1}, model: ${model}`
+        `[ai-service] ${operationName} — attempt ${attempt + 1}/${MAX_RETRIES + 1}, model: ${label}`
       );
 
-      const response = await client.messages.create({
+      const { text } = await generateText({
         model,
-        max_tokens: maxTokens,
         system: systemPrompt,
-        messages: [{ role: "user", content: userMessage }],
+        prompt: userMessage,
+        maxTokens,
       });
 
-      // Extract text from the response
-      const textBlock = response.content.find(
-        (block) => block.type === "text"
-      );
-      if (!textBlock || textBlock.type !== "text" || !textBlock.text.trim()) {
-        throw new AIEmptyResponseError("Claude returned an empty response");
+      if (!text.trim()) {
+        throw new AIEmptyResponseError("Model returned an empty response");
       }
 
       console.log(
-        `[ai-service] ${operationName} — success, ${textBlock.text.length} chars`
+        `[ai-service] ${operationName} — success, ${text.length} chars`
       );
-      return textBlock.text;
+      return text;
     } catch (err) {
       lastError = err instanceof Error ? err : new Error(String(err));
 
-      // Don't retry non-transient errors
-      if (err instanceof Anthropic.BadRequestError) {
-        console.error(
-          `[ai-service] ${operationName} — bad request (not retrying):`,
-          lastError.message
-        );
-        throw new AIRequestError(
-          `Claude rejected the request: ${lastError.message}`
-        );
-      }
-
-      // Don't retry our own validation errors
-      if (
-        err instanceof AIEmptyResponseError ||
-        err instanceof AIConfigError
-      ) {
+      if (err instanceof AIEmptyResponseError || err instanceof AIConfigError) {
         throw err;
       }
 
-      // Retry transient errors (rate limit, server error, timeout)
-      const isRetryable =
-        err instanceof Anthropic.RateLimitError ||
-        err instanceof Anthropic.InternalServerError ||
-        err instanceof Anthropic.APIConnectionError;
+      // Don't retry client errors (4xx except 429 rate limit)
+      if (
+        APICallError.isInstance(err) &&
+        err.statusCode !== undefined &&
+        err.statusCode < 500 &&
+        err.statusCode !== 429
+      ) {
+        console.error(
+          `[ai-service] ${operationName} — client error (not retrying):`,
+          lastError.message
+        );
+        throw new AIRequestError(
+          `Model rejected the request: ${lastError.message}`
+        );
+      }
 
-      if (!isRetryable || attempt >= MAX_RETRIES) {
+      if (attempt >= MAX_RETRIES) {
         console.error(
           `[ai-service] ${operationName} — failed after ${attempt + 1} attempts:`,
           lastError.message
@@ -188,7 +213,6 @@ async function callClaude(options: CallClaudeOptions): Promise<string> {
         );
       }
 
-      // Exponential backoff: 1s, 2s, 4s
       const delay = INITIAL_RETRY_DELAY_MS * Math.pow(2, attempt);
       console.warn(
         `[ai-service] ${operationName} — retryable error (attempt ${attempt + 1}), retrying in ${delay}ms:`,
@@ -198,7 +222,6 @@ async function callClaude(options: CallClaudeOptions): Promise<string> {
     }
   }
 
-  // Should not reach here, but TypeScript needs it
   throw new AIServiceError(
     `${operationName} failed: ${lastError?.message ?? "unknown error"}`
   );
@@ -208,10 +231,6 @@ async function callClaude(options: CallClaudeOptions): Promise<string> {
 // Error classes
 // ---------------------------------------------------------------------------
 
-/**
- * Error classes for AI service failures.
- * These allow the API route to map errors to appropriate HTTP status codes.
- */
 export class AIServiceError extends Error {
   constructor(message: string) {
     super(message);

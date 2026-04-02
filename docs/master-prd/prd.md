@@ -95,9 +95,9 @@ Master PRD (this file)
 
 ---
 
-## AI Provider Abstraction (Amendment to Section 3)
+## AI Provider Abstraction (Amendment to Section 3) ✅
 
-**PRD:** `docs/009-ai-provider-abstraction/prd.md` — Draft
+**PRD:** `docs/009-ai-provider-abstraction/prd.md` — Implemented (2026-04-02)
 
 **Scope:** Replace direct Anthropic SDK integration with the Vercel AI SDK. Support switching AI provider and model via environment variables.
 

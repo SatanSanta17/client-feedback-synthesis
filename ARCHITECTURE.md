@@ -12,7 +12,7 @@ Synthesiser is a web application for teams to capture structured client session 
 - Frontend & API: Next.js (App Router, TypeScript)
 - Database: Supabase (PostgreSQL + Row-Level Security)
 - Authentication: Google OAuth via Supabase Auth
-- AI: Claude API (server-side only) for note structuring
+- AI: Vercel AI SDK (server-side only) — supports Anthropic, OpenAI, Google via env-var-driven provider selection
 - Hosting: Vercel
 - Styling: Tailwind CSS + shadcn/ui
 
@@ -20,7 +20,7 @@ Synthesiser is a web application for teams to capture structured client session 
 
 ## Current State
 
-**Status:** PRD-002 Parts 1, 2, and 3 (Database Schema, Client Management, Session Capture Form, Past Sessions Table) implemented. PRD-003 Parts 1, 2, 3, and 4 (Database Schema Update, Signal Extraction via Claude API, Capture Form Extract Signals UX, Past Sessions Side-by-Side View) implemented. PRD-004 Part 1 Increments 1.1–1.5 (Master Signal database table, service layer, AI prompts, synthesis function, API routes, frontend page, tab navigation, and PDF download) implemented. PRD-005 Parts 1–4 (Admin Role System, Prompt Storage & Versioning, Prompt Editor UI, Version History & Revert) implemented. PRD-006 Part 1 Increments 1.1–1.3 (Master Signal Cleanup on Session Deletion — tainted flag, auto cold-start, frontend banners, settings prompt selection) implemented. PRD-007 Part 1 (Prompt Editor — contextual note, inline toggle between cold-start and incremental prompts, active badge, dirty-state guard) implemented. PRD-008 Part 1 (Remove Email Domain Restriction — open authentication) implemented. PRD-008 Part 2 (Per-User Data Isolation — RLS policies, `created_by` columns on `clients` and `prompt_versions`, user-scoped prompt service, user-scoped taint function) implemented. PRD-008 Part 3 (Remove Admin Role System — admin gating removed from settings page, tab nav, prompt API routes, and AuthProvider; `use-profile` hook deleted; `isCurrentUserAdmin` removed) implemented. The app shell is live with tab navigation, Google OAuth login (open to any Google account), a working capture form with signal extraction, and a full past sessions table with filters, expandable inline editing, signal extraction, and soft delete. Database tables (`clients`, `sessions`, `master_signals`, `profiles`, `prompt_versions`) are live with RLS. The `sessions` table includes `structured_notes` (TEXT, nullable) for storing signal extraction output. The `master_signals` table stores immutable snapshots of AI-synthesised master signal documents — each generation inserts a new row, latest by `generated_at` is the current one. The `master_signals` table includes an `is_tainted` flag (BOOLEAN, default false) that is set when a session with extracted signals is soft-deleted; when tainted, the next master signal generation forces a cold-start rebuild instead of an incremental merge, ensuring deleted session data is purged. The `profiles` table stores user metadata with an `is_admin` flag, auto-created via a trigger on `auth.users`. The `prompt_versions` table stores versioned AI system prompts with `is_active` flag, partial unique index, and full version history. The Master Signal page (`/m-signals`) displays the latest AI-synthesised cross-client analysis, supports cold start and incremental generation via Claude, shows a staleness banner when new sessions exist, shows a tainted banner when a session with signals has been deleted, and offers a client-side PDF download powered by pdf-lib. The capture form includes an "Extract Signals" button that calls Claude to generate a structured markdown signal report, displayed in a renderable/editable markdown panel. Both raw notes and structured notes are saved together. Expanded rows in the past sessions table show a side-by-side view of raw notes and structured notes using MarkdownPanel, with inline signal extraction and re-extraction support. The Settings page (`/settings`) provides a prompt editor UI with two tabs — Signal Extraction and Master Signal — full dirty tracking, save/reset-to-default, a collapsible version history panel, and a version view dialog with revert capability. The Master Signal tab dynamically resolves to the cold start or incremental prompt based on whether a master signal already exists and whether it is tainted (tainted = cold start). A contextual note above the editor explains which prompt variant is loaded and when it's used, with an inline toggle link to switch to the alternate variant (e.g., view the cold-start prompt while the incremental prompt is auto-selected). Both variants are fully editable, and the auto-selected prompt shows an "(active)" badge. Toggling respects the existing dirty-state guard. The AI service reads active prompts from the database with hardcoded fallback.
+**Status:** PRD-002 Parts 1, 2, and 3 (Database Schema, Client Management, Session Capture Form, Past Sessions Table) implemented. PRD-003 Parts 1, 2, 3, and 4 (Database Schema Update, Signal Extraction via AI, Capture Form Extract Signals UX, Past Sessions Side-by-Side View) implemented. PRD-004 Part 1 Increments 1.1–1.5 (Master Signal database table, service layer, AI prompts, synthesis function, API routes, frontend page, tab navigation, and PDF download) implemented. PRD-005 Parts 1–4 (Admin Role System, Prompt Storage & Versioning, Prompt Editor UI, Version History & Revert) implemented. PRD-006 Part 1 Increments 1.1–1.3 (Master Signal Cleanup on Session Deletion — tainted flag, auto cold-start, frontend banners, settings prompt selection) implemented. PRD-007 Part 1 (Prompt Editor — contextual note, inline toggle between cold-start and incremental prompts, active badge, dirty-state guard) implemented. PRD-008 Part 1 (Remove Email Domain Restriction — open authentication) implemented. PRD-008 Part 2 (Per-User Data Isolation — RLS policies, `created_by` columns on `clients` and `prompt_versions`, user-scoped prompt service, user-scoped taint function) implemented. PRD-008 Part 3 (Remove Admin Role System — admin gating removed from settings page, tab nav, prompt API routes, and AuthProvider; `use-profile` hook deleted; `isCurrentUserAdmin` removed) implemented. PRD-009 Part 1 (AI Provider Abstraction — replaced `@anthropic-ai/sdk` with Vercel AI SDK, provider-agnostic `callModel()` via `generateText()`, env-var-driven provider/model selection) implemented. The app shell is live with tab navigation, Google OAuth login (open to any Google account), a working capture form with signal extraction, and a full past sessions table with filters, expandable inline editing, signal extraction, and soft delete. Database tables (`clients`, `sessions`, `master_signals`, `profiles`, `prompt_versions`) are live with RLS. The `sessions` table includes `structured_notes` (TEXT, nullable) for storing signal extraction output. The `master_signals` table stores immutable snapshots of AI-synthesised master signal documents — each generation inserts a new row, latest by `generated_at` is the current one. The `master_signals` table includes an `is_tainted` flag (BOOLEAN, default false) that is set when a session with extracted signals is soft-deleted; when tainted, the next master signal generation forces a cold-start rebuild instead of an incremental merge, ensuring deleted session data is purged. The `profiles` table stores user metadata with an `is_admin` flag, auto-created via a trigger on `auth.users`. The `prompt_versions` table stores versioned AI system prompts with `is_active` flag, partial unique index, and full version history. The Master Signal page (`/m-signals`) displays the latest AI-synthesised cross-client analysis, supports cold start and incremental generation via AI, shows a staleness banner when new sessions exist, shows a tainted banner when a session with signals has been deleted, and offers a client-side PDF download powered by pdf-lib. The capture form includes an "Extract Signals" button that calls the AI model to generate a structured markdown signal report, displayed in a renderable/editable markdown panel. Both raw notes and structured notes are saved together. Expanded rows in the past sessions table show a side-by-side view of raw notes and structured notes using MarkdownPanel, with inline signal extraction and re-extraction support. The Settings page (`/settings`) provides a prompt editor UI with two tabs — Signal Extraction and Master Signal — full dirty tracking, save/reset-to-default, a collapsible version history panel, and a version view dialog with revert capability. The Master Signal tab dynamically resolves to the cold start or incremental prompt based on whether a master signal already exists and whether it is tainted (tainted = cold start). A contextual note above the editor explains which prompt variant is loaded and when it's used, with an inline toggle link to switch to the alternate variant (e.g., view the cold-start prompt while the incremental prompt is auto-selected). Both variants are fully editable, and the auto-selected prompt shows an "(active)" badge. Toggling respects the existing dirty-state guard. The AI service reads active prompts from the database with hardcoded fallback.
 
 ---
 
@@ -42,9 +42,9 @@ synthesiser/
 │   ├── api/
 │   │   ├── ai/
 │   │   │   ├── extract-signals/
-│   │   │   │   └── route.ts     # POST — extract signals from raw notes via Claude API
+│   │   │   │   └── route.ts     # POST — extract signals from raw notes via AI model
 │   │   │   └── generate-master-signal/
-│   │   │       └── route.ts     # POST — generate/regenerate master signal via Claude AI synthesis
+│   │   │       └── route.ts     # POST — generate/regenerate master signal via AI model
 │   │   ├── clients/
 │   │   │   └── route.ts         # GET (search, optional hasSession filter) and POST (create) for clients
 │   │   ├── master-signal/
@@ -110,7 +110,7 @@ synthesiser/
 │   │   ├── master-signal-synthesis.ts # System prompts (cold start + incremental) and user message builder for master signal
 │   │   └── signal-extraction.ts # System prompt and user message template for signal extraction
 │   ├── services/
-│   │   ├── ai-service.ts        # Claude API wrapper — extractSignals(), synthesiseMasterSignal(), shared retry logic, typed error classes; reads active prompts from DB with hardcoded fallback
+│   │   ├── ai-service.ts        # AI service — extractSignals(), synthesiseMasterSignal(), provider-agnostic via Vercel AI SDK, retry logic, typed error classes; reads active prompts from DB with hardcoded fallback
 │   │   ├── client-service.ts    # Client search (with hasSession filter) and creation (searchClients, createNewClient)
 │   │   ├── master-signal-service.ts # Master signal CRUD — get latest, stale count, fetch signal sessions, save
 │   │   ├── profile-service.ts   # Server-side profile fetch (getCurrentProfile)
@@ -145,9 +145,15 @@ synthesiser/
     ├── 006-master-signal-cleanup/
     │   ├── prd.md               # PRD-006 — Master Signal Cleanup on Session Deletion (Part 1 implemented)
     │   └── trd.md               # TRD-006 — Master Signal Cleanup on Session Deletion (Part 1 implemented)
-    └── 007-prompt-editor-toggle/
-        ├── prd.md               # PRD-007 — Prompt Editor: View Alternate Master Signal Prompt (Part 1 implemented)
-        └── trd.md               # TRD-007 — Prompt Editor: View Alternate Master Signal Prompt (Part 1 implemented)
+    ├── 007-prompt-editor-toggle/
+    │   ├── prd.md               # PRD-007 — Prompt Editor: View Alternate Master Signal Prompt (Part 1 implemented)
+    │   └── trd.md               # TRD-007 — Prompt Editor: View Alternate Master Signal Prompt (Part 1 implemented)
+    ├── 008-open-access/
+    │   ├── prd.md               # PRD-008 — Open Access: Remove Domain Restriction and Per-User Data Isolation (implemented)
+    │   └── trd.md               # TRD-008 — Open Access (implemented)
+    └── 009-ai-provider-abstraction/
+        ├── prd.md               # PRD-009 — AI Provider Abstraction: Multi-Provider Support via Vercel AI SDK (implemented)
+        └── trd.md               # TRD-009 — AI Provider Abstraction (implemented)
 ```
 
 > This map is updated after each increment ships. Only files that exist in the codebase are listed here.
@@ -262,7 +268,7 @@ Stores versioned AI system prompts per user. Each save/reset/revert creates a ne
 5. The callback route handler exchanges the code for a session via `supabase.auth.exchangeCodeForSession(code)`.
 6. On success: redirect to `/capture`. On failure: redirect to `/login?error=exchange_failed`.
 7. **AuthProvider** (`components/providers/auth-provider.tsx`) wraps the app in `layout.tsx`. It reads the initial session on mount and subscribes to `onAuthStateChange`. Exposes `user`, `isAuthenticated`, `isLoading`, and `signOut` via React context.
-9. **UserMenu** consumes the auth context. Shows a loading skeleton while `isLoading`, a "Sign in" link when unauthenticated, and the user's Google avatar + email with a sign-out dropdown when authenticated.
+8. **UserMenu** consumes the auth context. Shows a loading skeleton while `isLoading`, a "Sign in" link when unauthenticated, and the user's Google avatar + email with a sign-out dropdown when authenticated.
 
 ---
 
@@ -270,8 +276,8 @@ Stores versioned AI system prompts per user. Each save/reset/revert creates a ne
 
 | Method | Route | Purpose | Auth |
 |--------|-------|---------|------|
-| POST | `/api/ai/extract-signals` | Extract signals from raw notes via Claude. Body: `{ rawNotes }`. Returns `{ structuredNotes }` (markdown string). Retries transient failures. | Yes (401 if unauthenticated) |
-| POST | `/api/ai/generate-master-signal` | Generate/regenerate the master signal. No body. Cold start synthesises from all sessions; incremental merges new sessions into existing master signal. Returns `{ masterSignal, unchanged? }`. | Yes (401 if unauthenticated) |
+| POST | `/api/ai/extract-signals` | Extract signals from raw notes via AI model. Body: `{ rawNotes }`. Returns `{ structuredNotes }` (markdown string). Retries transient failures. | Yes (401 if unauthenticated) |
+| POST | `/api/ai/generate-master-signal` | Generate/regenerate the master signal via AI model. No body. Cold start synthesises from all sessions; incremental merges new sessions into existing master signal. Returns `{ masterSignal, unchanged? }`. | Yes (401 if unauthenticated) |
 | GET | `/api/master-signal` | Fetch the current master signal and staleness count. Returns `{ masterSignal: {...} \| null, staleCount: number }`. | Yes (401 if unauthenticated) |
 | GET | `/api/clients?q=<search>&hasSession=true` | Search clients by name. Optional `hasSession` filter returns only clients with sessions. Returns `{ clients: Array<{ id, name }> }`. | Yes (RLS) |
 | POST | `/api/clients` | Create a new client. Body: `{ name }`. Returns 201 or 409 (duplicate). | Yes (RLS) |
@@ -291,8 +297,11 @@ Stores versioned AI system prompts per user. Each save/reset/revert creates a ne
 | `NEXT_PUBLIC_SUPABASE_URL` | Client + Server | Supabase project URL |
 | `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_DEFAULT_KEY` | Client + Server | Supabase publishable key (safe for browser) |
 | `SUPABASE_SERVICE_ROLE_KEY` | Server only | Supabase service role key (bypasses RLS) |
-| `ANTHROPIC_API_KEY` | Server only | Claude API key |
-| `CLAUDE_MODEL` | Server only | Claude model identifier |
+| `AI_PROVIDER` | Server only | AI provider (`anthropic`, `openai`, `google`) |
+| `AI_MODEL` | Server only | Provider-specific model identifier |
+| `ANTHROPIC_API_KEY` | Server only | Anthropic API key (required when `AI_PROVIDER=anthropic`) |
+| `OPENAI_API_KEY` | Server only | OpenAI API key (required when `AI_PROVIDER=openai`) |
+| `GOOGLE_GENERATIVE_AI_API_KEY` | Server only | Google AI API key (required when `AI_PROVIDER=google`) |
 | `NEXT_PUBLIC_APP_URL` | Client + Server | Application base URL |
 
 See `.env.example` for the full template.
@@ -303,7 +312,7 @@ See `.env.example` for the full template.
 
 1. **Standalone app.** Separate deployment, separate auth, separate database. No shared components.
 2. **Supabase for auth and database.** Provides Google OAuth, PostgreSQL, RLS, and auto-generated types out of the box. Reduces infrastructure overhead.
-3. **Server-side Claude calls only.** API key never touches the browser. All AI operations go through Next.js API routes.
+3. **Server-side AI calls only, provider-agnostic.** API keys never touch the browser. All AI operations go through Next.js API routes. The AI service uses the Vercel AI SDK (`generateText()`) and supports multiple providers (Anthropic, OpenAI, Google) via `AI_PROVIDER` and `AI_MODEL` env vars.
 4. **Manual theme tagging (not AI-driven).** Users explicitly link sessions to themes. Automatic theme extraction is deferred to backlog.
 5. **Clients as a first-class entity.** Separate `clients` table (not derived from unique session values) to support future enrichment and enterprise features.
 6. **Architecture follows code, not the other way around.** This document is updated after implementation, never speculatively. If it's in this file, it exists in the codebase.

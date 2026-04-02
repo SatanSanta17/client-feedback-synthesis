@@ -6,6 +6,16 @@ All notable changes to this project are documented here, grouped by PRD and part
 
 ## [Unreleased]
 
+### PRD-009 Part 1: AI Provider Abstraction — 2026-04-02
+- Replaced `@anthropic-ai/sdk` with the Vercel AI SDK (`ai`, `@ai-sdk/anthropic`, `@ai-sdk/openai`, `@ai-sdk/google`)
+- Replaced `callClaude()` with provider-agnostic `callModel()` using `generateText()` from the Vercel AI SDK
+- Added `resolveModel()` factory that reads `AI_PROVIDER` and `AI_MODEL` env vars and returns the correct SDK model instance
+- Supports Anthropic, OpenAI, and Google providers at launch — switching is a one-line env var change
+- Replaced Anthropic-specific error class checks with generic `APICallError` status code inspection for retry logic
+- Replaced `CLAUDE_MODEL` env var with `AI_PROVIDER` + `AI_MODEL`
+- Public API (`extractSignals`, `synthesiseMasterSignal`) unchanged — no caller modifications
+- Updated `.env.example`, `ARCHITECTURE.md`, `CLAUDE.md`
+
 ### PRD-008 Part 3: Remove Admin Role System — 2026-04-02
 - Removed admin gate from Settings page — all authenticated users can access `/settings` and customise their prompts
 - Settings tab now visible in navigation for all users

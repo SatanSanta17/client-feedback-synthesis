@@ -8,7 +8,7 @@ The result: your team always knows what clients are asking for, what's blocking 
 
 ## What it does
 
-**Capture** — Paste raw session notes. Claude extracts structured signals: pain points, must-haves, competitive mentions, blockers, urgency, sentiment, and more. Review, tweak if needed, save. Done in under a minute.
+**Capture** — Paste raw session notes. AI extracts structured signals: pain points, must-haves, competitive mentions, blockers, urgency, sentiment, and more. Review, tweak if needed, save. Done in under a minute.
 
 **Synthesise** — Every captured session feeds into a master signal document. AI merges signals across all clients, surfaces cross-client patterns, and generates strategic takeaways. Incrementally updates as new sessions come in — no need to rebuild from scratch.
 
@@ -28,7 +28,7 @@ The result: your team always knows what clients are asking for, what's blocking 
 | Framework | Next.js 16 (App Router, TypeScript) |
 | Database | Supabase (PostgreSQL + Row-Level Security) |
 | Auth | Google OAuth via Supabase Auth |
-| AI | Claude API (server-side) |
+| AI | Vercel AI SDK — supports Anthropic, OpenAI, Google (server-side) |
 | Styling | Tailwind CSS + shadcn/ui |
 | PDF | pdf-lib (client-side generation) |
 | Hosting | Vercel |
@@ -41,7 +41,7 @@ npm install
 
 # Set up environment variables
 cp .env.example .env.local
-# Fill in your Supabase, Anthropic, and Google OAuth credentials
+# Fill in your Supabase, AI provider, and Google OAuth credentials
 
 # Run the dev server
 npm run dev
@@ -56,8 +56,9 @@ Open [http://localhost:3000](http://localhost:3000).
 | `NEXT_PUBLIC_SUPABASE_URL` | Supabase project URL |
 | `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_DEFAULT_KEY` | Supabase publishable key |
 | `SUPABASE_SERVICE_ROLE_KEY` | Supabase service role key (server only) |
-| `ANTHROPIC_API_KEY` | Claude API key (server only) |
-| `CLAUDE_MODEL` | Claude model identifier (e.g. `claude-sonnet-4-20250514`) |
+| `AI_PROVIDER` | AI provider: `anthropic`, `openai`, or `google` |
+| `AI_MODEL` | Provider-specific model ID (e.g. `claude-sonnet-4-20250514`, `gpt-4o`) |
+| `ANTHROPIC_API_KEY` | Anthropic API key (when `AI_PROVIDER=anthropic`) |
 | `NEXT_PUBLIC_APP_URL` | Application base URL |
 
 See `.env.example` for the full template.

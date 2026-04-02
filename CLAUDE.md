@@ -60,7 +60,7 @@ These rules apply to every file under `app/`, `components/`, and `lib/`.
 - **Metadata is co-located with routes.** Every page exports a `metadata` object or `generateMetadata` function for SEO. Never hardcode `<title>` or `<meta>` tags in components.
 - **Use `next/image` for all images.** Never use raw `<img>` tags.
 - **Use `next/link` for all internal navigation.** Never use `<a>` tags for internal routes. Never use `window.location` for client-side navigation — use `useRouter()` from `next/navigation`.
-- **Environment variables follow the `NEXT_PUBLIC_` convention.** Client-accessible env vars must be prefixed with `NEXT_PUBLIC_`. Server-only secrets (Supabase service role key, Claude API key) must never be prefixed. Never expose API keys or secrets to the client bundle.
+- **Environment variables follow the `NEXT_PUBLIC_` convention.** Client-accessible env vars must be prefixed with `NEXT_PUBLIC_`. Server-only secrets (Supabase service role key, AI provider API keys) must never be prefixed. Never expose API keys or secrets to the client bundle.
 
 ### TypeScript Patterns
 
@@ -90,11 +90,11 @@ These rules apply to every file under `app/`, `components/`, and `lib/`.
 
 ### API Routes (Next.js Route Handlers)
 
-- **All external API calls are server-side only.** Claude API calls, Supabase service-role operations, and any secret-dependent logic lives in `app/api/` route handlers. Never call these from the client directly.
+- **All external API calls are server-side only.** AI model calls, Supabase service-role operations, and any secret-dependent logic lives in `app/api/` route handlers. Never call these from the client directly.
 - **Route handlers validate input with Zod.** Every POST/PUT handler parses the request body with a Zod schema. Invalid input returns 400 with a descriptive error.
 - **Route handlers don't contain business logic.** They validate input, call service functions from `lib/services/`, and format responses. If a route handler exceeds ~30 lines, extract logic to a service.
-- **HTTP status codes are explicit.** 400 = bad input, 401 = unauthenticated, 403 = forbidden, 404 = not found, 409 = conflict, 422 = unprocessable (e.g., Claude returned bad output), 500 = server error. Always include a JSON body with a `message` field.
-- **Service functions live in `lib/services/`.** Each domain gets a service file (e.g., `session-service.ts`, `theme-service.ts`, `ai-service.ts`). Services handle data access (Supabase queries), business logic, and external API calls (Claude). Services never import from `next/server` — they are framework-agnostic.
+- **HTTP status codes are explicit.** 400 = bad input, 401 = unauthenticated, 403 = forbidden, 404 = not found, 409 = conflict, 422 = unprocessable (e.g., AI model returned bad output), 500 = server error. Always include a JSON body with a `message` field.
+- **Service functions live in `lib/services/`.** Each domain gets a service file (e.g., `session-service.ts`, `theme-service.ts`, `ai-service.ts`). Services handle data access (Supabase queries), business logic, and external API calls (AI models). Services never import from `next/server` — they are framework-agnostic.
 
 ---
 
@@ -121,18 +121,17 @@ These rules apply to every file under `app/`, `components/`, and `lib/`.
 
 ---
 
-## AI Integration — Claude API Conventions
+## AI Integration — Provider-Agnostic via Vercel AI SDK
 
-- **All Claude API calls are server-side.** Made from Next.js API routes, never from the browser. The API key is an environment variable (`ANTHROPIC_API_KEY`), never exposed to the client.
+- **All AI calls are server-side.** Made from Next.js API routes, never from the browser. API keys are environment variables, never exposed to the client.
+- **Provider and model are environment variables.** `AI_PROVIDER` (e.g., `anthropic`, `openai`, `google`) and `AI_MODEL` (e.g., `claude-sonnet-4-20250514`, `gpt-4o`, `gemini-2.0-flash`) are set in `.env` and read by the `resolveModel()` function in `ai-service.ts`. Never hardcode provider or model names.
+- **Vercel AI SDK is the abstraction layer.** The `ai-service.ts` file uses `generateText()` from the `ai` package. Provider packages (`@ai-sdk/anthropic`, `@ai-sdk/openai`, `@ai-sdk/google`) are thin adapters. Adding a new provider is a single `case` in the `PROVIDER_MAP`.
 - **Prompts are version-controlled.** Prompt templates live in `lib/prompts/` as named exports. Each prompt file contains the system message, user message template, and expected response schema. Changing a prompt is a code change that goes through review.
-- **Model name is an environment variable.** `CLAUDE_MODEL` (e.g., `claude-opus-4-5`) is set in `.env` and read in the service layer. Never hardcode model names.
-- **Structured JSON output.** Claude is instructed to return JSON matching a defined schema. The API route parses the response with `JSON.parse()` wrapped in try/catch. Malformed output returns 422 to the client.
-- **Validate Claude output against a Zod schema.** After parsing JSON, validate it against a Zod schema before returning to the client. Never trust raw LLM output.
-- **Set `max_tokens` on every call.** Never let the model decide how long to respond. Set explicit limits based on expected output size.
-- **Handle all failure modes.** Every Claude API call must handle: timeouts, rate limits (429), malformed responses, empty responses, and service outages. Retry transient failures (429, 500, timeout) up to 3 times with exponential backoff. Don't retry 400 errors — that's a prompt bug.
-- **Degrade gracefully.** If Claude fails after retries, the user can still save raw notes manually. AI structuring is an enhancement, not a gate.
+- **Set `maxTokens` on every call.** Never let the model decide how long to respond. Set explicit limits based on expected output size.
+- **Handle all failure modes.** Every AI call must handle: timeouts, rate limits (429), malformed responses, empty responses, and service outages. Retry transient failures (429, 5xx, network errors) up to 3 times with exponential backoff. Don't retry 4xx errors (except 429) — that's a prompt or config bug.
+- **Degrade gracefully.** If the AI model fails after retries, the user can still save raw notes manually. AI structuring is an enhancement, not a gate.
 - **Never expose raw API errors to users.** Wrap failures in user-friendly messages. Log the raw error server-side.
-- **Be explicit about what Claude should NOT do.** "Do not hallucinate data not present in the notes", "If a field cannot be extracted, return null", "Do not add conversational text in the JSON response."
+- **Be explicit about what the model should NOT do.** "Do not hallucinate data not present in the notes", "If a field cannot be extracted, return null", "Do not add conversational text in the JSON response."
 
 ---
 
@@ -161,7 +160,7 @@ These rules apply to every file under `app/`, `components/`, and `lib/`.
 | API routes | kebab-case REST | `/api/sessions`, `/api/sessions/[id]`, `/api/ai/structure` |
 | DB tables | snake_case plural | `sessions`, `themes`, `session_themes` |
 | DB columns | snake_case | `client_name`, `session_date`, `created_at` |
-| Env vars | UPPER_SNAKE_CASE | `ANTHROPIC_API_KEY`, `CLAUDE_MODEL`, `NEXT_PUBLIC_SUPABASE_URL` |
+| Env vars | UPPER_SNAKE_CASE | `AI_PROVIDER`, `AI_MODEL`, `NEXT_PUBLIC_SUPABASE_URL` |
 
 ### Exports
 

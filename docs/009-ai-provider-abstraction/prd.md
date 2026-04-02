@@ -1,7 +1,7 @@
 # PRD-009: AI Provider Abstraction — Multi-Provider Support via Vercel AI SDK
 
 > **Master PRD Section:** Section 3 — Synthesis Dashboard (amendment)
-> **Status:** Draft
+> **Status:** Implemented (2026-04-02)
 > **Deliverable:** Developers can switch AI provider and model via environment variables. No code changes required to swap between Anthropic, OpenAI, Google, and others.
 
 ## Purpose
