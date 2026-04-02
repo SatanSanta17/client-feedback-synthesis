@@ -187,7 +187,21 @@ async function callModel(options: CallModelOptions): Promise<string> {
         throw err;
       }
 
-      // Don't retry client errors (4xx except 429 rate limit)
+      // Quota / billing errors — don't retry, surface immediately
+      if (
+        APICallError.isInstance(err) &&
+        (err.statusCode === 402 || err.statusCode === 403)
+      ) {
+        console.error(
+          `[ai-service] ${operationName} — quota/billing error (${err.statusCode}):`,
+          lastError.message
+        );
+        throw new AIQuotaError(
+          `AI provider returned ${err.statusCode}: ${lastError.message}`
+        );
+      }
+
+      // Don't retry other client errors (4xx except 429 rate limit)
       if (
         APICallError.isInstance(err) &&
         err.statusCode !== undefined &&
@@ -249,6 +263,13 @@ export class AIRequestError extends AIServiceError {
   constructor(message: string) {
     super(message);
     this.name = "AIRequestError";
+  }
+}
+
+export class AIQuotaError extends AIServiceError {
+  constructor(message: string) {
+    super(message);
+    this.name = "AIQuotaError";
   }
 }
 

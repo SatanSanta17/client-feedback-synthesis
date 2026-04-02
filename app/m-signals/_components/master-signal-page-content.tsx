@@ -71,7 +71,7 @@ export function MasterSignalPageContent() {
         const errorData = await response.json().catch(() => null)
         const message =
           errorData?.message ?? "Failed to generate master signal"
-        toast.error(message)
+        response.status === 402 ? toast.warning(message) : toast.error(message)
         return
       }
 

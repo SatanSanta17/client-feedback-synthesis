@@ -7,6 +7,7 @@ import {
   AIEmptyResponseError,
   AIRequestError,
   AIConfigError,
+  AIQuotaError,
 } from "@/lib/services/ai-service";
 
 const extractSignalsSchema = z.object({
@@ -73,6 +74,17 @@ export async function POST(request: NextRequest) {
             "AI service is not configured correctly. Please contact support.",
         },
         { status: 500 }
+      );
+    }
+
+    if (err instanceof AIQuotaError) {
+      console.error("[api/ai/extract-signals] quota error:", err.message);
+      return NextResponse.json(
+        {
+          message:
+            "We've hit our AI usage limit — looks like a lot of people are finding this useful! Please try again later or reach out so we can get things running again.",
+        },
+        { status: 402 }
       );
     }
 
