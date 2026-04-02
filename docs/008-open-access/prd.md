@@ -1,7 +1,7 @@
 # PRD-008: Open Access — Remove Domain Restriction and Per-User Data Isolation
 
 > **Master PRD Section:** Section 1 — Foundation (amendment)
-> **Status:** Draft
+> **Status:** Implemented (2026-04-02)
 > **Deliverable:** Any Google account can sign in. Each user's sessions, master signals, and prompts are fully isolated. Every user controls their own AI prompts.
 > **Context:** This is a temporary access model to allow multiple individual users to onboard and use the product independently. A proper team/workspace-based access model will replace this in a future PRD.
 

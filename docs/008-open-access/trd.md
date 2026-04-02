@@ -1,7 +1,7 @@
 # TRD-008: Open Access — Remove Domain Restriction and Per-User Data Isolation
 
-> **Status:** Draft
-> **PRD:** `docs/008-open-access/prd.md` (approved)
+> **Status:** Implemented (2026-04-02)
+> **PRD:** `docs/008-open-access/prd.md` (implemented)
 > **Mirrors:** PRD Parts 1, 2, 3
 
 ---

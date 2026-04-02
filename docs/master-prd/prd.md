@@ -85,6 +85,26 @@ Master PRD (this file)
 
 ---
 
+## Open Access (Amendment to Section 1) ✅
+
+**PRD:** `docs/008-open-access/prd.md` — Implemented (2026-04-02)
+
+**Scope:** Remove email domain restriction, isolate all data per user (sessions, master signals, clients, prompts), remove admin role system.
+
+**Deliverable:** Any Google account can sign in. Each user operates in complete isolation with full prompt control.
+
+---
+
+## AI Provider Abstraction (Amendment to Section 3)
+
+**PRD:** `docs/009-ai-provider-abstraction/prd.md` — Draft
+
+**Scope:** Replace direct Anthropic SDK integration with the Vercel AI SDK. Support switching AI provider and model via environment variables.
+
+**Deliverable:** Developers can switch between Anthropic, OpenAI, Google, and other providers without code changes.
+
+---
+
 ## Out of Scope
 
 - Real-time collaboration / multiplayer editing (planned for future)
