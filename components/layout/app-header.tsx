@@ -5,6 +5,7 @@ import { useAuth } from "@/components/providers/auth-provider";
 import { TabNav } from "@/components/layout/tab-nav";
 import { UserMenu } from "@/components/layout/user-menu";
 import { CreateTeamDialog } from "@/components/layout/create-team-dialog";
+import { WorkspaceSwitcher } from "@/components/layout/workspace-switcher";
 
 export function AppHeader() {
   const pathname = usePathname();
@@ -18,6 +19,7 @@ export function AppHeader() {
         <span className="text-base font-semibold text-[var(--text-primary)]">
           Synthesiser
         </span>
+        {isAuthenticated && <WorkspaceSwitcher />}
         <TabNav />
       </div>
       <div className="flex items-center gap-3">
