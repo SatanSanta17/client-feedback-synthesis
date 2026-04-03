@@ -1,8 +1,8 @@
 # TRD-010: Team Access — Workspaces, Invitations, and Role-Based Collaboration
 
-> **Status:** Draft (Parts 1–4)
+> **Status:** Draft (Parts 1–6)
 > **PRD:** `docs/010-team-access/prd.md` (approved)
-> **Mirrors:** PRD Parts 1–8. This TRD is written incrementally — Parts 1–4 are detailed below; Parts 5–8 will be added after review.
+> **Mirrors:** PRD Parts 1–8. This TRD is written incrementally — Parts 1–6 are detailed below; Parts 7–8 will be added after review.
 
 ---
 
@@ -882,3 +882,384 @@ The switcher only renders when the user is authenticated and has at least one te
 - If a user is removed from a team while it's active, next request clears the cookie silently
 - Middleware validation does not break existing login, callback, or invite flows
 - No regressions — personal workspace behavior unchanged when no cookie is set
+
+---
+
+## Part 5: Team-Scoped Data — Sessions and Clients
+
+### 5.1 Technical Decisions
+
+1. **Workspace context flows from cookie → service layer via `getActiveTeamId()`.** Every service function that reads or writes `sessions` or `clients` calls `getActiveTeamId()` and adds the appropriate `team_id` filter. `null` = personal workspace (existing behavior), non-null = team workspace.
+
+2. **`createSession` and `createNewClient` set `team_id` based on active workspace.** The insert payload includes `team_id: activeTeamId` (null for personal). No API route changes needed — the service layer handles scoping transparently.
+
+3. **RLS is the enforcement layer; service-level filters are the convenience layer.** Updated RLS policies on `sessions` and `clients` ensure that even if a service function omits a filter, users only see data they should. The dual approach (RLS + service filter) provides defense in depth.
+
+4. **Session attribution uses a Supabase join to `profiles`.** When listing sessions in a team workspace, each session includes the email of the user who captured it. This is fetched via a join from `sessions.created_by` → `profiles.email`. Personal workspace sessions don't need this — they're all the current user's.
+
+5. **Admin edit/delete permissions are checked at the API route level, not RLS.** RLS enforces visibility (team members can read all team sessions). Write permissions (sales can only edit/delete own, admins can edit/delete any) are checked in the `updateSession` and `deleteSession` API route handlers before calling the service. This avoids complex RLS write policies that would be hard to debug.
+
+### 5.2 RLS Policy Updates
+
+**`sessions` — drop and recreate policies**
+
+```sql
+-- Drop existing personal-only policies
+DROP POLICY IF EXISTS "Users can read own sessions" ON sessions;
+DROP POLICY IF EXISTS "Users can insert own sessions" ON sessions;
+DROP POLICY IF EXISTS "Users can update own sessions" ON sessions;
+
+-- Personal sessions: team_id IS NULL, created_by = user
+CREATE POLICY "Users can read own personal sessions"
+  ON sessions FOR SELECT TO authenticated
+  USING (deleted_at IS NULL AND team_id IS NULL AND created_by = auth.uid());
+
+-- Team sessions: team_id IS NOT NULL, user is a member
+CREATE POLICY "Team members can read team sessions"
+  ON sessions FOR SELECT TO authenticated
+  USING (deleted_at IS NULL AND team_id IS NOT NULL AND is_team_member(team_id));
+
+-- Insert: personal or team member
+CREATE POLICY "Users can insert sessions"
+  ON sessions FOR INSERT TO authenticated
+  WITH CHECK (
+    (team_id IS NULL) OR
+    (team_id IS NOT NULL AND is_team_member(team_id))
+  );
+
+-- Update: personal (own) or team (own, or admin)
+CREATE POLICY "Users can update sessions"
+  ON sessions FOR UPDATE TO authenticated
+  USING (
+    deleted_at IS NULL AND (
+      (team_id IS NULL AND created_by = auth.uid()) OR
+      (team_id IS NOT NULL AND is_team_member(team_id) AND (
+        created_by = auth.uid() OR is_team_admin(team_id)
+      ))
+    )
+  )
+  WITH CHECK (true);
+```
+
+**`clients` — drop and recreate policies**
+
+```sql
+-- Drop existing personal-only policies
+DROP POLICY IF EXISTS "Users can read own clients" ON clients;
+DROP POLICY IF EXISTS "Users can update own clients" ON clients;
+
+-- Personal clients
+CREATE POLICY "Users can read own personal clients"
+  ON clients FOR SELECT TO authenticated
+  USING (deleted_at IS NULL AND team_id IS NULL AND created_by = auth.uid());
+
+-- Team clients
+CREATE POLICY "Team members can read team clients"
+  ON clients FOR SELECT TO authenticated
+  USING (deleted_at IS NULL AND team_id IS NOT NULL AND is_team_member(team_id));
+
+-- Insert: personal or team member
+CREATE POLICY "Users can insert clients"
+  ON clients FOR INSERT TO authenticated
+  WITH CHECK (
+    (team_id IS NULL) OR
+    (team_id IS NOT NULL AND is_team_member(team_id))
+  );
+
+-- Update: personal (own) or team member
+CREATE POLICY "Users can update clients"
+  ON clients FOR UPDATE TO authenticated
+  USING (
+    deleted_at IS NULL AND (
+      (team_id IS NULL AND created_by = auth.uid()) OR
+      (team_id IS NOT NULL AND is_team_member(team_id))
+    )
+  )
+  WITH CHECK (true);
+```
+
+### 5.3 Service Layer Changes
+
+**`lib/services/session-service.ts`**
+
+- `getSessions()` — reads `getActiveTeamId()`. If personal: existing behavior (RLS scopes to `created_by`). If team: adds `.eq("team_id", teamId)`. Also selects `created_by` for attribution. When in team context, uses a second query to fetch `profiles.email` for each unique `created_by` to display attribution.
+- `createSession()` — reads `getActiveTeamId()` and includes `team_id` in the insert payload.
+- `updateSession()` — no service changes needed. Permission checks happen at the API route level.
+- `deleteSession()` — `taintLatestMasterSignal()` is updated to accept an optional `teamId` parameter. In team context, it taints the team's master signal instead of the user's personal one.
+
+**`lib/services/client-service.ts`**
+
+- `searchClients()` — reads `getActiveTeamId()`. If personal: existing behavior. If team: adds `.eq("team_id", teamId)` to filter team clients. The `hasSession` variant also scopes sessions by `team_id`.
+- `createNewClient()` — reads `getActiveTeamId()` and includes `team_id` in the insert payload.
+
+### 5.4 API Route Changes
+
+**`app/api/sessions/[id]/route.ts`** — `PUT` and `DELETE` handlers
+
+Add permission checks for team context:
+- Read `active_team_id` cookie
+- If team context: fetch the session's `created_by` and compare with the current user
+  - If `created_by = user.id` → allow (any role)
+  - If `created_by != user.id` → check if user is admin of the team → allow if admin, 403 if sales
+- Personal context: existing behavior (RLS already scopes to own sessions)
+
+**`app/api/sessions/route.ts`** — No changes needed. Service layer handles scoping.
+
+**`app/api/clients/route.ts`** — No changes needed. Service layer handles scoping.
+
+### 5.5 Frontend Changes
+
+**`app/capture/_components/past-sessions-table.tsx`**
+
+- In team context, each session row shows the creator's email/name alongside the client and date.
+- The API response includes a `created_by_email` field when in team context.
+
+**`app/capture/_components/expanded-session-row.tsx`**
+
+- Edit and delete buttons are conditionally rendered:
+  - Personal workspace: always visible (user owns all sessions)
+  - Team workspace: visible if `created_by = currentUser.id` OR if current user is an admin
+
+The frontend reads the `active_team_id` cookie and the user's role from the workspace switcher context or a prop to determine permissions.
+
+### 5.6 Files Changed / Created
+
+| Action | File | Details |
+|--------|------|---------|
+| Modify | `lib/services/session-service.ts` | Add `team_id` scoping to `getSessions()`, `createSession()`; attribution query for team context |
+| Modify | `lib/services/client-service.ts` | Add `team_id` scoping to `searchClients()`, `createNewClient()` |
+| Modify | `lib/services/master-signal-service.ts` | `taintLatestMasterSignal()` accepts optional `teamId` |
+| Modify | `app/api/sessions/[id]/route.ts` | Add admin permission check for team session edits/deletes |
+| Modify | `app/capture/_components/past-sessions-table.tsx` | Show session attribution in team context |
+| Modify | `app/capture/_components/expanded-session-row.tsx` | Conditional edit/delete based on ownership and role |
+| Create | `docs/010-team-access/004-rls-sessions-clients-team.sql` | RLS migration for team-scoped sessions and clients |
+
+### 5.7 Implementation Increments
+
+**Increment 5.1: Database — RLS policies**
+- Write and provide the SQL migration for updated RLS on `sessions` and `clients`
+- User runs in Supabase SQL editor
+- Verify: personal workspace queries still work, team queries return team-scoped data
+
+**Increment 5.2: Service layer — session and client scoping**
+- Modify `session-service.ts`: `getSessions()` and `createSession()` use `getActiveTeamId()`
+- Modify `client-service.ts`: `searchClients()` and `createNewClient()` use `getActiveTeamId()`
+- Modify `master-signal-service.ts`: `taintLatestMasterSignal()` accepts optional `teamId`
+- Verify: sessions created in team context have `team_id` set; listing returns team-scoped data
+
+**Increment 5.3: API routes — admin permission checks**
+- Add admin check to `PUT` and `DELETE` in `app/api/sessions/[id]/route.ts`
+- Sales members get 403 when editing/deleting others' team sessions
+- Admins can edit/delete any team session
+- Verify: permission matrix works (sales own, sales other → 403, admin other → OK)
+
+**Increment 5.4: Frontend — attribution and permissions**
+- Show creator email on session rows in team context
+- Conditionally show edit/delete buttons based on ownership + role
+- Verify: team members see all sessions with attribution, edit/delete controls respect roles
+
+**Verification:**
+- Sessions created in personal workspace have `team_id = NULL` — existing behavior
+- Sessions created in team workspace have `team_id` set and are visible to all team members
+- Clients created in team workspace are shared — all members see them in the combobox
+- Sales members can only edit/delete their own team sessions
+- Admins can edit/delete any team session
+- Client name uniqueness is enforced per-team and per-user (personal)
+- Session filters (client, date) work within team scope
+- `taintLatestMasterSignal()` taints the team's signal when a team session is deleted
+- No regressions in personal workspace
+
+---
+
+## Part 6: Team-Scoped Master Signal and Prompts
+
+### 6.1 Technical Decisions
+
+1. **Master signal scoping follows the same `getActiveTeamId()` pattern.** All functions in `master-signal-service.ts` read the active workspace and scope queries with `team_id`. Personal master signal behavior is unchanged when `team_id IS NULL`.
+
+2. **Admin-only generation is checked at the API route level.** The `POST /api/ai/generate-master-signal` route checks the user's team role before proceeding. Sales members receive a 403. The frontend conditionally hides the generate button for sales members.
+
+3. **Prompt scoping is transparent to the AI service.** `getActivePrompt()` reads `getActiveTeamId()` and queries for the team's active prompt (or the user's personal prompt). The AI service (`extractSignals`, `synthesiseMasterSignal`) calls `getActivePrompt()` which already returns the correct prompt for the active workspace — no AI service changes needed.
+
+4. **Team prompts fallback to hardcoded defaults.** When no team-level prompt exists for a given key (e.g., freshly created team), `getActivePrompt()` returns `null` and the AI service uses the hardcoded default. This is the existing behavior — no special handling needed.
+
+5. **Prompt save includes `team_id`.** When saving a new prompt version in team context, `savePromptVersion()` includes `team_id` in the insert. The deactivation step also scopes to the team (deactivate the team's current active prompt, not the user's personal one).
+
+### 6.2 RLS Policy Updates
+
+**`master_signals` — drop and recreate policies**
+
+```sql
+-- Drop existing personal-only policies
+DROP POLICY IF EXISTS "Users can read own master signals" ON master_signals;
+DROP POLICY IF EXISTS "Users can insert own master signals" ON master_signals;
+
+-- Personal master signals
+CREATE POLICY "Users can read own personal master signals"
+  ON master_signals FOR SELECT TO authenticated
+  USING (team_id IS NULL AND created_by = auth.uid());
+
+-- Team master signals: any team member can read
+CREATE POLICY "Team members can read team master signals"
+  ON master_signals FOR SELECT TO authenticated
+  USING (team_id IS NOT NULL AND is_team_member(team_id));
+
+-- Insert: personal (own) or team admin
+CREATE POLICY "Users can insert master signals"
+  ON master_signals FOR INSERT TO authenticated
+  WITH CHECK (
+    (team_id IS NULL) OR
+    (team_id IS NOT NULL AND is_team_admin(team_id))
+  );
+```
+
+**`prompt_versions` — drop and recreate policies**
+
+```sql
+-- Drop existing personal-only policies
+DROP POLICY IF EXISTS "Users can read own prompts" ON prompt_versions;
+DROP POLICY IF EXISTS "Users can insert own prompts" ON prompt_versions;
+DROP POLICY IF EXISTS "Users can update own prompts" ON prompt_versions;
+
+-- Personal prompts
+CREATE POLICY "Users can read own personal prompts"
+  ON prompt_versions FOR SELECT TO authenticated
+  USING (team_id IS NULL AND created_by = auth.uid());
+
+-- Team prompts: any team member can read
+CREATE POLICY "Team members can read team prompts"
+  ON prompt_versions FOR SELECT TO authenticated
+  USING (team_id IS NOT NULL AND is_team_member(team_id));
+
+-- Insert: personal (own) or team admin
+CREATE POLICY "Users can insert prompts"
+  ON prompt_versions FOR INSERT TO authenticated
+  WITH CHECK (
+    (team_id IS NULL) OR
+    (team_id IS NOT NULL AND is_team_admin(team_id))
+  );
+
+-- Update (deactivation): personal (own) or team admin
+CREATE POLICY "Users can update prompts"
+  ON prompt_versions FOR UPDATE TO authenticated
+  USING (
+    (team_id IS NULL AND created_by = auth.uid()) OR
+    (team_id IS NOT NULL AND is_team_admin(team_id))
+  )
+  WITH CHECK (true);
+```
+
+### 6.3 Service Layer Changes
+
+**`lib/services/master-signal-service.ts`**
+
+All query functions add `team_id` scoping:
+
+- `getLatestMasterSignal()` — reads `getActiveTeamId()`. Filters `.eq("team_id", teamId)` or `.is("team_id", null)` for personal.
+- `getStaleSessionCount()` — scopes session count by `team_id`.
+- `getAllSignalSessions()` — scopes by `team_id`.
+- `getSignalSessionsSince()` — scopes by `team_id`.
+- `saveMasterSignal()` — includes `team_id` in insert payload.
+- `taintLatestMasterSignal()` — already updated in Part 5 to accept optional `teamId`; when provided, taints the team's latest signal instead of filtering by `created_by`.
+
+**`lib/services/prompt-service.ts`**
+
+- `getActivePrompt()` — reads `getActiveTeamId()`. If team: queries where `team_id = teamId`. If personal: existing behavior (RLS scopes to `created_by`).
+- `getPromptHistory()` — same scoping pattern.
+- `savePromptVersion()` — reads `getActiveTeamId()`. If team: includes `team_id` in insert and scopes deactivation to the team. If personal: existing behavior.
+
+### 6.4 API Route Changes
+
+**`app/api/ai/generate-master-signal/route.ts`**
+
+Add admin check before generation:
+- Read `active_team_id` cookie (via `getActiveTeamId()`)
+- If team context: verify user is an admin of the team → 403 if not
+- Personal context: no role check needed (user generates their own)
+
+**`app/api/master-signal/route.ts`**
+
+No changes needed — `getLatestMasterSignal()` and `getStaleSessionCount()` handle scoping internally via `getActiveTeamId()`.
+
+**`app/api/prompts/route.ts`**
+
+Add admin check for `POST` (save prompt) in team context:
+- If team context: verify user is an admin → 403 if not
+- `GET` (read) requires no role check — all team members can view prompts
+
+### 6.5 Frontend Changes
+
+**`app/m-signals/_components/master-signal-page-content.tsx`**
+
+- In team context with a sales role: hide the "Generate" / "Regenerate" button, show a message like "Only admins can generate the master signal."
+- PDF download remains visible to all team members.
+- The component reads the user's role from the workspace context to determine visibility.
+
+**`app/settings/_components/settings-page-content.tsx`**
+
+- Already conditionally renders based on team context and admin role (implemented in Part 2).
+- Sales members in a team context: show prompts in read-only mode with an info message.
+- No structural changes needed — the existing `showTeamTab` logic handles this.
+
+**`app/settings/_components/prompt-editor-page-content.tsx`**
+
+- Accept a `readOnly` prop. When true: textarea is disabled, save button is hidden, and an info message explains that only admins can edit prompts.
+- `SettingsPageContent` passes `readOnly={!teamCtx.isAdmin}` when rendering in team context for non-admin users.
+
+### 6.6 Files Changed / Created
+
+| Action | File | Details |
+|--------|------|---------|
+| Modify | `lib/services/master-signal-service.ts` | Add `team_id` scoping to all query and save functions |
+| Modify | `lib/services/prompt-service.ts` | Add `team_id` scoping to `getActivePrompt()`, `getPromptHistory()`, `savePromptVersion()` |
+| Modify | `app/api/ai/generate-master-signal/route.ts` | Add admin role check for team context |
+| Modify | `app/api/prompts/route.ts` | Add admin role check for `POST` in team context |
+| Modify | `app/m-signals/_components/master-signal-page-content.tsx` | Hide generate button for sales; show read-only message |
+| Modify | `app/settings/_components/prompt-editor-page-content.tsx` | Accept `readOnly` prop; disable editing for non-admins |
+| Modify | `app/settings/_components/settings-page-content.tsx` | Pass `readOnly` to prompt editor when user is not admin |
+| Create | `docs/010-team-access/005-rls-master-signals-prompts-team.sql` | RLS migration for team-scoped master signals and prompts |
+
+### 6.7 Implementation Increments
+
+**Increment 6.1: Database — RLS policies**
+- Write and provide the SQL migration for updated RLS on `master_signals` and `prompt_versions`
+- User runs in Supabase SQL editor
+- Verify: personal workspace queries still work, team queries return team-scoped data
+
+**Increment 6.2: Service layer — master signal scoping**
+- Modify `master-signal-service.ts`: all functions use `getActiveTeamId()` for team scoping
+- `saveMasterSignal()` includes `team_id` in insert
+- `taintLatestMasterSignal()` scopes by `team_id` when provided
+- Verify: generating master signal in team context creates a team-scoped row
+
+**Increment 6.3: Service layer — prompt scoping**
+- Modify `prompt-service.ts`: `getActivePrompt()`, `getPromptHistory()`, `savePromptVersion()` scope by `team_id`
+- Deactivation step in `savePromptVersion()` scopes to team context
+- Verify: prompts saved in team context have `team_id`; reading returns team prompts
+
+**Increment 6.4: API routes — admin checks**
+- Add admin role check to `POST /api/ai/generate-master-signal`
+- Add admin role check to `POST /api/prompts`
+- Sales members get 403 in team context
+- Personal context: no change
+- Verify: sales → 403, admin → success
+
+**Increment 6.5: Frontend — read-only modes**
+- `MasterSignalPageContent`: hide generate button for sales, show info message
+- `PromptEditorPageContent`: accept `readOnly` prop, disable editing for non-admins
+- `SettingsPageContent`: pass `readOnly` for non-admin team members
+- Verify: sales see master signal and prompts in read-only; admins have full control
+
+**Verification:**
+- Master signal in personal workspace is scoped to user's sessions — unchanged
+- Master signal in team workspace synthesises from all team sessions
+- Only admins can generate/regenerate team master signal
+- Sales members see master signal read-only with info message
+- PDF download works for all team members
+- Prompts in personal workspace are per-user — unchanged
+- Prompts in team workspace are shared — one active set per team
+- Only admins can edit team prompts
+- Sales members see prompts read-only with info message
+- New teams with no custom prompts fall back to hardcoded defaults
+- Staleness count and tainted flag are correctly scoped by team
+- No regressions in personal workspace for master signal or prompts
