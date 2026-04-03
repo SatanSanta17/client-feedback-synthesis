@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
-import { getTeamMember, revokeInvitation } from "@/lib/services/team-service";
+import { getTeamMember } from "@/lib/services/team-service";
+import { revokeInvitation } from "@/lib/services/invitation-service";
 
 export async function DELETE(
   _request: NextRequest,

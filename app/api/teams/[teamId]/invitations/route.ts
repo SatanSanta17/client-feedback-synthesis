@@ -1,12 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { createClient } from "@/lib/supabase/server";
+import { getTeamMember, getTeamById } from "@/lib/services/team-service";
 import {
-  getTeamMember,
-  getTeamById,
   createInvitations,
   getPendingInvitations,
-} from "@/lib/services/team-service";
+} from "@/lib/services/invitation-service";
 
 const createInvitationsSchema = z.object({
   emails: z

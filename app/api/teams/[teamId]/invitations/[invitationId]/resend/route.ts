@@ -1,10 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
-import {
-  getTeamMember,
-  getTeamById,
-  resendInvitation,
-} from "@/lib/services/team-service";
+import { getTeamMember, getTeamById } from "@/lib/services/team-service";
+import { resendInvitation } from "@/lib/services/invitation-service";
 
 export async function POST(
   _request: NextRequest,
