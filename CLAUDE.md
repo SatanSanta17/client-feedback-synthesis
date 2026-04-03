@@ -82,9 +82,9 @@ These rules apply to every file under `app/`, `components/`, and `lib/`.
 
 ### Styling Rules
 
-- **Tailwind CSS with a clean, utilitarian design.** White background, neutral greys, single brand accent colour (indigo/purple). No unnecessary visual complexity.
+- **Tailwind CSS with a clean, professional design.** White background, neutral greys, single brand accent colour (indigo/purple). Polished enough for paying customers, no unnecessary visual complexity.
 - **Use a utility function for conditional classes.** Never concatenate class strings manually. Always use `cn()` (clsx + tailwind-merge) that handles Tailwind class conflicts.
-- **Mobile-readable, desktop-first.** The app is designed for desktop use. It should be legible on mobile but is not optimised for it.
+- **Desktop-first, mobile-responsive.** The primary experience is desktop. All pages must be fully responsive and usable on mobile, but desktop is the design priority.
 - **Consistent spacing and sizing.** Use Tailwind's spacing scale consistently. Don't mix arbitrary pixel values with Tailwind units.
 - **Theme and typography are defined globally.** All shared colours, font sizes, font weights, border radii, shadows, and brand tokens (accent colours, status colours, badge colours) must be defined in `globals.css` using CSS custom properties or Tailwind's `@layer` directives — never scattered as inline values across components. Components reference these global tokens via Tailwind classes or `var(--token-name)`. This makes theme-wide changes a single-file edit instead of a project-wide find-and-replace. If a colour, font size, or spacing value appears in more than one component, it belongs in the global stylesheet.
 

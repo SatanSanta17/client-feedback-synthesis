@@ -105,6 +105,16 @@ Master PRD (this file)
 
 ---
 
+## Team Access (New Section)
+
+**PRD:** `docs/010-team-access/prd.md` — Draft
+
+**Scope:** Team workspaces with role-based access (owner, admin, sales), email invitations via provider-agnostic email service, workspace switching, team-scoped sessions/clients/master signals/prompts, team management (members, roles, ownership transfer). Team creation is a paid feature gated by a developer-set flag.
+
+**Deliverable:** Users can create teams, invite members, and collaborate on shared data. Solo users continue to operate in personal workspaces unchanged.
+
+---
+
 ## Out of Scope
 
 - Real-time collaboration / multiplayer editing (planned for future)
@@ -113,7 +123,6 @@ Master PRD (this file)
 - Client-facing session summaries
 - Attachment or file upload (notes are text-only)
 - Audit log UI
-- Email/Slack notifications
 - Mobile-first design
 - Self-service theme management (merge, split, archive)
 - Feature-advisor DB query tool (future integration, separate task)

@@ -1,0 +1,535 @@
+# TRD-010: Team Access — Workspaces, Invitations, and Role-Based Collaboration
+
+> **Status:** Draft (Parts 1–2)
+> **PRD:** `docs/010-team-access/prd.md` (approved)
+> **Mirrors:** PRD Parts 1–8. This TRD is written incrementally — Parts 1–2 are detailed below; Parts 3–8 will be added after review.
+
+---
+
+## Technical Decisions
+
+1. **Owner tracked on `teams` table, not as a role.** `teams.owner_id` identifies the owner. `team_members.role` has two values: `admin` and `sales`. The owner is always an admin with extra privileges. Transfer is a single-column update on `teams`.
+
+2. **Cookie-based workspace context.** The active team is stored in a cookie (`active_team_id`). All API routes and service functions read this cookie to scope data. `null` / empty = personal workspace. This avoids URL restructuring and keeps the existing route structure intact. (Detailed in future Part 4 TRD.)
+
+3. **`team_id` nullable on all data tables.** `sessions`, `clients`, `master_signals`, and `prompt_versions` gain a nullable `team_id` column. `NULL` = personal workspace. This preserves all existing personal-workspace behavior — current RLS policies continue to work when `team_id IS NULL`.
+
+4. **Email service follows the same provider abstraction pattern as `ai-service.ts`.** A `resolveEmailProvider()` function reads `EMAIL_PROVIDER` from env vars and returns a provider adapter. The public `sendEmail()` function delegates to the resolved provider. Adding a new provider means adding one factory entry — no changes to consuming code.
+
+5. **Invite token is a crypto-random string, not a JWT.** Simpler, no expiry embedded in the token — expiry is checked against `team_invitations.expires_at` in the database. Tokens are 32-byte hex strings generated via `crypto.randomBytes(32).toString('hex')`.
+
+6. **RLS uses a `SECURITY DEFINER` helper for team membership checks.** A `is_team_member(team_id UUID)` function avoids recursive RLS issues when policies on `team_members` reference themselves. Same pattern as the existing `is_admin()` function.
+
+7. **Resend as the starting email provider.** The `resend` npm package is lightweight, has a simple API, and offers 3,000 free emails/month. The abstraction layer makes swapping to SMTP/Brevo/SendGrid trivial.
+
+---
+
+## Part 1: Database Schema and Email Service
+
+### 1.1 Database Migrations
+
+#### New tables
+
+**`teams`**
+
+```sql
+CREATE TABLE teams (
+  id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  name       TEXT NOT NULL,
+  owner_id   UUID NOT NULL REFERENCES auth.users(id),
+  created_by UUID NOT NULL DEFAULT auth.uid() REFERENCES auth.users(id),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  deleted_at TIMESTAMPTZ
+);
+
+ALTER TABLE teams ENABLE ROW LEVEL SECURITY;
+```
+
+**`team_members`**
+
+```sql
+CREATE TABLE team_members (
+  id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  team_id    UUID NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+  user_id    UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+  role       TEXT NOT NULL CHECK (role IN ('admin', 'sales')),
+  joined_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  removed_at TIMESTAMPTZ
+);
+
+CREATE UNIQUE INDEX team_members_active_unique
+  ON team_members (team_id, user_id)
+  WHERE removed_at IS NULL;
+
+ALTER TABLE team_members ENABLE ROW LEVEL SECURITY;
+```
+
+**`team_invitations`**
+
+```sql
+CREATE TABLE team_invitations (
+  id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  team_id     UUID NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+  email       TEXT NOT NULL,
+  role        TEXT NOT NULL CHECK (role IN ('admin', 'sales')),
+  invited_by  UUID NOT NULL REFERENCES auth.users(id),
+  token       TEXT NOT NULL UNIQUE,
+  expires_at  TIMESTAMPTZ NOT NULL,
+  accepted_at TIMESTAMPTZ,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+ALTER TABLE team_invitations ENABLE ROW LEVEL SECURITY;
+```
+
+#### Modifications to existing tables
+
+**`profiles` — add `can_create_team`**
+
+```sql
+ALTER TABLE profiles
+  ADD COLUMN can_create_team BOOLEAN NOT NULL DEFAULT false;
+```
+
+**`sessions` — add `team_id`**
+
+```sql
+ALTER TABLE sessions
+  ADD COLUMN team_id UUID REFERENCES teams(id);
+```
+
+**`clients` — add `team_id` and update unique index**
+
+```sql
+ALTER TABLE clients
+  ADD COLUMN team_id UUID REFERENCES teams(id);
+
+-- Drop the existing per-user unique index
+DROP INDEX clients_name_unique;
+
+-- Personal clients: unique per user
+CREATE UNIQUE INDEX clients_name_user_unique
+  ON clients (LOWER(name), created_by)
+  WHERE deleted_at IS NULL AND team_id IS NULL;
+
+-- Team clients: unique per team
+CREATE UNIQUE INDEX clients_name_team_unique
+  ON clients (LOWER(name), team_id)
+  WHERE deleted_at IS NULL AND team_id IS NOT NULL;
+```
+
+**`master_signals` — add `team_id`**
+
+```sql
+ALTER TABLE master_signals
+  ADD COLUMN team_id UUID REFERENCES teams(id);
+```
+
+**`prompt_versions` — add `team_id` and update unique index**
+
+```sql
+ALTER TABLE prompt_versions
+  ADD COLUMN team_id UUID REFERENCES teams(id);
+
+-- Drop the existing per-user active unique index
+DROP INDEX prompt_versions_active_unique;
+
+-- Personal prompts: one active per key per user
+CREATE UNIQUE INDEX prompt_versions_active_user_unique
+  ON prompt_versions (prompt_key, created_by)
+  WHERE is_active = true AND created_by IS NOT NULL AND team_id IS NULL;
+
+-- Team prompts: one active per key per team
+CREATE UNIQUE INDEX prompt_versions_active_team_unique
+  ON prompt_versions (prompt_key, team_id)
+  WHERE is_active = true AND team_id IS NOT NULL;
+```
+
+#### Helper function
+
+```sql
+CREATE OR REPLACE FUNCTION is_team_member(p_team_id UUID)
+RETURNS BOOLEAN
+LANGUAGE sql
+SECURITY DEFINER
+STABLE
+AS $$
+  SELECT EXISTS (
+    SELECT 1 FROM team_members
+    WHERE team_id = p_team_id
+      AND user_id = auth.uid()
+      AND removed_at IS NULL
+  );
+$$;
+
+CREATE OR REPLACE FUNCTION get_team_role(p_team_id UUID)
+RETURNS TEXT
+LANGUAGE sql
+SECURITY DEFINER
+STABLE
+AS $$
+  SELECT role FROM team_members
+  WHERE team_id = p_team_id
+    AND user_id = auth.uid()
+    AND removed_at IS NULL
+  LIMIT 1;
+$$;
+
+CREATE OR REPLACE FUNCTION is_team_admin(p_team_id UUID)
+RETURNS BOOLEAN
+LANGUAGE sql
+SECURITY DEFINER
+STABLE
+AS $$
+  SELECT EXISTS (
+    SELECT 1 FROM team_members
+    WHERE team_id = p_team_id
+      AND user_id = auth.uid()
+      AND removed_at IS NULL
+      AND role = 'admin'
+  );
+$$;
+```
+
+#### RLS Policies — new tables
+
+**`teams`**
+
+```sql
+-- Members can read their non-deleted teams
+CREATE POLICY "Team members can read team"
+  ON teams FOR SELECT TO authenticated
+  USING (deleted_at IS NULL AND is_team_member(id));
+
+-- Authenticated users can create teams (app-level check for can_create_team)
+CREATE POLICY "Authenticated users can create teams"
+  ON teams FOR INSERT TO authenticated
+  WITH CHECK (true);
+
+-- Owner can update their team (rename)
+CREATE POLICY "Owner can update team"
+  ON teams FOR UPDATE TO authenticated
+  USING (owner_id = auth.uid() AND deleted_at IS NULL)
+  WITH CHECK (true);
+```
+
+**`team_members`**
+
+```sql
+-- Members can see other members of their teams
+CREATE POLICY "Members can read team members"
+  ON team_members FOR SELECT TO authenticated
+  USING (is_team_member(team_id));
+
+-- Admins can insert new members (via invite acceptance — service role handles this)
+CREATE POLICY "Service role inserts team members"
+  ON team_members FOR INSERT TO authenticated
+  WITH CHECK (true);
+
+-- Admins can update members (set removed_at)
+CREATE POLICY "Admins can update team members"
+  ON team_members FOR UPDATE TO authenticated
+  USING (is_team_admin(team_id))
+  WITH CHECK (true);
+```
+
+**`team_invitations`**
+
+```sql
+-- Admins can read invitations for their teams
+CREATE POLICY "Admins can read team invitations"
+  ON team_invitations FOR SELECT TO authenticated
+  USING (is_team_admin(team_id));
+
+-- Admins can create invitations
+CREATE POLICY "Admins can create invitations"
+  ON team_invitations FOR INSERT TO authenticated
+  WITH CHECK (is_team_admin(team_id));
+
+-- Admins can update invitations (revoke — set accepted_at)
+CREATE POLICY "Admins can update invitations"
+  ON team_invitations FOR UPDATE TO authenticated
+  USING (is_team_admin(team_id))
+  WITH CHECK (true);
+
+-- Public read for token validation (invite acceptance page — unauthenticated users need to see team name)
+-- This is handled via service role client in the invite page API, not RLS.
+```
+
+### 1.2 Email Service
+
+**New file: `lib/services/email-service.ts`**
+
+```
+resolveEmailProvider()        → reads EMAIL_PROVIDER env var, returns provider adapter
+sendEmail({ to, subject, html }) → delegates to resolved provider
+```
+
+**Structure:**
+
+```typescript
+type SupportedEmailProvider = "resend";
+
+interface EmailPayload {
+  to: string;
+  subject: string;
+  html: string;
+}
+
+interface EmailProvider {
+  send(payload: EmailPayload): Promise<void>;
+}
+
+const PROVIDER_MAP: Record<SupportedEmailProvider, () => EmailProvider>;
+
+function resolveEmailProvider(): EmailProvider;
+export async function sendEmail(payload: EmailPayload): Promise<void>;
+export class EmailConfigError extends Error {}
+export class EmailSendError extends Error {}
+```
+
+The Resend adapter:
+
+```typescript
+import { Resend } from "resend";
+
+const resendProvider: EmailProvider = {
+  async send({ to, subject, html }) {
+    const resend = new Resend(process.env.RESEND_API_KEY);
+    const { error } = await resend.emails.send({
+      from: process.env.EMAIL_FROM ?? "Synthesiser <noreply@synthesiser.app>",
+      to,
+      subject,
+      html,
+    });
+    if (error) throw new EmailSendError(error.message);
+  },
+};
+```
+
+**Adding a new provider (e.g., SMTP):**
+
+1. Add `"smtp"` to `SupportedEmailProvider`
+2. Create an smtp adapter implementing `EmailProvider`
+3. Add it to `PROVIDER_MAP`
+4. Set `EMAIL_PROVIDER=smtp` in `.env`
+
+No consuming code changes required.
+
+### 1.3 Environment Variables
+
+Add to `.env.example`:
+
+```
+# Email provider
+EMAIL_PROVIDER=resend
+RESEND_API_KEY=re_xxxxxxxxxxxx
+EMAIL_FROM="Synthesiser <noreply@yourdomain.com>"
+```
+
+### 1.4 New Dependencies
+
+```
+npm install resend
+```
+
+### 1.5 Files Changed / Created
+
+| Action | File | Details |
+|--------|------|---------|
+| Create | `lib/services/email-service.ts` | Provider-agnostic email service with `sendEmail()`, `resolveEmailProvider()`, Resend adapter, error classes |
+| Modify | `.env.example` | Add `EMAIL_PROVIDER`, `RESEND_API_KEY`, `EMAIL_FROM` |
+| Create | `docs/010-team-access/001-create-team-tables.sql` | SQL migration for `teams`, `team_members`, `team_invitations` tables |
+| Create | `docs/010-team-access/002-modify-existing-tables.sql` | SQL migration adding `team_id` to `sessions`, `clients`, `master_signals`, `prompt_versions`, and `can_create_team` to `profiles` |
+| Create | `docs/010-team-access/003-rls-and-functions.sql` | SQL for helper functions (`is_team_member`, `get_team_role`, `is_team_admin`) and RLS policies |
+
+### 1.6 Implementation Increments
+
+**Increment 1.1: Database migrations**
+- Write and provide the three SQL migration files
+- User runs them in Supabase SQL editor
+
+**Increment 1.2: Email service**
+- Install `resend` package
+- Create `lib/services/email-service.ts` with `resolveEmailProvider()` + Resend adapter
+- Update `.env.example` with email env vars
+- Verify: config error when `EMAIL_PROVIDER` is missing or unsupported
+
+**Verification:**
+- All tables exist in Supabase with RLS enabled
+- `is_team_member()`, `get_team_role()`, `is_team_admin()` functions exist
+- Existing data untouched — all new columns are nullable or have defaults
+- `sendEmail()` resolves to Resend and can send a test email
+- No regressions — existing personal workspace flows work unchanged
+
+---
+
+## Part 2: Team Creation and Invite Flow
+
+### 2.1 New API Routes
+
+**`POST /api/teams`** — Create a team
+
+```
+Body: { name: string }
+Auth: Required. Checks profiles.can_create_team = true.
+Steps:
+  1. Validate input (Zod: name min 1, max 100)
+  2. Fetch profile, check can_create_team = true → 403 if false
+  3. Insert into teams (name, owner_id = user.id, created_by = user.id)
+  4. Insert into team_members (team_id, user_id, role = 'admin')
+  5. Return 201 { team: { id, name } }
+```
+
+**`POST /api/teams/[teamId]/invitations`** — Send invitation(s)
+
+```
+Body: { emails: string[], role: 'admin' | 'sales' }
+Auth: Required. Must be admin of the team.
+Steps:
+  1. Validate input (Zod: emails array of valid email strings, role)
+  2. Verify caller is admin via get_team_role()
+  3. For each email:
+     a. Skip if already an active team member
+     b. Skip if a pending (non-expired, non-accepted) invitation exists
+     c. Generate token: crypto.randomBytes(32).toString('hex')
+     d. Insert into team_invitations (team_id, email, role, invited_by, token, expires_at = now + 7 days)
+     e. Send invite email via sendEmail()
+  4. Return 200 { sent: string[], skipped: Array<{ email, reason }> }
+```
+
+**`GET /api/teams/[teamId]/invitations`** — List pending invitations
+
+```
+Auth: Required. Must be admin of the team.
+Returns: { invitations: Array<{ id, email, role, invited_by, expires_at, accepted_at, created_at }> }
+Filters: Non-accepted invitations, ordered by created_at DESC.
+```
+
+**`DELETE /api/teams/[teamId]/invitations/[invitationId]`** — Revoke invitation
+
+```
+Auth: Required. Must be admin of the team.
+Steps:
+  1. Delete the invitation row (or set accepted_at to a sentinel — delete is simpler)
+  2. Return 200 { message: "Invitation revoked" }
+```
+
+**`POST /api/teams/[teamId]/invitations/[invitationId]/resend`** — Resend invitation
+
+```
+Auth: Required. Must be admin of the team.
+Steps:
+  1. Generate a new token and set expires_at = now + 7 days
+  2. Update the invitation row
+  3. Send invite email with new link
+  4. Return 200 { message: "Invitation resent" }
+```
+
+### 2.2 New Service Layer
+
+**New file: `lib/services/team-service.ts`**
+
+```typescript
+// Team CRUD
+createTeam(name: string, userId: string): Promise<Team>
+getTeamsForUser(userId: string): Promise<Team[]>
+getTeamById(teamId: string): Promise<Team | null>
+
+// Membership
+getTeamMember(teamId: string, userId: string): Promise<TeamMember | null>
+isTeamAdmin(teamId: string, userId: string): Promise<boolean>
+
+// Invitations
+createInvitations(teamId: string, emails: string[], role: string, invitedBy: string): Promise<InviteResult>
+getPendingInvitations(teamId: string): Promise<TeamInvitation[]>
+revokeInvitation(invitationId: string): Promise<void>
+resendInvitation(invitationId: string): Promise<void>
+```
+
+Uses `createClient()` (anon/user-scoped) for RLS-protected operations. Uses `createServiceRoleClient()` only for operations that need to bypass RLS (e.g., reading invitation by token for unauthenticated invite acceptance — covered in Part 3).
+
+### 2.3 Invite Email Template
+
+HTML email built inline (no template engine needed for v1):
+
+```
+Subject: "You're invited to join {teamName} on Synthesiser"
+
+Body:
+- "{inviterName} invited you to join {teamName} on Synthesiser."
+- "You've been invited as a {role}."
+- CTA button: "Join Team" → {APP_URL}/invite/{token}
+- Footer: "This invitation expires in 7 days."
+```
+
+Reads `NEXT_PUBLIC_APP_URL` for the link base URL.
+
+### 2.4 Frontend Components
+
+**Team creation:**
+
+- Add a "Create Team" button in the app header or Settings page
+- Visible only when `profiles.can_create_team = true` — fetched from the profile service
+- Clicking opens a dialog with a team name input + "Create" button
+- On success: sets `active_team_id` cookie to the new team's ID, refreshes the page
+
+**New file: `app/settings/_components/team-settings.tsx`**
+
+Team settings section within the Settings page (or a new tab). Contains:
+
+1. **Team info** — name (editable by owner, shown in Part 7)
+2. **Invite section:**
+   - Single invite: email input + role select + "Send Invite" button
+   - Bulk invite: "Bulk Invite" button → opens textarea + role select + "Send All" button
+3. **Pending invitations table:** email, role, status (pending/expired), sent date, actions (revoke, resend)
+
+Visibility: This section only renders when the active workspace is a team and the current user is an admin.
+
+### 2.5 Files Changed / Created
+
+| Action | File | Details |
+|--------|------|---------|
+| Create | `lib/services/team-service.ts` | Team CRUD, membership queries, invitation management |
+| Create | `app/api/teams/route.ts` | POST — create team |
+| Create | `app/api/teams/[teamId]/invitations/route.ts` | GET — list invitations, POST — create invitation(s) |
+| Create | `app/api/teams/[teamId]/invitations/[invitationId]/route.ts` | DELETE — revoke invitation |
+| Create | `app/api/teams/[teamId]/invitations/[invitationId]/resend/route.ts` | POST — resend invitation |
+| Create | `app/settings/_components/team-settings.tsx` | Team settings UI: invite single, bulk invite, pending invitations |
+| Modify | `app/settings/_components/prompt-editor-page-content.tsx` | Add team settings tab/section (conditional on active team workspace) |
+| Modify | `app/settings/page.tsx` | Pass team context to settings content |
+| Modify | `components/layout/app-header.tsx` | Add "Create Team" button (conditional on `can_create_team`) |
+| Modify | `lib/services/profile-service.ts` | Ensure `can_create_team` is included in `Profile` interface and `getCurrentProfile()` select |
+
+### 2.6 Implementation Increments
+
+**Increment 2.1: Team service + API routes**
+- Create `lib/services/team-service.ts`
+- Create API routes: `POST /api/teams`, team invitation CRUD routes
+- Zod validation on all inputs
+- Verify: team creation inserts into `teams` + `team_members`, invitation CRUD works
+
+**Increment 2.2: Invite email integration**
+- Build inline HTML email template for team invitations
+- Wire invitation API routes to call `sendEmail()` with the template
+- Verify: invite email is received with correct team name, role, and link
+
+**Increment 2.3: Frontend — team creation**
+- Add "Create Team" button (visible when `can_create_team = true`)
+- Team name dialog + submission flow
+- On success: set `active_team_id` cookie, refresh
+- Update `profile-service.ts` to include `can_create_team`
+
+**Increment 2.4: Frontend — team settings (invite + pending invitations)**
+- Build `team-settings.tsx` with single invite, bulk invite, and pending invitations table
+- Wire to invitation API routes
+- Add team settings section to the Settings page (conditional on team context)
+- Verify: full invite flow works end-to-end from UI
+
+**Verification:**
+- Users with `can_create_team = true` can create teams; others cannot
+- Creating a team sets owner and adds creator as admin member
+- Single invite sends one email with valid token link
+- Bulk invite sends emails, skips invalid/duplicate, shows summary
+- Pending invitations are visible with revoke and resend actions
+- No regressions to personal workspace or existing settings page
