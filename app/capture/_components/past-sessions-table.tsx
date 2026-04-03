@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback, useRef } from "react"
 import { Loader2, Sparkles } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
+import { useAuth } from "@/components/providers/auth-provider"
 import {
   SessionFilters,
   type SessionFiltersState,
@@ -13,6 +14,12 @@ import { ExpandedSessionRow, type SessionRow } from "./expanded-session-row"
 
 export interface PastSessionsTableProps {
   refreshKey: number
+}
+
+function getActiveTeamId(): string | null {
+  if (typeof document === "undefined") return null
+  const match = document.cookie.match(/(?:^|;\s*)active_team_id=([^;]*)/)
+  return match ? decodeURIComponent(match[1]) : null
 }
 
 const PAGE_SIZE = 20
@@ -34,6 +41,7 @@ function truncateNotes(notes: string, maxLength = 100): string {
 export function PastSessionsTable({
   refreshKey,
 }: PastSessionsTableProps) {
+  const { user } = useAuth()
   const [sessions, setSessions] = useState<SessionRow[]>([])
   const [total, setTotal] = useState(0)
   const [offset, setOffset] = useState(0)
@@ -43,6 +51,25 @@ export function PastSessionsTable({
     dateFrom: "",
     dateTo: "",
   })
+  const [teamRole, setTeamRole] = useState<string | null>(null)
+  const activeTeamId = getActiveTeamId()
+  const isTeamContext = !!activeTeamId
+
+  useEffect(() => {
+    if (!activeTeamId) {
+      setTeamRole(null)
+      return
+    }
+    fetch("/api/teams")
+      .then((res) => (res.ok ? res.json() : { teams: [] }))
+      .then((data) => {
+        const team = (data.teams ?? []).find(
+          (t: { id: string }) => t.id === activeTeamId
+        )
+        setTeamRole(team?.role ?? null)
+      })
+      .catch(() => setTeamRole(null))
+  }, [activeTeamId])
 
   const [expandedSessionId, setExpandedSessionId] = useState<string | null>(null)
   const [pendingExpandId, setPendingExpandId] = useState<string | null>(null)
@@ -228,6 +255,11 @@ export function PastSessionsTable({
                 <th className="px-4 py-2.5 text-left font-medium text-muted-foreground">
                   Date
                 </th>
+                {isTeamContext && (
+                  <th className="px-4 py-2.5 text-left font-medium text-muted-foreground">
+                    Captured by
+                  </th>
+                )}
                 <th className="px-4 py-2.5 text-left font-medium text-muted-foreground">
                   Notes
                 </th>
@@ -236,11 +268,15 @@ export function PastSessionsTable({
             <tbody>
               {sessions.map((session) => {
                 const isExpanded = expandedSessionId === session.id
+                const isOwner = session.created_by === user?.id
+                const canEdit = !isTeamContext || isOwner || teamRole === "admin"
                 return (
                   <SessionTableRow
                     key={session.id}
                     session={session}
                     isExpanded={isExpanded}
+                    isTeamContext={isTeamContext}
+                    canEdit={canEdit}
                     onRowClick={() => handleRowClick(session.id)}
                     onDirtyChange={handleDirtyChange}
                     onSave={handleExpandedSave}
@@ -288,6 +324,8 @@ export function PastSessionsTable({
 interface SessionTableRowProps {
   session: SessionRow
   isExpanded: boolean
+  isTeamContext: boolean
+  canEdit: boolean
   onRowClick: () => void
   onDirtyChange: (dirty: boolean) => void
   onSave: () => void
@@ -296,9 +334,17 @@ interface SessionTableRowProps {
   saveRef: React.MutableRefObject<(() => Promise<boolean>) | null>
 }
 
+function formatEmail(email?: string): string {
+  if (!email) return ""
+  const [local] = email.split("@")
+  return local
+}
+
 function SessionTableRow({
   session,
   isExpanded,
+  isTeamContext,
+  canEdit,
   onRowClick,
   onDirtyChange,
   onSave,
@@ -306,6 +352,8 @@ function SessionTableRow({
   onDelete,
   saveRef,
 }: SessionTableRowProps) {
+  const colSpan = isTeamContext ? 4 : 3
+
   return (
     <>
       <tr
@@ -320,6 +368,11 @@ function SessionTableRow({
         <td className="px-4 py-2.5 text-muted-foreground whitespace-nowrap">
           {formatDate(session.session_date)}
         </td>
+        {isTeamContext && (
+          <td className="px-4 py-2.5 text-muted-foreground whitespace-nowrap">
+            {formatEmail(session.created_by_email)}
+          </td>
+        )}
         <td className="px-4 py-2.5 text-muted-foreground">
           <span className="flex items-center gap-1.5">
             {truncateNotes(session.raw_notes)}
@@ -331,9 +384,10 @@ function SessionTableRow({
       </tr>
       {isExpanded && (
         <tr>
-          <td colSpan={3} className="p-0">
+          <td colSpan={colSpan} className="p-0">
             <ExpandedSessionRow
               session={session}
+              canEdit={canEdit}
               onSave={onSave}
               onCancel={onCancel}
               onDelete={onDelete}

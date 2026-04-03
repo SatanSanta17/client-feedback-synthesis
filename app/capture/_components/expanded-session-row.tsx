@@ -22,11 +22,14 @@ export interface SessionRow {
   session_date: string
   raw_notes: string
   structured_notes: string | null
+  created_by: string
   created_at: string
+  created_by_email?: string
 }
 
 export interface ExpandedSessionRowProps {
   session: SessionRow
+  canEdit: boolean
   onSave: () => void
   onCancel: () => void
   onDelete: () => void
@@ -36,6 +39,7 @@ export interface ExpandedSessionRowProps {
 
 export function ExpandedSessionRow({
   session,
+  canEdit,
   onSave,
   onCancel,
   onDelete,
@@ -211,67 +215,92 @@ export function ExpandedSessionRow({
 
   return (
     <div className="flex flex-col gap-4 p-4 bg-muted/20 border-t border-border">
-      <div className="flex flex-col gap-1.5">
-        <Label className="text-xs text-muted-foreground">Client</Label>
-        <ClientCombobox
-          value={client}
-          onChange={(c) => {
-            if (c) setClient(c)
-          }}
-        />
-      </div>
+      {canEdit ? (
+        <>
+          <div className="flex flex-col gap-1.5">
+            <Label className="text-xs text-muted-foreground">Client</Label>
+            <ClientCombobox
+              value={client}
+              onChange={(c) => {
+                if (c) setClient(c)
+              }}
+            />
+          </div>
 
-      <div className="flex flex-col gap-1.5">
-        <Label className="text-xs text-muted-foreground">Session Date</Label>
-        <DatePicker
-          value={sessionDate}
-          onChange={setSessionDate}
-          className="w-48"
-        />
-      </div>
+          <div className="flex flex-col gap-1.5">
+            <Label className="text-xs text-muted-foreground">Session Date</Label>
+            <DatePicker
+              value={sessionDate}
+              onChange={setSessionDate}
+              className="w-48"
+            />
+          </div>
+        </>
+      ) : (
+        <div className="flex items-center gap-6 text-sm">
+          <div>
+            <span className="text-xs text-muted-foreground">Client</span>
+            <p className="font-medium">{session.client_name}</p>
+          </div>
+          <div>
+            <span className="text-xs text-muted-foreground">Date</span>
+            <p className="font-medium">{session.session_date}</p>
+          </div>
+          {session.created_by_email && (
+            <div>
+              <span className="text-xs text-muted-foreground">Captured by</span>
+              <p className="font-medium">{session.created_by_email}</p>
+            </div>
+          )}
+        </div>
+      )}
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         <div className="flex flex-col gap-1.5">
           <Label className="text-xs text-muted-foreground">Raw Notes</Label>
           <MarkdownPanel
             content={rawNotes}
-            onChange={setRawNotes}
+            onChange={canEdit ? setRawNotes : undefined}
+            readOnly={!canEdit}
           />
         </div>
 
         <div className="flex flex-col gap-1.5">
           <div className="flex items-center justify-between">
             <Label className="text-xs text-muted-foreground">Extracted Signals</Label>
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              disabled={!rawNotes.trim() || extractionState === "extracting"}
-              onClick={handleExtractSignals}
-            >
-              {extractionState === "extracting" ? (
-                <>
-                  <Loader2 className="mr-1.5 size-3.5 animate-spin" />
-                  Extracting...
-                </>
-              ) : extractionState === "done" ? (
-                <>
-                  <RefreshCw className="mr-1.5 size-3.5" />
-                  Re-extract
-                </>
-              ) : (
-                <>
-                  <Sparkles className="mr-1.5 size-3.5" />
-                  Extract Signals
-                </>
-              )}
-            </Button>
+            {canEdit && (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                disabled={!rawNotes.trim() || extractionState === "extracting"}
+                onClick={handleExtractSignals}
+              >
+                {extractionState === "extracting" ? (
+                  <>
+                    <Loader2 className="mr-1.5 size-3.5 animate-spin" />
+                    Extracting...
+                  </>
+                ) : extractionState === "done" ? (
+                  <>
+                    <RefreshCw className="mr-1.5 size-3.5" />
+                    Re-extract
+                  </>
+                ) : (
+                  <>
+                    <Sparkles className="mr-1.5 size-3.5" />
+                    Extract Signals
+                  </>
+                )}
+              </Button>
+            )}
           </div>
 
           {extractionState === "done" && structuredNotes ? (
             <MarkdownPanel
               content={structuredNotes}
-              onChange={setStructuredNotes}
+              onChange={canEdit ? setStructuredNotes : undefined}
+              readOnly={!canEdit}
             />
           ) : extractionState === "extracting" ? (
             <div className="flex items-center justify-center rounded-lg border border-border bg-card py-12">
@@ -286,68 +315,86 @@ export function ExpandedSessionRow({
       </div>
 
       <div className="flex items-center gap-2">
-        <Button
-          size="sm"
-          onClick={handleSave}
-          disabled={!isFormValid || !isDirty || isSaving || isDeleting}
-        >
-          {isSaving ? (
-            <Loader2 className="mr-1.5 size-3.5 animate-spin" />
-          ) : (
-            <Save className="mr-1.5 size-3.5" />
-          )}
-          {isSaving ? "Saving..." : "Save"}
-        </Button>
-
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={onCancel}
-          disabled={isSaving || isDeleting}
-        >
-          <X className="mr-1.5 size-3.5" />
-          Cancel
-        </Button>
-
-        <div className="ml-auto">
-          {showDeleteConfirm ? (
-            <div className="flex items-center gap-2">
-              <span className="text-xs text-muted-foreground">
-                Delete this session?
-              </span>
-              <Button
-                variant="destructive"
-                size="sm"
-                onClick={handleDelete}
-                disabled={isDeleting}
-              >
-                {isDeleting && (
-                  <Loader2 className="mr-1.5 size-3.5 animate-spin" />
-                )}
-                {isDeleting ? "Deleting..." : "Confirm"}
-              </Button>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => setShowDeleteConfirm(false)}
-                disabled={isDeleting}
-              >
-                No
-              </Button>
-            </div>
-          ) : (
+        {canEdit ? (
+          <>
             <Button
-              variant="ghost"
               size="sm"
-              onClick={() => setShowDeleteConfirm(true)}
-              disabled={isSaving || isDeleting}
-              className="text-destructive hover:text-destructive hover:bg-destructive/10"
+              onClick={handleSave}
+              disabled={!isFormValid || !isDirty || isSaving || isDeleting}
             >
-              <Trash2 className="mr-1.5 size-3.5" />
-              Delete
+              {isSaving ? (
+                <Loader2 className="mr-1.5 size-3.5 animate-spin" />
+              ) : (
+                <Save className="mr-1.5 size-3.5" />
+              )}
+              {isSaving ? "Saving..." : "Save"}
             </Button>
-          )}
-        </div>
+
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={onCancel}
+              disabled={isSaving || isDeleting}
+            >
+              <X className="mr-1.5 size-3.5" />
+              Cancel
+            </Button>
+
+            <div className="ml-auto">
+              {showDeleteConfirm ? (
+                <div className="flex items-center gap-2">
+                  <span className="text-xs text-muted-foreground">
+                    Delete this session?
+                  </span>
+                  <Button
+                    variant="destructive"
+                    size="sm"
+                    onClick={handleDelete}
+                    disabled={isDeleting}
+                  >
+                    {isDeleting && (
+                      <Loader2 className="mr-1.5 size-3.5 animate-spin" />
+                    )}
+                    {isDeleting ? "Deleting..." : "Confirm"}
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setShowDeleteConfirm(false)}
+                    disabled={isDeleting}
+                  >
+                    No
+                  </Button>
+                </div>
+              ) : (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setShowDeleteConfirm(true)}
+                  disabled={isSaving || isDeleting}
+                  className="text-destructive hover:text-destructive hover:bg-destructive/10"
+                >
+                  <Trash2 className="mr-1.5 size-3.5" />
+                  Delete
+                </Button>
+              )}
+            </div>
+          </>
+        ) : (
+          <div className="flex items-center gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={onCancel}
+            >
+              <X className="mr-1.5 size-3.5" />
+              Close
+            </Button>
+            <span className="text-xs text-muted-foreground">
+              View only — you can only edit your own sessions
+            </span>
+          </div>
+        )}
       </div>
 
       {showReextractConfirm && (
