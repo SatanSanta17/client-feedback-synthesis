@@ -1,4 +1,4 @@
-import { createClient, createServiceRoleClient } from "@/lib/supabase/server";
+import { createClient, createServiceRoleClient, getActiveTeamId } from "@/lib/supabase/server";
 import { createNewClient, ClientDuplicateError } from "./client-service";
 import { taintLatestMasterSignal } from "./master-signal-service";
 
@@ -22,6 +22,7 @@ export interface Session {
 
 export interface SessionWithClient extends Session {
   client_name: string;
+  created_by_email?: string;
 }
 
 export interface SessionFilters {
@@ -35,18 +36,19 @@ export interface SessionFilters {
 /**
  * Fetch paginated sessions with optional filters.
  * Joins with clients to include client_name.
+ * Scopes by active workspace: personal (team_id IS NULL) or team.
  * Returns sessions and total count for pagination.
  */
 export async function getSessions(
   filters: SessionFilters
 ): Promise<{ sessions: SessionWithClient[]; total: number }> {
   const { clientId, dateFrom, dateTo, offset, limit } = filters;
+  const teamId = await getActiveTeamId();
 
-  console.log("[session-service] getSessions — filters:", JSON.stringify(filters));
+  console.log("[session-service] getSessions — filters:", JSON.stringify(filters), "teamId:", teamId);
 
   const supabase = await createClient();
 
-  // Build the data query with join
   let query = supabase
     .from("sessions")
     .select("id, client_id, session_date, raw_notes, structured_notes, created_by, created_at, clients(name)", { count: "exact" })
@@ -54,6 +56,12 @@ export async function getSessions(
     .order("session_date", { ascending: false })
     .order("created_at", { ascending: false })
     .range(offset, offset + limit - 1);
+
+  if (teamId) {
+    query = query.eq("team_id", teamId);
+  } else {
+    query = query.is("team_id", null);
+  }
 
   if (clientId) {
     query = query.eq("client_id", clientId);
@@ -72,9 +80,24 @@ export async function getSessions(
     throw new Error("Failed to fetch sessions");
   }
 
-  // Transform the joined data to flatten client_name
-  const sessions: SessionWithClient[] = (data ?? []).map((row) => {
-    // Supabase returns the joined table as an object (single FK) or array
+  const rows = data ?? [];
+
+  // In team context, resolve creator emails for attribution
+  let emailByUserId: Map<string, string> | null = null;
+  if (teamId && rows.length > 0) {
+    const uniqueUserIds = [...new Set(rows.map((r) => r.created_by))];
+    const serviceClient = createServiceRoleClient();
+    const { data: profiles } = await serviceClient
+      .from("profiles")
+      .select("id, email")
+      .in("id", uniqueUserIds);
+
+    emailByUserId = new Map(
+      (profiles ?? []).map((p) => [p.id, p.email])
+    );
+  }
+
+  const sessions: SessionWithClient[] = rows.map((row) => {
     const clientData = row.clients as unknown as { name: string } | null;
     return {
       id: row.id,
@@ -85,6 +108,7 @@ export async function getSessions(
       created_by: row.created_by,
       created_at: row.created_at,
       client_name: clientData?.name ?? "Unknown",
+      created_by_email: emailByUserId?.get(row.created_by) ?? undefined,
     };
   });
 
@@ -115,8 +139,8 @@ export async function createSession(
     console.log("[session-service] created new client:", resolvedClientId);
   }
 
-  // Insert the session
   const supabase = await createClient();
+  const teamId = await getActiveTeamId();
 
   const { data, error } = await supabase
     .from("sessions")
@@ -125,6 +149,7 @@ export async function createSession(
       session_date: sessionDate,
       raw_notes: rawNotes,
       structured_notes: structuredNotes ?? null,
+      team_id: teamId,
     })
     .select("id, client_id, session_date, raw_notes, structured_notes, created_by, created_at")
     .single();
@@ -134,7 +159,7 @@ export async function createSession(
     throw new Error("Failed to create session");
   }
 
-  console.log("[session-service] createSession success:", data.id);
+  console.log("[session-service] createSession success:", data.id, "teamId:", teamId);
   return data;
 }
 
@@ -221,7 +246,7 @@ export async function deleteSession(id: string): Promise<void> {
     .update({ deleted_at: new Date().toISOString() })
     .eq("id", id)
     .is("deleted_at", null)
-    .select("id, structured_notes, created_by")
+    .select("id, structured_notes, created_by, team_id")
     .single();
 
   if (error) {
@@ -235,10 +260,9 @@ export async function deleteSession(id: string): Promise<void> {
 
   console.log("[session-service] deleteSession success:", data.id);
 
-  // Taint the deleting user's master signal if the session had extracted signals
   if (data.structured_notes) {
     try {
-      await taintLatestMasterSignal(data.created_by);
+      await taintLatestMasterSignal(data.created_by, data.team_id ?? undefined);
     } catch (taintErr) {
       console.error(
         "[session-service] failed to taint master signal:",

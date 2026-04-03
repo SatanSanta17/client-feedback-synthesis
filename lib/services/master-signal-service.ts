@@ -217,24 +217,29 @@ export async function saveMasterSignal(
 // ---------------------------------------------------------------------------
 
 /**
- * Mark the latest master signal for a specific user as tainted (contains data
- * from a now-deleted session). No-op if no master signal exists or if already
- * tainted. Uses the service role client to bypass RLS (called from deleteSession
- * which also uses the service role client).
+ * Mark the latest master signal as tainted (contains data from a now-deleted
+ * session). Scopes by teamId when provided (team context), otherwise by userId
+ * (personal context). No-op if no master signal exists or if already tainted.
+ * Uses the service role client to bypass RLS.
  */
-export async function taintLatestMasterSignal(userId: string): Promise<void> {
-  console.log("[master-signal-service] taintLatestMasterSignal — userId:", userId);
+export async function taintLatestMasterSignal(userId: string, teamId?: string): Promise<void> {
+  console.log("[master-signal-service] taintLatestMasterSignal — userId:", userId, "teamId:", teamId);
 
   const supabase = createServiceRoleClient();
 
-  // Find the latest master signal belonging to this user
-  const { data: latest, error: fetchError } = await supabase
+  let query = supabase
     .from("master_signals")
     .select("id, is_tainted")
-    .eq("created_by", userId)
     .order("generated_at", { ascending: false })
-    .limit(1)
-    .maybeSingle();
+    .limit(1);
+
+  if (teamId) {
+    query = query.eq("team_id", teamId);
+  } else {
+    query = query.eq("created_by", userId).is("team_id", null);
+  }
+
+  const { data: latest, error: fetchError } = await query.maybeSingle();
 
   if (fetchError) {
     console.error(
