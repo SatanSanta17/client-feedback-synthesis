@@ -1,11 +1,14 @@
 "use client";
 
 import { usePathname } from "next/navigation";
+import { useAuth } from "@/components/providers/auth-provider";
 import { TabNav } from "@/components/layout/tab-nav";
 import { UserMenu } from "@/components/layout/user-menu";
+import { CreateTeamDialog } from "@/components/layout/create-team-dialog";
 
 export function AppHeader() {
   const pathname = usePathname();
+  const { canCreateTeam, isAuthenticated } = useAuth();
 
   if (pathname === "/login") return null;
 
@@ -17,7 +20,10 @@ export function AppHeader() {
         </span>
         <TabNav />
       </div>
-      <UserMenu />
+      <div className="flex items-center gap-3">
+        {isAuthenticated && canCreateTeam && <CreateTeamDialog />}
+        <UserMenu />
+      </div>
     </header>
   );
 }

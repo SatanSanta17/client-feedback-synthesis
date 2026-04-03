@@ -15,6 +15,7 @@ interface AuthContextValue {
   user: User | null;
   isAuthenticated: boolean;
   isLoading: boolean;
+  canCreateTeam: boolean;
   signOut: () => Promise<void>;
 }
 
@@ -27,6 +28,7 @@ interface AuthProviderProps {
 export function AuthProvider({ children }: AuthProviderProps) {
   const [user, setUser] = useState<User | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [canCreateTeam, setCanCreateTeam] = useState(false);
   const router = useRouter();
   const supabase = createClient();
 
@@ -34,6 +36,17 @@ export function AuthProvider({ children }: AuthProviderProps) {
     supabase.auth.getUser().then(({ data: { user: currentUser } }) => {
       setUser(currentUser);
       setIsLoading(false);
+
+      if (currentUser) {
+        supabase
+          .from("profiles")
+          .select("can_create_team")
+          .eq("id", currentUser.id)
+          .single()
+          .then(({ data }) => {
+            setCanCreateTeam(data?.can_create_team ?? false);
+          });
+      }
     });
 
     const {
@@ -41,6 +54,19 @@ export function AuthProvider({ children }: AuthProviderProps) {
     } = supabase.auth.onAuthStateChange((_event, session) => {
       setUser(session?.user ?? null);
       setIsLoading(false);
+
+      if (session?.user) {
+        supabase
+          .from("profiles")
+          .select("can_create_team")
+          .eq("id", session.user.id)
+          .single()
+          .then(({ data }) => {
+            setCanCreateTeam(data?.can_create_team ?? false);
+          });
+      } else {
+        setCanCreateTeam(false);
+      }
     });
 
     return () => {
@@ -51,6 +77,7 @@ export function AuthProvider({ children }: AuthProviderProps) {
   const signOut = useCallback(async () => {
     await supabase.auth.signOut();
     setUser(null);
+    setCanCreateTeam(false);
     router.push("/login");
   }, [supabase, router]);
 
@@ -60,6 +87,7 @@ export function AuthProvider({ children }: AuthProviderProps) {
         user,
         isAuthenticated: !!user,
         isLoading,
+        canCreateTeam,
         signOut,
       }}
     >

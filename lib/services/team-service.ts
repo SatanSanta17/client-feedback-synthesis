@@ -221,9 +221,6 @@ export async function createInvitations(
   const result: InviteResult = { sent: [], skipped: [] };
 
   const members = await getActiveTeamMembers(teamId);
-  const memberEmails = new Set(
-    members.map((m) => m.user_id)
-  );
 
   // Fetch member emails via profiles for dedup
   const serviceClient = createServiceRoleClient();
