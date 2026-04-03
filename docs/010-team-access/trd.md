@@ -1,8 +1,8 @@
 # TRD-010: Team Access — Workspaces, Invitations, and Role-Based Collaboration
 
-> **Status:** Draft (Parts 1–2)
+> **Status:** Draft (Parts 1–3)
 > **PRD:** `docs/010-team-access/prd.md` (approved)
-> **Mirrors:** PRD Parts 1–8. This TRD is written incrementally — Parts 1–2 are detailed below; Parts 3–8 will be added after review.
+> **Mirrors:** PRD Parts 1–8. This TRD is written incrementally — Parts 1–3 are detailed below; Parts 4–8 will be added after review.
 
 ---
 
@@ -533,3 +533,190 @@ Visibility: This section only renders when the active workspace is a team and th
 - Bulk invite sends emails, skips invalid/duplicate, shows summary
 - Pending invitations are visible with revoke and resend actions
 - No regressions to personal workspace or existing settings page
+
+---
+
+## Part 3: Invite Acceptance and Join Flow
+
+### 3.1 Technical Decisions
+
+1. **Token validation uses the service role client.** The `/invite/[token]` page must be accessible to unauthenticated users (they haven't signed in yet). The page's server component uses `createServiceRoleClient()` to look up the invitation by token, bypassing RLS. Only the token, team name, role, and expiry status are exposed — no sensitive data.
+
+2. **Invite token stored in a cookie during OAuth.** When a user clicks "Sign in with Google to join" on the invite page, the token is stored in a short-lived cookie (`pending_invite_token`, 10 min TTL). After OAuth completes, the auth callback reads this cookie, validates the invitation, creates the membership, and clears the cookie. This avoids passing the token through OAuth redirect URLs which have length limits and are logged.
+
+3. **Invite acceptance uses the service role client.** The auth callback needs to: (a) read the invitation by token (bypassing RLS since the user may not have RLS-visible access to `team_invitations`), (b) insert into `team_members`, and (c) update the invitation's `accepted_at`. All three operations use `createServiceRoleClient()` to avoid RLS chicken-and-egg issues.
+
+4. **The `/invite/[token]` route is public.** Middleware is updated to allow unauthenticated access to `/invite/` paths — same treatment as `/login` and `/auth/callback`.
+
+### 3.2 New API Route
+
+**`GET /api/invite/[token]`** — Validate an invite token (server-side, called by the invite page)
+
+```
+Auth: Not required (public).
+Steps:
+  1. Use service role client to find the invitation by token
+  2. If not found → return 404 { status: "invalid" }
+  3. If already accepted → return 410 { status: "already_accepted" }
+  4. If expired (expires_at < now) → return 410 { status: "expired" }
+  5. Fetch team name from teams table
+  6. Return 200 { status: "valid", teamName, role }
+```
+
+This route is read-only and exposes only the team name and invited role — no IDs or emails.
+
+### 3.3 Invite Acceptance in Auth Callback
+
+**Modified file: `app/auth/callback/route.ts`**
+
+After successful `exchangeCodeForSession()`, the callback checks for a `pending_invite_token` cookie:
+
+```
+Steps:
+  1. Exchange code for session (existing)
+  2. Read pending_invite_token cookie
+  3. If no token → redirect to /capture (existing behavior)
+  4. If token exists:
+     a. Clear the cookie immediately
+     b. Use service role client to fetch the invitation by token
+     c. Validate: exists, not expired, not already accepted
+     d. If invalid → redirect to /capture (graceful degradation — user is signed in)
+     e. Get the user's email from the session
+     f. Check if user is already a member of the team:
+        - If yes → set active_team_id cookie, redirect to /capture
+        - If no → insert into team_members (team_id, user_id, role from invitation)
+     g. Set accepted_at = now() on the invitation
+     h. Set active_team_id cookie to the invitation's team_id
+     i. Redirect to /capture
+```
+
+### 3.4 Frontend — Invite Page
+
+**New file: `app/invite/[token]/page.tsx`** (Server Component)
+
+The page is a server component that fetches invite details on the server and renders the appropriate state.
+
+```
+Server-side:
+  1. Use service role client to fetch invitation by token
+  2. Determine status: valid, expired, already_accepted, invalid
+  3. If valid: fetch team name
+  4. Pass status + team name + role to the client component
+
+Client component renders one of:
+  - Valid: team name, role badge, "Sign in with Google to join" button
+  - Expired: "This invitation has expired. Ask the team admin to send a new one."
+  - Already accepted: "This invitation has already been used."
+  - Invalid: "This invitation link is invalid."
+```
+
+**New file: `app/invite/[token]/_components/invite-page-content.tsx`** (Client Component)
+
+Handles the "Sign in with Google to join" button:
+
+```
+Steps:
+  1. Set pending_invite_token cookie (document.cookie, 10 min TTL)
+  2. Call supabase.auth.signInWithOAuth({ provider: "google", redirectTo: /auth/callback })
+```
+
+If the user is already authenticated (checked via `useAuth()`), skip OAuth and call a `POST /api/invite/[token]/accept` endpoint directly.
+
+### 3.5 Accept Endpoint for Already-Authenticated Users
+
+**New file: `app/api/invite/[token]/accept/route.ts`**
+
+```
+Auth: Required.
+Body: none (token is in the URL)
+Steps:
+  1. Use service role client to fetch invitation by token
+  2. Validate: exists, not expired, not already accepted → 400/404/410
+  3. Get the user from session
+  4. Check email match: invitation.email must equal user.email (case-insensitive)
+     - If mismatch → 403 { message: "This invitation was sent to a different email address" }
+  5. Check if already a team member → if yes, skip insert, set accepted_at, return 200
+  6. Insert into team_members
+  7. Set accepted_at = now() on the invitation
+  8. Return 200 { teamId, teamName }
+```
+
+The frontend then sets the `active_team_id` cookie and redirects to `/capture`.
+
+### 3.6 Middleware Update
+
+**Modified file: `middleware.ts`**
+
+Add `/invite` to the public routes list:
+
+```typescript
+const isPublicRoute =
+  pathname === "/login" ||
+  pathname.startsWith("/auth/callback") ||
+  pathname.startsWith("/invite");
+```
+
+### 3.7 New Service Layer
+
+**New functions in `lib/services/invitation-service.ts`:**
+
+```typescript
+getInvitationByToken(token: string): Promise<InvitationWithTeam | null>
+acceptInvitation(invitationId: string, userId: string, teamId: string, role: string): Promise<void>
+```
+
+`getInvitationByToken` uses the service role client to bypass RLS. Returns the invitation joined with the team name.
+
+`acceptInvitation` uses the service role client to:
+1. Check if user is already a member (skip insert if so)
+2. Insert into `team_members`
+3. Set `accepted_at = now()` on the invitation
+
+### 3.8 Files Changed / Created
+
+| Action | File | Details |
+|--------|------|---------|
+| Create | `app/invite/[token]/page.tsx` | Server component — validates token, renders invite page |
+| Create | `app/invite/[token]/_components/invite-page-content.tsx` | Client component — sign-in button, cookie handling |
+| Create | `app/api/invite/[token]/accept/route.ts` | POST — accept invitation for already-authenticated users |
+| Modify | `app/auth/callback/route.ts` | Check `pending_invite_token` cookie after OAuth, create membership |
+| Modify | `middleware.ts` | Add `/invite` to public routes |
+| Modify | `lib/services/invitation-service.ts` | Add `getInvitationByToken()`, `acceptInvitation()` |
+
+### 3.9 Implementation Increments
+
+**Increment 3.1: Invitation service extensions**
+- Add `getInvitationByToken()` and `acceptInvitation()` to `invitation-service.ts`
+- Both use `createServiceRoleClient()` to bypass RLS
+- Verify: token lookup returns invitation + team name, acceptance creates membership and sets `accepted_at`
+
+**Increment 3.2: Invite page (frontend)**
+- Update middleware to allow `/invite` as a public route
+- Create `app/invite/[token]/page.tsx` (server component) and `invite-page-content.tsx` (client component)
+- Valid tokens show team name + role + sign-in button
+- Invalid/expired/used tokens show appropriate error messages
+- Verify: visiting `/invite/[valid-token]` shows the invite page
+
+**Increment 3.3: Auth callback integration**
+- Modify `app/auth/callback/route.ts` to check for `pending_invite_token` cookie
+- On valid invite: create membership, set `active_team_id` cookie, redirect to `/capture`
+- On invalid/missing invite: existing behavior (redirect to `/capture`)
+- Verify: clicking "Sign in to join" → OAuth → callback → user is a team member
+
+**Increment 3.4: Accept endpoint for authenticated users**
+- Create `app/api/invite/[token]/accept/route.ts`
+- Validates token, checks email match, creates membership
+- Wire into `invite-page-content.tsx` — if user is already authenticated, call accept endpoint instead of OAuth
+- Verify: authenticated user visiting an invite link can join without re-authenticating
+
+**Verification:**
+- `/invite/[valid-token]` shows team name and sign-in button
+- `/invite/[expired-token]` shows expiry message
+- `/invite/[used-token]` shows "already accepted" message
+- `/invite/[garbage]` shows "invalid" message
+- New user: clicks invite link → signs in with Google → lands in team workspace as a member
+- Existing user (not signed in): clicks invite link → signs in → joins team
+- Existing user (already signed in): clicks invite link → accepts directly → joins team
+- Duplicate membership: already a member → redirects to team workspace, no duplicate row
+- `pending_invite_token` cookie is cleared after use
+- No regressions to existing login or auth callback flows
