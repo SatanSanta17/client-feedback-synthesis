@@ -1,8 +1,8 @@
 # TRD-010: Team Access — Workspaces, Invitations, and Role-Based Collaboration
 
-> **Status:** Draft (Parts 1–6)
+> **Status:** Draft (Parts 1–7)
 > **PRD:** `docs/010-team-access/prd.md` (approved)
-> **Mirrors:** PRD Parts 1–8. This TRD is written incrementally — Parts 1–6 are detailed below; Parts 7–8 will be added after review.
+> **Mirrors:** PRD Parts 1–8. This TRD is written incrementally — Parts 1–7 are detailed below; Part 8 will be added after review.
 
 ---
 
@@ -1263,3 +1263,252 @@ Add admin check for `POST` (save prompt) in team context:
 - New teams with no custom prompts fall back to hardcoded defaults
 - Staleness count and tainted flag are correctly scoped by team
 - No regressions in personal workspace for master signal or prompts
+
+---
+
+## Part 7: Team Management — Members, Roles, and Ownership
+
+### 7.1 API Routes
+
+**`app/api/teams/[teamId]/route.ts`** (new)
+
+Handles team-level operations: reading team details, renaming, and deleting.
+
+- `GET /api/teams/[teamId]` — Returns the team object including `owner_id` and the full member list (with profile data: email). Requires active membership.
+- `PATCH /api/teams/[teamId]` — Rename the team. Body: `{ name: string }`. Only the owner can rename. Returns the updated team.
+- `DELETE /api/teams/[teamId]` — Soft-delete the team (sets `deleted_at`). Only the owner can delete. Clears `active_team_id` cookie for any member who has this team active (handled client-side on next request via existing middleware validation).
+
+Zod schemas:
+
+```typescript
+const renameTeamSchema = z.object({
+  name: z.string().min(1).max(100),
+});
+```
+
+**`app/api/teams/[teamId]/members/route.ts`** (new)
+
+- `GET /api/teams/[teamId]/members` — Returns all active members with their profile data (email, name). Joins `team_members` with `profiles` to include `email`. Any team member can read.
+
+**`app/api/teams/[teamId]/members/[userId]/route.ts`** (new)
+
+- `DELETE /api/teams/[teamId]/members/[userId]` — Remove a member from the team. Sets `team_members.removed_at`. Permission logic:
+  - Owner can remove anyone except themselves (use "leave" flow instead).
+  - Admin can remove sales members only.
+  - Sales cannot remove anyone.
+  - Returns 403 with a descriptive message for unauthorized attempts.
+
+**`app/api/teams/[teamId]/members/[userId]/role/route.ts`** (new)
+
+- `PATCH /api/teams/[teamId]/members/[userId]/role` — Change a member's role. Body: `{ role: "admin" | "sales" }`. Only the owner can change roles. Cannot change own role (owner is always admin).
+
+Zod schema:
+
+```typescript
+const changeRoleSchema = z.object({
+  role: z.enum(["admin", "sales"]),
+});
+```
+
+**`app/api/teams/[teamId]/transfer/route.ts`** (new)
+
+- `POST /api/teams/[teamId]/transfer` — Transfer ownership. Body: `{ newOwnerId: string }`. Only the current owner can transfer. If the new owner is a sales member, they are promoted to admin. The previous owner retains admin role. Updates `teams.owner_id`.
+
+Zod schema:
+
+```typescript
+const transferOwnershipSchema = z.object({
+  newOwnerId: z.string().uuid(),
+});
+```
+
+**`app/api/teams/[teamId]/leave/route.ts`** (new)
+
+- `POST /api/teams/[teamId]/leave` — Current user leaves the team. Sets `team_members.removed_at` on their own row.
+  - If the user is the owner:
+    - If there are other admin members: ownership auto-transfers to the admin with the earliest `joined_at`, then the owner's membership is removed.
+    - If there are no other admins: returns 400 with message "You must promote another member to admin before leaving, or delete the team."
+  - If the user is not the owner: straightforward removal.
+  - If the team was the user's active workspace, the response instructs the client to clear the `active_team_id` cookie.
+
+### 7.2 Service Layer
+
+**`lib/services/team-service.ts`** — add the following functions:
+
+```typescript
+// Rename a team (owner only — checked at route level)
+export async function renameTeam(teamId: string, name: string): Promise<Team>
+
+// Soft-delete a team (owner only — checked at route level)
+export async function deleteTeam(teamId: string): Promise<void>
+
+// Remove a member (sets removed_at)
+export async function removeMember(teamId: string, userId: string): Promise<void>
+
+// Change a member's role
+export async function changeMemberRole(
+  teamId: string,
+  userId: string,
+  role: "admin" | "sales"
+): Promise<void>
+
+// Transfer ownership — updates teams.owner_id, promotes transferee to admin if needed
+export async function transferOwnership(
+  teamId: string,
+  newOwnerId: string
+): Promise<void>
+
+// Leave team — handles auto-transfer logic for owner departure
+export async function leaveTeam(
+  teamId: string,
+  userId: string,
+  isOwner: boolean
+): Promise<{ autoTransferredTo?: string }>
+```
+
+`removeMember` uses `createServiceRoleClient()` to bypass RLS (similar to how `deleteSession` works — the update sets `removed_at` which would violate a `WITH CHECK` constraint through the regular client).
+
+`transferOwnership` is a two-step operation:
+1. If the new owner's current role is `sales`, update to `admin`.
+2. Update `teams.owner_id` to the new owner's user ID.
+
+`leaveTeam` logic:
+1. If `isOwner`:
+   a. Fetch all active admins (`role = 'admin' AND removed_at IS NULL AND user_id != userId`).
+   b. If none exist, throw an error (blocked).
+   c. Pick the earliest by `joined_at`, call `transferOwnership`.
+   d. Set `removed_at` on the owner's membership row.
+2. If not owner: set `removed_at` on the user's membership row.
+3. Return `{ autoTransferredTo }` if a transfer happened (for logging/notification).
+
+### 7.3 Frontend
+
+**`app/settings/_components/team-settings.tsx`** — updated
+
+Currently this component has three sections: single invite, bulk invite, and pending invitations. Add a new section **above** the invite sections:
+
+1. **Team Info & Danger Zone** — shows team name with a rename input (owner only), and a "Delete Team" button (owner only) with confirmation dialog.
+2. **Members List** — table of all active team members with columns: Email, Role, Joined, Actions.
+3. Existing invite sections remain below.
+
+The component now receives additional props: `isOwner: boolean`, `isAdmin: boolean`, `ownerId: string`.
+
+**`app/settings/_components/team-members-table.tsx`** (new)
+
+Props:
+```typescript
+interface TeamMembersTableProps {
+  teamId: string;
+  ownerId: string;
+  currentUserId: string;
+  isOwner: boolean;
+  isAdmin: boolean;
+  refreshKey: number;
+  onMemberChanged: () => void;
+}
+```
+
+Fetches members from `GET /api/teams/[teamId]/members` on mount and when `refreshKey` changes. Renders a table:
+
+| Email | Role | Joined | Actions |
+|-------|------|--------|---------|
+
+- The owner row shows an "Owner" badge next to the role.
+- Actions column (contextual):
+  - **Owner viewing a non-owner member:** "Remove" button + "Change Role" dropdown + "Transfer Ownership" button (with confirmation dialog).
+  - **Admin viewing a sales member:** "Remove" button.
+  - **All members viewing themselves:** "Leave Team" button (red text, with confirmation). If the user is the owner and no other admins exist, the button is disabled with a tooltip explaining they must promote someone first.
+  - **Sales viewing others:** no actions.
+
+Role change uses a `<Select>` inline or a dropdown with "Admin" / "Sales" options. On change, calls `PATCH /api/teams/[teamId]/members/[userId]/role`.
+
+Remove calls `DELETE /api/teams/[teamId]/members/[userId]` with a confirmation dialog ("Remove {email} from the team?").
+
+Transfer ownership calls `POST /api/teams/[teamId]/transfer` with a confirmation dialog ("Transfer ownership to {email}? You will remain as an admin.").
+
+Leave calls `POST /api/teams/[teamId]/leave` with a confirmation dialog. On success:
+- Clear `active_team_id` cookie.
+- Redirect to `/capture` (personal workspace).
+
+**`app/settings/_components/team-danger-zone.tsx`** (new)
+
+Props:
+```typescript
+interface TeamDangerZoneProps {
+  teamId: string;
+  teamName: string;
+  isOwner: boolean;
+  onTeamRenamed: (newName: string) => void;
+  onTeamDeleted: () => void;
+}
+```
+
+Renders:
+- **Rename:** An inline text input pre-filled with the current team name and a "Rename" button. Only visible to the owner. Calls `PATCH /api/teams/[teamId]`.
+- **Delete:** A destructive "Delete Team" button (owner only) with a confirmation dialog that requires typing the team name to confirm. Calls `DELETE /api/teams/[teamId]`. On success: clears `active_team_id` cookie, redirects to `/capture`.
+
+**`app/settings/_components/settings-page-content.tsx`** — updated
+
+Pass `isOwner` and `ownerId` to `TeamSettings`:
+- Resolve `isOwner` by comparing `teamCtx.ownerId` with `user.id`.
+- Add `ownerId` to the `TeamContext` interface (fetched alongside team data).
+
+### 7.4 Files Changed / Created
+
+| Action | File | Details |
+|--------|------|---------|
+| Create | `app/api/teams/[teamId]/route.ts` | GET, PATCH (rename), DELETE (soft-delete) |
+| Create | `app/api/teams/[teamId]/members/route.ts` | GET — list active members with profiles |
+| Create | `app/api/teams/[teamId]/members/[userId]/route.ts` | DELETE — remove member |
+| Create | `app/api/teams/[teamId]/members/[userId]/role/route.ts` | PATCH — change role |
+| Create | `app/api/teams/[teamId]/transfer/route.ts` | POST — transfer ownership |
+| Create | `app/api/teams/[teamId]/leave/route.ts` | POST — leave team |
+| Modify | `lib/services/team-service.ts` | Add `renameTeam`, `deleteTeam`, `removeMember`, `changeMemberRole`, `transferOwnership`, `leaveTeam` |
+| Create | `app/settings/_components/team-members-table.tsx` | Members list with role/remove/transfer/leave actions |
+| Create | `app/settings/_components/team-danger-zone.tsx` | Rename + delete team (owner only) |
+| Modify | `app/settings/_components/team-settings.tsx` | Integrate members table and danger zone, accept new props |
+| Modify | `app/settings/_components/settings-page-content.tsx` | Resolve and pass `isOwner`, `ownerId` to `TeamSettings` |
+
+### 7.5 Implementation Increments
+
+**Increment 7.1: Service layer — team management functions**
+- Add `renameTeam`, `deleteTeam`, `removeMember`, `changeMemberRole`, `transferOwnership`, `leaveTeam` to `team-service.ts`
+- Verify: functions work with service role client where needed
+
+**Increment 7.2: API routes — team operations**
+- Create `app/api/teams/[teamId]/route.ts` (GET, PATCH, DELETE)
+- Create `app/api/teams/[teamId]/members/route.ts` (GET)
+- Create `app/api/teams/[teamId]/members/[userId]/route.ts` (DELETE)
+- Create `app/api/teams/[teamId]/members/[userId]/role/route.ts` (PATCH)
+- Create `app/api/teams/[teamId]/transfer/route.ts` (POST)
+- Create `app/api/teams/[teamId]/leave/route.ts` (POST)
+- All routes validate auth, team membership, and role permissions
+- Verify: correct 403s for unauthorized actions, correct 200/204 for authorized actions
+
+**Increment 7.3: Frontend — members table**
+- Create `team-members-table.tsx` with member list, role badges, action buttons
+- Integrate into `team-settings.tsx`
+- Wire up remove, role change, transfer, and leave actions
+- Update `settings-page-content.tsx` to resolve and pass `isOwner`, `ownerId`
+- Verify: members table shows all team members, actions work correctly per role
+
+**Increment 7.4: Frontend — danger zone (rename + delete)**
+- Create `team-danger-zone.tsx` with rename input and delete button
+- Owner-only visibility enforced in `team-settings.tsx`
+- Delete requires typing team name to confirm
+- On delete: clear cookie, redirect to `/capture`
+- Verify: rename updates team name, delete soft-deletes and redirects
+
+**Verification:**
+- Owner can rename and delete the team
+- Owner can remove any member (admin or sales)
+- Owner can change any member's role
+- Owner can transfer ownership — new owner becomes admin, old owner stays admin
+- Admin can remove sales members but not other admins
+- Sales members see no management actions (except leave)
+- All members can leave the team
+- Owner leaving auto-transfers to the oldest admin
+- Owner blocked from leaving when no other admins exist
+- Removed/left members are switched to personal workspace
+- Data from removed members stays with the team (verified by Part 8)
+- No regressions in invite flow or workspace switching
