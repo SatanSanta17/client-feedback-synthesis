@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { createClient } from "@/lib/supabase/server";
+import { createClient, getActiveTeamId } from "@/lib/supabase/server";
 import {
   synthesiseMasterSignal,
   AIServiceError,
@@ -14,6 +14,7 @@ import {
   getSignalSessionsSince,
   saveMasterSignal,
 } from "@/lib/services/master-signal-service";
+import { getTeamMember } from "@/lib/services/team-service";
 
 /**
  * POST /api/ai/generate-master-signal
@@ -21,15 +22,11 @@ import {
  * Triggers master signal generation. Determines cold start vs. incremental
  * based on whether a previous master signal exists.
  *
- * - Cold start: synthesises from all sessions with structured_notes.
- * - Incremental: merges new/updated sessions into the existing master signal.
- * - If no new sessions since last generation, returns the existing signal unchanged.
- * - Failed generation never overwrites a good previous result.
+ * In team context, only admins can generate the master signal.
  */
 export async function POST() {
   console.log("[api/ai/generate-master-signal] POST — starting generation");
 
-  // Auth check
   const supabase = await createClient();
   const {
     data: { user },
@@ -43,6 +40,18 @@ export async function POST() {
       { message: "Authentication required" },
       { status: 401 }
     );
+  }
+
+  const teamId = await getActiveTeamId();
+  if (teamId) {
+    const member = await getTeamMember(teamId, user.id);
+    if (member?.role !== "admin") {
+      console.warn("[api/ai/generate-master-signal] POST — non-admin in team context");
+      return NextResponse.json(
+        { message: "Only team admins can generate the master signal" },
+        { status: 403 }
+      );
+    }
   }
 
   try {

@@ -1,11 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
-import { createClient } from "@/lib/supabase/server";
+import { createClient, getActiveTeamId } from "@/lib/supabase/server";
 import {
   getPromptHistory,
   savePromptVersion,
   type PromptKey,
 } from "@/lib/services/prompt-service";
+import { getTeamMember } from "@/lib/services/team-service";
 
 const VALID_PROMPT_KEYS: PromptKey[] = [
   "signal_extraction",
@@ -101,6 +102,18 @@ export async function POST(request: NextRequest) {
       { message: "Authentication required" },
       { status: 401 }
     );
+  }
+
+  const teamId = await getActiveTeamId();
+  if (teamId) {
+    const member = await getTeamMember(teamId, user.id);
+    if (member?.role !== "admin") {
+      console.warn("[api/prompts] POST — non-admin in team context");
+      return NextResponse.json(
+        { message: "Only team admins can edit prompts" },
+        { status: 403 }
+      );
+    }
   }
 
   // Parse and validate request body
