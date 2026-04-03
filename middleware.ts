@@ -35,9 +35,10 @@ export async function middleware(request: NextRequest) {
 
   const { pathname } = request.nextUrl;
 
-  // Allow unauthenticated access to login and auth callback
   const isPublicRoute =
-    pathname === "/login" || pathname.startsWith("/auth/callback");
+    pathname === "/login" ||
+    pathname.startsWith("/auth/callback") ||
+    pathname.startsWith("/invite");
 
   if (!user && !isPublicRoute) {
     const loginUrl = request.nextUrl.clone();
