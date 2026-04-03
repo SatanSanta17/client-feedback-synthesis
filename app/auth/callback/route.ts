@@ -1,5 +1,9 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
+import {
+  getInvitationByToken,
+  acceptInvitation,
+} from "@/lib/services/invitation-service";
 
 export async function GET(request: Request) {
   const { searchParams, origin } = new URL(request.url);
@@ -19,5 +23,68 @@ export async function GET(request: Request) {
     return NextResponse.redirect(`${origin}/login?error=exchange_failed`);
   }
 
-  return NextResponse.redirect(`${origin}/capture`);
+  const pendingToken = getCookie(request, "pending_invite_token");
+  const response = NextResponse.redirect(`${origin}/capture`);
+
+  // Always clear the invite cookie regardless of outcome
+  if (pendingToken) {
+    response.cookies.set("pending_invite_token", "", {
+      path: "/",
+      maxAge: 0,
+    });
+  }
+
+  if (!pendingToken) {
+    return response;
+  }
+
+  try {
+    const result = await getInvitationByToken(pendingToken);
+
+    if (!result || result.status !== "valid") {
+      console.log("Auth callback: invite token invalid or expired, skipping acceptance");
+      return response;
+    }
+
+    const { invitation } = result;
+
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
+
+    if (!user) {
+      console.error("Auth callback: no user after session exchange");
+      return response;
+    }
+
+    await acceptInvitation(
+      invitation.id,
+      user.id,
+      invitation.team_id,
+      invitation.role
+    );
+
+    response.cookies.set("active_team_id", invitation.team_id, {
+      path: "/",
+      maxAge: 60 * 60 * 24 * 365,
+      sameSite: "lax",
+    });
+
+    console.log(
+      `Auth callback: user ${user.id} joined team ${invitation.team_id} via invite`
+    );
+  } catch (err) {
+    console.error(
+      "Auth callback: invite acceptance failed",
+      err instanceof Error ? err.message : err
+    );
+  }
+
+  return response;
+}
+
+function getCookie(request: Request, name: string): string | undefined {
+  const header = request.headers.get("cookie") ?? "";
+  const match = header.match(new RegExp(`(?:^|;\\s*)${name}=([^;]*)`));
+  return match ? decodeURIComponent(match[1]) : undefined;
 }
