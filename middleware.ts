@@ -53,6 +53,28 @@ export async function middleware(request: NextRequest) {
     return NextResponse.redirect(captureUrl);
   }
 
+  // Validate active_team_id cookie — clear if user was removed from the team
+  if (user) {
+    const activeTeamId = request.cookies.get("active_team_id")?.value;
+
+    if (activeTeamId) {
+      const { data: membership } = await supabase
+        .from("team_members")
+        .select("id")
+        .eq("team_id", activeTeamId)
+        .eq("user_id", user.id)
+        .is("removed_at", null)
+        .maybeSingle();
+
+      if (!membership) {
+        supabaseResponse.cookies.set("active_team_id", "", {
+          path: "/",
+          maxAge: 0,
+        });
+      }
+    }
+  }
+
   return supabaseResponse;
 }
 

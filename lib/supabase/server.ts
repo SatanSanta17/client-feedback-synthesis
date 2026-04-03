@@ -3,6 +3,15 @@ import { createClient as createSupabaseClient } from "@supabase/supabase-js";
 import { cookies } from "next/headers";
 
 /**
+ * Reads the active workspace from the `active_team_id` cookie.
+ * Returns null for personal workspace (no cookie or empty value).
+ */
+export async function getActiveTeamId(): Promise<string | null> {
+  const cookieStore = await cookies();
+  return cookieStore.get("active_team_id")?.value || null;
+}
+
+/**
  * Creates a Supabase client that uses the anon key + user cookies.
  * Respects RLS — use for all user-facing reads and writes.
  */
