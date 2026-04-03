@@ -12,6 +12,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { Info } from "lucide-react";
 import { PromptEditor } from "./prompt-editor";
 import { VersionHistoryPanel } from "./version-history-panel";
 import { VersionViewDialog } from "./version-view-dialog";
@@ -38,9 +39,10 @@ const DEFAULT_PROMPTS: Record<PromptKey, string> = {
 
 interface PromptEditorPageContentProps {
   embedded?: boolean;
+  readOnly?: boolean;
 }
 
-export function PromptEditorPageContent({ embedded = false }: PromptEditorPageContentProps) {
+export function PromptEditorPageContent({ embedded = false, readOnly = false }: PromptEditorPageContentProps) {
   const [activeTab, setActiveTab] = useState<PromptKey>("signal_extraction");
   const [originalContent, setOriginalContent] = useState("");
   const [currentContent, setCurrentContent] = useState("");
@@ -379,10 +381,18 @@ export function PromptEditorPageContent({ embedded = false }: PromptEditorPageCo
               </div>
             )}
 
+            {readOnly && (
+              <div className="mb-3 flex items-center gap-2 rounded-lg border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-800">
+                <Info className="size-4 shrink-0" />
+                <span>Only team admins can edit prompts. You can view them here.</span>
+              </div>
+            )}
+
             <PromptEditor
               content={currentContent}
               onChange={setCurrentContent}
               isLoading={isLoading}
+              readOnly={readOnly}
               className="flex-1"
             />
 
@@ -391,23 +401,25 @@ export function PromptEditorPageContent({ embedded = false }: PromptEditorPageCo
                 {currentContent.length.toLocaleString()} characters
               </span>
 
-              <div className="flex items-center gap-2">
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={handleReset}
-                  disabled={isSaving || isLoading}
-                >
-                  Reset to Default
-                </Button>
-                <Button
-                  size="sm"
-                  onClick={handleSave}
-                  disabled={!isDirty || isSaving || isLoading}
-                >
-                  {isSaving ? "Saving..." : "Save"}
-                </Button>
-              </div>
+              {!readOnly && (
+                <div className="flex items-center gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={handleReset}
+                    disabled={isSaving || isLoading}
+                  >
+                    Reset to Default
+                  </Button>
+                  <Button
+                    size="sm"
+                    onClick={handleSave}
+                    disabled={!isDirty || isSaving || isLoading}
+                  >
+                    {isSaving ? "Saving..." : "Save"}
+                  </Button>
+                </div>
+              )}
             </div>
 
             <VersionHistoryPanel
@@ -418,7 +430,7 @@ export function PromptEditorPageContent({ embedded = false }: PromptEditorPageCo
                 setViewingVersion(version);
                 setViewingVersionNumber(versionNumber);
               }}
-              onRevert={handleRevert}
+              onRevert={readOnly ? undefined : handleRevert}
               isReverting={isReverting}
               className="mt-4"
             />
@@ -457,7 +469,7 @@ export function PromptEditorPageContent({ embedded = false }: PromptEditorPageCo
         version={viewingVersion}
         versionNumber={viewingVersionNumber}
         onClose={() => setViewingVersion(null)}
-        onRevert={async (version) => {
+        onRevert={readOnly ? undefined : async (version) => {
           await handleRevert(version);
           setViewingVersion(null);
         }}

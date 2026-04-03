@@ -18,7 +18,7 @@ interface VersionViewDialogProps {
   version: PromptVersion | null;
   versionNumber: number;
   onClose: () => void;
-  onRevert: (version: PromptVersion) => void;
+  onRevert?: (version: PromptVersion) => void;
   isReverting: boolean;
 }
 
@@ -71,7 +71,7 @@ export function VersionViewDialog({
           <Button variant="outline" onClick={onClose}>
             Close
           </Button>
-          {!version.is_active && (
+          {!version.is_active && onRevert && (
             <Button
               variant="outline"
               onClick={() => onRevert(version)}

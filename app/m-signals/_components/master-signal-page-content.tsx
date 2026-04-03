@@ -3,7 +3,7 @@
 import { useState, useEffect, useCallback } from "react"
 import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
-import { Loader2, Sparkles, RefreshCw, AlertTriangle, FileText, Download } from "lucide-react"
+import { Loader2, Sparkles, RefreshCw, AlertTriangle, FileText, Download, Info } from "lucide-react"
 import { toast } from "sonner"
 
 import { Button } from "@/components/ui/button"
@@ -17,6 +17,12 @@ interface MasterSignal {
 
 type PageState = "loading" | "empty-no-sessions" | "empty-ready" | "has-signal"
 
+function getActiveTeamId(): string | null {
+  if (typeof document === "undefined") return null
+  const match = document.cookie.match(/(?:^|;\s*)active_team_id=([^;]*)/)
+  return match ? decodeURIComponent(match[1]) : null
+}
+
 export function MasterSignalPageContent() {
   const [pageState, setPageState] = useState<PageState>("loading")
   const [masterSignal, setMasterSignal] = useState<MasterSignal | null>(null)
@@ -24,6 +30,27 @@ export function MasterSignalPageContent() {
   const [isTainted, setIsTainted] = useState(false)
   const [isGenerating, setIsGenerating] = useState(false)
   const [isDownloading, setIsDownloading] = useState(false)
+  const [isTeamAdmin, setIsTeamAdmin] = useState(true)
+
+  const activeTeamId = getActiveTeamId()
+  const isTeamContext = !!activeTeamId
+  const canGenerate = !isTeamContext || isTeamAdmin
+
+  useEffect(() => {
+    if (!activeTeamId) {
+      setIsTeamAdmin(true)
+      return
+    }
+    fetch("/api/teams")
+      .then((res) => (res.ok ? res.json() : { teams: [] }))
+      .then((data) => {
+        const team = (data.teams ?? []).find(
+          (t: { id: string }) => t.id === activeTeamId
+        )
+        setIsTeamAdmin(team?.role === "admin")
+      })
+      .catch(() => setIsTeamAdmin(false))
+  }, [activeTeamId])
 
   // --- Fetch current master signal on mount ---
   const fetchMasterSignal = useCallback(async () => {
@@ -154,31 +181,33 @@ export function MasterSignalPageContent() {
             </Button>
           )}
 
-          {/* Generate / Regenerate */}
-          <Button
-            size="sm"
-            onClick={handleGenerate}
-            disabled={
-              isGenerating || pageState === "loading" || pageState === "empty-no-sessions"
-            }
-          >
-            {isGenerating ? (
-              <>
-                <Loader2 className="mr-1.5 size-4 animate-spin" />
-                Generating...
-              </>
-            ) : masterSignal ? (
-              <>
-                <RefreshCw className="mr-1.5 size-4" />
-                Re-generate
-              </>
-            ) : (
-              <>
-                <Sparkles className="mr-1.5 size-4" />
-                Generate Master Signal
-              </>
-            )}
-          </Button>
+          {/* Generate / Regenerate — only for admins in team context */}
+          {canGenerate && (
+            <Button
+              size="sm"
+              onClick={handleGenerate}
+              disabled={
+                isGenerating || pageState === "loading" || pageState === "empty-no-sessions"
+              }
+            >
+              {isGenerating ? (
+                <>
+                  <Loader2 className="mr-1.5 size-4 animate-spin" />
+                  Generating...
+                </>
+              ) : masterSignal ? (
+                <>
+                  <RefreshCw className="mr-1.5 size-4" />
+                  Re-generate
+                </>
+              ) : (
+                <>
+                  <Sparkles className="mr-1.5 size-4" />
+                  Generate Master Signal
+                </>
+              )}
+            </Button>
+          )}
         </div>
       </div>
 
@@ -208,6 +237,14 @@ export function MasterSignalPageContent() {
             new/updated session{staleCount === 1 ? "" : "s"} since last
             generation.
           </span>
+        </div>
+      )}
+
+      {/* Read-only info for non-admin team members */}
+      {!canGenerate && (
+        <div className="flex items-center gap-2 rounded-lg border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-800">
+          <Info className="size-4 shrink-0" />
+          <span>Only team admins can generate or regenerate the master signal.</span>
         </div>
       )}
 

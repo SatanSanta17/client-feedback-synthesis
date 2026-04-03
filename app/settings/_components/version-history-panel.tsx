@@ -12,7 +12,7 @@ interface VersionHistoryPanelProps {
   isOpen: boolean;
   onToggle: () => void;
   onViewVersion: (version: PromptVersion, versionNumber: number) => void;
-  onRevert: (version: PromptVersion) => void;
+  onRevert?: (version: PromptVersion) => void;
   isReverting: boolean;
   className?: string;
 }
@@ -114,7 +114,7 @@ export function VersionHistoryPanel({
                           <Eye className="mr-1 h-3 w-3" />
                           View
                         </Button>
-                        {!version.is_active && (
+                        {!version.is_active && onRevert && (
                           <Button
                             variant="outline"
                             size="sm"

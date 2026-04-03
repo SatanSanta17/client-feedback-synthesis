@@ -6,6 +6,7 @@ interface PromptEditorProps {
   content: string;
   onChange: (value: string) => void;
   isLoading: boolean;
+  readOnly?: boolean;
   className?: string;
 }
 
@@ -13,6 +14,7 @@ export function PromptEditor({
   content,
   onChange,
   isLoading,
+  readOnly,
   className,
 }: PromptEditorProps) {
   if (isLoading) {
@@ -30,8 +32,10 @@ export function PromptEditor({
     <textarea
       value={content}
       onChange={(e) => onChange(e.target.value)}
+      readOnly={readOnly}
       className={cn(
         "min-h-0 w-full flex-1 resize-none rounded-md border border-[var(--border-default)] bg-[var(--surface-page)] p-4 font-mono text-sm leading-relaxed text-[var(--text-primary)] placeholder:text-[var(--text-muted)] focus:border-[var(--brand-primary)] focus:outline-none focus:ring-1 focus:ring-[var(--brand-primary)]",
+        readOnly && "cursor-default bg-[var(--surface-raised)] opacity-75",
         className
       )}
       spellCheck={false}

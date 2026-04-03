@@ -79,7 +79,8 @@ export function SettingsPageContent() {
     }
   }, [isAuthenticated, resolveTeamContext]);
 
-  const showTeamTab = teamCtx?.isAdmin === true;
+  const isTeamContext = teamCtx !== null;
+  const isAdmin = teamCtx?.isAdmin === true;
 
   if (isCheckingTeam) {
     return (
@@ -96,8 +97,12 @@ export function SettingsPageContent() {
     );
   }
 
-  if (!showTeamTab) {
+  if (!isTeamContext) {
     return <PromptEditorPageContent />;
+  }
+
+  if (!isAdmin) {
+    return <PromptEditorPageContent readOnly />;
   }
 
   return (
