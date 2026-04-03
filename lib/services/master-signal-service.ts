@@ -1,4 +1,4 @@
-import { createClient, createServiceRoleClient } from "@/lib/supabase/server";
+import { createClient, createServiceRoleClient, getActiveTeamId } from "@/lib/supabase/server";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -28,19 +28,28 @@ export interface SignalSession {
 
 /**
  * Fetch the latest master signal (most recent by generated_at).
+ * Scopes by active workspace: personal (team_id IS NULL) or team.
  * Returns null if no master signal has been generated yet.
  */
 export async function getLatestMasterSignal(): Promise<MasterSignal | null> {
-  console.log("[master-signal-service] getLatestMasterSignal");
+  const teamId = await getActiveTeamId();
+  console.log("[master-signal-service] getLatestMasterSignal — teamId:", teamId);
 
   const supabase = await createClient();
 
-  const { data, error } = await supabase
+  let query = supabase
     .from("master_signals")
     .select("id, content, generated_at, sessions_included, created_by, created_at, is_tainted")
     .order("generated_at", { ascending: false })
-    .limit(1)
-    .maybeSingle();
+    .limit(1);
+
+  if (teamId) {
+    query = query.eq("team_id", teamId);
+  } else {
+    query = query.is("team_id", null);
+  }
+
+  const { data, error } = await query.maybeSingle();
 
   if (error) {
     console.error("[master-signal-service] getLatestMasterSignal error:", error);
@@ -67,7 +76,7 @@ export async function getLatestMasterSignal(): Promise<MasterSignal | null> {
 
 /**
  * Count sessions that have structured_notes and were updated after the given
- * timestamp. Used to determine staleness of the current master signal.
+ * timestamp. Scopes by active workspace.
  *
  * If `since` is null, counts ALL sessions with structured_notes (useful when
  * no master signal exists yet).
@@ -75,7 +84,8 @@ export async function getLatestMasterSignal(): Promise<MasterSignal | null> {
 export async function getStaleSessionCount(
   since: string | null
 ): Promise<number> {
-  console.log("[master-signal-service] getStaleSessionCount — since:", since);
+  const teamId = await getActiveTeamId();
+  console.log("[master-signal-service] getStaleSessionCount — since:", since, "teamId:", teamId);
 
   const supabase = await createClient();
 
@@ -84,6 +94,12 @@ export async function getStaleSessionCount(
     .select("id", { count: "exact", head: true })
     .not("structured_notes", "is", null)
     .is("deleted_at", null);
+
+  if (teamId) {
+    query = query.eq("team_id", teamId);
+  } else {
+    query = query.is("team_id", null);
+  }
 
   if (since) {
     query = query.gt("updated_at", since);
@@ -103,19 +119,28 @@ export async function getStaleSessionCount(
 
 /**
  * Fetch all non-deleted sessions with structured_notes, joined with client
- * names. Used for cold-start generation (no previous master signal).
+ * names. Scopes by active workspace. Used for cold-start generation.
  */
 export async function getAllSignalSessions(): Promise<SignalSession[]> {
-  console.log("[master-signal-service] getAllSignalSessions");
+  const teamId = await getActiveTeamId();
+  console.log("[master-signal-service] getAllSignalSessions — teamId:", teamId);
 
   const supabase = await createClient();
 
-  const { data, error } = await supabase
+  let query = supabase
     .from("sessions")
     .select("id, session_date, structured_notes, updated_at, clients(name)")
     .not("structured_notes", "is", null)
     .is("deleted_at", null)
     .order("session_date", { ascending: true });
+
+  if (teamId) {
+    query = query.eq("team_id", teamId);
+  } else {
+    query = query.is("team_id", null);
+  }
+
+  const { data, error } = await query;
 
   if (error) {
     console.error("[master-signal-service] getAllSignalSessions error:", error);
@@ -134,22 +159,31 @@ export async function getAllSignalSessions(): Promise<SignalSession[]> {
 
 /**
  * Fetch sessions with structured_notes that were updated after the given
- * timestamp. Used for incremental generation.
+ * timestamp. Scopes by active workspace. Used for incremental generation.
  */
 export async function getSignalSessionsSince(
   since: string
 ): Promise<SignalSession[]> {
-  console.log("[master-signal-service] getSignalSessionsSince — since:", since);
+  const teamId = await getActiveTeamId();
+  console.log("[master-signal-service] getSignalSessionsSince — since:", since, "teamId:", teamId);
 
   const supabase = await createClient();
 
-  const { data, error } = await supabase
+  let query = supabase
     .from("sessions")
     .select("id, session_date, structured_notes, updated_at, clients(name)")
     .not("structured_notes", "is", null)
     .is("deleted_at", null)
     .gt("updated_at", since)
     .order("session_date", { ascending: true });
+
+  if (teamId) {
+    query = query.eq("team_id", teamId);
+  } else {
+    query = query.is("team_id", null);
+  }
+
+  const { data, error } = await query;
 
   if (error) {
     console.error(
@@ -171,15 +205,18 @@ export async function getSignalSessionsSince(
 
 /**
  * Persist a new master signal generation. Inserts a new immutable row.
+ * Scopes by active workspace — includes team_id when in team context.
  */
 export async function saveMasterSignal(
   content: string,
   sessionsIncluded: number
 ): Promise<MasterSignal> {
+  const teamId = await getActiveTeamId();
   console.log(
     "[master-signal-service] saveMasterSignal —",
     sessionsIncluded,
-    "sessions included"
+    "sessions included, teamId:",
+    teamId
   );
 
   const supabase = await createClient();
@@ -190,6 +227,7 @@ export async function saveMasterSignal(
       content,
       sessions_included: sessionsIncluded,
       generated_at: new Date().toISOString(),
+      team_id: teamId,
     })
     .select("id, content, generated_at, sessions_included, created_by, created_at, is_tainted")
     .single();

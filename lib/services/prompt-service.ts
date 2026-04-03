@@ -1,4 +1,4 @@
-import { createClient } from "@/lib/supabase/server";
+import { createClient, getActiveTeamId } from "@/lib/supabase/server";
 
 // Valid prompt keys
 export type PromptKey =
@@ -18,20 +18,29 @@ export interface PromptVersion {
 
 /**
  * Fetches the currently active prompt for a given key.
- * Uses the user-scoped client — RLS returns only the current user's prompts.
- * Returns null if no active prompt is found (falls back to hardcoded default).
+ * Scopes by active workspace: team prompts in team context,
+ * personal prompts otherwise. Returns null if none found
+ * (falls back to hardcoded default upstream).
  */
 export async function getActivePrompt(
   promptKey: PromptKey
 ): Promise<string | null> {
+  const teamId = await getActiveTeamId();
   const supabase = await createClient();
 
-  const { data, error } = await supabase
+  let query = supabase
     .from("prompt_versions")
     .select("content")
     .eq("prompt_key", promptKey)
-    .eq("is_active", true)
-    .single();
+    .eq("is_active", true);
+
+  if (teamId) {
+    query = query.eq("team_id", teamId);
+  } else {
+    query = query.is("team_id", null);
+  }
+
+  const { data, error } = await query.maybeSingle();
 
   if (error) {
     console.error(
@@ -46,18 +55,27 @@ export async function getActivePrompt(
 
 /**
  * Fetches the version history for a given prompt key, newest first.
- * Uses the user-scoped client — RLS returns only the current user's versions.
+ * Scopes by active workspace.
  */
 export async function getPromptHistory(
   promptKey: PromptKey
 ): Promise<PromptVersion[]> {
+  const teamId = await getActiveTeamId();
   const supabase = await createClient();
 
-  const { data, error } = await supabase
+  let query = supabase
     .from("prompt_versions")
     .select("*")
     .eq("prompt_key", promptKey)
     .order("created_at", { ascending: false });
+
+  if (teamId) {
+    query = query.eq("team_id", teamId);
+  } else {
+    query = query.is("team_id", null);
+  }
+
+  const { data, error } = await query;
 
   if (error) {
     console.error(
@@ -72,8 +90,8 @@ export async function getPromptHistory(
 
 /**
  * Saves a new prompt version and makes it active.
- * Atomically deactivates the previous active version.
- * Uses the user-scoped client — RLS ensures the user only touches their own rows.
+ * Atomically deactivates the previous active version within the same scope
+ * (personal or team). Includes team_id in the insert when in team context.
  */
 export async function savePromptVersion(input: {
   promptKey: PromptKey;
@@ -82,14 +100,25 @@ export async function savePromptVersion(input: {
   authorEmail: string;
 }): Promise<PromptVersion> {
   const { promptKey, content, authorId, authorEmail } = input;
+  const teamId = await getActiveTeamId();
   const supabase = await createClient();
 
-  // Step 1: Deactivate the current active version
-  const { error: deactivateError } = await supabase
+  console.log(`[prompt-service] savePromptVersion — key: ${promptKey}, teamId: ${teamId}`);
+
+  // Step 1: Deactivate the current active version (scoped to workspace)
+  let deactivateQuery = supabase
     .from("prompt_versions")
     .update({ is_active: false })
     .eq("prompt_key", promptKey)
     .eq("is_active", true);
+
+  if (teamId) {
+    deactivateQuery = deactivateQuery.eq("team_id", teamId);
+  } else {
+    deactivateQuery = deactivateQuery.is("team_id", null);
+  }
+
+  const { error: deactivateError } = await deactivateQuery;
 
   if (deactivateError) {
     console.error(
@@ -110,6 +139,7 @@ export async function savePromptVersion(input: {
       author_id: authorId,
       author_email: authorEmail,
       is_active: true,
+      team_id: teamId,
     })
     .select()
     .single();
@@ -125,7 +155,7 @@ export async function savePromptVersion(input: {
   }
 
   console.log(
-    `[prompt-service] Saved new active prompt for ${promptKey}: ${data.id}`
+    `[prompt-service] Saved new active prompt for ${promptKey}: ${data.id}, teamId: ${teamId}`
   );
 
   return data;
