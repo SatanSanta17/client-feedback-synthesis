@@ -1,4 +1,4 @@
-import { createClient } from "@/lib/supabase/server";
+import { createClient, createServiceRoleClient } from "@/lib/supabase/server";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -150,4 +150,193 @@ export async function getActiveTeamMembers(
   }
 
   return data ?? [];
+}
+
+// ---------------------------------------------------------------------------
+// Team Management
+// ---------------------------------------------------------------------------
+
+export async function renameTeam(
+  teamId: string,
+  name: string
+): Promise<Team> {
+  console.log(`[team-service] renameTeam — teamId: ${teamId}, name: ${name}`);
+
+  const supabase = await createClient();
+
+  const { data, error } = await supabase
+    .from("teams")
+    .update({ name: name.trim() })
+    .eq("id", teamId)
+    .is("deleted_at", null)
+    .select()
+    .single();
+
+  if (error) {
+    console.error("[team-service] renameTeam error:", error.message);
+    throw new Error("Failed to rename team");
+  }
+
+  console.log(`[team-service] renameTeam — success: ${data.id}`);
+  return data;
+}
+
+export async function deleteTeam(teamId: string): Promise<void> {
+  console.log(`[team-service] deleteTeam — teamId: ${teamId}`);
+
+  const supabase = createServiceRoleClient();
+
+  const { error } = await supabase
+    .from("teams")
+    .update({ deleted_at: new Date().toISOString() })
+    .eq("id", teamId)
+    .is("deleted_at", null);
+
+  if (error) {
+    console.error("[team-service] deleteTeam error:", error.message);
+    throw new Error("Failed to delete team");
+  }
+
+  console.log(`[team-service] deleteTeam — success: ${teamId}`);
+}
+
+export async function removeMember(
+  teamId: string,
+  userId: string
+): Promise<void> {
+  console.log(`[team-service] removeMember — teamId: ${teamId}, userId: ${userId}`);
+
+  const supabase = createServiceRoleClient();
+
+  const { data, error } = await supabase
+    .from("team_members")
+    .update({ removed_at: new Date().toISOString() })
+    .eq("team_id", teamId)
+    .eq("user_id", userId)
+    .is("removed_at", null)
+    .select("id")
+    .single();
+
+  if (error) {
+    console.error("[team-service] removeMember error:", error.message);
+    throw new Error("Failed to remove member");
+  }
+
+  console.log(`[team-service] removeMember — removed membership: ${data.id}`);
+}
+
+export async function changeMemberRole(
+  teamId: string,
+  userId: string,
+  role: "admin" | "sales"
+): Promise<void> {
+  console.log(`[team-service] changeMemberRole — teamId: ${teamId}, userId: ${userId}, role: ${role}`);
+
+  const supabase = await createClient();
+
+  const { error } = await supabase
+    .from("team_members")
+    .update({ role })
+    .eq("team_id", teamId)
+    .eq("user_id", userId)
+    .is("removed_at", null);
+
+  if (error) {
+    console.error("[team-service] changeMemberRole error:", error.message);
+    throw new Error("Failed to change member role");
+  }
+
+  console.log(`[team-service] changeMemberRole — success`);
+}
+
+export async function transferOwnership(
+  teamId: string,
+  newOwnerId: string
+): Promise<void> {
+  console.log(`[team-service] transferOwnership — teamId: ${teamId}, newOwnerId: ${newOwnerId}`);
+
+  const supabase = createServiceRoleClient();
+
+  // Promote the new owner to admin if they are currently sales
+  const { data: member } = await supabase
+    .from("team_members")
+    .select("role")
+    .eq("team_id", teamId)
+    .eq("user_id", newOwnerId)
+    .is("removed_at", null)
+    .single();
+
+  if (member?.role === "sales") {
+    const { error: promoteError } = await supabase
+      .from("team_members")
+      .update({ role: "admin" })
+      .eq("team_id", teamId)
+      .eq("user_id", newOwnerId)
+      .is("removed_at", null);
+
+    if (promoteError) {
+      console.error("[team-service] transferOwnership — promote error:", promoteError.message);
+      throw new Error("Failed to promote new owner to admin");
+    }
+  }
+
+  const { error } = await supabase
+    .from("teams")
+    .update({ owner_id: newOwnerId })
+    .eq("id", teamId)
+    .is("deleted_at", null);
+
+  if (error) {
+    console.error("[team-service] transferOwnership error:", error.message);
+    throw new Error("Failed to transfer ownership");
+  }
+
+  console.log(`[team-service] transferOwnership — success: new owner ${newOwnerId}`);
+}
+
+export class LeaveBlockedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "LeaveBlockedError";
+  }
+}
+
+export async function leaveTeam(
+  teamId: string,
+  userId: string,
+  isOwner: boolean
+): Promise<{ autoTransferredTo?: string }> {
+  console.log(`[team-service] leaveTeam — teamId: ${teamId}, userId: ${userId}, isOwner: ${isOwner}`);
+
+  let autoTransferredTo: string | undefined;
+
+  if (isOwner) {
+    const supabase = createServiceRoleClient();
+
+    const { data: admins } = await supabase
+      .from("team_members")
+      .select("user_id, joined_at")
+      .eq("team_id", teamId)
+      .eq("role", "admin")
+      .is("removed_at", null)
+      .neq("user_id", userId)
+      .order("joined_at", { ascending: true });
+
+    if (!admins || admins.length === 0) {
+      throw new LeaveBlockedError(
+        "You must promote another member to admin before leaving, or delete the team."
+      );
+    }
+
+    const newOwner = admins[0];
+    await transferOwnership(teamId, newOwner.user_id);
+    autoTransferredTo = newOwner.user_id;
+
+    console.log(`[team-service] leaveTeam — auto-transferred ownership to ${newOwner.user_id}`);
+  }
+
+  await removeMember(teamId, userId);
+
+  console.log(`[team-service] leaveTeam — user ${userId} left team ${teamId}`);
+  return { autoTransferredTo };
 }
