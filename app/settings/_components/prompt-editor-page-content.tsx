@@ -36,7 +36,11 @@ const DEFAULT_PROMPTS: Record<PromptKey, string> = {
 // Component
 // ---------------------------------------------------------------------------
 
-export function PromptEditorPageContent() {
+interface PromptEditorPageContentProps {
+  embedded?: boolean;
+}
+
+export function PromptEditorPageContent({ embedded = false }: PromptEditorPageContentProps) {
   const [activeTab, setActiveTab] = useState<PromptKey>("signal_extraction");
   const [originalContent, setOriginalContent] = useState("");
   const [currentContent, setCurrentContent] = useState("");
@@ -316,18 +320,8 @@ export function PromptEditorPageContent() {
   // Render
   // -------------------------------------------------------------------------
 
-  return (
-    <div className="flex flex-1 flex-col p-6">
-      <div className="mb-6">
-        <h1 className="text-lg font-semibold text-[var(--text-primary)]">
-          Settings
-        </h1>
-        <p className="mt-1 text-sm text-[var(--text-secondary)]">
-          Edit the AI system prompts used for signal extraction and master signal
-          synthesis.
-        </p>
-      </div>
-
+  const content = (
+    <>
       <Tabs
         value={activeTab}
         onValueChange={handleTabChange}
@@ -469,6 +463,23 @@ export function PromptEditorPageContent() {
         }}
         isReverting={isReverting}
       />
+    </>
+  );
+
+  if (embedded) return content;
+
+  return (
+    <div className="flex flex-1 flex-col p-6">
+      <div className="mb-6">
+        <h1 className="text-lg font-semibold text-[var(--text-primary)]">
+          Settings
+        </h1>
+        <p className="mt-1 text-sm text-[var(--text-secondary)]">
+          Edit the AI system prompts used for signal extraction and master signal
+          synthesis.
+        </p>
+      </div>
+      {content}
     </div>
   );
 }

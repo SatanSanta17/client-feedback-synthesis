@@ -1,9 +1,9 @@
-import { PromptEditorPageContent } from "./_components/prompt-editor-page-content";
+import { SettingsPageContent } from "./_components/settings-page-content";
 
 export const metadata = {
   title: "Settings — Synthesiser",
 };
 
 export default function SettingsPage() {
-  return <PromptEditorPageContent />;
+  return <SettingsPageContent />;
 }
