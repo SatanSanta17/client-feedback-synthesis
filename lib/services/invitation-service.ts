@@ -20,6 +20,12 @@ export interface TeamInvitation {
   created_at: string;
 }
 
+export interface InvitationWithTeam extends TeamInvitation {
+  team_name: string;
+}
+
+export type InvitationStatus = "valid" | "expired" | "already_accepted" | "invalid";
+
 export interface InviteResult {
   sent: string[];
   skipped: Array<{ email: string; reason: string }>;
@@ -228,4 +234,95 @@ export async function resendInvitation(
   });
 
   console.log(`[invitation-service] resendInvitation — resent ${invitationId} to ${data.email}`);
+}
+
+// ---------------------------------------------------------------------------
+// Token-based lookup & acceptance (service role — bypasses RLS)
+// ---------------------------------------------------------------------------
+
+export async function getInvitationByToken(
+  token: string
+): Promise<{ invitation: InvitationWithTeam; status: InvitationStatus } | null> {
+  const supabase = createServiceRoleClient();
+
+  const { data, error } = await supabase
+    .from("team_invitations")
+    .select("*, teams:team_id ( name )")
+    .eq("token", token)
+    .single();
+
+  if (error || !data) {
+    console.error("[invitation-service] getInvitationByToken — not found:", error?.message);
+    return null;
+  }
+
+  const teamName =
+    (data.teams as unknown as { name: string } | null)?.name ?? "Unknown Team";
+
+  const invitation: InvitationWithTeam = {
+    id: data.id,
+    team_id: data.team_id,
+    email: data.email,
+    role: data.role,
+    invited_by: data.invited_by,
+    token: data.token,
+    expires_at: data.expires_at,
+    accepted_at: data.accepted_at,
+    created_at: data.created_at,
+    team_name: teamName,
+  };
+
+  if (invitation.accepted_at) {
+    return { invitation, status: "already_accepted" };
+  }
+
+  if (new Date(invitation.expires_at) < new Date()) {
+    return { invitation, status: "expired" };
+  }
+
+  return { invitation, status: "valid" };
+}
+
+export async function acceptInvitation(
+  invitationId: string,
+  userId: string,
+  teamId: string,
+  role: string
+): Promise<void> {
+  const supabase = createServiceRoleClient();
+
+  const { data: existing } = await supabase
+    .from("team_members")
+    .select("id")
+    .eq("team_id", teamId)
+    .eq("user_id", userId)
+    .is("removed_at", null)
+    .maybeSingle();
+
+  if (!existing) {
+    const { error: memberError } = await supabase
+      .from("team_members")
+      .insert({ team_id: teamId, user_id: userId, role });
+
+    if (memberError) {
+      console.error("[invitation-service] acceptInvitation — member insert error:", memberError.message);
+      throw new Error("Failed to add user to team");
+    }
+
+    console.log(`[invitation-service] acceptInvitation — added user ${userId} to team ${teamId} as ${role}`);
+  } else {
+    console.log(`[invitation-service] acceptInvitation — user ${userId} already a member of team ${teamId}, skipping insert`);
+  }
+
+  const { error: updateError } = await supabase
+    .from("team_invitations")
+    .update({ accepted_at: new Date().toISOString() })
+    .eq("id", invitationId);
+
+  if (updateError) {
+    console.error("[invitation-service] acceptInvitation — failed to mark accepted:", updateError.message);
+    throw new Error("Failed to mark invitation as accepted");
+  }
+
+  console.log(`[invitation-service] acceptInvitation — invitation ${invitationId} marked as accepted`);
 }
