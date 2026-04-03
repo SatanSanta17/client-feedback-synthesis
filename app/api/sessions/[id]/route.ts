@@ -1,11 +1,60 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
+import { createClient, getActiveTeamId } from "@/lib/supabase/server";
+import { getTeamMember } from "@/lib/services/team-service";
 import {
   updateSession,
   deleteSession,
   SessionNotFoundError,
   ClientDuplicateError,
 } from "@/lib/services/session-service";
+
+// ---------------------------------------------------------------------------
+// Team permission helper
+// ---------------------------------------------------------------------------
+
+async function checkTeamSessionPermission(
+  sessionId: string
+): Promise<NextResponse | null> {
+  const teamId = await getActiveTeamId();
+  if (!teamId) return null;
+
+  const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  if (!user) {
+    return NextResponse.json(
+      { message: "Authentication required" },
+      { status: 401 }
+    );
+  }
+
+  const { data: session } = await supabase
+    .from("sessions")
+    .select("created_by")
+    .eq("id", sessionId)
+    .is("deleted_at", null)
+    .single();
+
+  if (!session) {
+    return NextResponse.json(
+      { message: "Session not found" },
+      { status: 404 }
+    );
+  }
+
+  if (session.created_by === user.id) return null;
+
+  const member = await getTeamMember(teamId, user.id);
+  if (member?.role === "admin") return null;
+
+  return NextResponse.json(
+    { message: "You can only edit or delete your own sessions" },
+    { status: 403 }
+  );
+}
 
 // --- PUT /api/sessions/[id] ---
 
@@ -44,6 +93,9 @@ export async function PUT(
   const { id } = await params;
 
   console.log("[api/sessions/[id]] PUT — id:", id);
+
+  const permError = await checkTeamSessionPermission(id);
+  if (permError) return permError;
 
   let body: unknown;
   try {
@@ -103,6 +155,9 @@ export async function DELETE(
   const { id } = await params;
 
   console.log("[api/sessions/[id]] DELETE — id:", id);
+
+  const permError = await checkTeamSessionPermission(id);
+  if (permError) return permError;
 
   try {
     await deleteSession(id);
