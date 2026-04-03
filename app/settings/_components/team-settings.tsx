@@ -1,19 +1,33 @@
 "use client";
 
 import { useCallback, useState } from "react";
+import { useAuth } from "@/components/providers/auth-provider";
 import { InviteSingleForm } from "./invite-single-form";
 import { InviteBulkDialog } from "./invite-bulk-dialog";
 import { PendingInvitationsTable } from "./pending-invitations-table";
+import { TeamMembersTable } from "./team-members-table";
+import { TeamDangerZone } from "./team-danger-zone";
 
 interface TeamSettingsProps {
   teamId: string;
   teamName: string;
+  ownerId: string;
+  isOwner: boolean;
+  isAdmin: boolean;
 }
 
-export function TeamSettings({ teamId, teamName }: TeamSettingsProps) {
+export function TeamSettings({
+  teamId,
+  teamName: initialTeamName,
+  ownerId,
+  isOwner,
+  isAdmin,
+}: TeamSettingsProps) {
+  const { user } = useAuth();
   const [refreshKey, setRefreshKey] = useState(0);
+  const [teamName, setTeamName] = useState(initialTeamName);
 
-  const handleInviteSent = useCallback(() => {
+  const handleChange = useCallback(() => {
     setRefreshKey((k) => k + 1);
   }, []);
 
@@ -24,15 +38,33 @@ export function TeamSettings({ teamId, teamName }: TeamSettingsProps) {
           {teamName}
         </h2>
         <p className="mt-1 text-sm text-[var(--text-secondary)]">
-          Invite members and manage pending invitations.
+          Manage members, invitations, and team settings.
         </p>
       </div>
 
-      <InviteSingleForm teamId={teamId} onInviteSent={handleInviteSent} />
+      <TeamMembersTable
+        teamId={teamId}
+        ownerId={ownerId}
+        currentUserId={user?.id ?? ""}
+        isOwner={isOwner}
+        isAdmin={isAdmin}
+        refreshKey={refreshKey}
+        onMemberChanged={handleChange}
+      />
 
-      <InviteBulkDialog teamId={teamId} onInvitesSent={handleInviteSent} />
+      <InviteSingleForm teamId={teamId} onInviteSent={handleChange} />
+
+      <InviteBulkDialog teamId={teamId} onInvitesSent={handleChange} />
 
       <PendingInvitationsTable teamId={teamId} refreshKey={refreshKey} />
+
+      <TeamDangerZone
+        teamId={teamId}
+        teamName={teamName}
+        isOwner={isOwner}
+        onTeamRenamed={(newName) => setTeamName(newName)}
+        onTeamDeleted={handleChange}
+      />
     </div>
   );
 }

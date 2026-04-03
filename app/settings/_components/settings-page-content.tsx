@@ -10,7 +10,9 @@ import { TeamSettings } from "./team-settings";
 interface TeamContext {
   teamId: string;
   teamName: string;
+  ownerId: string;
   isAdmin: boolean;
+  isOwner: boolean;
 }
 
 function getActiveTeamId(): string | null {
@@ -53,7 +55,7 @@ export function SettingsPageContent() {
 
     const { data: team } = await supabase
       .from("teams")
-      .select("id, name")
+      .select("id, name, owner_id")
       .eq("id", activeTeamId)
       .is("deleted_at", null)
       .single();
@@ -66,7 +68,9 @@ export function SettingsPageContent() {
     setTeamCtx({
       teamId: team.id,
       teamName: team.name,
+      ownerId: team.owner_id,
       isAdmin: member.role === "admin",
+      isOwner: team.owner_id === user.id,
     });
     setIsCheckingTeam(false);
   }, [user]);
@@ -130,6 +134,9 @@ export function SettingsPageContent() {
           <TeamSettings
             teamId={teamCtx.teamId}
             teamName={teamCtx.teamName}
+            ownerId={teamCtx.ownerId}
+            isOwner={teamCtx.isOwner}
+            isAdmin={teamCtx.isAdmin}
           />
         </TabsContent>
       </Tabs>
