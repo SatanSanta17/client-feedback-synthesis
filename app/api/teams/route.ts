@@ -1,7 +1,56 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { createClient } from "@/lib/supabase/server";
-import { createTeam } from "@/lib/services/team-service";
+import { createTeam, getTeamsForUser } from "@/lib/services/team-service";
+
+// --- GET /api/teams ---
+
+export async function GET() {
+  const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  if (!user) {
+    return NextResponse.json(
+      { message: "Authentication required" },
+      { status: 401 }
+    );
+  }
+
+  try {
+    const teams = await getTeamsForUser();
+
+    const { data: memberships } = await supabase
+      .from("team_members")
+      .select("team_id, role")
+      .eq("user_id", user.id)
+      .is("removed_at", null);
+
+    const roleByTeamId = new Map(
+      (memberships ?? []).map((m) => [m.team_id, m.role])
+    );
+
+    const teamsWithRoles = teams.map((t) => ({
+      id: t.id,
+      name: t.name,
+      role: roleByTeamId.get(t.id) ?? "sales",
+    }));
+
+    return NextResponse.json({ teams: teamsWithRoles });
+  } catch (err) {
+    console.error(
+      "[api/teams] GET — error:",
+      err instanceof Error ? err.message : err
+    );
+    return NextResponse.json(
+      { message: "Failed to fetch teams" },
+      { status: 500 }
+    );
+  }
+}
+
+// --- POST /api/teams ---
 
 const createTeamSchema = z.object({
   name: z
