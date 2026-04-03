@@ -1,8 +1,8 @@
 # TRD-010: Team Access — Workspaces, Invitations, and Role-Based Collaboration
 
-> **Status:** Draft (Parts 1–3)
+> **Status:** Draft (Parts 1–4)
 > **PRD:** `docs/010-team-access/prd.md` (approved)
-> **Mirrors:** PRD Parts 1–8. This TRD is written incrementally — Parts 1–3 are detailed below; Parts 4–8 will be added after review.
+> **Mirrors:** PRD Parts 1–8. This TRD is written incrementally — Parts 1–4 are detailed below; Parts 5–8 will be added after review.
 
 ---
 
@@ -720,3 +720,165 @@ acceptInvitation(invitationId: string, userId: string, teamId: string, role: str
 - Duplicate membership: already a member → redirects to team workspace, no duplicate row
 - `pending_invite_token` cookie is cleared after use
 - No regressions to existing login or auth callback flows
+
+---
+
+## Part 4: Workspace Switcher and Context Management
+
+### 4.1 Technical Decisions
+
+1. **`active_team_id` cookie is the single source of workspace context.** Every API route and service function reads this cookie to determine scope. Empty/missing = personal workspace. The cookie is already being set by the team creation dialog and invite acceptance flow.
+
+2. **A shared `getActiveTeamId()` server utility reads the cookie.** Instead of every service function parsing cookies directly, a single helper in `lib/supabase/server.ts` reads the `active_team_id` cookie from the Next.js `cookies()` store. Service functions call this helper to scope queries.
+
+3. **Workspace context is validated on read, not on write.** When the active workspace cookie points to a team the user is no longer a member of, the system treats it as "personal workspace" (clears the cookie via middleware). This avoids 403 errors and handles removal gracefully.
+
+4. **The switcher is a client component in the header.** It fetches the user's teams from a new `GET /api/teams` endpoint and renders a dropdown. Switching sets the cookie and calls `router.refresh()` to re-render server components with the new context.
+
+5. **Service-layer changes are deferred to Part 5.** Part 4 only builds the switcher UI and the context plumbing (cookie read helper, middleware validation, teams API). The actual query scoping in `session-service.ts`, `client-service.ts`, `master-signal-service.ts`, and `prompt-service.ts` is implemented in Parts 5–7 when team-scoped data flows are built.
+
+### 4.2 Server Utility — Active Workspace Reader
+
+**Modified file: `lib/supabase/server.ts`**
+
+Add a new exported function:
+
+```typescript
+export async function getActiveTeamId(): Promise<string | null> {
+  const cookieStore = await cookies();
+  return cookieStore.get("active_team_id")?.value || null;
+}
+```
+
+All service functions that need workspace context will import and call this helper. Returns `null` for personal workspace.
+
+### 4.3 Middleware — Stale Team Validation
+
+**Modified file: `middleware.ts`**
+
+For authenticated users with an `active_team_id` cookie, the middleware validates that the user is still a member of that team. If not, it clears the cookie so the user falls back to personal workspace without an error.
+
+```
+Steps (after existing auth checks):
+  1. Read active_team_id from request cookies
+  2. If no active_team_id → continue (personal workspace)
+  3. Query team_members for (team_id, user_id, removed_at IS NULL)
+  4. If no matching row → clear active_team_id cookie on the response
+  5. Continue with the (possibly modified) response
+```
+
+This adds one Supabase query per request for users with an active team — acceptable since middleware already makes a `getUser()` call. The check reuses the same Supabase client instance.
+
+### 4.4 New API Route
+
+**`GET /api/teams`** — List teams for the current user
+
+```
+Auth: Required.
+Returns: { teams: Array<{ id, name, role }> }
+Steps:
+  1. Get user from session
+  2. Fetch team_members where user_id = user.id AND removed_at IS NULL
+  3. Fetch teams by those team_ids where deleted_at IS NULL
+  4. For each team, include the user's role
+  5. Return sorted by created_at ascending
+```
+
+This endpoint already has a route file for `POST /api/teams`. The `GET` handler is added to the same file.
+
+### 4.5 Frontend — Workspace Switcher
+
+**New file: `components/layout/workspace-switcher.tsx`**
+
+A dropdown component placed in the app header between the logo and the tab navigation:
+
+```
+Structure:
+  - Trigger: shows current workspace name ("Personal" or team name)
+  - Dropdown content:
+    - "Personal" option with a check icon if active
+    - Divider
+    - List of teams with name + role badge, check icon on active
+  - Selecting an option sets the active_team_id cookie and calls router.refresh()
+```
+
+Visual details:
+- Uses the existing `DropdownMenu` component from shadcn/ui
+- Active workspace shows a check mark (`Check` icon from Lucide)
+- Team entries show a small role badge (`admin` / `sales`)
+- "Personal" is always the first option
+- If the user has no teams, the switcher is not rendered — hidden entirely
+
+**Cookie management (client-side):**
+
+```typescript
+function setActiveTeamCookie(teamId: string | null) {
+  if (teamId) {
+    document.cookie = `active_team_id=${teamId}; path=/; max-age=${60 * 60 * 24 * 365}; SameSite=Lax`;
+  } else {
+    document.cookie = "active_team_id=; path=/; max-age=0; SameSite=Lax";
+  }
+}
+```
+
+Passing `null` clears the cookie (switches to personal workspace).
+
+### 4.6 Header Integration
+
+**Modified file: `components/layout/app-header.tsx`**
+
+Insert the `WorkspaceSwitcher` between the logo and `TabNav`:
+
+```
+Before:
+  <span>Synthesiser</span>
+  <TabNav />
+
+After:
+  <span>Synthesiser</span>
+  <WorkspaceSwitcher />
+  <TabNav />
+```
+
+The switcher only renders when the user is authenticated and has at least one team membership. Solo users see no change in the header.
+
+### 4.7 Files Changed / Created
+
+| Action | File | Details |
+|--------|------|---------|
+| Create | `components/layout/workspace-switcher.tsx` | Dropdown to switch between personal and team workspaces |
+| Modify | `components/layout/app-header.tsx` | Integrate `WorkspaceSwitcher` between logo and tab nav |
+| Modify | `lib/supabase/server.ts` | Add `getActiveTeamId()` helper |
+| Modify | `middleware.ts` | Validate `active_team_id` cookie — clear if user is no longer a member |
+| Modify | `app/api/teams/route.ts` | Add `GET` handler — list teams for current user with roles |
+
+### 4.8 Implementation Increments
+
+**Increment 4.1: Server utility + middleware validation**
+- Add `getActiveTeamId()` to `lib/supabase/server.ts`
+- Update `middleware.ts` to validate the `active_team_id` cookie against `team_members`
+- If the user was removed from the team, clear the cookie silently
+- Verify: setting an invalid `active_team_id` cookie results in it being cleared on next request
+
+**Increment 4.2: Teams list API**
+- Add `GET` handler to `app/api/teams/route.ts`
+- Returns teams with the user's role in each
+- Verify: authenticated user sees their teams, unauthenticated gets 401
+
+**Increment 4.3: Workspace switcher UI**
+- Create `components/layout/workspace-switcher.tsx`
+- Integrate into `app-header.tsx`
+- Fetches teams from `GET /api/teams` on mount
+- Switching sets the cookie and refreshes the page
+- Solo users (no teams) see no switcher
+- Verify: switching workspaces changes the cookie value, page refreshes
+
+**Verification:**
+- Solo users (no team memberships) see no workspace switcher — header unchanged
+- Users with teams see a switcher showing "Personal" + team names
+- Switching to a team sets `active_team_id` cookie and refreshes the page
+- Switching to "Personal" clears the `active_team_id` cookie
+- Active workspace persists across page refreshes (cookie-based)
+- If a user is removed from a team while it's active, next request clears the cookie silently
+- Middleware validation does not break existing login, callback, or invite flows
+- No regressions — personal workspace behavior unchanged when no cookie is set
