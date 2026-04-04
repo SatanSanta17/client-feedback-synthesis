@@ -115,6 +115,16 @@ Master PRD (this file)
 
 ---
 
+## Email + Password Authentication (New Section)
+
+**PRD:** `docs/011-email-auth/prd.md` — Draft
+
+**Scope:** Email + password sign-up and sign-in, password reset flow, invite page auth choice with email pre-fill and match verification, middleware updates for new public routes.
+
+**Deliverable:** Users can sign up and sign in with email + password alongside Google OAuth. Invited users see a contextual sign-in/sign-up form with their email pre-filled. Email match is verified before accepting invitations.
+
+---
+
 ## Out of Scope
 
 - Real-time collaboration / multiplayer editing (planned for future)
