@@ -63,6 +63,20 @@ export async function GET(request: Request) {
       return response;
     }
 
+    if (user.email?.toLowerCase() !== invitation.email.toLowerCase()) {
+      console.warn(
+        `Auth callback: email mismatch — user ${user.email} tried to accept invite for ${invitation.email}`
+      );
+      const mismatchRedirect = NextResponse.redirect(
+        `${origin}/invite/${pendingToken}?error=email_mismatch`
+      );
+      mismatchRedirect.cookies.set("pending_invite_token", "", {
+        path: "/",
+        maxAge: 0,
+      });
+      return mismatchRedirect;
+    }
+
     await acceptInvitation(
       invitation.id,
       user.id,
