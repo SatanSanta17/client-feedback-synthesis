@@ -1,8 +1,8 @@
 # TRD-010: Team Access — Workspaces, Invitations, and Role-Based Collaboration
 
-> **Status:** Draft (Parts 1–7)
+> **Status:** Implemented (Parts 1–8)
 > **PRD:** `docs/010-team-access/prd.md` (approved)
-> **Mirrors:** PRD Parts 1–8. This TRD is written incrementally — Parts 1–7 are detailed below; Part 8 will be added after review.
+> **Mirrors:** PRD Parts 1–8. All parts are detailed below.
 
 ---
 
@@ -1512,3 +1512,57 @@ Pass `isOwner` and `ownerId` to `TeamSettings`:
 - Removed/left members are switched to personal workspace
 - Data from removed members stays with the team (verified by Part 8)
 - No regressions in invite flow or workspace switching
+
+---
+
+## Part 8: Data Retention on Member Departure
+
+### 8.1 Design Rationale
+
+Part 8 requires **no new code**. The existing architecture already satisfies all data retention requirements by design. This part serves as a verification checklist confirming the behavior.
+
+Key design decisions that make this work:
+
+1. **`team_id` on data tables, not `user_id` ownership.** Sessions, clients, master signals, and prompt versions are scoped to the team via `team_id`. They are **not** deleted or orphaned when a member departs — `removeMember()` only sets `team_members.removed_at`, which has no cascade or trigger on data tables.
+
+2. **`created_by` is preserved as attribution, not as an access gate.** The `created_by` column on sessions and clients identifies who captured the data. RLS policies for team data check `is_team_member(team_id)`, not `created_by = auth.uid()`. Departed members' sessions remain visible to the team because the RLS condition is team membership, not authorship.
+
+3. **RLS enforces access revocation automatically.** The `is_team_member(team_id)` function checks `removed_at IS NULL`. Once a member's `removed_at` is set, all RLS policies that reference this function will exclude them — they lose read and write access to team data without any explicit revocation step.
+
+4. **Re-joining creates a new `team_members` row.** The `acceptInvitation()` function in `invitation-service.ts` checks for existing active membership before inserting. If a departed member (who has `removed_at` set) is re-invited, a new `team_members` row is created with `removed_at = NULL`. The unique index `(team_id, user_id) WHERE removed_at IS NULL` allows this because the old row has `removed_at` set. The rejoined member sees all team data — including their own old sessions — because RLS scopes by `team_id` membership, not by individual `created_by`.
+
+5. **Master signal includes all team sessions.** `getAllSignalSessions()` and `getSignalSessionsSince()` filter by `team_id` and `deleted_at IS NULL`, not by `created_by`. A departed member's sessions continue to contribute to the team's master signal as long as the sessions are not soft-deleted.
+
+### 8.2 Requirement Mapping
+
+| PRD Requirement | How It's Satisfied |
+|---|---|
+| **P8.R1** Sessions from departed members remain, attributed to original creator | `sessions.team_id` stays set; `sessions.created_by` is immutable; RLS checks team membership, not authorship |
+| **P8.R2** Clients from departed members remain accessible | `clients.team_id` stays set; same RLS pattern as sessions |
+| **P8.R3** Departed member's sessions contribute to master signal | `getAllSignalSessions()` / `getSignalSessionsSince()` scope by `team_id`, not `created_by` |
+| **P8.R4** Departed member loses access to team data | `is_team_member()` returns `false` once `removed_at` is set; all team RLS policies deny access |
+| **P8.R5** Re-joining shows all team data including old contributions | New `team_members` row with `removed_at = NULL` restores `is_team_member()` → full team data visible again |
+
+### 8.3 Files Changed / Created
+
+None. Part 8 is satisfied by the existing implementation from Parts 1–7.
+
+### 8.4 Implementation Increments
+
+**Increment 8.1: Verification only**
+- No code changes required
+- Manually verify each requirement by testing the following scenarios:
+  1. Remove a member who has sessions → confirm their sessions remain visible to team
+  2. Generate master signal → confirm it includes the departed member's sessions
+  3. Sign in as the departed member → confirm they see only their personal workspace, not team data
+  4. Re-invite the departed member → confirm they see all team data again after accepting
+  5. Confirm `created_by_email` attribution still resolves correctly for the departed member's sessions (the `profiles` table retains their record)
+
+**Verification:**
+- Sessions from departed members are visible in the team workspace
+- Client names from departed members appear in comboboxes
+- Master signal synthesises across all team sessions regardless of member status
+- Departed members see only personal workspace when signing in
+- Re-joining via new invite restores full team data access
+- Attribution (captured by) shows correctly for all sessions
+- No orphaned or inaccessible data after member departure

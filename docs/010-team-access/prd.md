@@ -1,7 +1,7 @@
 # PRD-010: Team Access — Workspaces, Invitations, and Role-Based Collaboration
 
 > **Master PRD Section:** New section — Team Access
-> **Status:** Draft
+> **Status:** Implemented
 > **Deliverable:** Users can create teams, invite members via email, and collaborate on shared sessions, clients, master signals, and prompts with role-based access control. Solo users continue to operate in a personal workspace unchanged.
 
 ---

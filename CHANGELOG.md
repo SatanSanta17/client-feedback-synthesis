@@ -6,6 +6,71 @@ All notable changes to this project are documented here, grouped by PRD and part
 
 ## [Unreleased]
 
+### PRD-010 Part 7: Team Management — Members, Roles, and Ownership — 2026-04-02
+- Added team management service functions: `renameTeam`, `deleteTeam`, `removeMember`, `changeMemberRole`, `transferOwnership`, `leaveTeam` (with `LeaveBlockedError`)
+- Created API routes: `GET/PATCH/DELETE /api/teams/[teamId]`, `GET /api/teams/[teamId]/members`, `DELETE /api/teams/[teamId]/members/[userId]`, `PATCH /api/teams/[teamId]/members/[userId]/role`, `POST /api/teams/[teamId]/transfer`, `POST /api/teams/[teamId]/leave`
+- Owner can rename/delete team, remove any member, change roles, transfer ownership
+- Admin can remove sales members; sales have no management actions (except leave)
+- Owner leaving auto-transfers ownership to the oldest admin; blocked if no other admins exist
+- Created `team-members-table.tsx`: member list with contextual actions (remove, role change, transfer, leave) and confirmation dialogs
+- Created `team-danger-zone.tsx`: rename input + delete button with type-to-confirm safety dialog (owner only)
+- Updated `team-settings.tsx` to integrate members table and danger zone
+- Updated `settings-page-content.tsx` to resolve and pass `ownerId`, `isOwner` to team settings
+
+### PRD-010 Part 6: Team-Scoped Master Signal and Prompts — 2026-04-02
+- Scoped all `master-signal-service.ts` functions by `team_id` via `getActiveTeamId()`: `getLatestMasterSignal`, `getStaleSessionCount`, `getAllSignalSessions`, `getSignalSessionsSince`, `saveMasterSignal`
+- Scoped all `prompt-service.ts` functions by `team_id`: `getActivePrompt`, `getPromptHistory`, `savePromptVersion` (deactivation scoped to workspace)
+- Added admin role check to `POST /api/ai/generate-master-signal` and `POST /api/prompts` in team context (403 for sales)
+- Master signal page hides generate button for non-admin team members, shows info banner
+- Prompt editor accepts `readOnly` prop — sales members see prompts in view-only mode with info banner
+- `VersionHistoryPanel` and `VersionViewDialog` hide revert buttons when `onRevert` is not provided
+- `SettingsPageContent` passes `readOnly` for non-admin team members
+
+### PRD-010 Part 5: Team-Scoped Data — Sessions and Clients — 2026-04-02
+- Scoped `getSessions` and `createSession` by `team_id` via `getActiveTeamId()` in `session-service.ts`
+- Scoped `searchClients` and `createNewClient` by `team_id` in `client-service.ts`
+- `taintLatestMasterSignal` accepts optional `teamId` for team-scoped tainting
+- `deleteSession` passes `team_id` to taint function
+- Added `checkTeamSessionPermission` to `PUT/DELETE /api/sessions/[id]` — sales can only modify own sessions, admins can modify any
+- Added "Captured by" column in past sessions table (team context only, shows email local part)
+- `SessionRow` interface includes `created_by` and `created_by_email`
+- `ExpandedSessionRow` accepts `canEdit` — read-only view with "View only" message for non-permitted users
+- `MarkdownPanel` accepts `readOnly` prop to hide edit toggle
+- Resolved creator emails via `profiles` table in `getSessions` for team attribution
+
+### PRD-010 Part 4: Workspace Switcher and Context Management — 2026-04-02
+- Added `getActiveTeamId()` to `lib/supabase/server.ts` for reading the `active_team_id` cookie server-side
+- Middleware validates `active_team_id` cookie on every request — clears if user is no longer a team member
+- Created `workspace-switcher.tsx`: dropdown showing Personal + all teams with roles, sets/clears cookie on switch
+- Integrated workspace switcher into `app-header.tsx` (visible only when user has team memberships)
+- Created `GET /api/teams` route to list user's teams with roles
+
+### PRD-010 Part 3: Invite Acceptance and Join Flow — 2026-04-02
+- Created `/invite/[token]` server page with `InvitePageContent` client component
+- Handles four states: valid (join), expired, already accepted, invalid — with appropriate UI for each
+- Authenticated users see "Accept & Join Team" button (calls `POST /api/invite/[token]/accept`)
+- Unauthenticated users see "Sign in with Google to join" (sets `pending_invite_token` cookie, redirects through OAuth)
+- Auth callback (`/auth/callback`) checks for `pending_invite_token` cookie, auto-accepts invitation and sets `active_team_id`
+- Added `getInvitationByToken` and `acceptInvitation` to `invitation-service.ts` (service role client for RLS bypass)
+- Middleware allows `/invite` as a public route
+
+### PRD-010 Part 2: Team Creation and Invite Flow — 2026-04-02
+- Created `team-service.ts` with `createTeam`, `getTeamsForUser`, `getTeamById`, `getTeamMember`, `getActiveTeamMembers`
+- Created `invitation-service.ts` with `createInvitations`, `getPendingInvitations`, `revokeInvitation`, `resendInvitation`
+- Created invite email template in `lib/email-templates/invite-email.ts`
+- Created API routes: `POST /api/teams`, `GET/POST /api/teams/[teamId]/invitations`, `DELETE/POST .../[invitationId]`, `.../[invitationId]/resend`
+- Created `create-team-dialog.tsx` for team creation (visible when `can_create_team = true`)
+- Created `team-settings.tsx`, `invite-single-form.tsx`, `invite-bulk-dialog.tsx`, `pending-invitations-table.tsx`
+- Created `settings-page-content.tsx` wrapping prompt editor and team settings in tabs (admin only)
+
+### PRD-010 Part 1: Database Schema and Email Service — 2026-04-02
+- Created `teams`, `team_members`, `team_invitations` tables with RLS policies
+- Added `can_create_team` to `profiles` table
+- Added nullable `team_id` column to `sessions`, `clients`, `master_signals`, `prompt_versions`
+- Created helper functions: `is_team_member()`, `get_team_role()`, `is_team_admin()` (SECURITY DEFINER)
+- Created provider-agnostic `email-service.ts` with `sendEmail()`, `resolveEmailProvider()`, Resend adapter
+- Added `EMAIL_PROVIDER`, `RESEND_API_KEY`, `EMAIL_FROM` env vars
+
 ### PRD-009 Part 1: AI Provider Abstraction — 2026-04-02
 - Replaced `@anthropic-ai/sdk` with the Vercel AI SDK (`ai`, `@ai-sdk/anthropic`, `@ai-sdk/openai`, `@ai-sdk/google`)
 - Replaced `callClaude()` with provider-agnostic `callModel()` using `generateText()` from the Vercel AI SDK

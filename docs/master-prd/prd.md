@@ -105,9 +105,9 @@ Master PRD (this file)
 
 ---
 
-## Team Access (New Section)
+## Team Access (New Section) ✅
 
-**PRD:** `docs/010-team-access/prd.md` — Draft
+**PRD:** `docs/010-team-access/prd.md` — Implemented (2026-04-02)
 
 **Scope:** Team workspaces with role-based access (owner, admin, sales), email invitations via provider-agnostic email service, workspace switching, team-scoped sessions/clients/master signals/prompts, team management (members, roles, ownership transfer). Team creation is a paid feature gated by a developer-set flag.
 
