@@ -1,6 +1,6 @@
 # TRD-011: Email + Password Authentication
 
-> **Status:** Draft (Part 1)
+> **Status:** Draft (Parts 1–2)
 >
 > Mirrors **PRD-011**. Each part maps to the corresponding PRD part.
 
@@ -147,4 +147,129 @@ Before implementation, the following must be configured in the Supabase dashboar
 
 - **Part 2 (Password Reset):** The "Forgot password?" link on the login page will be present but points to a page that doesn't exist until Part 2 is implemented. This is intentional — the link is UI-ready, the destination follows in the next part.
 - **Part 3 (Invite Flow):** The shared `GoogleIcon` component created in Increment 1.1 will be reused when the invite page is updated in Part 3. The auth form patterns established here (Zod schemas, error handling, success states) will be adapted for the invite page forms.
-- **Part 4 (Middleware and Callback):** Increment 1.2 includes the minimal middleware changes needed for Part 1 (`/signup` as public route + authenticated redirect). Part 4 will add the remaining public routes (`/forgot-password`, `/reset-password`) and the callback type handling.
+- **Part 4 (Middleware and Callback):** Increment 1.2 includes the minimal middleware changes needed for Part 1 (`/signup` as public route + authenticated redirect). Part 2 adds `/forgot-password` and `/reset-password`. Part 4 is now largely absorbed into Parts 1 and 2 — only the invite email match verification (P3.R1) remains for Part 3.
+
+---
+
+## Part 2: Password Reset Flow
+
+> Implements **P2.R1–P2.R3** from PRD-011. Also partially implements **P4.R1** and **P4.R2** (middleware and callback changes needed for the reset flow).
+
+### Overview
+
+Add a complete password reset flow: a "forgot password" page to request a reset email, an updated auth callback to handle recovery links, and a "reset password" page to set a new password. Supabase handles the reset email delivery via the configured SMTP provider (Brevo).
+
+### Database Changes
+
+None. Password reset is handled entirely by Supabase Auth.
+
+### Files Changed
+
+| File | Action | Purpose |
+|------|--------|---------|
+| `app/forgot-password/page.tsx` | **Create** | Forgot password page — server component shell |
+| `app/forgot-password/_components/forgot-password-form.tsx` | **Create** | Client component — email input, request reset, success state |
+| `app/reset-password/page.tsx` | **Create** | Reset password page — server component shell |
+| `app/reset-password/_components/reset-password-form.tsx` | **Create** | Client component — new password + confirm, update user |
+| `app/auth/callback/route.ts` | **Modify** | Detect `type=recovery` and redirect to `/reset-password` |
+| `middleware.ts` | **Modify** | Add `/forgot-password` and `/reset-password` to public/auth route handling |
+
+### Implementation
+
+#### Increment 2.1: Forgot Password Page + Middleware
+
+**What:** Create the `/forgot-password` page with a single email field. On submit, sends a password reset email via Supabase Auth. Shows a "Check your email" success state regardless of whether the email exists (prevents enumeration). Update middleware to allow unauthenticated access and redirect authenticated users.
+
+**Files:**
+
+1. **Create `app/forgot-password/_components/forgot-password-form.tsx`**
+   - `"use client"` component
+   - Uses `react-hook-form` + `zod` for validation
+   - Zod schema: `email: z.string().email()`
+   - Single form field: Email (`Input`)
+   - Submit button: "Send Reset Link" (disabled while submitting, shows spinner)
+   - On submit:
+     - Calls `supabase.auth.resetPasswordForEmail(email, { redirectTo: origin + '/auth/callback' })`
+     - Always transitions to a success state after the call (regardless of whether the email exists in the system)
+     - Success state: checkmark icon, "Check your email", "If an account exists for {email}, we've sent a password reset link."
+   - Footer link: "Back to [sign in](/login)" — uses `next/link`
+
+2. **Create `app/forgot-password/page.tsx`**
+   - Server component, exports `metadata` with title "Forgot Password — Synthesiser"
+   - Renders `ForgotPasswordForm`
+
+3. **Modify `middleware.ts`**
+   - Add `pathname === "/forgot-password"` to the `isPublicRoute` check
+   - Add `/forgot-password` to the authenticated redirect condition (alongside `/login` and `/signup`) — authenticated users don't need to reset their password via this flow
+
+**Verification:**
+- Unauthenticated user can access `/forgot-password`
+- Authenticated user visiting `/forgot-password` is redirected to `/capture`
+- Submitting a valid email shows the success state
+- Submitting a non-existent email still shows the success state (no enumeration)
+- "Back to sign in" link navigates to `/login`
+
+---
+
+#### Increment 2.2: Auth Callback — Recovery Type Handling
+
+**What:** Update the auth callback to detect the `type=recovery` query parameter from Supabase's password reset email link. When detected, redirect to `/reset-password` instead of `/capture`.
+
+**Files:**
+
+1. **Modify `app/auth/callback/route.ts`**
+   - After successful code exchange, check `searchParams.get("type")`
+   - If `type === "recovery"`: redirect to `/reset-password` (skip invite token handling — a recovery flow is never an invite acceptance)
+   - Otherwise: existing behavior (check pending invite, redirect to `/capture`)
+
+**Verification:**
+- Clicking the reset link in the email lands on `/auth/callback?code=...&type=recovery`
+- The callback exchanges the code and redirects to `/reset-password`
+- The user has a valid authenticated session on `/reset-password`
+- Non-recovery callbacks (OAuth, signup confirmation) continue to redirect to `/capture`
+
+---
+
+#### Increment 2.3: Reset Password Page
+
+**What:** Create the `/reset-password` page with new password and confirm password fields. On submit, updates the user's password via `supabase.auth.updateUser()`. On success, redirects to `/capture` with a toast. The page requires an authenticated session — unauthenticated visitors are redirected to `/login` by the existing middleware.
+
+**Files:**
+
+1. **Create `app/reset-password/_components/reset-password-form.tsx`**
+   - `"use client"` component
+   - Uses `react-hook-form` + `zod` for validation
+   - Zod schema:
+     - `password`: `z.string().min(8)` with regex refinement for at least 1 digit and 1 special character (same rules as sign-up)
+     - `confirmPassword`: `z.string()` with `.refine()` to match `password`
+   - Two form fields: New Password (`Input type="password"`), Confirm New Password (`Input type="password"`)
+   - Submit button: "Reset Password" (disabled while submitting, shows spinner)
+   - On submit:
+     - Calls `supabase.auth.updateUser({ password })`
+     - On success: `window.location.href = '/capture'` (the `/capture` page will show a toast — or use `router.push('/capture')` and fire `toast.success("Password updated successfully")` before navigating)
+     - On error: shows inline error below the form
+   - Footer link: "Back to [sign in](/login)" — uses `next/link`
+
+2. **Create `app/reset-password/page.tsx`**
+   - Server component, exports `metadata` with title "Reset Password — Synthesiser"
+   - Renders `ResetPasswordForm`
+
+3. **Modify `middleware.ts`** (if needed)
+   - `/reset-password` is NOT added to `isPublicRoute` — it requires authentication
+   - `/reset-password` is NOT added to the authenticated redirect condition — authenticated users must be able to access it to complete the reset flow
+   - Result: unauthenticated users are redirected to `/login`, authenticated users see the form. This is the correct behavior with no middleware changes.
+
+**Verification:**
+- Unauthenticated user visiting `/reset-password` is redirected to `/login`
+- Authenticated user (via recovery link) sees the reset form
+- Submitting a valid new password updates the password and redirects to `/capture`
+- Password validation enforces the same rules as sign-up (min 8 chars, 1 digit, 1 special char)
+- Mismatched passwords show inline error
+
+---
+
+### Dependencies on Other Parts
+
+- **Part 1 (Sign-Up and Sign-In):** The "Forgot password?" link on the login page (Part 1, Increment 1.3) now points to a functional `/forgot-password` page.
+- **Part 3 (Invite Flow):** No direct dependency. The callback changes in Increment 2.2 are backward-compatible with the existing invite flow.
+- **Part 4 (Middleware and Callback):** P4.R1 (public routes) and P4.R2 (callback type handling) are now fully implemented across Parts 1 and 2. Part 4 is reduced to P4.R3 verification only — authenticated redirect behavior is already in place.
