@@ -1,7 +1,6 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { useRouter } from "next/navigation";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -37,7 +36,6 @@ export function WorkspaceSwitcher() {
   const [teams, setTeams] = useState<TeamEntry[]>([]);
   const [activeTeamId, setActiveTeamId] = useState<string | null>(null);
   const [loaded, setLoaded] = useState(false);
-  const router = useRouter();
 
   useEffect(() => {
     setActiveTeamId(getActiveTeamId());
@@ -58,7 +56,7 @@ export function WorkspaceSwitcher() {
       setActiveTeamId(teamId);
       window.location.reload();
     },
-    [activeTeamId, router]
+    [activeTeamId]
   );
 
   if (!loaded || teams.length === 0) return null;

@@ -1,7 +1,6 @@
 "use client";
 
 import { useCallback, useState } from "react";
-import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { Plus } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -25,7 +24,6 @@ export function CreateTeamDialog() {
   const [open, setOpen] = useState(false);
   const [name, setName] = useState("");
   const [isCreating, setIsCreating] = useState(false);
-  const router = useRouter();
 
   const handleCreate = useCallback(async () => {
     const trimmed = name.trim();
@@ -55,14 +53,14 @@ export function CreateTeamDialog() {
       toast.success(`Team "${team.name}" created`);
       setOpen(false);
       setName("");
-      router.refresh();
+      window.location.reload();
     } catch (err) {
       console.error("Create team error:", err);
       toast.error("Something went wrong");
     } finally {
       setIsCreating(false);
     }
-  }, [name, router]);
+  }, [name]);
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
