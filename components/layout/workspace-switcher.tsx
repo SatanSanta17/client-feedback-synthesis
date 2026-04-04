@@ -56,7 +56,7 @@ export function WorkspaceSwitcher() {
       if (teamId === activeTeamId) return;
       setActiveTeamCookie(teamId);
       setActiveTeamId(teamId);
-      router.refresh();
+      window.location.reload();
     },
     [activeTeamId, router]
   );
