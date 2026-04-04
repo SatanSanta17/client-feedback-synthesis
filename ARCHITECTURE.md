@@ -457,8 +457,9 @@ Stores versioned AI system prompts per user or team workspace. Each save/reset/r
 | `OPENAI_API_KEY` | Server only | OpenAI API key (required when `AI_PROVIDER=openai`) |
 | `GOOGLE_GENERATIVE_AI_API_KEY` | Server only | Google AI API key (required when `AI_PROVIDER=google`) |
 | `NEXT_PUBLIC_APP_URL` | Client + Server | Application base URL |
-| `EMAIL_PROVIDER` | Server only | Email provider (`resend`) |
+| `EMAIL_PROVIDER` | Server only | Email provider (`resend`, `brevo`) |
 | `RESEND_API_KEY` | Server only | Resend API key (required when `EMAIL_PROVIDER=resend`) |
+| `BREVO_API_KEY` | Server only | Brevo API key (required when `EMAIL_PROVIDER=brevo`) |
 | `EMAIL_FROM` | Server only | Sender email address for outbound emails |
 
 See `.env.example` for the full template.
@@ -478,4 +479,4 @@ See `.env.example` for the full template.
 9. **Role-based access within teams.** Three roles: owner (one per team, full control), admin (manage members and content), sales (capture sessions, view data). Owner is a database concept (`teams.owner_id`), not a role value — the owner always has `role = 'admin'` in `team_members`.
 10. **Team creation is a paid feature.** The `can_create_team` flag on `profiles` gates team creation. Developers enable this per user. No self-service payment gateway.
 11. **Data retention on member departure.** When a member is removed or leaves, their sessions and other data remain in the team (owned by `team_id`). The `team_members.removed_at` timestamp records the departure. Re-inviting a departed member restores full access.
-12. **Provider-agnostic email service.** Email sending is abstracted via `email-service.ts` with `resolveEmailProvider()` — currently supports Resend, extensible to SMTP, Brevo, etc. via `EMAIL_PROVIDER` env var.
+12. **Provider-agnostic email service.** Email sending is abstracted via `email-service.ts` with `resolveEmailProvider()` — supports Resend and Brevo, extensible to SMTP and others via `EMAIL_PROVIDER` env var.

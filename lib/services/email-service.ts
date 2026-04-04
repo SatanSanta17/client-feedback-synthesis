@@ -1,4 +1,5 @@
 import { Resend } from "resend";
+import { BrevoClient } from "@getbrevo/brevo";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -18,7 +19,7 @@ interface EmailProvider {
 // Provider adapters
 // ---------------------------------------------------------------------------
 
-type SupportedEmailProvider = "resend";
+type SupportedEmailProvider = "resend" | "brevo";
 
 function createResendProvider(): EmailProvider {
   const apiKey = process.env.RESEND_API_KEY;
@@ -40,8 +41,44 @@ function createResendProvider(): EmailProvider {
   };
 }
 
+function createBrevoProvider(): EmailProvider {
+  const apiKey = process.env.BREVO_API_KEY;
+  if (!apiKey) {
+    throw new EmailConfigError("BREVO_API_KEY environment variable is not set");
+  }
+
+  const brevo = new BrevoClient({ apiKey });
+  const fromRaw = process.env.EMAIL_FROM ?? "Synthesiser <noreply@synthesiser.app>";
+  const parsed = parseFromAddress(fromRaw);
+
+  return {
+    async send({ to, subject, html }) {
+      try {
+        await brevo.transactionalEmails.sendTransacEmail({
+          sender: parsed,
+          to: [{ email: to }],
+          subject,
+          htmlContent: html,
+        });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        throw new EmailSendError(`Brevo error: ${message}`);
+      }
+    },
+  };
+}
+
+function parseFromAddress(from: string): { name: string; email: string } {
+  const match = from.match(/^(.+)\s*<(.+)>$/);
+  if (match) {
+    return { name: match[1].trim(), email: match[2].trim() };
+  }
+  return { name: "Synthesiser", email: from.trim() };
+}
+
 const PROVIDER_MAP: Record<SupportedEmailProvider, () => EmailProvider> = {
   resend: createResendProvider,
+  brevo: createBrevoProvider,
 };
 
 // ---------------------------------------------------------------------------

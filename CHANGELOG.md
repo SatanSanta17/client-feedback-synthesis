@@ -6,6 +6,13 @@ All notable changes to this project are documented here, grouped by PRD and part
 
 ## [Unreleased]
 
+### Email Provider: Add Brevo Adapter — 2026-04-02
+- Added Brevo adapter to `email-service.ts` using `@getbrevo/brevo` SDK
+- `EMAIL_PROVIDER` now supports `resend` and `brevo` — switch via env var
+- Added `BREVO_API_KEY` env var; only the active provider's key is required
+- Added `parseFromAddress()` helper to extract name/email from `EMAIL_FROM` format
+- Resend adapter unchanged
+
 ### PRD-010 Part 7: Team Management — Members, Roles, and Ownership — 2026-04-02
 - Added team management service functions: `renameTeam`, `deleteTeam`, `removeMember`, `changeMemberRole`, `transferOwnership`, `leaveTeam` (with `LeaveBlockedError`)
 - Created API routes: `GET/PATCH/DELETE /api/teams/[teamId]`, `GET /api/teams/[teamId]/members`, `DELETE /api/teams/[teamId]/members/[userId]`, `PATCH /api/teams/[teamId]/members/[userId]/role`, `POST /api/teams/[teamId]/transfer`, `POST /api/teams/[teamId]/leave`
