@@ -1,6 +1,6 @@
 # TRD-011: Email + Password Authentication
 
-> **Status:** Draft (Parts 1–2)
+> **Status:** Draft (Parts 1–3)
 >
 > Mirrors **PRD-011**. Each part maps to the corresponding PRD part.
 
@@ -273,3 +273,182 @@ None. Password reset is handled entirely by Supabase Auth.
 - **Part 1 (Sign-Up and Sign-In):** The "Forgot password?" link on the login page (Part 1, Increment 1.3) now points to a functional `/forgot-password` page.
 - **Part 3 (Invite Flow):** No direct dependency. The callback changes in Increment 2.2 are backward-compatible with the existing invite flow.
 - **Part 4 (Middleware and Callback):** P4.R1 (public routes) and P4.R2 (callback type handling) are now fully implemented across Parts 1 and 2. Part 4 is reduced to P4.R3 verification only — authenticated redirect behavior is already in place.
+
+---
+
+## Part 3: Invite Flow — Email Match Verification and Auth Choice
+
+> Implements **P3.R1–P3.R7** from PRD-011.
+
+### Overview
+
+Harden the invite acceptance flow with email match verification and add email + password auth options to the invite page. Currently, the OAuth callback blindly accepts invitations without checking if the authenticated user's email matches the invited email. The invite page only shows a Google OAuth button for unauthenticated users, with no email + password option. This part fixes both gaps.
+
+Three key changes:
+
+1. **Auth callback email guard** — before accepting an invitation in the callback, verify that the authenticated user's email matches the invitation's target email. Reject mismatches.
+2. **Server-side user existence check** — the invite page's server component checks whether the invited email already has an account, so the client knows whether to show a sign-in or sign-up form.
+3. **Invite page UI rewrite** — the client component renders different auth UIs based on authentication state and email match: sign-in form, sign-up form, accept button, or mismatch warning.
+
+### Database Changes
+
+None. All changes are in the application layer. The `team_invitations` table and `profiles` table are queried but not modified.
+
+### Files Changed
+
+| File | Action | Purpose |
+|------|--------|---------|
+| `app/auth/callback/route.ts` | **Modify** | Add email match verification before accepting invitation |
+| `app/invite/[token]/page.tsx` | **Modify** | Pass `invitedEmail` and `userExists` to client component |
+| `app/invite/[token]/_components/invite-page-content.tsx` | **Rewrite** | Full rewrite — auth forms, mismatch state, sign-in/sign-up detection |
+
+### Implementation
+
+#### Increment 3.1: Auth Callback — Email Match Verification
+
+**What:** Add an email comparison guard to the auth callback so that when a `pending_invite_token` is present, the callback verifies the authenticated user's email matches the invitation's email before accepting. If emails don't match, skip acceptance and redirect to the invite page with an error query parameter.
+
+**Files:**
+
+1. **Modify `app/auth/callback/route.ts`**
+   - After fetching the invitation and the user, add:
+     ```
+     if (user.email?.toLowerCase() !== invitation.email.toLowerCase()) {
+       console.warn(`Auth callback: email mismatch — user ${user.email} tried to accept invite for ${invitation.email}`);
+       return NextResponse.redirect(`${origin}/invite/${pendingToken}?error=email_mismatch`);
+     }
+     ```
+   - This check goes between the `if (!user)` guard and the `acceptInvitation()` call
+   - The redirect goes to the invite page (not `/capture`) so the user sees the mismatch context
+   - The `pending_invite_token` cookie is still cleared (already handled above the check)
+
+**Verification:**
+- OAuth sign-in with matching email: invitation accepted, redirected to `/capture` with team active (existing behavior, unchanged)
+- OAuth sign-in with mismatched email: invitation NOT accepted, redirected to `/invite/{token}?error=email_mismatch`
+- No pending token: existing behavior unchanged (redirect to `/capture`)
+- Recovery flow: existing behavior unchanged (redirect to `/reset-password`)
+
+---
+
+#### Increment 3.2: Invite Page Server Component — Pass Email and User Existence
+
+**What:** Update the invite page server component to pass the invited email and a `userExists` boolean to the client component. The user existence check queries the `profiles` table using the service role client to determine whether the invited email already has an account.
+
+**Files:**
+
+1. **Modify `app/invite/[token]/page.tsx`**
+   - After fetching the invitation, if status is `valid`:
+     - Query: `createServiceRoleClient().from("profiles").select("id").eq("email", invitation.email.toLowerCase()).maybeSingle()`
+     - Derive `userExists = !!profileData`
+   - Pass new props to `<InvitePageContent>`:
+     - `invitedEmail={invitation.email}` — the email the invitation was sent to
+     - `userExists={userExists}` — whether an account already exists for that email
+   - For non-valid statuses (`invalid`, `expired`, `already_accepted`), pass `invitedEmail={null}` and `userExists={false}` (not used in those states)
+   - Import `createServiceRoleClient` from `@/lib/supabase/server`
+
+**Verification:**
+- Invite page for a new user (no profile for that email): `userExists` is `false`
+- Invite page for an existing user (profile exists): `userExists` is `true`
+- Invalid/expired/already_accepted states render unchanged
+
+---
+
+#### Increment 3.3: Invite Page Client Component — Full UI Rewrite
+
+**What:** Rewrite the `valid` status rendering in `InvitePageContent` to handle four distinct states: (1) authenticated + email match, (2) authenticated + email mismatch, (3) unauthenticated + existing user (sign-in), (4) unauthenticated + new user (sign-up). Add email + password forms with pre-filled read-only email, Google OAuth as an alternative, and handle the `error=email_mismatch` query parameter.
+
+**Props additions:**
+
+```typescript
+interface InvitePageContentProps {
+  status: InvitationStatus;
+  token: string;
+  teamName: string | null;
+  role: string | null;
+  invitedEmail: string | null;  // NEW
+  userExists: boolean;           // NEW
+}
+```
+
+**Four UI states for `status === "valid"`:**
+
+1. **Authenticated + email matches** (`isAuthenticated && user.email === invitedEmail`)
+   - Show: "Signed in as {user.email}" + "Accept & Join Team" button
+   - Behavior: calls `POST /api/invite/{token}/accept` → sets `active_team_id` cookie → redirects to `/capture`
+   - This is the existing behavior, preserved as-is
+
+2. **Authenticated + email mismatch** (`isAuthenticated && user.email !== invitedEmail`)
+   - Show: mismatch warning card:
+     - Alert icon (yellow/amber)
+     - "This invitation is for **{invitedEmail}**"
+     - "You're signed in as **{user.email}**"
+     - Button: "Sign out and continue as {invitedEmail}" — calls `supabase.auth.signOut()` then `window.location.reload()` (reloads the invite page as unauthenticated)
+   - The "Accept & Join Team" button is **hidden** in this state (P3.AC11)
+
+3. **Unauthenticated + user exists** (`!isAuthenticated && userExists`)
+   - Show: sign-in form:
+     - Email field: `<Input>` pre-filled with `invitedEmail`, `readOnly`, visually muted
+     - Password field: `<Input type="password">`
+     - Submit button: "Sign in & Join"
+     - Validation: `react-hook-form` + `zod` — email (pre-set, not user-editable), password required
+   - On submit:
+     - Call `supabase.auth.signInWithPassword({ email: invitedEmail, password })`
+     - On success: call `POST /api/invite/{token}/accept` → set `active_team_id` cookie → redirect to `/capture`
+     - On error: inline error below the form ("Invalid password", "Email not confirmed", etc.)
+   - Below form: divider + Google OAuth button ("Or continue with Google") — sets `pending_invite_token` cookie, calls `signInWithOAuth`
+   - Footer: "Don't have an account? [Sign up](/signup)" link
+
+4. **Unauthenticated + new user** (`!isAuthenticated && !userExists`)
+   - Show: sign-up form:
+     - Email field: `<Input>` pre-filled with `invitedEmail`, `readOnly`, visually muted
+     - Password field: `<Input type="password">`
+     - Confirm Password field: `<Input type="password">`
+     - Submit button: "Create Account & Join"
+     - Validation: same Zod schema as `/signup` — password min 8 chars, 1 digit, 1 special character, confirm must match
+   - On submit:
+     - Set `pending_invite_token` cookie (for the callback to auto-accept after confirmation)
+     - Call `supabase.auth.signUp({ email: invitedEmail, password, options: { emailRedirectTo: origin + '/auth/callback' } })`
+     - On success: transition to "Check your email" state (same pattern as `/signup`)
+     - On error: inline error below the form
+   - Below form: divider + Google OAuth button — same as state 3
+   - Footer: "Already have an account? [Sign in](/login)" link
+
+**Error query parameter handling:**
+- On mount, read `searchParams` for `error=email_mismatch`
+- If present: show a toast "You signed in with a different email than the invitation was sent to"
+- Clean the URL with `window.history.replaceState()` to prevent re-showing on refresh
+- Use `useSearchParams()` from `next/navigation`
+
+**Files:**
+
+1. **Rewrite `app/invite/[token]/_components/invite-page-content.tsx`**
+   - Add `invitedEmail` and `userExists` to `InvitePageContentProps`
+   - Add imports: `useSearchParams` from `next/navigation`, `useForm` from `react-hook-form`, `zodResolver` from `@hookform/resolvers/zod`, `z` from `zod`, `Loader2` from `lucide-react`, `Input` from `@/components/ui/input`, `Label` from `@/components/ui/label`
+   - Keep the `InviteShell`, `StatusIcon` helper components and `invalid`/`expired`/`already_accepted` renderers unchanged
+   - Rewrite the `valid` status renderer with the four states above
+   - Extract reusable form schemas:
+     - `inviteSignInSchema = z.object({ password: z.string().min(1, "Password is required") })`
+     - `inviteSignUpSchema = z.object({ password: ..., confirmPassword: ... }).refine(...)` (same rules as signup-form.tsx)
+   - Keep `setInviteCookie`, `setActiveTeamCookie`, `handleSignInToJoin` (Google OAuth), and `handleAcceptDirectly` helper functions
+
+**Verification:**
+- Authenticated user with matching email sees "Accept & Join Team" button → works as before
+- Authenticated user with mismatched email sees mismatch warning + sign-out button → no accept button visible
+- Clicking "Sign out and continue as..." signs out and reloads as unauthenticated
+- Unauthenticated user with existing account sees sign-in form with pre-filled read-only email
+- Signing in with correct password accepts invitation and redirects to `/capture`
+- Signing in with wrong password shows inline error
+- Unauthenticated new user sees sign-up form with pre-filled read-only email
+- Signing up shows "Check your email" state
+- After email confirmation, callback auto-accepts invitation (email match verified by Increment 3.1)
+- Google OAuth on invite page works — sets cookie, redirects through OAuth, callback verifies email
+- `?error=email_mismatch` in URL shows a toast and cleans the URL
+- Invalid/expired/already_accepted states render unchanged
+
+---
+
+### Dependencies on Other Parts
+
+- **Part 1 (Sign-Up and Sign-In):** The Zod password schema, form patterns, and `GoogleIcon` component created in Part 1 are reused in the invite page forms.
+- **Part 2 (Password Reset):** No direct dependency. The auth callback recovery check (Increment 2.2) is positioned before the invite token handling, so recovery flows are unaffected.
+- **Part 4 (Middleware and Callback):** All middleware and callback changes needed for the invite flow are included in this part (Increment 3.1). Part 4 is fully absorbed into Parts 1–3 and requires no additional work.
