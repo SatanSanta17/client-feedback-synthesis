@@ -11,18 +11,12 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { GoogleIcon } from "@/components/ui/google-icon";
+import { passwordField } from "@/lib/schemas/password-schema";
 
 const signupSchema = z
   .object({
     email: z.string().email("Please enter a valid email address"),
-    password: z
-      .string()
-      .min(8, "Password must be at least 8 characters")
-      .regex(/\d/, "Password must contain at least one number")
-      .regex(
-        /[^a-zA-Z0-9]/,
-        "Password must contain at least one special character"
-      ),
+    password: passwordField,
     confirmPassword: z.string(),
   })
   .refine((data) => data.password === data.confirmPassword, {
