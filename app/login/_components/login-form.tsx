@@ -1,0 +1,169 @@
+"use client";
+
+import { useState } from "react";
+import Link from "next/link";
+import { useForm } from "react-hook-form";
+import { z } from "zod";
+import { zodResolver } from "@hookform/resolvers/zod";
+import { Loader2 } from "lucide-react";
+import { createClient } from "@/lib/supabase/client";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { GoogleIcon } from "@/components/ui/google-icon";
+
+const loginSchema = z.object({
+  email: z.string().email("Please enter a valid email address"),
+  password: z.string().min(1, "Password is required"),
+});
+
+type LoginFields = z.infer<typeof loginSchema>;
+
+function friendlyAuthError(message: string): string {
+  const lower = message.toLowerCase();
+  if (lower.includes("invalid login credentials")) {
+    return "Invalid email or password";
+  }
+  if (lower.includes("email not confirmed")) {
+    return "Please check your email to confirm your account";
+  }
+  return message;
+}
+
+export function LoginForm() {
+  const [serverError, setServerError] = useState<string | null>(null);
+  const supabase = createClient();
+
+  const {
+    register,
+    handleSubmit,
+    formState: { errors, isSubmitting },
+  } = useForm<LoginFields>({
+    resolver: zodResolver(loginSchema),
+    defaultValues: { email: "", password: "" },
+  });
+
+  async function onSubmit(data: LoginFields) {
+    setServerError(null);
+
+    const { error } = await supabase.auth.signInWithPassword({
+      email: data.email,
+      password: data.password,
+    });
+
+    if (error) {
+      setServerError(friendlyAuthError(error.message));
+      return;
+    }
+
+    window.location.href = "/capture";
+  }
+
+  async function handleGoogleSignIn() {
+    await supabase.auth.signInWithOAuth({
+      provider: "google",
+      options: {
+        redirectTo: `${window.location.origin}/auth/callback`,
+      },
+    });
+  }
+
+  return (
+    <div className="flex min-h-screen items-center justify-center bg-[var(--surface-page)]">
+      <div className="w-full max-w-sm rounded-lg border border-[var(--border-default)] bg-white p-8 shadow-sm">
+        <div className="mb-8 text-center">
+          <h1 className="text-xl font-semibold text-[var(--text-primary)]">
+            Synthesiser
+          </h1>
+          <p className="mt-2 text-sm text-[var(--text-secondary)]">
+            Sign in to capture and synthesise client feedback.
+          </p>
+        </div>
+
+        <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
+          <div className="space-y-1.5">
+            <Label htmlFor="email">Email</Label>
+            <Input
+              id="email"
+              type="email"
+              placeholder="you@example.com"
+              autoComplete="email"
+              {...register("email")}
+            />
+            {errors.email && (
+              <p className="text-xs text-red-500">{errors.email.message}</p>
+            )}
+          </div>
+
+          <div className="space-y-1.5">
+            <div className="flex items-center justify-between">
+              <Label htmlFor="password">Password</Label>
+              <Link
+                href="/forgot-password"
+                className="text-xs text-[var(--brand-primary)] hover:underline"
+              >
+                Forgot password?
+              </Link>
+            </div>
+            <Input
+              id="password"
+              type="password"
+              placeholder="Enter your password"
+              autoComplete="current-password"
+              {...register("password")}
+            />
+            {errors.password && (
+              <p className="text-xs text-red-500">{errors.password.message}</p>
+            )}
+          </div>
+
+          {serverError && (
+            <p className="text-xs text-red-500">{serverError}</p>
+          )}
+
+          <Button
+            type="submit"
+            disabled={isSubmitting}
+            className="w-full cursor-pointer"
+            size="lg"
+          >
+            {isSubmitting ? (
+              <>
+                <Loader2 className="mr-2 size-4 animate-spin" />
+                Signing in…
+              </>
+            ) : (
+              "Sign In"
+            )}
+          </Button>
+        </form>
+
+        <div className="my-6 flex items-center gap-3">
+          <div className="h-px flex-1 bg-[var(--border-default)]" />
+          <span className="text-xs text-[var(--text-muted)]">or</span>
+          <div className="h-px flex-1 bg-[var(--border-default)]" />
+        </div>
+
+        <Button
+          onClick={handleGoogleSignIn}
+          variant="outline"
+          className="w-full cursor-pointer"
+          size="lg"
+        >
+          <GoogleIcon className="mr-2 h-5 w-5" />
+          Continue with Google
+        </Button>
+
+        <p className="mt-6 text-center text-sm text-[var(--text-secondary)]">
+          Don&apos;t have an account?{" "}
+          <Link
+            href="/signup"
+            className="font-medium text-[var(--brand-primary)] hover:underline"
+          >
+            Sign up
+          </Link>
+        </p>
+      </div>
+    </div>
+  );
+}
