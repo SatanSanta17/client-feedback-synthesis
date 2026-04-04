@@ -125,6 +125,16 @@ Master PRD (this file)
 
 ---
 
+## Code Quality — SOLID, DRY, and Design Consistency (New Section)
+
+**PRD:** `docs/012-code-quality/prd.md` — Draft
+
+**Scope:** Centralise status colour tokens in globals.css, extract duplicated logic (team cookie helpers, signal extraction hook, auth form shell, AI error mapper), decompose oversized components (expanded-session-row, prompt-editor-page-content, master-signal-page-content, past-sessions-table), and clean up API route handlers (extract orchestration to services, add Zod to GET routes, decouple prompt templates from services).
+
+**Deliverable:** Every file follows SRP. Shared patterns live in one place. Design tokens are centralised. No user-visible changes — identical product behaviour before and after.
+
+---
+
 ## Out of Scope
 
 - Real-time collaboration / multiplayer editing (planned for future)
