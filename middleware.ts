@@ -38,6 +38,7 @@ export async function middleware(request: NextRequest) {
   const isPublicRoute =
     pathname === "/login" ||
     pathname === "/signup" ||
+    pathname === "/forgot-password" ||
     pathname.startsWith("/auth/callback") ||
     pathname.startsWith("/invite");
 
@@ -48,7 +49,12 @@ export async function middleware(request: NextRequest) {
   }
 
   // Authenticated user visiting auth pages → send them to the app
-  if (user && (pathname === "/login" || pathname === "/signup")) {
+  if (
+    user &&
+    (pathname === "/login" ||
+      pathname === "/signup" ||
+      pathname === "/forgot-password")
+  ) {
     const captureUrl = request.nextUrl.clone();
     captureUrl.pathname = "/capture";
     return NextResponse.redirect(captureUrl);
