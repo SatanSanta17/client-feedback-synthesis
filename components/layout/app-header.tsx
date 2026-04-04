@@ -10,7 +10,13 @@ export function AppHeader() {
   const pathname = usePathname();
   const { isAuthenticated } = useAuth();
 
-  if (pathname === "/login") return null;
+  const isAuthPage =
+    pathname === "/login" ||
+    pathname === "/signup" ||
+    pathname === "/forgot-password" ||
+    pathname === "/reset-password";
+
+  if (isAuthPage) return null;
 
   return (
     <header className="flex items-center justify-between border-b border-[var(--border-default)] bg-[var(--surface-page)] px-6">

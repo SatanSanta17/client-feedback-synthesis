@@ -32,7 +32,7 @@ export function ForgotPasswordForm() {
 
   async function onSubmit(data: ForgotPasswordFields) {
     await supabase.auth.resetPasswordForEmail(data.email, {
-      redirectTo: `${window.location.origin}/auth/callback`,
+      redirectTo: `${window.location.origin}/auth/callback?type=recovery`,
     });
 
     setSubmittedEmail(data.email);

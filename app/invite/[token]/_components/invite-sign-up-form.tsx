@@ -10,6 +10,7 @@ import { createClient } from "@/lib/supabase/client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { PasswordInput } from "@/components/ui/password-input";
 import { GoogleIcon } from "@/components/ui/google-icon";
 import { passwordField } from "@/lib/schemas/password-schema";
 import {
@@ -130,9 +131,8 @@ export function InviteSignUpForm({
 
         <div className="space-y-1.5">
           <Label htmlFor="invite-password">Password</Label>
-          <Input
+          <PasswordInput
             id="invite-password"
-            type="password"
             placeholder="Min 8 chars, 1 number, 1 special"
             autoComplete="new-password"
             {...register("password")}
@@ -144,9 +144,8 @@ export function InviteSignUpForm({
 
         <div className="space-y-1.5">
           <Label htmlFor="invite-confirm-password">Confirm Password</Label>
-          <Input
+          <PasswordInput
             id="invite-confirm-password"
-            type="password"
             placeholder="Re-enter your password"
             autoComplete="new-password"
             {...register("confirmPassword")}

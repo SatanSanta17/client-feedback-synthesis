@@ -9,8 +9,8 @@ import { Loader2 } from "lucide-react";
 import { toast } from "sonner";
 import { createClient } from "@/lib/supabase/client";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { PasswordInput } from "@/components/ui/password-input";
 import { passwordField } from "@/lib/schemas/password-schema";
 
 const resetPasswordSchema = z
@@ -69,10 +69,9 @@ export function ResetPasswordForm() {
         <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
           <div className="space-y-1.5">
             <Label htmlFor="password">New Password</Label>
-            <Input
+            <PasswordInput
               id="password"
-              type="password"
-              placeholder="Min 8 chars, 1 number, 1 special"
+              placeholder="password"
               autoComplete="new-password"
               {...register("password")}
             />
@@ -83,9 +82,8 @@ export function ResetPasswordForm() {
 
           <div className="space-y-1.5">
             <Label htmlFor="confirmPassword">Confirm New Password</Label>
-            <Input
+            <PasswordInput
               id="confirmPassword"
-              type="password"
               placeholder="Re-enter your new password"
               autoComplete="new-password"
               {...register("confirmPassword")}
