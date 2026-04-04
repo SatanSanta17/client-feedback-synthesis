@@ -23,6 +23,12 @@ export async function GET(request: Request) {
     return NextResponse.redirect(`${origin}/login?error=exchange_failed`);
   }
 
+  // Recovery flow — redirect to reset password page, skip invite handling
+  const type = searchParams.get("type");
+  if (type === "recovery") {
+    return NextResponse.redirect(`${origin}/reset-password`);
+  }
+
   const pendingToken = getCookie(request, "pending_invite_token");
   const response = NextResponse.redirect(`${origin}/capture`);
 
