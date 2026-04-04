@@ -4,12 +4,11 @@ import { usePathname } from "next/navigation";
 import { useAuth } from "@/components/providers/auth-provider";
 import { TabNav } from "@/components/layout/tab-nav";
 import { UserMenu } from "@/components/layout/user-menu";
-import { CreateTeamDialog } from "@/components/layout/create-team-dialog";
 import { WorkspaceSwitcher } from "@/components/layout/workspace-switcher";
 
 export function AppHeader() {
   const pathname = usePathname();
-  const { canCreateTeam, isAuthenticated } = useAuth();
+  const { isAuthenticated } = useAuth();
 
   if (pathname === "/login") return null;
 
@@ -23,7 +22,6 @@ export function AppHeader() {
         <TabNav />
       </div>
       <div className="flex items-center gap-3">
-        {isAuthenticated && canCreateTeam && <CreateTeamDialog />}
         <UserMenu />
       </div>
     </header>

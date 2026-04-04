@@ -6,6 +6,15 @@ All notable changes to this project are documented here, grouped by PRD and part
 
 ## [Unreleased]
 
+### Workspace Switcher: Always Visible + Create Team in Dropdown — 2026-04-02
+- Workspace switcher now renders for all authenticated users (not just those with teams)
+- Shows a skeleton shimmer while loading instead of disappearing
+- "Create Team" option moved inside the dropdown (gated by `canCreateTeam`)
+- Non-paid users see a disabled "Team workspaces — contact us" hint (passive CTA)
+- Standalone "Create Team" button removed from app header
+- `CreateTeamDialog` converted to controlled component (`open`/`onOpenChange` props)
+- Fixed `router.refresh()` → `window.location.reload()` in both workspace switcher and create team dialog
+
 ### Email Provider: Add Brevo Adapter — 2026-04-02
 - Added Brevo adapter to `email-service.ts` using `@getbrevo/brevo` SDK
 - `EMAIL_PROVIDER` now supports `resend` and `brevo` — switch via env var

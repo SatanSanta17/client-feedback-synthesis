@@ -140,11 +140,11 @@ synthesiser/
 │   │   └── auth-provider.tsx    # AuthProvider context — user, isAuthenticated, isLoading, canCreateTeam, signOut
 │   ├── layout/
 │   │   ├── app-footer.tsx       # Footer — developer contact (name, email, GitHub, LinkedIn)
-│   │   ├── app-header.tsx       # Top bar — TabNav + WorkspaceSwitcher + CreateTeamDialog + UserMenu
-│   │   ├── create-team-dialog.tsx # Team creation dialog (visible when can_create_team = true)
+│   │   ├── app-header.tsx       # Top bar — TabNav + WorkspaceSwitcher + UserMenu
+│   │   ├── create-team-dialog.tsx # Controlled team creation dialog (opened from workspace switcher)
 │   │   ├── tab-nav.tsx          # Route-based tab navigation with active indicator
 │   │   ├── user-menu.tsx        # Auth-aware user menu — avatar, email, sign-out dropdown
-│   │   └── workspace-switcher.tsx # Personal ↔ team workspace dropdown switcher
+│   │   └── workspace-switcher.tsx # Always-visible workspace dropdown — switch, create team, CTA
 │   └── ui/                      # shadcn/ui primitives (do not modify)
 │       ├── badge.tsx
 │       ├── button.tsx

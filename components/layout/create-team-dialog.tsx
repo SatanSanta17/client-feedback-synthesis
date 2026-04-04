@@ -2,7 +2,6 @@
 
 import { useCallback, useState } from "react";
 import { toast } from "sonner";
-import { Plus } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -11,7 +10,6 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
-  DialogTrigger,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -20,8 +18,12 @@ function setActiveTeamCookie(teamId: string) {
   document.cookie = `active_team_id=${teamId}; path=/; max-age=${60 * 60 * 24 * 365}; SameSite=Lax`;
 }
 
-export function CreateTeamDialog() {
-  const [open, setOpen] = useState(false);
+interface CreateTeamDialogProps {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+}
+
+export function CreateTeamDialog({ open, onOpenChange }: CreateTeamDialogProps) {
   const [name, setName] = useState("");
   const [isCreating, setIsCreating] = useState(false);
 
@@ -51,7 +53,7 @@ export function CreateTeamDialog() {
       const { team } = await response.json();
       setActiveTeamCookie(team.id);
       toast.success(`Team "${team.name}" created`);
-      setOpen(false);
+      onOpenChange(false);
       setName("");
       window.location.reload();
     } catch (err) {
@@ -60,16 +62,10 @@ export function CreateTeamDialog() {
     } finally {
       setIsCreating(false);
     }
-  }, [name]);
+  }, [name, onOpenChange]);
 
   return (
-    <Dialog open={open} onOpenChange={setOpen}>
-      <DialogTrigger asChild>
-        <Button variant="outline" size="sm">
-          <Plus data-icon="inline-start" />
-          Create Team
-        </Button>
-      </DialogTrigger>
+    <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent>
         <DialogHeader>
           <DialogTitle>Create a Team</DialogTitle>
