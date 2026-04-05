@@ -172,6 +172,47 @@ export function SessionCaptureForm({ onSessionSaved }: SessionCaptureFormProps) 
     await performExtraction()
   }
 
+  const uploadAttachmentsToSession = async (
+    sessionId: string,
+    pendingAttachments: ParsedAttachment[]
+  ) => {
+    let failCount = 0
+
+    for (const attachment of pendingAttachments) {
+      try {
+        const formData = new FormData()
+        formData.append("file", attachment.file)
+        formData.append("parsed_content", attachment.parsed_content)
+        formData.append("source_format", attachment.source_format)
+
+        const res = await fetch(`/api/sessions/${sessionId}/attachments`, {
+          method: "POST",
+          body: formData,
+        })
+
+        if (!res.ok) {
+          failCount++
+          console.error(
+            `[SessionCaptureForm] attachment upload failed for "${attachment.file_name}":`,
+            await res.text().catch(() => "unknown error")
+          )
+        }
+      } catch (err) {
+        failCount++
+        console.error(
+          `[SessionCaptureForm] attachment upload error for "${attachment.file_name}":`,
+          err instanceof Error ? err.message : err
+        )
+      }
+    }
+
+    if (failCount > 0) {
+      toast.warning(
+        `${failCount} attachment${failCount > 1 ? "s" : ""} failed to upload. The session was saved.`
+      )
+    }
+  }
+
   const onSubmit = async (data: CaptureFormValues) => {
     if (!hasInput) {
       toast.error("Provide notes or attach files before saving.")
@@ -179,15 +220,6 @@ export function SessionCaptureForm({ onSessionSaved }: SessionCaptureFormProps) 
     }
 
     const client = data.client as ClientSelection
-    const composedInput = composeAIInput(data.rawNotes, attachments)
-
-    const attachmentsMeta = attachments.map((a) => ({
-      file_name: a.file_name,
-      file_type: a.file_type,
-      file_size: a.file_size,
-      source_format: a.source_format,
-      parsed_content: a.parsed_content,
-    }))
 
     try {
       const response = await fetch("/api/sessions", {
@@ -197,9 +229,9 @@ export function SessionCaptureForm({ onSessionSaved }: SessionCaptureFormProps) 
           clientId: client.id,
           clientName: client.name,
           sessionDate: data.sessionDate,
-          rawNotes: composedInput,
+          rawNotes: data.rawNotes,
           structuredNotes: structuredNotes,
-          attachments: attachmentsMeta.length > 0 ? attachmentsMeta : undefined,
+          hasAttachments: attachments.length > 0,
         }),
       })
 
@@ -213,6 +245,12 @@ export function SessionCaptureForm({ onSessionSaved }: SessionCaptureFormProps) 
           toast.error(message)
         }
         return
+      }
+
+      const { session } = await response.json()
+
+      if (attachments.length > 0) {
+        await uploadAttachmentsToSession(session.id, attachments)
       }
 
       toast.success("Session saved")
