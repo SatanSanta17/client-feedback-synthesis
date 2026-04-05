@@ -1,7 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
 
-import { createClient, getActiveTeamId } from "@/lib/supabase/server";
-import { getTeamMember } from "@/lib/services/team-service";
 import {
   uploadAndCreateAttachment,
   getAttachmentCountForSession,
@@ -11,6 +9,7 @@ import {
   MAX_ATTACHMENTS,
   ACCEPTED_FILE_TYPES,
 } from "@/lib/constants";
+import { checkSessionWriteAccess } from "@/app/api/sessions/_helpers";
 
 export async function POST(
   request: NextRequest,
@@ -20,44 +19,10 @@ export async function POST(
 
   console.log("[api/sessions/[id]/attachments] POST — session:", sessionId);
 
-  const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  const access = await checkSessionWriteAccess(sessionId);
+  if (access.error) return access.error;
 
-  if (!user) {
-    return NextResponse.json(
-      { message: "Authentication required" },
-      { status: 401 }
-    );
-  }
-
-  const teamId = await getActiveTeamId();
-
-  // Verify session exists and user has write access
-  const { data: session } = await supabase
-    .from("sessions")
-    .select("id, created_by")
-    .eq("id", sessionId)
-    .is("deleted_at", null)
-    .single();
-
-  if (!session) {
-    return NextResponse.json(
-      { message: "Session not found" },
-      { status: 404 }
-    );
-  }
-
-  if (teamId && session.created_by !== user.id) {
-    const member = await getTeamMember(teamId, user.id);
-    if (member?.role !== "admin") {
-      return NextResponse.json(
-        { message: "You can only add attachments to your own sessions" },
-        { status: 403 }
-      );
-    }
-  }
+  const { teamId } = access;
 
   let formData: FormData;
   try {

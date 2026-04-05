@@ -9,6 +9,7 @@ import {
   MAX_ATTACHMENTS,
   ACCEPTED_EXTENSIONS,
 } from "@/lib/constants";
+import { formatFileSize } from "@/lib/utils/format-file-size";
 
 export interface ParsedAttachment {
   file: File;
@@ -23,12 +24,6 @@ interface FileUploadZoneProps {
   onFileParsed: (result: ParsedAttachment) => void;
   disabled?: boolean;
   currentCount: number;
-}
-
-function formatFileSize(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 function hasValidExtension(fileName: string): boolean {

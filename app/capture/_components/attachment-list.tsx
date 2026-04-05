@@ -11,6 +11,7 @@ import {
   ChevronRight,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
+import { formatFileSize } from "@/lib/utils/format-file-size";
 import type { ParsedAttachment } from "./file-upload-zone";
 
 interface AttachmentListProps {
@@ -26,12 +27,6 @@ const FILE_ICONS: Record<string, React.ElementType> = {
   "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
     FileText,
 };
-
-function formatFileSize(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-}
 
 export function AttachmentList({ attachments, onRemove }: AttachmentListProps) {
   const [expandedIndex, setExpandedIndex] = useState<number | null>(null);

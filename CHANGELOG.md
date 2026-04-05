@@ -6,6 +6,18 @@ All notable changes to this project are documented here, grouped by PRD and part
 
 ## [Unreleased]
 
+### PRD-013 Part 2: Persistence & Signal Extraction Integration — 2026-04-02
+- Created `session_attachments` table with RLS (personal + team-scoped) and `session-attachments` Storage bucket
+- Created `lib/services/attachment-service.ts` — `uploadAndCreateAttachment`, `getAttachmentsBySessionId`, `deleteAttachment` (soft-delete DB + hard-delete Storage), `getSignedDownloadUrl`, `getAttachmentCountForSession`
+- Created `POST /api/sessions/[id]/attachments` — multipart upload endpoint with file size/type/count validation
+- Created `DELETE /api/sessions/[id]/attachments/[attachmentId]` — soft-delete attachment + hard-delete from Storage
+- Updated `POST /api/sessions` — relaxed `rawNotes` to allow empty when `hasAttachments` is true
+- Updated `session-capture-form.tsx` — two-step save flow (save session JSON → upload attachments via multipart)
+- Updated `attachment-list.tsx` — added "View content" toggle showing parsed text read-only
+- Extracted `checkSessionWriteAccess` shared helper to `app/api/sessions/_helpers.ts` — eliminates duplicated auth/permission checks across `[id]/route.ts`, attachments POST, and attachments DELETE routes
+- Extracted `formatFileSize` to `lib/utils/format-file-size.ts` — shared by `file-upload-zone.tsx` and `attachment-list.tsx`
+- Removed unused `getActiveTeamId` import from `attachment-service.ts`
+
 ### PRD-013 Part 1: File Upload Infrastructure — 2026-04-02
 - Created `lib/constants.ts` with file upload limits (`MAX_FILE_SIZE_BYTES`, `MAX_COMBINED_CHARS`, `MAX_ATTACHMENTS`, `ACCEPTED_FILE_TYPES`, `ACCEPTED_EXTENSIONS`)
 - Created `lib/services/file-parser-service.ts` with parsers for TXT, PDF, CSV, DOCX, JSON files and WhatsApp/Slack chat format detection and restructuring

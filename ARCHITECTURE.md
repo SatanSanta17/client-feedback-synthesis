@@ -20,7 +20,7 @@ Synthesiser is a web application for teams to capture structured client session 
 
 ## Current State
 
-**Status:** PRD-002 through PRD-010 implemented. PRD-013 Part 1 (File Upload Infrastructure) implemented. The app is a fully functional team-capable client feedback capture and synthesis platform. Google OAuth login (open to any Google account), working capture form with AI signal extraction and file attachment upload, past sessions table with filters/inline editing/soft delete, master signal page with AI synthesis and PDF download, prompt editor with version history, and team access with role-based permissions.
+**Status:** PRD-002 through PRD-010 implemented. PRD-013 Parts 1–2 (File Upload Infrastructure + Persistence & Signal Extraction Integration) implemented. The app is a fully functional team-capable client feedback capture and synthesis platform. Google OAuth login (open to any Google account), working capture form with AI signal extraction and file attachment upload with server-side persistence, past sessions table with filters/inline editing/soft delete, master signal page with AI synthesis and PDF download, prompt editor with version history, and team access with role-based permissions.
 
 **Core features live:**
 - Session capture with AI signal extraction (Vercel AI SDK, multi-provider) and file attachment upload (TXT, PDF, CSV, DOCX, JSON) with server-side parsing and chat format detection (WhatsApp, Slack)
@@ -33,7 +33,7 @@ Synthesiser is a web application for teams to capture structured client session 
 - Team management (members, roles, ownership transfer, rename, delete)
 - Data retention on member departure
 
-**Database tables:** `clients`, `sessions`, `master_signals`, `profiles`, `prompt_versions`, `teams`, `team_members`, `team_invitations` — all with RLS.
+**Database tables:** `clients`, `sessions`, `session_attachments`, `master_signals`, `profiles`, `prompt_versions`, `teams`, `team_members`, `team_invitations` — all with RLS.
 
 ---
 
@@ -73,9 +73,14 @@ synthesiser/
 │   │   ├── prompts/
 │   │   │   └── route.ts         # GET/POST — prompt CRUD (team admin check) — workspace-scoped
 │   │   ├── sessions/
+│   │   │   ├── _helpers.ts      # Shared helpers — checkSessionWriteAccess (auth + session ownership + team role)
 │   │   │   ├── route.ts         # GET/POST — session list and create — team-scoped
 │   │   │   └── [id]/
-│   │   │       └── route.ts     # PUT/DELETE — update/soft-delete session (team permission check)
+│   │   │       ├── route.ts     # PUT/DELETE — update/soft-delete session (uses _helpers)
+│   │   │       └── attachments/
+│   │   │           ├── route.ts         # POST — upload single attachment to session (multipart/form-data)
+│   │   │           └── [attachmentId]/
+│   │   │               └── route.ts     # DELETE — soft-delete attachment + hard-delete from storage
 │   │   └── teams/
 │   │       ├── route.ts         # GET (list user's teams) and POST (create team)
 │   │       └── [teamId]/
@@ -173,6 +178,7 @@ synthesiser/
 │   │   └── signal-extraction.ts # System prompt and user message template for signal extraction
 │   ├── services/
 │   │   ├── ai-service.ts        # AI service — extractSignals(), synthesiseMasterSignal(), provider-agnostic via Vercel AI SDK
+│   │   ├── attachment-service.ts # Attachment CRUD — upload to Storage, DB persist, soft-delete + storage cleanup, signed URLs
 │   │   ├── client-service.ts    # Client search and creation — team-scoped via getActiveTeamId()
 │   │   ├── email-service.ts     # Provider-agnostic email sending — sendEmail(), resolveEmailProvider(), Resend adapter
 │   │   ├── file-parser-service.ts # File parsing — TXT, PDF, CSV, DOCX, JSON + WhatsApp/Slack chat detection
@@ -183,6 +189,7 @@ synthesiser/
 │   │   ├── session-service.ts   # Session CRUD — team-scoped via getActiveTeamId()
 │   │   └── team-service.ts      # Team CRUD — create, list, members, rename, delete, roles, transfer, leave
 │   ├── utils/
+│   │   ├── format-file-size.ts    # File size formatting (bytes → "1.2 KB", "3.4 MB")
 │   │   └── format-relative-time.ts # Relative time formatting ("just now", "5m ago", "3d ago")
 │   └── supabase/
 │       ├── server.ts            # Server-side Supabase clients (anon + service role) + getActiveTeamId()
@@ -267,6 +274,29 @@ Stores captured client feedback sessions. Scoped to a user or a team.
 
 **Indexes:** `sessions_client_id_idx` (filtered), `sessions_session_date_idx` (desc, filtered).
 **RLS:** Personal: users SELECT/UPDATE own sessions. Team: members SELECT all team sessions; admins UPDATE/DELETE any team session; sales UPDATE/DELETE only own team sessions. INSERT allowed for authenticated users.
+
+### `session_attachments`
+
+Stores uploaded file metadata and parsed content for session attachments. Original files are stored in the `session-attachments` Supabase Storage bucket.
+
+| Column | Type | Notes |
+|--------|------|-------|
+| `id` | UUID (PK) | `gen_random_uuid()` |
+| `session_id` | UUID (FK → sessions) | NOT NULL |
+| `file_name` | TEXT | NOT NULL, original upload file name |
+| `file_type` | TEXT | NOT NULL, MIME type |
+| `file_size` | INTEGER | NOT NULL, file size in bytes |
+| `storage_path` | TEXT | NOT NULL, path in Storage bucket (`{ownerId}/{sessionId}/{uuid}.{ext}`) |
+| `parsed_content` | TEXT | NOT NULL, extracted text from file |
+| `source_format` | TEXT | NOT NULL, detected format (`generic`, `whatsapp`, `slack`) |
+| `created_by` | UUID | Default `auth.uid()` |
+| `team_id` | UUID (FK → teams) | Nullable. NULL = personal workspace. |
+| `created_at` | TIMESTAMPTZ | Default `now()` |
+| `deleted_at` | TIMESTAMPTZ | Soft delete |
+
+**Indexes:** `session_attachments_session_id_idx` — on `session_id` where `deleted_at IS NULL`.
+**RLS:** Personal: users SELECT/INSERT their own attachments. Team: members SELECT team attachments; INSERT allowed for authenticated users. Service role handles DELETE (soft-delete + storage cleanup).
+**Storage bucket:** `session-attachments` — private, max 10 MB per file. Files stored at `{ownerId}/{sessionId}/{uuid}.{ext}`. All operations via service role client.
 
 ### `master_signals`
 
@@ -427,6 +457,8 @@ Stores versioned AI system prompts per user or team workspace. Each save/reset/r
 | POST | `/api/sessions` | Create session. Workspace-scoped. | Yes (RLS) |
 | PUT | `/api/sessions/[id]` | Update session. Team: admin can edit any, sales own only. | Yes (RLS) |
 | DELETE | `/api/sessions/[id]` | Soft-delete session. Team: admin can delete any, sales own only. | Yes (RLS) |
+| POST | `/api/sessions/[id]/attachments` | Upload single attachment (multipart). Validates file size/type/count. | Yes (RLS) |
+| DELETE | `/api/sessions/[id]/attachments/[attachmentId]` | Soft-delete attachment + hard-delete from Storage. | Yes |
 | GET | `/api/prompts?key=` | Fetch active prompt + history. Workspace-scoped. | Yes (RLS) |
 | POST | `/api/prompts` | Save new prompt version. Team: admin only. | Yes (RLS) |
 

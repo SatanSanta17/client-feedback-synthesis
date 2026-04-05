@@ -1,11 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 
-import { createClient, getActiveTeamId } from "@/lib/supabase/server";
-import { getTeamMember } from "@/lib/services/team-service";
 import {
   deleteAttachment,
   AttachmentNotFoundError,
 } from "@/lib/services/attachment-service";
+import { checkSessionWriteAccess } from "@/app/api/sessions/_helpers";
 
 export async function DELETE(
   _request: NextRequest,
@@ -20,44 +19,8 @@ export async function DELETE(
     attachmentId
   );
 
-  const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-
-  if (!user) {
-    return NextResponse.json(
-      { message: "Authentication required" },
-      { status: 401 }
-    );
-  }
-
-  const teamId = await getActiveTeamId();
-
-  // Verify session exists and user has write access
-  const { data: session } = await supabase
-    .from("sessions")
-    .select("id, created_by")
-    .eq("id", sessionId)
-    .is("deleted_at", null)
-    .single();
-
-  if (!session) {
-    return NextResponse.json(
-      { message: "Session not found" },
-      { status: 404 }
-    );
-  }
-
-  if (teamId && session.created_by !== user.id) {
-    const member = await getTeamMember(teamId, user.id);
-    if (member?.role !== "admin") {
-      return NextResponse.json(
-        { message: "You can only delete attachments from your own sessions" },
-        { status: 403 }
-      );
-    }
-  }
+  const access = await checkSessionWriteAccess(sessionId);
+  if (access.error) return access.error;
 
   try {
     await deleteAttachment(attachmentId);

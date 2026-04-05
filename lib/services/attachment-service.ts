@@ -1,4 +1,4 @@
-import { createClient, createServiceRoleClient, getActiveTeamId } from "@/lib/supabase/server";
+import { createClient, createServiceRoleClient } from "@/lib/supabase/server";
 
 const STORAGE_BUCKET = "SYNTHESISER_FILE_UPLOAD";
 
