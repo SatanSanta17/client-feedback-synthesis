@@ -1,4 +1,4 @@
-import { PDFParse } from "pdf-parse";
+import pdfParse from "pdf-parse/lib/pdf-parse";
 import mammoth from "mammoth";
 import Papa from "papaparse";
 
@@ -73,9 +73,8 @@ function parseTxt(buffer: Buffer): string {
 
 async function parsePdf(buffer: Buffer): Promise<string> {
   try {
-    const pdf = new PDFParse({ data: new Uint8Array(buffer) });
-    const result = await pdf.getText();
-    return result.text;
+    const data = await pdfParse(buffer);
+    return data.text;
   } catch {
     throw new FileParseError(
       "Could not extract text from this PDF — it may be scanned or encrypted."

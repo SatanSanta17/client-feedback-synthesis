@@ -281,7 +281,7 @@ Stores captured client feedback sessions. Scoped to a user or a team.
 
 ### `session_attachments`
 
-Stores uploaded file metadata and parsed content for session attachments. Original files are stored in the `session-attachments` Supabase Storage bucket.
+Stores uploaded file metadata and parsed content for session attachments. Original files are stored in the `SYNTHESISER_FILE_UPLOAD` Supabase Storage bucket.
 
 | Column | Type | Notes |
 |--------|------|-------|
@@ -300,7 +300,7 @@ Stores uploaded file metadata and parsed content for session attachments. Origin
 
 **Indexes:** `session_attachments_session_id_idx` — on `session_id` where `deleted_at IS NULL`.
 **RLS:** Personal: users SELECT/INSERT their own attachments. Team: members SELECT team attachments; INSERT allowed for authenticated users. Service role handles DELETE (soft-delete + storage cleanup).
-**Storage bucket:** `session-attachments` — private, max 10 MB per file. Files stored at `{ownerId}/{sessionId}/{uuid}.{ext}`. All operations via service role client.
+**Storage bucket:** `SYNTHESISER_FILE_UPLOAD` — private, max 10 MB per file. Files stored at `{ownerId}/{sessionId}/{uuid}.{ext}`. All operations via service role client.
 
 ### `master_signals`
 

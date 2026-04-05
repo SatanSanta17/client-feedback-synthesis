@@ -320,7 +320,7 @@ Persist file attachments when a session is saved. Original files are stored in S
 
 #### Supabase Storage bucket
 
-- **Bucket name:** `session-attachments`
+- **Bucket name:** `SYNTHESISER_FILE_UPLOAD`
 - **Public:** No (private bucket)
 - **File path pattern:** `{owner_id}/{session_id}/{uuid}.{ext}`
   - `owner_id` = `auth.uid()` for personal workspace, `team_id` for team workspace
@@ -342,7 +342,7 @@ Persist file attachments when a session is saved. Original files are stored in S
 
 #### Increment 2.1: Database Migration + Storage Bucket
 
-**What:** Create the `session_attachments` table with RLS and the `session-attachments` Storage bucket. This is a manual Supabase Dashboard step documented here.
+**What:** Create the `session_attachments` table with RLS and the `SYNTHESISER_FILE_UPLOAD` Storage bucket. This is a manual Supabase Dashboard step documented here.
 
 **SQL migration:**
 
@@ -442,7 +442,7 @@ Save migration SQL to `docs/013-file-upload/001-create-session-attachments-table
 
    **`uploadAndCreateAttachment`:**
    1. Build storage path: `{ownerId}/{sessionId}/{uuid}.{ext}` where `ownerId` = `teamId ?? auth.uid()`.
-   2. Use `createServiceRoleClient()` to upload to `session-attachments` bucket: `supabase.storage.from('session-attachments').upload(path, buffer, { contentType })`.
+   2. Use `createServiceRoleClient()` to upload to `SYNTHESISER_FILE_UPLOAD` bucket: `supabase.storage.from('SYNTHESISER_FILE_UPLOAD').upload(path, buffer, { contentType })`.
    3. If upload fails, throw with descriptive error.
    4. Insert row into `session_attachments` using the anon client (RLS INSERT policy allows authenticated users). Include `team_id` from input.
    5. Return the inserted row.
@@ -456,13 +456,13 @@ Save migration SQL to `docs/013-file-upload/001-create-session-attachments-table
    **`deleteAttachment`:**
    1. Use service role client to read the attachment row (need `storage_path`).
    2. Soft-delete: `UPDATE session_attachments SET deleted_at = now() WHERE id = $1`.
-   3. Hard-delete from Storage: `supabase.storage.from('session-attachments').remove([storagePath])`.
+   3. Hard-delete from Storage: `supabase.storage.from('SYNTHESISER_FILE_UPLOAD').remove([storagePath])`.
    4. If Storage delete fails, log warning but don't fail (attachment is already soft-deleted in DB — orphaned blob is acceptable).
    5. Throw `AttachmentNotFoundError` if row doesn't exist.
 
    **`getSignedDownloadUrl`:**
    1. Use service role client.
-   2. `supabase.storage.from('session-attachments').createSignedUrl(path, 60)` — 60 second expiry.
+   2. `supabase.storage.from('SYNTHESISER_FILE_UPLOAD').createSignedUrl(path, 60)` — 60 second expiry.
    3. Return the signed URL.
 
    Error class:

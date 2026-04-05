@@ -95,7 +95,7 @@ If a known format is detected, the `source_format` field is set accordingly (`"w
 
 RLS policies mirror the sessions table — users can only access attachments belonging to their own sessions (or team sessions in team context).
 
-**P2.R2 — Supabase Storage bucket.** A new `session-attachments` storage bucket holds original files. Files are stored at path `/{owner_id}/{session_id}/{uuid}-{filename}` where `owner_id` is the user ID or team ID depending on workspace context. Storage policies restrict access to the file owner or team members.
+**P2.R2 — Supabase Storage bucket.** A new `SYNTHESISER_FILE_UPLOAD` storage bucket holds original files. Files are stored at path `/{owner_id}/{session_id}/{uuid}-{filename}` where `owner_id` is the user ID or team ID depending on workspace context. Storage policies restrict access to the file owner or team members.
 
 **P2.R3 — Persist attachments on session save.** When the user saves a session (new or existing), attachments held in client state are persisted:
 1. Original file uploaded to Supabase Storage → returns `storage_path`
@@ -128,7 +128,7 @@ The existing signal extraction prompt and output schema are unchanged. The AI si
 
 - [ ] P2.AC1 — `session_attachments` table exists with the specified schema
 - [ ] P2.AC2 — RLS policies restrict attachment access to session owners / team members
-- [ ] P2.AC3 — `session-attachments` storage bucket is created with appropriate policies
+- [ ] P2.AC3 — `SYNTHESISER_FILE_UPLOAD` storage bucket is created with appropriate policies
 - [ ] P2.AC4 — Saving a session uploads files to Storage and inserts attachment rows
 - [ ] P2.AC5 — Signal extraction combines raw notes + attachment content with clear labels
 - [ ] P2.AC6 — Existing signal extraction prompt and output are unchanged

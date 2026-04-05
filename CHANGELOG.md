@@ -20,7 +20,7 @@ All notable changes to this project are documented here, grouped by PRD and part
   - Renamed `checkSessionWriteAccess` → `checkSessionAccess` — accurately reflects its use for both read and write operations
 
 ### PRD-013 Part 2: Persistence & Signal Extraction Integration — 2026-04-02
-- Created `session_attachments` table with RLS (personal + team-scoped) and `session-attachments` Storage bucket
+- Created `session_attachments` table with RLS (personal + team-scoped) and `SYNTHESISER_FILE_UPLOAD` Storage bucket
 - Created `lib/services/attachment-service.ts` — `uploadAndCreateAttachment`, `getAttachmentsBySessionId`, `deleteAttachment` (soft-delete DB + hard-delete Storage), `getSignedDownloadUrl`, `getAttachmentCountForSession`
 - Created `POST /api/sessions/[id]/attachments` — multipart upload endpoint with file size/type/count validation
 - Created `DELETE /api/sessions/[id]/attachments/[attachmentId]` — soft-delete attachment + hard-delete from Storage
