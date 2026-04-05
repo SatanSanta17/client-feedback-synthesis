@@ -19,11 +19,10 @@
 - **TRD mirrors the PRD structure** — same part numbers, same feature boundaries. Each part includes: database models, API endpoints, frontend pages/components, files changed, and implementation increments. The TRD is the implementation blueprint — it answers "how" for everything the PRD says "what."
 - **Write TRD parts one at a time, but always reference the entire PRD.** When writing a TRD part, read and reference the full PRD — not just the corresponding part. Each TRD part must account for forward compatibility with later parts and must not introduce designs that conflict with future requirements. Data structures, types, and interfaces created in earlier parts should carry the fields and shape that later parts will need, even if those fields are unused until then.
 - **Each TRD part breaks down into increments. Each increment produces one or more PRs.** An increment is a self-contained, verifiable unit of implementation work. A PR is the smallest pushable unit of code. Never lose sight of the PRD's end goal, but never try to ship it all at once either.
-- **The final TRD part always includes a code quality audit increment.** Before marking a feature complete, the last increment of the last TRD part must review all files created or modified during the feature's implementation for: (1) **SRP violations** — each file, component, and function does one thing. (2) **DRY violations** — shared patterns are extracted, no duplication across files. (3) **Design token adherence** — no hardcoded colours, font sizes, or spacing values; use CSS custom properties or Tailwind tokens. (4) **Logging** — all API routes and services log entry, exit, and errors. (5) **Dead code** — no unused imports, variables, or files remain. (6) **Convention compliance** — naming, export style, import order, and TypeScript strictness follow the rules in this document. This increment produces fixes, not a report.
+- **Every TRD part ends with a code quality audit increment.** The last increment of every TRD part (not just the final part) must review all files created or modified in that part for: (1) **SRP violations** — each file, component, and function does one thing. (2) **DRY violations** — shared patterns are extracted, no duplication across files. (3) **Design token adherence** — no hardcoded colours, font sizes, or spacing values; use CSS custom properties or Tailwind tokens. (4) **Logging** — all API routes and services log entry, exit, and errors. (5) **Dead code** — no unused imports, variables, or files remain. (6) **Convention compliance** — naming, export style, import order, and TypeScript strictness follow the rules in this document. This increment produces fixes, not a report. Catching issues per-part prevents bad patterns from compounding across later parts.
 - **Verify before every push.** Before code is pushed, every change must pass four checks: (1) **Code quality** — read every modified file end-to-end for syntax errors, unused imports, broken references, and consistency with existing patterns. (2) **PRD compliance** — walk through each PRD requirement and confirm the implementation covers it. (3) **No regressions** — trace existing flows through modified files to confirm the happy path still works and new code only activates in the intended scenario. (4) **Documentation consistency** — check if ARCHITECTURE.md or any README in the modified area is now factually incorrect. If it contradicts the new code, fix it.
 - **Respect existing architecture decisions.** `ARCHITECTURE.md` documents platform-specific rules, data flow, and constraints that must not be violated. Read and follow them.
-- **Update ARCHITECTURE.md after every change** that modifies file structure, adds routes, services, database tables, or environment variables. Architecture follows code — never the other way around. If something is documented in ARCHITECTURE.md, it must exist in the codebase. Never pre-fill architecture docs with planned-but-unbuilt structures.
-- **Maintain the CHANGELOG.** Every user-facing change, API change, or database migration is logged in `CHANGELOG.md` with the date and a short description. Group entries under the relevant PRD/part number.
+- **Update ARCHITECTURE.md and CHANGELOG.md after each TRD part completes** — not after each increment and not deferred to the end of the PRD. A part is the smallest unit that delivers a coherent change, and documentation must stay current at that boundary. `ARCHITECTURE.md` reflects file structure, routes, services, database tables, and environment variables — architecture follows code, never the other way around. If something is documented in ARCHITECTURE.md, it must exist in the codebase. Never pre-fill architecture docs with planned-but-unbuilt structures. `CHANGELOG.md` logs every user-facing change, API change, or database migration with the date and a short description, grouped under the relevant PRD/part number.
 
 ---
 
@@ -180,12 +179,13 @@ These rules apply to every file under `app/`, `components/`, and `lib/`.
 
 ---
 
-## After Making Changes
+## After Each TRD Part Completes
 
-1. Update `ARCHITECTURE.md` if you changed any file structure, added routes, services, database tables, or env vars.
-2. Update `CHANGELOG.md` with a short description of the change.
-3. Verify all file references in documentation still exist.
-4. Test the flows affected by the change.
-5. If adding a new frontend component, verify it follows the naming, export, and styling conventions above.
-6. If adding a new API route or service, verify it follows the validation, error handling, and logging conventions above.
-7. If modifying the database schema, regenerate Supabase types and update the data model section in ARCHITECTURE.md.
+1. Update `ARCHITECTURE.md` if the part changed file structure, added routes, services, database tables, or env vars.
+2. Update `CHANGELOG.md` with a short description of what the part delivered.
+3. Run the code quality audit increment (last increment of every part — see Critical Rules).
+4. Verify all file references in documentation still exist.
+5. Test the flows affected by the part.
+6. If adding a new frontend component, verify it follows the naming, export, and styling conventions above.
+7. If adding a new API route or service, verify it follows the validation, error handling, and logging conventions above.
+8. If modifying the database schema, regenerate Supabase types and update the data model section in ARCHITECTURE.md.
