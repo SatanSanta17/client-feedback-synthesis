@@ -133,7 +133,7 @@ export function InviteSignUpForm({
           <Label htmlFor="invite-password">Password</Label>
           <PasswordInput
             id="invite-password"
-            placeholder="Min 8 chars, 1 number, 1 special"
+            placeholder="password"
             autoComplete="new-password"
             {...register("password")}
           />

@@ -135,13 +135,22 @@ Master PRD (this file)
 
 ---
 
+## File Upload and Signal Extraction (New Section)
+
+**PRD:** `docs/013-file-upload/prd.md` — Draft
+
+**Scope:** Generic file upload infrastructure supporting TXT, PDF, CSV, DOCX, and JSON files. Files are parsed into text on upload and fed into the existing signal extraction pipeline alongside raw notes. Includes stateless parse API, Supabase Storage for original files, a `session_attachments` table for metadata and parsed content, upload zone UI on the capture form, and attachment management in past session views.
+
+**Deliverable:** Users can upload files alongside raw notes. The AI receives richer input — real chat exports, meeting transcripts, PDFs, and survey data — without any changes to the signal extraction pipeline.
+
+---
+
 ## Out of Scope
 
 - Real-time collaboration / multiplayer editing (planned for future)
 - Automatic theme extraction at save time (themes are manually tagged)
 - Roadmap integration (no Jira tickets or spec file creation)
 - Client-facing session summaries
-- Attachment or file upload (notes are text-only)
 - Audit log UI
 - Mobile-first design
 - Self-service theme management (merge, split, archive)
@@ -156,4 +165,5 @@ Master PRD (this file)
 - Export to CSV/PDF: export the synthesis dashboard or client profiles for stakeholder presentations
 - Feature-advisor integration: wire the feature-advisor agent to query the sessions database directly instead of reading flat files
 - Theme lifecycle management: merge duplicate themes, archive stale themes, split overloaded themes
-- Session attachments: upload PDFs or audio recordings alongside text notes
+- Session attachments: ~~upload PDFs or audio recordings alongside text notes~~ → moved to PRD-013
+- Conversational insights chat: a RAG-powered chat interface where users can ask questions about their captured sessions and master signals. Uses pgvector (Supabase) for semantic search over structured notes, respects workspace scoping (personal/team), streams responses via Vercel AI SDK, and optionally persists conversation history
