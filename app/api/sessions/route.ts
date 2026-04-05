@@ -62,7 +62,6 @@ const createSessionSchema = z
     sessionDate: z.string().min(1, "Session date is required"),
     rawNotes: z
       .string()
-      .min(1, "Notes are required")
       .max(50000, "Notes must be 50,000 characters or fewer"),
     structuredNotes: z
       .string()
@@ -70,10 +69,10 @@ const createSessionSchema = z
       .nullable()
       .optional()
       .default(null),
+    hasAttachments: z.boolean().optional().default(false),
   })
   .refine(
     (data) => {
-      // When clientId is null (new client), clientName must be non-empty
       if (data.clientId === null) {
         return data.clientName.trim().length > 0;
       }
@@ -82,6 +81,13 @@ const createSessionSchema = z
     {
       message: "Client name is required when creating a new client",
       path: ["clientName"],
+    }
+  )
+  .refine(
+    (data) => data.rawNotes.trim().length > 0 || data.hasAttachments,
+    {
+      message: "Notes or at least one attachment is required",
+      path: ["rawNotes"],
     }
   );
 

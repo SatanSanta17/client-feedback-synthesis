@@ -1,0 +1,2 @@
+1. make the whole upload box clickable
+2. shift the table to a new page bring the prompt at the capture page and show the capture form and the extracted notes side by side
