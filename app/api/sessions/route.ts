@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
+import { MAX_COMBINED_CHARS } from "@/lib/constants";
 import {
   getSessions,
   createSession,
@@ -62,7 +63,7 @@ const createSessionSchema = z
     sessionDate: z.string().min(1, "Session date is required"),
     rawNotes: z
       .string()
-      .max(50000, "Notes must be 50,000 characters or fewer"),
+      .max(MAX_COMBINED_CHARS, `Notes must be ${MAX_COMBINED_CHARS.toLocaleString()} characters or fewer`),
     structuredNotes: z
       .string()
       .max(100000, "Structured notes must be 100,000 characters or fewer")

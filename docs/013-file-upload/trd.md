@@ -1,6 +1,6 @@
 # TRD-013: File Upload and Signal Extraction
 
-> **Status:** Draft (Parts 1–3)
+> **Status:** Draft (Parts 1–4)
 >
 > Mirrors **PRD-013**. Each part maps to the corresponding PRD part.
 
@@ -1136,5 +1136,109 @@ This increment produces fixes, not a report.
 ### Forward Compatibility Notes (for Part 4)
 
 - **P4.R3 — Max attachments:** `MAX_ATTACHMENTS` is already enforced client-side (upload zone) and server-side (`POST /api/sessions/[id]/attachments`). The expanded view passes `totalAttachmentCount` (saved + pending) to the upload zone's `currentCount`.
-- **P4.R4 — Combined limit:** The character counter in both the capture form and the expanded view enforces `MAX_COMBINED_CHARS` client-side. Part 4 adds server-side validation on the attachment upload route.
+- **P4.R4 — Combined limit:** The character counter in both the capture form and the expanded view enforces `MAX_COMBINED_CHARS` client-side. Part 4 adds server-side validation on the extract-signals route.
 - **P4.R5 — Session without raw notes:** The `updateSessionSchema` (Increment 3.3) and `createSessionSchema` (Part 2) both support empty `rawNotes` when `hasAttachments` is true.
+
+---
+
+## Part 4: Edge Cases and Limits
+
+> Implements **P4.R1–P4.R6** from PRD-013.
+
+### Overview
+
+Part 4 hardens the file upload feature by closing the remaining gap between client-side and server-side validation. Parts 1–3 already implemented the majority of Part 4's requirements as forward-compatible safeguards — empty/corrupt file handling (P4.R1, P4.R2), max attachments enforcement (P4.R3), client-side combined character limit (P4.R4 client), sessions without raw notes (P4.R5), and concurrent upload handling (P4.R6).
+
+The single outstanding requirement is **server-side enforcement of the combined 50,000 character limit** (P4.R4 server). Currently the `extract-signals` route validates only `rawNotes.max(50000)` via Zod, but the composed AI input (raw notes + all attachment content) can exceed this limit because attachment content is concatenated after validation. This part adds that server-side check.
+
+### What's Already Implemented (from Parts 1–3)
+
+| Requirement | Status | Where |
+|---|---|---|
+| P4.R1 — Empty files → 422 | ✓ Complete | `lib/services/file-parser-service.ts` — throws `FileParseError` when parsed content is empty; `app/api/files/parse/route.ts` — catches and returns 422 |
+| P4.R2 — Corrupt files → 422 | ✓ Complete | `lib/services/file-parser-service.ts` — format-specific try-catch blocks for PDF, DOCX, JSON; `app/api/files/parse/route.ts` — returns 422 with descriptive messages |
+| P4.R3 — Max 5 attachments | ✓ Complete | Client: `file-upload-zone.tsx` enforces `MAX_ATTACHMENTS` before processing; Server: `app/api/sessions/[id]/attachments/route.ts` POST handler checks `getAttachmentCountForSession()` and returns 400 |
+| P4.R4 — Combined limit (client) | ✓ Complete | `session-capture-form.tsx` and `expanded-session-row.tsx` — character counter shows combined total, "Extract Signals" button disabled when `isOverLimit` |
+| P4.R4 — Combined limit (server) | ⚠ Missing | `app/api/ai/extract-signals/route.ts` — Zod schema validates `rawNotes.max(50000)` but does not validate the composed input length (raw notes + attachment content) |
+| P4.R5 — Session without raw notes | ✓ Complete | Client: `hasInput` check includes `attachments.length > 0`; Server: `createSessionSchema` and `updateSessionSchema` use `.refine()` to allow empty `rawNotes` when `hasAttachments` is true |
+| P4.R6 — Concurrent uploads | ✓ Complete | `file-upload-zone.tsx` — `parsing` counter tracks in-flight requests; `processFiles()` loop handles each file independently; failures skip the file without blocking others |
+
+### Database Changes
+
+None. No schema changes required for Part 4.
+
+### Files Changed
+
+| File | Action | Purpose |
+|------|--------|---------|
+| `app/api/ai/extract-signals/route.ts` | **Modify** | Add server-side validation of composed input length against `MAX_COMBINED_CHARS` |
+
+### Implementation
+
+#### Increment 4.1: Server-Side Combined Input Limit Validation
+
+**What:** Add a length check on the `rawNotes` field (which at this point contains the full composed input — raw notes + attachment content — assembled by `composeAIInput()` on the client) before calling the AI service. The client already composes the full input and sends it as `rawNotes`, so the server validation is a straightforward length check on the received string.
+
+**Why this works:** Both `session-capture-form.tsx` and `expanded-session-row.tsx` call `composeAIInput()` to combine raw notes with all attachment parsed content into a single string, then send that composed string as the `rawNotes` field in the POST body to `/api/ai/extract-signals`. The server never needs to re-fetch attachments — it just needs to validate the total length of what it receives.
+
+**File: `app/api/ai/extract-signals/route.ts`**
+
+Update the Zod schema to use `MAX_COMBINED_CHARS` for the max length validation:
+
+```typescript
+import { MAX_COMBINED_CHARS } from "@/lib/constants";
+
+const extractSignalsSchema = z.object({
+  rawNotes: z
+    .string()
+    .min(1, "Notes are required")
+    .max(MAX_COMBINED_CHARS, `Input must be ${MAX_COMBINED_CHARS.toLocaleString()} characters or fewer`),
+});
+```
+
+This replaces the hardcoded `.max(50000, ...)` with the shared constant, ensuring the server and client enforce the same limit. If the constant changes in the future, both sides stay in sync automatically.
+
+Add a log line after validation to record the input length:
+
+```typescript
+console.log(
+  "[api/ai/extract-signals] POST — input length:",
+  parsed.data.rawNotes.length,
+  "chars"
+);
+```
+
+#### Increment 4.2: Code Quality Audit
+
+**What:** Review all files involved in Part 4 requirements for adherence to development rules.
+
+**Scope:** `app/api/ai/extract-signals/route.ts`, `app/api/files/parse/route.ts`, `app/api/sessions/[id]/attachments/route.ts`, `app/capture/_components/file-upload-zone.tsx`, `app/capture/_components/session-capture-form.tsx`, `app/capture/_components/expanded-session-row.tsx`, `lib/constants.ts`.
+
+**Checklist:**
+
+1. **Hardcoded values** — verify no other files duplicate the `50000` magic number instead of referencing `MAX_COMBINED_CHARS`. The extract-signals route was the last holdout; confirm no others remain.
+2. **Error message consistency** — verify 422 error messages for empty/corrupt files are user-friendly and don't leak internal details.
+3. **Logging** — confirm the extract-signals route logs input length, and the parse route logs file size and parse duration.
+4. **Dead code** — no unused imports or variables in modified files.
+5. **Convention compliance** — naming, exports, import order, TypeScript strictness.
+
+This increment produces fixes, not a report.
+
+### Summary of Increments
+
+| Increment | Scope | PRD Requirements |
+|-----------|-------|------------------|
+| 4.1 | Server-side combined input limit in extract-signals route | P4.R4 (server) |
+| 4.2 | Code quality audit across all Part 4-related files | Convention compliance |
+
+### PRD Coverage Matrix
+
+| Requirement | Increment | Status |
+|---|---|---|
+| P4.R1 — Empty files → 422 | Pre-existing (Part 1, Increment 1.1) | ✓ |
+| P4.R2 — Corrupt files → 422 | Pre-existing (Part 1, Increment 1.1) | ✓ |
+| P4.R3 — Max 5 attachments | Pre-existing (Part 1 client, Part 2 server) | ✓ |
+| P4.R4 — Combined 50k limit (client) | Pre-existing (Part 1 capture form, Part 3 expanded view) | ✓ |
+| P4.R4 — Combined 50k limit (server) | Increment 4.1 | Pending |
+| P4.R5 — Session without raw notes | Pre-existing (Part 1 client, Part 2 server) | ✓ |
+| P4.R6 — Concurrent uploads | Pre-existing (Part 1, Increment 1.2) | ✓ |

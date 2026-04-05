@@ -43,7 +43,7 @@ const captureFormSchema = z.object({
       message: "Client is required",
     }),
   sessionDate: z.string().min(1, "Session date is required"),
-  rawNotes: z.string().max(50000, "Notes must be 50,000 characters or fewer"),
+  rawNotes: z.string().max(MAX_COMBINED_CHARS, `Notes must be ${MAX_COMBINED_CHARS.toLocaleString()} characters or fewer`),
 })
 
 type CaptureFormValues = z.infer<typeof captureFormSchema>

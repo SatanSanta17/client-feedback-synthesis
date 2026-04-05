@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { createClient } from "@/lib/supabase/server";
+import { MAX_COMBINED_CHARS } from "@/lib/constants";
 import {
   extractSignals,
   AIServiceError,
@@ -14,7 +15,10 @@ const extractSignalsSchema = z.object({
   rawNotes: z
     .string()
     .min(1, "Notes are required")
-    .max(50000, "Notes must be 50,000 characters or fewer"),
+    .max(
+      MAX_COMBINED_CHARS,
+      `Input must be ${MAX_COMBINED_CHARS.toLocaleString()} characters or fewer`
+    ),
 });
 
 export async function POST(request: NextRequest) {
@@ -53,6 +57,12 @@ export async function POST(request: NextRequest) {
     console.warn("[api/ai/extract-signals] POST — validation failed:", message);
     return NextResponse.json({ message }, { status: 400 });
   }
+
+  console.log(
+    "[api/ai/extract-signals] POST — input length:",
+    parsed.data.rawNotes.length,
+    "chars"
+  );
 
   // Call the AI service
   try {
