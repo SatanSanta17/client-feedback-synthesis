@@ -8,21 +8,62 @@
 4. Always ask for plan confirmation before coding.
 5. Never make a document without being asked for explicitly.
 
-## Critical Rules — Do NOT Violate
+## Development Process
 
-- **Follow the development process — no shortcuts.** Every change follows this sequence: (1) Understand the purpose — why does this matter to the user? (2) Write the PRD in `docs/<number>-<feature-name>/prd.md` (3) Get explicit approval on the PRD (4) Only after PRD approval, write the TRD in `docs/<number>-<feature-name>/trd.md` (5) Implement one PRD part at a time in small, pushable increments (6) Review, verify, move to the next part. No step is skipped. **Never create a TRD before its PRD is approved.**
-- **No code changes without an approved PRD and TRD.** Every feature, fix, or refactor must first have a written PRD (Product Requirements Document) that is reviewed and approved. Only after PRD approval is the TRD (Technical Requirements Document) written. Code is not touched until both documents exist and are approved. No exceptions — not even "small" changes. **One exception:** trivial fixes (typos, CSS tweaks, one-line bugs) may skip the PRD/TRD — but still require explicit approval before any code is changed. Never change code silently.
-- **Two-tier PRD structure: Master PRD and Section PRDs.** The Master PRD (`docs/master-prd/prd.md`) defines the full product scope across numbered sections. Each section gets its own dedicated PRD and TRD folder under `docs/<number>-<name>/` (e.g., `docs/001-foundation/`). The Master PRD is the big picture — section PRDs contain detailed requirements, parts, and acceptance criteria.
-- **Section PRD/TRD folder convention.** Each section gets its own folder under `docs/` named `<number>-<feature-name>/` (e.g., `docs/001-foundation/`). Inside: `prd.md` (product requirements) and `trd.md` (technical design). The PRD is written first and submitted for approval. The TRD is only created after the PRD is explicitly approved — never at the same time. The PRD is product-only — requirements, acceptance criteria, user stories. The TRD is technical — DB schemas, API contracts, file changes, implementation increments.
-- **Section PRDs have parts, not monolithic requirements.** Large sections are split into numbered parts within their PRD (Part 1, Part 2, Part 3). Each part has its own requirements (P1.R1, P1.R2, etc.) and acceptance criteria. The TRD mirrors the same part structure. Implementation happens one part at a time — the owner says "implement Part 1," that part ships, then "implement Part 2" when ready. Parts that aren't ready yet stay in the document as roadmap, not commitment.
-- **PRD contains: purpose, user story, requirements (numbered per part), acceptance criteria (checkboxes per part), and a backlog section** for deferred ideas that don't belong in the current scope but shouldn't be forgotten. No technical details in the PRD — those go in the TRD.
-- **TRD mirrors the PRD structure** — same part numbers, same feature boundaries. Each part includes: database models, API endpoints, frontend pages/components, files changed, and implementation increments. The TRD is the implementation blueprint — it answers "how" for everything the PRD says "what."
-- **Write TRD parts one at a time, but always reference the entire PRD.** When writing a TRD part, read and reference the full PRD — not just the corresponding part. Each TRD part must account for forward compatibility with later parts and must not introduce designs that conflict with future requirements. Data structures, types, and interfaces created in earlier parts should carry the fields and shape that later parts will need, even if those fields are unused until then.
-- **Each TRD part breaks down into increments. Each increment produces one or more PRs.** An increment is a self-contained, verifiable unit of implementation work. A PR is the smallest pushable unit of code. Never lose sight of the PRD's end goal, but never try to ship it all at once either.
-- **Every TRD part ends with a code quality audit increment.** The last increment of every TRD part (not just the final part) must review all files created or modified in that part for: (1) **SRP violations** — each file, component, and function does one thing. (2) **DRY violations** — shared patterns are extracted, no duplication across files. (3) **Design token adherence** — no hardcoded colours, font sizes, or spacing values; use CSS custom properties or Tailwind tokens. (4) **Logging** — all API routes and services log entry, exit, and errors. (5) **Dead code** — no unused imports, variables, or files remain. (6) **Convention compliance** — naming, export style, import order, and TypeScript strictness follow the rules in this document. This increment produces fixes, not a report. Catching issues per-part prevents bad patterns from compounding across later parts.
-- **Verify before every push.** Before code is pushed, every change must pass four checks: (1) **Code quality** — read every modified file end-to-end for syntax errors, unused imports, broken references, and consistency with existing patterns. (2) **PRD compliance** — walk through each PRD requirement and confirm the implementation covers it. (3) **No regressions** — trace existing flows through modified files to confirm the happy path still works and new code only activates in the intended scenario. (4) **Documentation consistency** — check if ARCHITECTURE.md or any README in the modified area is now factually incorrect. If it contradicts the new code, fix it.
-- **Respect existing architecture decisions.** `ARCHITECTURE.md` documents platform-specific rules, data flow, and constraints that must not be violated. Read and follow them.
-- **Update ARCHITECTURE.md and CHANGELOG.md after each TRD part completes** — not after each increment and not deferred to the end of the PRD. A part is the smallest unit that delivers a coherent change, and documentation must stay current at that boundary. `ARCHITECTURE.md` reflects file structure, routes, services, database tables, and environment variables — architecture follows code, never the other way around. If something is documented in ARCHITECTURE.md, it must exist in the codebase. Never pre-fill architecture docs with planned-but-unbuilt structures. `CHANGELOG.md` logs every user-facing change, API change, or database migration with the date and a short description, grouped under the relevant PRD/part number.
+Every change follows this sequence. No step is skipped.
+
+1. Understand the purpose — why does this matter to the user?
+2. Write the PRD in `docs/<number>-<feature-name>/prd.md`
+3. Get explicit approval on the PRD
+4. Write the TRD in `docs/<number>-<feature-name>/trd.md` — **never before PRD approval**
+5. Implement one part at a time in small, pushable increments
+6. Verify before every push (see Quality Gates below)
+7. Update `ARCHITECTURE.md` and `CHANGELOG.md` after each part completes
+
+**Trivial fixes** (typos, CSS tweaks, one-line bugs) may skip the PRD/TRD but still require explicit approval before any code is changed. Never change code silently.
+
+### Document Structure
+
+- **Master PRD** (`docs/master-prd/prd.md`) defines full product scope across numbered sections.
+- **Section PRDs** live in `docs/<number>-<name>/prd.md` with co-located `trd.md`.
+- **PRD contains:** purpose, user story, requirements per part (P1.R1, P1.R2…), acceptance criteria (checkboxes per part), and a backlog section. No technical details — those go in the TRD.
+- **TRD mirrors PRD parts** — same part numbers, same boundaries. Each part includes: database models, API endpoints, frontend pages/components, files changed, and implementation increments. The TRD answers "how" for everything the PRD says "what."
+- **Write TRD parts one at a time, but reference the entire PRD.** Each TRD part must account for forward compatibility — data structures and interfaces should carry the shape that later parts will need, even if unused until then.
+- **Parts break into increments.** An increment is a self-contained, verifiable unit of work. A PR is the smallest pushable unit of code.
+
+### Quality Gates
+
+**Before every push:**
+
+1. Code quality — read every modified file for syntax errors, unused imports, broken references
+2. PRD compliance — confirm implementation covers each requirement
+3. No regressions — trace existing flows through modified files
+4. Documentation consistency — `ARCHITECTURE.md` and READMEs match the code
+
+**End-of-part audit** (last increment of every TRD part):
+
+1. SRP violations — each file, component, and function does one thing
+2. DRY violations — shared patterns extracted, no duplication
+3. Design token adherence — no hardcoded colours, sizes, or spacing; use CSS custom properties or Tailwind tokens
+4. Logging — all API routes and services log entry, exit, and errors
+5. Dead code — no unused imports, variables, or files remain
+6. Convention compliance — naming, exports, import order, TypeScript strictness
+
+This increment produces fixes, not a report.
+
+**After each TRD part completes:**
+
+1. Update `ARCHITECTURE.md` if file structure, routes, services, tables, or env vars changed
+2. Update `CHANGELOG.md` with what the part delivered
+3. Verify all file references in documentation still exist
+4. Test the flows affected by the part
+5. If modifying the database schema, regenerate Supabase types
+
+`ARCHITECTURE.md` reflects what exists in the codebase — never pre-fill with planned-but-unbuilt structures.
+
+### Architecture
+
+- **Respect existing architecture decisions.** `ARCHITECTURE.md` documents platform-specific rules, data flow, and constraints. Read and follow them before making changes.
 
 ---
 
@@ -93,7 +134,7 @@ These rules apply to every file under `app/`, `components/`, and `lib/`.
 
 - **All external API calls are server-side only.** AI model calls, Supabase service-role operations, and any secret-dependent logic lives in `app/api/` route handlers. Never call these from the client directly.
 - **Route handlers validate input with Zod.** Every POST/PUT handler parses the request body with a Zod schema. Invalid input returns 400 with a descriptive error.
-- **Route handlers don't contain business logic.** They validate input, call service functions from `lib/services/`, and format responses. If a route handler exceeds ~30 lines, extract logic to a service.
+- **Route handlers don't contain business logic.** They validate input, call service functions from `lib/services/`, and format responses. If a route handler has more than one responsibility (validation + business logic + response formatting), extract the business logic to a service.
 - **HTTP status codes are explicit.** 400 = bad input, 401 = unauthenticated, 403 = forbidden, 404 = not found, 409 = conflict, 422 = unprocessable (e.g., AI model returned bad output), 500 = server error. Always include a JSON body with a `message` field.
 - **Service functions live in `lib/services/`.** Each domain gets a service file (e.g., `session-service.ts`, `theme-service.ts`, `ai-service.ts`). Services handle data access (Supabase queries), business logic, and external API calls (AI models). Services never import from `next/server` — they are framework-agnostic.
 
@@ -106,7 +147,7 @@ These rules apply to every file under `app/`, `components/`, and `lib/`.
 - **Row-Level Security (RLS) is always enabled.** Every table has RLS policies. Default deny — explicitly grant access. All rows readable and writable only by authenticated users.
 - **Schema changes are documented.** Every migration is recorded in the TRD before execution. The ARCHITECTURE.md data model section is updated after each migration.
 - **Timestamps are UTC.** All `created_at`, `updated_at`, `deleted_at` columns use `timestamptz` and store UTC values.
-- **Soft deletes by default.** Use a `deleted_at` column. Queries filter `WHERE deleted_at IS NULL` unless explicitly recovering deleted records.
+- **Soft deletes for domain entities** (clients, sessions, teams, master signals). Use a `deleted_at` column. Queries filter `WHERE deleted_at IS NULL` unless explicitly recovering deleted records. Hard deletes for transient/operational data (expired tokens, temporary records) that have no audit or recovery value.
 - **Use Supabase's generated types.** Run `supabase gen types typescript` after schema changes and commit the output. Never hand-write types that duplicate the schema.
 
 ---
@@ -177,15 +218,3 @@ These rules apply to every file under `app/`, `components/`, and `lib/`.
 5. Internal services/hooks: `import { useAuth } from '@/lib/hooks/use-auth'`
 6. Types (if separate): `import type { Session } from '@/lib/types'`
 
----
-
-## After Each TRD Part Completes
-
-1. Update `ARCHITECTURE.md` if the part changed file structure, added routes, services, database tables, or env vars.
-2. Update `CHANGELOG.md` with a short description of what the part delivered.
-3. Run the code quality audit increment (last increment of every part — see Critical Rules).
-4. Verify all file references in documentation still exist.
-5. Test the flows affected by the part.
-6. If adding a new frontend component, verify it follows the naming, export, and styling conventions above.
-7. If adding a new API route or service, verify it follows the validation, error handling, and logging conventions above.
-8. If modifying the database schema, regenerate Supabase types and update the data model section in ARCHITECTURE.md.

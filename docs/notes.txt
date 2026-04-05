@@ -1,2 +1,3 @@
 1. make the whole upload box clickable
 2. shift the table to a new page bring the prompt at the capture page and show the capture form and the extracted notes side by side
+3. Instead of one huge master signal lets make a chat interface and the master signal is the content from where the LLM answer we store the master signals in a vector db and use LLM support to interact with the master signals
