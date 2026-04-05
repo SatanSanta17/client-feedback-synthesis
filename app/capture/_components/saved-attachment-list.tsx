@@ -114,23 +114,24 @@ export function SavedAttachmentList({
             key={attachment.id}
             className="rounded-md border border-border bg-muted/30"
           >
-            <div className="flex items-center gap-3 px-3 py-2">
-              <button
-                type="button"
-                onClick={() =>
-                  setExpandedId(isExpanded ? null : attachment.id)
-                }
-                className="shrink-0 rounded p-0.5 text-muted-foreground transition-colors hover:text-foreground"
-                aria-label={
-                  isExpanded ? "Hide parsed content" : "View parsed content"
-                }
-              >
+            <div
+              className="flex cursor-pointer items-center gap-3 px-3 py-2 transition-colors hover:bg-muted/50"
+              onClick={() =>
+                setExpandedId(isExpanded ? null : attachment.id)
+              }
+              role="button"
+              aria-expanded={isExpanded}
+              aria-label={
+                isExpanded ? "Hide parsed content" : "View parsed content"
+              }
+            >
+              <span className="shrink-0 text-muted-foreground">
                 {isExpanded ? (
                   <ChevronDown className="size-3.5" />
                 ) : (
                   <ChevronRight className="size-3.5" />
                 )}
-              </button>
+              </span>
 
               <Icon className="size-4 shrink-0 text-muted-foreground" />
 
@@ -150,7 +151,7 @@ export function SavedAttachmentList({
 
               <button
                 type="button"
-                onClick={() => handleDownload(attachment)}
+                onClick={(e) => { e.stopPropagation(); handleDownload(attachment); }}
                 disabled={isDownloading}
                 className="shrink-0 rounded p-0.5 text-muted-foreground transition-colors hover:text-foreground disabled:opacity-50"
                 aria-label={`Download ${attachment.file_name}`}
@@ -165,7 +166,7 @@ export function SavedAttachmentList({
               {canEdit && (
                 <button
                   type="button"
-                  onClick={() => handleDeleteClick(attachment.id)}
+                  onClick={(e) => { e.stopPropagation(); handleDeleteClick(attachment.id); }}
                   disabled={isDeleting}
                   className="shrink-0 rounded p-0.5 text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive disabled:opacity-50"
                   aria-label={`Delete ${attachment.file_name}`}

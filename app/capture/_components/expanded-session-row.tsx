@@ -340,6 +340,56 @@ export function ExpandedSessionRow({
             onChange={canEdit ? setRawNotes : undefined}
             readOnly={!canEdit}
           />
+
+          {/* Attachments section — below raw notes */}
+          <div className="mt-2 flex flex-col gap-2">
+            <Label className="text-xs text-muted-foreground">Attachments</Label>
+
+            {isLoadingAttachments ? (
+              <div className="flex items-center gap-2 py-2 text-xs text-muted-foreground">
+                <Loader2 className="size-3.5 animate-spin" /> Loading attachments…
+              </div>
+            ) : (
+              <SavedAttachmentList
+                attachments={savedAttachments}
+                sessionId={session.id}
+                canEdit={canEdit}
+                hasStructuredNotes={!!structuredNotes}
+                onDeleted={handleSavedAttachmentDeleted}
+              />
+            )}
+
+            <AttachmentList
+              attachments={pendingAttachments}
+              onRemove={handleRemovePendingAttachment}
+            />
+
+            {canEdit && (
+              <FileUploadZone
+                onFileParsed={handleAddPendingAttachment}
+                disabled={isSaving || extractionState === "extracting"}
+                currentCount={totalAttachmentCount}
+              />
+            )}
+
+            {(savedAttachments.length > 0 || pendingAttachments.length > 0 || rawNotes.length > 0) && (
+              <div className="flex items-center justify-between text-xs">
+                <span
+                  className={cn(
+                    "text-muted-foreground",
+                    isOverLimit && "font-medium text-destructive"
+                  )}
+                >
+                  {totalChars.toLocaleString()} / {MAX_COMBINED_CHARS.toLocaleString()} characters
+                </span>
+                {isOverLimit && (
+                  <span className="text-destructive">
+                    Over limit — remove content or attachments
+                  </span>
+                )}
+              </div>
+            )}
+          </div>
         </div>
 
         <div className="flex flex-col gap-1.5">
@@ -389,56 +439,6 @@ export function ExpandedSessionRow({
             </div>
           )}
         </div>
-      </div>
-
-      {/* Attachments section */}
-      <div className="flex flex-col gap-2">
-        <Label className="text-xs text-muted-foreground">Attachments</Label>
-
-        {isLoadingAttachments ? (
-          <div className="flex items-center gap-2 py-2 text-xs text-muted-foreground">
-            <Loader2 className="size-3.5 animate-spin" /> Loading attachments…
-          </div>
-        ) : (
-          <SavedAttachmentList
-            attachments={savedAttachments}
-            sessionId={session.id}
-            canEdit={canEdit}
-            hasStructuredNotes={!!structuredNotes}
-            onDeleted={handleSavedAttachmentDeleted}
-          />
-        )}
-
-        <AttachmentList
-          attachments={pendingAttachments}
-          onRemove={handleRemovePendingAttachment}
-        />
-
-        {canEdit && (
-          <FileUploadZone
-            onFileParsed={handleAddPendingAttachment}
-            disabled={isSaving || extractionState === "extracting"}
-            currentCount={totalAttachmentCount}
-          />
-        )}
-
-        {(savedAttachments.length > 0 || pendingAttachments.length > 0 || rawNotes.length > 0) && (
-          <div className="flex items-center justify-between text-xs">
-            <span
-              className={cn(
-                "text-muted-foreground",
-                isOverLimit && "font-medium text-destructive"
-              )}
-            >
-              {totalChars.toLocaleString()} / {MAX_COMBINED_CHARS.toLocaleString()} characters
-            </span>
-            {isOverLimit && (
-              <span className="text-destructive">
-                Over limit — remove content or attachments
-              </span>
-            )}
-          </div>
-        )}
       </div>
 
       <div className="flex items-center gap-2">

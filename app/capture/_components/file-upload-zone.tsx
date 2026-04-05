@@ -138,12 +138,15 @@ export function FileUploadZone({
       }}
       onDragLeave={() => setIsDragOver(false)}
       onDrop={handleDrop}
+      onClick={() => {
+        if (!isDisabled) inputRef.current?.click();
+      }}
       className={cn(
         "flex flex-col items-center gap-2 rounded-lg border-2 border-dashed px-4 py-6 text-center transition-colors",
         isDragOver
           ? "border-primary bg-primary/5"
           : "border-border bg-muted/30",
-        isDisabled && "pointer-events-none opacity-50"
+        isDisabled ? "pointer-events-none opacity-50" : "cursor-pointer hover:border-primary/50 hover:bg-primary/5"
       )}
     >
       <Upload className="size-6 text-muted-foreground" />
@@ -156,14 +159,9 @@ export function FileUploadZone({
         <>
           <p className="text-sm text-muted-foreground">
             Drag and drop files or{" "}
-            <button
-              type="button"
-              onClick={() => inputRef.current?.click()}
-              className="font-medium text-primary underline-offset-2 hover:underline"
-              disabled={isDisabled}
-            >
+            <span className="font-medium text-primary underline-offset-2 hover:underline">
               browse
-            </button>
+            </span>
           </p>
           <p className="text-xs text-muted-foreground/70">
             TXT, PDF, CSV, DOCX, JSON — max 10 MB
