@@ -6,7 +6,7 @@ import {
   SessionNotFoundError,
   ClientDuplicateError,
 } from "@/lib/services/session-service";
-import { checkSessionWriteAccess } from "@/app/api/sessions/_helpers";
+import { checkSessionAccess } from "@/app/api/sessions/_helpers";
 
 // --- PUT /api/sessions/[id] ---
 
@@ -53,7 +53,7 @@ export async function PUT(
 
   console.log("[api/sessions/[id]] PUT — id:", id);
 
-  const access = await checkSessionWriteAccess(id);
+  const access = await checkSessionAccess(id);
   if (access.error) return access.error;
 
   let body: unknown;
@@ -115,7 +115,7 @@ export async function DELETE(
 
   console.log("[api/sessions/[id]] DELETE — id:", id);
 
-  const access = await checkSessionWriteAccess(id);
+  const access = await checkSessionAccess(id);
   if (access.error) return access.error;
 
   try {

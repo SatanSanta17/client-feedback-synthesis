@@ -73,7 +73,7 @@ synthesiser/
 │   │   ├── prompts/
 │   │   │   └── route.ts         # GET/POST — prompt CRUD (team admin check) — workspace-scoped
 │   │   ├── sessions/
-│   │   │   ├── _helpers.ts      # Shared helpers — checkSessionWriteAccess (auth + session ownership + team role)
+│   │   │   ├── _helpers.ts      # Shared helpers — checkSessionAccess (auth + session ownership + team role)
 │   │   │   ├── route.ts         # GET/POST — session list and create — team-scoped
 │   │   │   └── [id]/
 │   │   │       ├── route.ts     # PUT/DELETE — update/soft-delete session (uses _helpers)
@@ -170,6 +170,8 @@ synthesiser/
 │       └── textarea.tsx
 ├── lib/
 │   ├── constants.ts             # Shared constants (file upload limits, accepted types)
+│   ├── constants/
+│   │   └── file-icons.ts        # FILE_ICONS map (MIME type → lucide icon component)
 │   ├── utils.ts                 # cn() utility (clsx + tailwind-merge)
 │   ├── email-templates/
 │   │   └── invite-email.ts      # HTML email template for team invitations
@@ -189,8 +191,10 @@ synthesiser/
 │   │   ├── session-service.ts   # Session CRUD — team-scoped via getActiveTeamId()
 │   │   └── team-service.ts      # Team CRUD — create, list, members, rename, delete, roles, transfer, leave
 │   ├── utils/
+│   │   ├── compose-ai-input.ts    # Composes raw notes + attachments into a single AI input string
 │   │   ├── format-file-size.ts    # File size formatting (bytes → "1.2 KB", "3.4 MB")
-│   │   └── format-relative-time.ts # Relative time formatting ("just now", "5m ago", "3d ago")
+│   │   ├── format-relative-time.ts # Relative time formatting ("just now", "5m ago", "3d ago")
+│   │   └── upload-attachments.ts  # Uploads pending attachments to a session (shared by capture form + expanded row)
 │   └── supabase/
 │       ├── server.ts            # Server-side Supabase clients (anon + service role) + getActiveTeamId()
 │       └── client.ts            # Browser-side Supabase client factory

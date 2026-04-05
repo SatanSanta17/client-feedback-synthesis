@@ -4,7 +4,7 @@ import { createServiceRoleClient } from "@/lib/supabase/server";
 import {
   getSignedDownloadUrl,
 } from "@/lib/services/attachment-service";
-import { checkSessionWriteAccess } from "@/app/api/sessions/_helpers";
+import { checkSessionAccess } from "@/app/api/sessions/_helpers";
 
 export async function GET(
   _request: NextRequest,
@@ -19,7 +19,7 @@ export async function GET(
     attachmentId
   );
 
-  const access = await checkSessionWriteAccess(sessionId);
+  const access = await checkSessionAccess(sessionId);
   if (access.error) return access.error;
 
   const serviceClient = createServiceRoleClient();

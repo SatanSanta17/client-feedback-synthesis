@@ -17,6 +17,8 @@ import { MarkdownPanel } from "./markdown-panel"
 import { FileUploadZone, type ParsedAttachment } from "./file-upload-zone"
 import { AttachmentList } from "./attachment-list"
 import { SavedAttachmentList } from "./saved-attachment-list"
+import { composeAIInput } from "@/lib/utils/compose-ai-input"
+import { uploadAttachmentsToSession } from "@/lib/utils/upload-attachments"
 import type { SessionAttachment } from "@/lib/services/attachment-service"
 
 type ExtractionState = "idle" | "extracting" | "done"
@@ -132,28 +134,10 @@ export function ExpandedSessionRow({
     onDirtyChange(isDirty)
   }, [isDirty, onDirtyChange])
 
-  // --- Compose AI input from notes + all attachments ---
-  const composeAIInput = useCallback((): string => {
-    const parts: string[] = []
-
-    if (rawNotes.trim()) parts.push(rawNotes.trim())
-
-    for (const a of savedAttachments) {
-      const label = a.source_format !== "generic"
-        ? `[Attached file: ${a.file_name} (${a.source_format} format)]`
-        : `[Attached file: ${a.file_name}]`
-      parts.push(`${label}\n${a.parsed_content}`)
-    }
-
-    for (const a of pendingAttachments) {
-      const label = a.source_format !== "generic"
-        ? `[Attached file: ${a.file_name} (${a.source_format} format)]`
-        : `[Attached file: ${a.file_name}]`
-      parts.push(`${label}\n${a.parsed_content}`)
-    }
-
-    return parts.join("\n\n---\n\n")
-  }, [rawNotes, savedAttachments, pendingAttachments])
+  const composeExpandedAIInput = useCallback(
+    () => composeAIInput(rawNotes, [...savedAttachments, ...pendingAttachments]),
+    [rawNotes, savedAttachments, pendingAttachments]
+  )
 
   // --- Signal extraction ---
   const performExtraction = useCallback(async () => {
@@ -163,7 +147,7 @@ export function ExpandedSessionRow({
       const response = await fetch("/api/ai/extract-signals", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ rawNotes: composeAIInput() }),
+        body: JSON.stringify({ rawNotes: composeExpandedAIInput() }),
       })
 
       if (!response.ok) {
@@ -187,7 +171,7 @@ export function ExpandedSessionRow({
       toast.error("Failed to extract signals — please try again")
       setExtractionState(structuredNotes ? "done" : "idle")
     }
-  }, [composeAIInput, structuredNotes])
+  }, [composeExpandedAIInput, structuredNotes])
 
   const handleExtractSignals = useCallback(async () => {
     if (extractionState === "done" && isStructuredDirty) {
@@ -249,42 +233,8 @@ export function ExpandedSessionRow({
         return false
       }
 
-      // Upload pending attachments
       if (pendingAttachments.length > 0) {
-        let failCount = 0
-        for (const attachment of pendingAttachments) {
-          try {
-            const formData = new FormData()
-            formData.append("file", attachment.file)
-            formData.append("parsed_content", attachment.parsed_content)
-            formData.append("source_format", attachment.source_format)
-
-            const res = await fetch(`/api/sessions/${session.id}/attachments`, {
-              method: "POST",
-              body: formData,
-            })
-
-            if (!res.ok) {
-              failCount++
-              console.error(
-                `[ExpandedSessionRow] attachment upload failed for "${attachment.file_name}":`,
-                await res.text().catch(() => "unknown error")
-              )
-            }
-          } catch (err) {
-            failCount++
-            console.error(
-              `[ExpandedSessionRow] attachment upload error for "${attachment.file_name}":`,
-              err instanceof Error ? err.message : err
-            )
-          }
-        }
-
-        if (failCount > 0) {
-          toast.warning(
-            `${failCount} attachment${failCount > 1 ? "s" : ""} failed to upload. The session was saved.`
-          )
-        }
+        await uploadAttachmentsToSession(session.id, pendingAttachments)
       }
 
       toast.success("Session updated")

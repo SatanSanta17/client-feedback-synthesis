@@ -3,9 +3,6 @@
 import { useState } from "react";
 import {
   FileText,
-  FileSpreadsheet,
-  FileJson2,
-  FileType2,
   Trash2,
   Download,
   ChevronDown,
@@ -15,6 +12,7 @@ import {
 import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { formatFileSize } from "@/lib/utils/format-file-size";
+import { FILE_ICONS } from "@/lib/constants/file-icons";
 import type { SessionAttachment } from "@/lib/services/attachment-service";
 
 interface SavedAttachmentListProps {
@@ -24,15 +22,6 @@ interface SavedAttachmentListProps {
   hasStructuredNotes: boolean;
   onDeleted: (attachmentId: string) => void;
 }
-
-const FILE_ICONS: Record<string, React.ElementType> = {
-  "text/plain": FileText,
-  "text/csv": FileSpreadsheet,
-  "application/pdf": FileType2,
-  "application/json": FileJson2,
-  "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
-    FileText,
-};
 
 export function SavedAttachmentList({
   attachments,

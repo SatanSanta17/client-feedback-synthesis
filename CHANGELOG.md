@@ -6,6 +6,19 @@ All notable changes to this project are documented here, grouped by PRD and part
 
 ## [Unreleased]
 
+### PRD-013 Part 3: Past Sessions — Attachment Display & Management — 2026-04-02
+- Added `attachment_count` to `SessionWithClient` with batch-fetch in `getSessions()` — displays paperclip icon with count in collapsed session rows
+- Created `GET /api/sessions/[id]/attachments` — returns non-deleted attachments for a session
+- Created `GET /api/sessions/[id]/attachments/[attachmentId]/download` — generates signed download URL
+- Created `saved-attachment-list.tsx` — displays persisted attachments with download, delete (with confirmation when signals exist), and view parsed content toggle
+- Updated `expanded-session-row.tsx` — full attachment management: fetch saved attachments on mount, upload new via `FileUploadZone`, delete existing, compose AI input from all attachments, two-step save flow
+- Relaxed `PUT /api/sessions/[id]` validation to allow empty `rawNotes` when `hasAttachments` is true
+- **Code quality audit:**
+  - Extracted `FILE_ICONS` to `lib/constants/file-icons.ts` — shared by `attachment-list.tsx` and `saved-attachment-list.tsx`
+  - Extracted `composeAIInput()` to `lib/utils/compose-ai-input.ts` — shared by `session-capture-form.tsx` and `expanded-session-row.tsx`
+  - Extracted `uploadAttachmentsToSession()` to `lib/utils/upload-attachments.ts` — shared by `session-capture-form.tsx` and `expanded-session-row.tsx`
+  - Renamed `checkSessionWriteAccess` → `checkSessionAccess` — accurately reflects its use for both read and write operations
+
 ### PRD-013 Part 2: Persistence & Signal Extraction Integration — 2026-04-02
 - Created `session_attachments` table with RLS (personal + team-scoped) and `session-attachments` Storage bucket
 - Created `lib/services/attachment-service.ts` — `uploadAndCreateAttachment`, `getAttachmentsBySessionId`, `deleteAttachment` (soft-delete DB + hard-delete Storage), `getSignedDownloadUrl`, `getAttachmentCountForSession`

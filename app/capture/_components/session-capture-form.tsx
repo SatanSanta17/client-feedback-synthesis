@@ -20,6 +20,8 @@ import { MarkdownPanel } from "./markdown-panel"
 import { FileUploadZone, type ParsedAttachment } from "./file-upload-zone"
 import { AttachmentList } from "./attachment-list"
 import { MAX_COMBINED_CHARS } from "@/lib/constants"
+import { composeAIInput } from "@/lib/utils/compose-ai-input"
+import { uploadAttachmentsToSession } from "@/lib/utils/upload-attachments"
 
 function getToday(): string {
   return new Date().toISOString().split("T")[0]
@@ -52,26 +54,6 @@ export interface SessionCaptureFormProps {
   onSessionSaved?: () => void
 }
 
-function composeAIInput(
-  rawNotes: string,
-  attachments: ParsedAttachment[]
-): string {
-  const parts: string[] = []
-
-  if (rawNotes.trim()) {
-    parts.push(rawNotes.trim())
-  }
-
-  for (const a of attachments) {
-    const label =
-      a.source_format !== "generic"
-        ? `[Attached file: ${a.file_name} (${a.source_format} format)]`
-        : `[Attached file: ${a.file_name}]`
-    parts.push(`${label}\n${a.parsed_content}`)
-  }
-
-  return parts.join("\n\n---\n\n")
-}
 
 export function SessionCaptureForm({ onSessionSaved }: SessionCaptureFormProps) {
   const {
@@ -170,47 +152,6 @@ export function SessionCaptureForm({ onSessionSaved }: SessionCaptureFormProps) 
   const handleConfirmReextract = async () => {
     setShowReextractConfirm(false)
     await performExtraction()
-  }
-
-  const uploadAttachmentsToSession = async (
-    sessionId: string,
-    pendingAttachments: ParsedAttachment[]
-  ) => {
-    let failCount = 0
-
-    for (const attachment of pendingAttachments) {
-      try {
-        const formData = new FormData()
-        formData.append("file", attachment.file)
-        formData.append("parsed_content", attachment.parsed_content)
-        formData.append("source_format", attachment.source_format)
-
-        const res = await fetch(`/api/sessions/${sessionId}/attachments`, {
-          method: "POST",
-          body: formData,
-        })
-
-        if (!res.ok) {
-          failCount++
-          console.error(
-            `[SessionCaptureForm] attachment upload failed for "${attachment.file_name}":`,
-            await res.text().catch(() => "unknown error")
-          )
-        }
-      } catch (err) {
-        failCount++
-        console.error(
-          `[SessionCaptureForm] attachment upload error for "${attachment.file_name}":`,
-          err instanceof Error ? err.message : err
-        )
-      }
-    }
-
-    if (failCount > 0) {
-      toast.warning(
-        `${failCount} attachment${failCount > 1 ? "s" : ""} failed to upload. The session was saved.`
-      )
-    }
   }
 
   const onSubmit = async (data: CaptureFormValues) => {

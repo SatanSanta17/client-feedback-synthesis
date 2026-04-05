@@ -1,32 +1,16 @@
 "use client";
 
 import { useState } from "react";
-import {
-  FileText,
-  FileSpreadsheet,
-  FileJson2,
-  FileType2,
-  X,
-  ChevronDown,
-  ChevronRight,
-} from "lucide-react";
+import { FileText, X, ChevronDown, ChevronRight } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { formatFileSize } from "@/lib/utils/format-file-size";
+import { FILE_ICONS } from "@/lib/constants/file-icons";
 import type { ParsedAttachment } from "./file-upload-zone";
 
 interface AttachmentListProps {
   attachments: ParsedAttachment[];
   onRemove: (index: number) => void;
 }
-
-const FILE_ICONS: Record<string, React.ElementType> = {
-  "text/plain": FileText,
-  "text/csv": FileSpreadsheet,
-  "application/pdf": FileType2,
-  "application/json": FileJson2,
-  "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
-    FileText,
-};
 
 export function AttachmentList({ attachments, onRemove }: AttachmentListProps) {
   const [expandedIndex, setExpandedIndex] = useState<number | null>(null);

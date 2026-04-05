@@ -4,7 +4,7 @@ import {
   deleteAttachment,
   AttachmentNotFoundError,
 } from "@/lib/services/attachment-service";
-import { checkSessionWriteAccess } from "@/app/api/sessions/_helpers";
+import { checkSessionAccess } from "@/app/api/sessions/_helpers";
 
 export async function DELETE(
   _request: NextRequest,
@@ -19,7 +19,7 @@ export async function DELETE(
     attachmentId
   );
 
-  const access = await checkSessionWriteAccess(sessionId);
+  const access = await checkSessionAccess(sessionId);
   if (access.error) return access.error;
 
   try {

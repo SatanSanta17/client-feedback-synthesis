@@ -4,14 +4,14 @@ import { createClient, getActiveTeamId } from "@/lib/supabase/server";
 import { getTeamMember } from "@/lib/services/team-service";
 
 /**
- * Checks whether the current user has write access to a session.
- * Returns null if access is granted, or a NextResponse error if denied.
+ * Checks whether the current user has access to a session.
+ * Used for both read and write operations on session-scoped resources.
  *
  * - 401 if not authenticated
  * - 404 if session not found or deleted
  * - 403 if in a team context and the user is not the session owner or a team admin
  */
-export async function checkSessionWriteAccess(
+export async function checkSessionAccess(
   sessionId: string
 ): Promise<{ error: NextResponse } | { error: null; userId: string; teamId: string | null }> {
   const supabase = await createClient();
