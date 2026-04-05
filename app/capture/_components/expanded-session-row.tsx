@@ -4,6 +4,8 @@ import { useState, useEffect, useCallback } from "react"
 import { Loader2, Save, X, Trash2, Sparkles, RefreshCw } from "lucide-react"
 import { toast } from "sonner"
 
+import { cn } from "@/lib/utils"
+import { MAX_COMBINED_CHARS } from "@/lib/constants"
 import { Button } from "@/components/ui/button"
 import { Label } from "@/components/ui/label"
 import {
@@ -12,6 +14,10 @@ import {
 } from "./client-combobox"
 import { DatePicker } from "./date-picker"
 import { MarkdownPanel } from "./markdown-panel"
+import { FileUploadZone, type ParsedAttachment } from "./file-upload-zone"
+import { AttachmentList } from "./attachment-list"
+import { SavedAttachmentList } from "./saved-attachment-list"
+import type { SessionAttachment } from "@/lib/services/attachment-service"
 
 type ExtractionState = "idle" | "extracting" | "done"
 
@@ -64,6 +70,32 @@ export function ExpandedSessionRow({
   )
   const [showReextractConfirm, setShowReextractConfirm] = useState(false)
 
+  // Attachment state
+  const [savedAttachments, setSavedAttachments] = useState<SessionAttachment[]>([])
+  const [pendingAttachments, setPendingAttachments] = useState<ParsedAttachment[]>([])
+  const [isLoadingAttachments, setIsLoadingAttachments] = useState(true)
+  const [deletedAttachmentIds, setDeletedAttachmentIds] = useState<Set<string>>(new Set())
+
+  // Fetch saved attachments on mount
+  useEffect(() => {
+    let cancelled = false
+    setIsLoadingAttachments(true)
+
+    fetch(`/api/sessions/${session.id}/attachments`)
+      .then((res) => (res.ok ? res.json() : { attachments: [] }))
+      .then((data) => {
+        if (!cancelled) setSavedAttachments(data.attachments ?? [])
+      })
+      .catch(() => {
+        if (!cancelled) setSavedAttachments([])
+      })
+      .finally(() => {
+        if (!cancelled) setIsLoadingAttachments(false)
+      })
+
+    return () => { cancelled = true }
+  }, [session.id])
+
   const isStructuredDirty = structuredNotes !== lastExtractedNotes
 
   const isDirty =
@@ -71,16 +103,57 @@ export function ExpandedSessionRow({
     client.name !== session.client_name ||
     sessionDate !== session.session_date ||
     rawNotes !== session.raw_notes ||
-    structuredNotes !== session.structured_notes
+    structuredNotes !== session.structured_notes ||
+    pendingAttachments.length > 0 ||
+    deletedAttachmentIds.size > 0
+
+  const hasInput =
+    rawNotes.trim().length > 0 ||
+    savedAttachments.length > 0 ||
+    pendingAttachments.length > 0
 
   const isFormValid =
     client.name.trim().length > 0 &&
     sessionDate.length > 0 &&
-    rawNotes.trim().length > 0
+    hasInput
+
+  // Combined character counter
+  const savedAttachmentChars = savedAttachments.reduce(
+    (sum, a) => sum + a.parsed_content.length, 0
+  )
+  const pendingAttachmentChars = pendingAttachments.reduce(
+    (sum, a) => sum + a.parsed_content.length, 0
+  )
+  const totalChars = (rawNotes?.length ?? 0) + savedAttachmentChars + pendingAttachmentChars
+  const isOverLimit = totalChars > MAX_COMBINED_CHARS
+  const totalAttachmentCount = savedAttachments.length + pendingAttachments.length
 
   useEffect(() => {
     onDirtyChange(isDirty)
   }, [isDirty, onDirtyChange])
+
+  // --- Compose AI input from notes + all attachments ---
+  const composeAIInput = useCallback((): string => {
+    const parts: string[] = []
+
+    if (rawNotes.trim()) parts.push(rawNotes.trim())
+
+    for (const a of savedAttachments) {
+      const label = a.source_format !== "generic"
+        ? `[Attached file: ${a.file_name} (${a.source_format} format)]`
+        : `[Attached file: ${a.file_name}]`
+      parts.push(`${label}\n${a.parsed_content}`)
+    }
+
+    for (const a of pendingAttachments) {
+      const label = a.source_format !== "generic"
+        ? `[Attached file: ${a.file_name} (${a.source_format} format)]`
+        : `[Attached file: ${a.file_name}]`
+      parts.push(`${label}\n${a.parsed_content}`)
+    }
+
+    return parts.join("\n\n---\n\n")
+  }, [rawNotes, savedAttachments, pendingAttachments])
 
   // --- Signal extraction ---
   const performExtraction = useCallback(async () => {
@@ -90,7 +163,7 @@ export function ExpandedSessionRow({
       const response = await fetch("/api/ai/extract-signals", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ rawNotes }),
+        body: JSON.stringify({ rawNotes: composeAIInput() }),
       })
 
       if (!response.ok) {
@@ -114,7 +187,7 @@ export function ExpandedSessionRow({
       toast.error("Failed to extract signals — please try again")
       setExtractionState(structuredNotes ? "done" : "idle")
     }
-  }, [rawNotes, structuredNotes])
+  }, [composeAIInput, structuredNotes])
 
   const handleExtractSignals = useCallback(async () => {
     if (extractionState === "done" && isStructuredDirty) {
@@ -128,6 +201,20 @@ export function ExpandedSessionRow({
     setShowReextractConfirm(false)
     await performExtraction()
   }, [performExtraction])
+
+  // --- Attachment handlers ---
+  const handleSavedAttachmentDeleted = useCallback((attachmentId: string) => {
+    setSavedAttachments((prev) => prev.filter((a) => a.id !== attachmentId))
+    setDeletedAttachmentIds((prev) => new Set(prev).add(attachmentId))
+  }, [])
+
+  const handleAddPendingAttachment = useCallback((attachment: ParsedAttachment) => {
+    setPendingAttachments((prev) => [...prev, attachment])
+  }, [])
+
+  const handleRemovePendingAttachment = useCallback((index: number) => {
+    setPendingAttachments((prev) => prev.filter((_, i) => i !== index))
+  }, [])
 
   // --- Save ---
   const handleSave = useCallback(async (): Promise<boolean> => {
@@ -144,6 +231,7 @@ export function ExpandedSessionRow({
           sessionDate,
           rawNotes,
           structuredNotes,
+          hasAttachments: savedAttachments.length + pendingAttachments.length > 0,
         }),
       })
 
@@ -161,6 +249,44 @@ export function ExpandedSessionRow({
         return false
       }
 
+      // Upload pending attachments
+      if (pendingAttachments.length > 0) {
+        let failCount = 0
+        for (const attachment of pendingAttachments) {
+          try {
+            const formData = new FormData()
+            formData.append("file", attachment.file)
+            formData.append("parsed_content", attachment.parsed_content)
+            formData.append("source_format", attachment.source_format)
+
+            const res = await fetch(`/api/sessions/${session.id}/attachments`, {
+              method: "POST",
+              body: formData,
+            })
+
+            if (!res.ok) {
+              failCount++
+              console.error(
+                `[ExpandedSessionRow] attachment upload failed for "${attachment.file_name}":`,
+                await res.text().catch(() => "unknown error")
+              )
+            }
+          } catch (err) {
+            failCount++
+            console.error(
+              `[ExpandedSessionRow] attachment upload error for "${attachment.file_name}":`,
+              err instanceof Error ? err.message : err
+            )
+          }
+        }
+
+        if (failCount > 0) {
+          toast.warning(
+            `${failCount} attachment${failCount > 1 ? "s" : ""} failed to upload. The session was saved.`
+          )
+        }
+      }
+
       toast.success("Session updated")
       onSave()
       return true
@@ -174,7 +300,7 @@ export function ExpandedSessionRow({
     } finally {
       setIsSaving(false)
     }
-  }, [session.id, client, sessionDate, rawNotes, structuredNotes, isFormValid, onSave])
+  }, [session.id, client, sessionDate, rawNotes, structuredNotes, isFormValid, onSave, savedAttachments, pendingAttachments])
 
   useEffect(() => {
     registerSave(handleSave)
@@ -274,7 +400,7 @@ export function ExpandedSessionRow({
                 type="button"
                 variant="outline"
                 size="sm"
-                disabled={!rawNotes.trim() || extractionState === "extracting"}
+                disabled={!hasInput || isOverLimit || extractionState === "extracting"}
                 onClick={handleExtractSignals}
               >
                 {extractionState === "extracting" ? (
@@ -315,13 +441,63 @@ export function ExpandedSessionRow({
         </div>
       </div>
 
+      {/* Attachments section */}
+      <div className="flex flex-col gap-2">
+        <Label className="text-xs text-muted-foreground">Attachments</Label>
+
+        {isLoadingAttachments ? (
+          <div className="flex items-center gap-2 py-2 text-xs text-muted-foreground">
+            <Loader2 className="size-3.5 animate-spin" /> Loading attachments…
+          </div>
+        ) : (
+          <SavedAttachmentList
+            attachments={savedAttachments}
+            sessionId={session.id}
+            canEdit={canEdit}
+            hasStructuredNotes={!!structuredNotes}
+            onDeleted={handleSavedAttachmentDeleted}
+          />
+        )}
+
+        <AttachmentList
+          attachments={pendingAttachments}
+          onRemove={handleRemovePendingAttachment}
+        />
+
+        {canEdit && (
+          <FileUploadZone
+            onFileParsed={handleAddPendingAttachment}
+            disabled={isSaving || extractionState === "extracting"}
+            currentCount={totalAttachmentCount}
+          />
+        )}
+
+        {(savedAttachments.length > 0 || pendingAttachments.length > 0 || rawNotes.length > 0) && (
+          <div className="flex items-center justify-between text-xs">
+            <span
+              className={cn(
+                "text-muted-foreground",
+                isOverLimit && "font-medium text-destructive"
+              )}
+            >
+              {totalChars.toLocaleString()} / {MAX_COMBINED_CHARS.toLocaleString()} characters
+            </span>
+            {isOverLimit && (
+              <span className="text-destructive">
+                Over limit — remove content or attachments
+              </span>
+            )}
+          </div>
+        )}
+      </div>
+
       <div className="flex items-center gap-2">
         {canEdit ? (
           <>
             <Button
               size="sm"
               onClick={handleSave}
-              disabled={!isFormValid || !isDirty || isSaving || isDeleting}
+              disabled={!isFormValid || !isDirty || isSaving || isDeleting || isOverLimit}
             >
               {isSaving ? (
                 <Loader2 className="mr-1.5 size-3.5 animate-spin" />

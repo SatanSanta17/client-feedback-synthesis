@@ -17,13 +17,13 @@ const updateSessionSchema = z
     sessionDate: z.string().min(1, "Session date is required"),
     rawNotes: z
       .string()
-      .min(1, "Notes are required")
       .max(50000, "Notes must be 50,000 characters or fewer"),
     structuredNotes: z
       .string()
       .max(100000, "Structured notes must be 100,000 characters or fewer")
       .nullable()
       .optional(),
+    hasAttachments: z.boolean().optional().default(false),
   })
   .refine(
     (data) => {
@@ -35,6 +35,13 @@ const updateSessionSchema = z
     {
       message: "Client name is required when creating a new client",
       path: ["clientName"],
+    }
+  )
+  .refine(
+    (data) => data.rawNotes.trim().length > 0 || data.hasAttachments,
+    {
+      message: "Notes or at least one attachment is required",
+      path: ["rawNotes"],
     }
   );
 
