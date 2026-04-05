@@ -25,6 +25,7 @@ export interface SessionRow {
   created_by: string
   created_at: string
   created_by_email?: string
+  attachment_count: number
 }
 
 export interface ExpandedSessionRowProps {

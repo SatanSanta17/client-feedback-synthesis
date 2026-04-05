@@ -1,6 +1,6 @@
 # TRD-013: File Upload and Signal Extraction
 
-> **Status:** Draft (Parts 1–2)
+> **Status:** Draft (Parts 1–3)
 >
 > Mirrors **PRD-013**. Each part maps to the corresponding PRD part.
 
@@ -617,3 +617,524 @@ This increment produces fixes, not a report.
 - **Part 3 — Past sessions display:** `getAttachmentsBySessionId()` is ready for the expanded session row. `getSignedDownloadUrl()` generates signed URLs for the download button. The `AttachmentList` component's view-only toggle (Increment 2.4) will be reused in expanded rows. The attachment count can be fetched via `getAttachmentsBySessionId().length` or added as a count subquery in `getSessions()`.
 - **Part 3 — Upload from expanded view:** The `FileUploadZone` + `POST /api/sessions/[id]/attachments` route already support adding attachments to existing sessions.
 - **Part 4 — Server-side combined limit:** The `POST /api/sessions/[id]/attachments` route can query existing attachment `parsed_content` character totals and reject uploads that would exceed `MAX_COMBINED_CHARS`.
+
+---
+
+## Part 3: Past Sessions — Attachment Display and Management
+
+> Implements **P3.R1–P3.R5** from PRD-013.
+>
+> References full PRD scope: Part 4 requires server-side combined character limit validation on the `POST /api/sessions/[id]/attachments` route — this part does not add that server-side check. The upload zone and character counter already enforce limits client-side (from Parts 1–2). The saved attachment list component is designed to be reusable if needed elsewhere (e.g., a read-only session detail page in a future PRD).
+
+### Overview
+
+Show attachment information in the past sessions table and enable attachment management in expanded session views. Collapsed rows display a paperclip icon with attachment count. Expanded views show persisted attachments with download, view content, and delete actions, plus the same upload zone from the capture form for adding new attachments. Re-extraction composes input from raw notes + all saved and pending attachment content.
+
+### Database Changes
+
+None. Part 2 created all required tables and storage infrastructure.
+
+### Files Changed
+
+| File | Action | Purpose |
+|------|--------|---------|
+| `app/api/sessions/[id]/attachments/route.ts` | **Modify** | Add GET handler — returns session attachments |
+| `app/api/sessions/[id]/attachments/[attachmentId]/download/route.ts` | **Create** | GET — returns signed download URL for original file |
+| `app/api/sessions/[id]/route.ts` | **Modify** | Relax `rawNotes` validation (allow empty when attachments exist) |
+| `lib/services/session-service.ts` | **Modify** | Add attachment counts to `getSessions()` response |
+| `app/capture/_components/expanded-session-row.tsx` | **Modify** | Fetch attachments, upload zone, saved/pending lists, re-extraction with attachments, two-step save |
+| `app/capture/_components/saved-attachment-list.tsx` | **Create** | List component for persisted attachments — download, delete, view content |
+| `app/capture/_components/past-sessions-table.tsx` | **Modify** | Show paperclip icon + count in collapsed session rows |
+
+### Implementation
+
+#### Increment 3.1: Attachment Count in Collapsed Rows + GET Attachments API
+
+**What:** Show a paperclip icon with attachment count in the collapsed session rows. Add a GET handler to the existing attachments route so the expanded view can fetch persisted attachments.
+
+**Files:**
+
+1. **Modify `lib/services/session-service.ts`**
+
+   Add `attachment_count` to the `SessionWithClient` interface and the `getSessions()` response.
+
+   ```typescript
+   export interface SessionWithClient extends Session {
+     client_name: string;
+     created_by_email?: string;
+     attachment_count: number;
+   }
+   ```
+
+   After the main sessions query, batch-fetch attachment counts for the returned session IDs:
+
+   ```typescript
+   // After fetching sessions, get attachment counts in a single query
+   const sessionIds = rows.map((r) => r.id);
+   let attachmentCountMap = new Map<string, number>();
+
+   if (sessionIds.length > 0) {
+     const { data: attachmentRows } = await supabase
+       .from("session_attachments")
+       .select("session_id")
+       .in("session_id", sessionIds)
+       .is("deleted_at", null);
+
+     for (const row of attachmentRows ?? []) {
+       attachmentCountMap.set(
+         row.session_id,
+         (attachmentCountMap.get(row.session_id) ?? 0) + 1
+       );
+     }
+   }
+
+   // Then in the map:
+   const sessions: SessionWithClient[] = rows.map((row) => ({
+     // ...existing fields...
+     attachment_count: attachmentCountMap.get(row.id) ?? 0,
+   }));
+   ```
+
+   This is a single additional query (not N+1) and runs within the same RLS context.
+
+2. **Modify `app/capture/_components/expanded-session-row.tsx`**
+
+   Update the `SessionRow` interface to include the new field:
+
+   ```typescript
+   export interface SessionRow {
+     // ...existing fields...
+     attachment_count: number;
+   }
+   ```
+
+3. **Modify `app/capture/_components/past-sessions-table.tsx`**
+
+   In the `SessionTableRow` collapsed row, add a paperclip icon with count after the notes column (or inline with notes):
+
+   ```tsx
+   {session.attachment_count > 0 && (
+     <span className="flex items-center gap-1 text-muted-foreground">
+       <Paperclip className="size-3.5" />
+       <span className="text-xs">{session.attachment_count}</span>
+     </span>
+   )}
+   ```
+
+   Import `Paperclip` from `lucide-react`. The indicator appears in the "Notes" cell alongside the truncated notes and the existing sparkles icon.
+
+4. **Modify `app/api/sessions/[id]/attachments/route.ts`**
+
+   Add a `GET` handler alongside the existing `POST`:
+
+   ```
+   GET /api/sessions/[id]/attachments
+
+   Response 200: { attachments: SessionAttachment[] }
+   Response 401: { message: "Authentication required" }
+   Response 404: { message: "Session not found" }
+   ```
+
+   Implementation:
+   1. Auth check (reuse `checkSessionWriteAccess` — though this is a read, the same helper confirms session existence and user access; rename consideration deferred to audit).
+   2. Call `getAttachmentsBySessionId(sessionId)`.
+   3. Return the attachments array.
+   4. Log entry and count.
+
+   Note: We reuse `checkSessionWriteAccess` because it validates auth + session existence + team membership — all required for read access too. The "write" in the name is slightly misleading for a GET, but functionally correct. The audit increment can rename if needed.
+
+#### Increment 3.2: Download API + Saved Attachment List Component
+
+**What:** Create the download API route for generating signed URLs, and a new component for displaying persisted (saved) attachments with download, delete, and view content actions.
+
+**Files:**
+
+1. **Create `app/api/sessions/[id]/attachments/[attachmentId]/download/route.ts`**
+
+   ```
+   GET /api/sessions/[id]/attachments/[attachmentId]/download
+
+   Response 200: { url: string }
+   Response 401: { message: "Authentication required" }
+   Response 404: { message: "Session not found" } or { message: "Attachment not found" }
+   Response 500: { message: "Failed to generate download URL" }
+   ```
+
+   Implementation:
+   1. Auth check via `checkSessionWriteAccess(sessionId)`.
+   2. Fetch the attachment row from DB (via service role client) to get `storage_path`. Verify `deleted_at IS NULL`.
+   3. Call `getSignedDownloadUrl(storagePath)` from `attachment-service.ts`.
+   4. Return `{ url: signedUrl }`.
+   5. If the attachment row exists but the Storage file is missing (orphaned soft-delete), the `getSignedDownloadUrl` call will throw — return 500 with message "Original file no longer available."
+   6. Log entry, success, errors.
+
+2. **Create `app/capture/_components/saved-attachment-list.tsx`**
+
+   A separate component for persisted attachments (distinct from `attachment-list.tsx` which handles client-side `ParsedAttachment` objects). Different data shape (`SessionAttachment` from DB — has `id`, `storage_path`, no `File` object) and different actions (download, server-side delete vs. client-side remove).
+
+   ```typescript
+   "use client"
+
+   import type { SessionAttachment } from "@/lib/services/attachment-service";
+
+   interface SavedAttachmentListProps {
+     attachments: SessionAttachment[];
+     sessionId: string;
+     canEdit: boolean;
+     hasStructuredNotes: boolean;
+     onDeleted: (attachmentId: string) => void;
+   }
+   ```
+
+   Features:
+   - Renders a list of persisted attachment rows (only when `attachments.length > 0`).
+   - Each row shows:
+     - Expand/collapse chevron for "View content" toggle (same pattern as `attachment-list.tsx`).
+     - File type icon (same `FILE_ICONS` map — extract to a shared constant if not already; will check in audit).
+     - File name (truncated).
+     - File size (formatted via `formatFileSize`).
+     - Source format badge (if not `"generic"`).
+     - **Download button** — `Download` icon from `lucide-react`. On click:
+       1. Call `GET /api/sessions/{sessionId}/attachments/{attachmentId}/download`.
+       2. On success: open `url` in a new tab or trigger `window.open(url)` / create an `<a>` with `download` attribute.
+       3. On error: show error toast.
+     - **Delete button** (only when `canEdit` is true) — `Trash2` icon. On click:
+       1. If `hasStructuredNotes` is true, show an inline confirmation: "Signals have already been extracted. Deleting this attachment won't affect them. Continue?"
+       2. Call `DELETE /api/sessions/{sessionId}/attachments/{attachmentId}`.
+       3. On success: call `onDeleted(attachmentId)` to update parent state, show success toast.
+       4. On error: show error toast.
+   - "View content" toggle: when expanded, shows `attachment.parsed_content` in a read-only, scrollable monospace container (same styling as `attachment-list.tsx`).
+   - Loading/deleting states: show a spinner on the download and delete buttons while their async operations are in progress.
+
+#### Increment 3.3: Expanded Session Row — Attachments Integration
+
+**What:** Integrate attachment management into the expanded session row: fetch saved attachments on mount, display them, allow adding new attachments via the upload zone, handle delete, update re-extraction to include attachment content, and implement the two-step save flow for new attachments.
+
+**Files:**
+
+1. **Modify `app/api/sessions/[id]/route.ts`**
+
+   Relax `rawNotes` validation in the `updateSessionSchema` to allow empty notes when attachments exist (matching the POST route pattern from Part 2):
+
+   ```typescript
+   const updateSessionSchema = z
+     .object({
+       clientId: z.string().uuid().nullable(),
+       clientName: z.string().max(255).default(""),
+       sessionDate: z.string().min(1, "Session date is required"),
+       rawNotes: z
+         .string()
+         .max(50000, "Notes must be 50,000 characters or fewer"),
+       structuredNotes: z
+         .string()
+         .max(100000, "Structured notes must be 100,000 characters or fewer")
+         .nullable()
+         .optional(),
+       hasAttachments: z.boolean().optional().default(false),
+     })
+     .refine(
+       (data) => {
+         if (data.clientId === null) {
+           return data.clientName.trim().length > 0;
+         }
+         return true;
+       },
+       { message: "Client name is required when creating a new client", path: ["clientName"] }
+     )
+     .refine(
+       (data) => data.rawNotes.trim().length > 0 || data.hasAttachments,
+       { message: "Notes or at least one attachment is required", path: ["rawNotes"] }
+     );
+   ```
+
+   The `.min(1)` on `rawNotes` is removed. A `.refine()` ensures either `rawNotes` or `hasAttachments` is present — identical to the POST route pattern.
+
+2. **Modify `app/capture/_components/expanded-session-row.tsx`**
+
+   This is the largest change in Part 3. The expanded row gains full attachment management capabilities.
+
+   **New imports:**
+   ```typescript
+   import { FileUploadZone, type ParsedAttachment } from "./file-upload-zone"
+   import { AttachmentList } from "./attachment-list"
+   import { SavedAttachmentList } from "./saved-attachment-list"
+   import type { SessionAttachment } from "@/lib/services/attachment-service"
+   import { MAX_COMBINED_CHARS } from "@/lib/constants"
+   import { cn } from "@/lib/utils"
+   ```
+
+   **New state:**
+   ```typescript
+   const [savedAttachments, setSavedAttachments] = useState<SessionAttachment[]>([])
+   const [pendingAttachments, setPendingAttachments] = useState<ParsedAttachment[]>([])
+   const [isLoadingAttachments, setIsLoadingAttachments] = useState(true)
+   const [deletedAttachmentIds, setDeletedAttachmentIds] = useState<Set<string>>(new Set())
+   ```
+
+   **Fetch attachments on mount:**
+   ```typescript
+   useEffect(() => {
+     let cancelled = false;
+     setIsLoadingAttachments(true);
+
+     fetch(`/api/sessions/${session.id}/attachments`)
+       .then((res) => (res.ok ? res.json() : { attachments: [] }))
+       .then((data) => {
+         if (!cancelled) setSavedAttachments(data.attachments ?? []);
+       })
+       .catch(() => {
+         if (!cancelled) setSavedAttachments([]);
+       })
+       .finally(() => {
+         if (!cancelled) setIsLoadingAttachments(false);
+       });
+
+     return () => { cancelled = true; };
+   }, [session.id]);
+   ```
+
+   **Update `isDirty`:**
+   ```typescript
+   const isDirty =
+     client.id !== session.client_id ||
+     client.name !== session.client_name ||
+     sessionDate !== session.session_date ||
+     rawNotes !== session.raw_notes ||
+     structuredNotes !== session.structured_notes ||
+     pendingAttachments.length > 0 ||
+     deletedAttachmentIds.size > 0
+   ```
+
+   **Update `isFormValid`:**
+   ```typescript
+   const hasInput =
+     rawNotes.trim().length > 0 ||
+     savedAttachments.length > 0 ||
+     pendingAttachments.length > 0
+
+   const isFormValid =
+     client.name.trim().length > 0 &&
+     sessionDate.length > 0 &&
+     hasInput
+   ```
+
+   **Combined character counter:**
+   ```typescript
+   const savedAttachmentChars = savedAttachments.reduce(
+     (sum, a) => sum + a.parsed_content.length, 0
+   )
+   const pendingAttachmentChars = pendingAttachments.reduce(
+     (sum, a) => sum + a.parsed_content.length, 0
+   )
+   const totalChars = (rawNotes?.length ?? 0) + savedAttachmentChars + pendingAttachmentChars
+   const isOverLimit = totalChars > MAX_COMBINED_CHARS
+   const totalAttachmentCount = savedAttachments.length + pendingAttachments.length
+   ```
+
+   **Update `performExtraction` (P3.R5):**
+
+   Compose AI input from raw notes + all saved attachments + all pending attachments:
+   ```typescript
+   const composeExpandedAIInput = (): string => {
+     const parts: string[] = []
+
+     if (rawNotes.trim()) parts.push(rawNotes.trim())
+
+     for (const a of savedAttachments) {
+       const label = a.source_format !== "generic"
+         ? `[Attached file: ${a.file_name} (${a.source_format} format)]`
+         : `[Attached file: ${a.file_name}]`
+       parts.push(`${label}\n${a.parsed_content}`)
+     }
+
+     for (const a of pendingAttachments) {
+       const label = a.source_format !== "generic"
+         ? `[Attached file: ${a.file_name} (${a.source_format} format)]`
+         : `[Attached file: ${a.file_name}]`
+       parts.push(`${label}\n${a.parsed_content}`)
+     }
+
+     return parts.join("\n\n---\n\n")
+   }
+   ```
+
+   Update `performExtraction` to use `composeExpandedAIInput()` instead of just `rawNotes`:
+   ```typescript
+   body: JSON.stringify({ rawNotes: composeExpandedAIInput() })
+   ```
+
+   Also update the "Extract Signals" button disable condition:
+   ```typescript
+   disabled={!hasInput || isOverLimit || extractionState === "extracting"}
+   ```
+
+   **Update `handleSave` — two-step save flow:**
+   ```typescript
+   const handleSave = useCallback(async (): Promise<boolean> => {
+     if (!isFormValid) return false
+     setIsSaving(true)
+
+     try {
+       // Step 1: Update session data
+       const response = await fetch(`/api/sessions/${session.id}`, {
+         method: "PUT",
+         headers: { "Content-Type": "application/json" },
+         body: JSON.stringify({
+           clientId: client.id,
+           clientName: client.name,
+           sessionDate,
+           rawNotes,
+           structuredNotes,
+           hasAttachments: savedAttachments.length + pendingAttachments.length > 0,
+         }),
+       })
+
+       if (!response.ok) {
+         // ...existing error handling...
+         return false
+       }
+
+       // Step 2: Upload pending attachments
+       if (pendingAttachments.length > 0) {
+         let failCount = 0
+         for (const attachment of pendingAttachments) {
+           try {
+             const formData = new FormData()
+             formData.append("file", attachment.file)
+             formData.append("parsed_content", attachment.parsed_content)
+             formData.append("source_format", attachment.source_format)
+
+             const res = await fetch(`/api/sessions/${session.id}/attachments`, {
+               method: "POST",
+               body: formData,
+             })
+             if (!res.ok) failCount++
+           } catch {
+             failCount++
+           }
+         }
+         if (failCount > 0) {
+           toast.warning(`${failCount} attachment${failCount > 1 ? "s" : ""} failed to upload.`)
+         }
+       }
+
+       toast.success("Session updated")
+       onSave()
+       return true
+     } catch (err) {
+       // ...existing error handling...
+       return false
+     } finally {
+       setIsSaving(false)
+     }
+   }, [session.id, client, sessionDate, rawNotes, structuredNotes, isFormValid, onSave, savedAttachments, pendingAttachments])
+   ```
+
+   **Handle saved attachment deletion:**
+   ```typescript
+   const handleSavedAttachmentDeleted = useCallback((attachmentId: string) => {
+     setSavedAttachments((prev) => prev.filter((a) => a.id !== attachmentId))
+     setDeletedAttachmentIds((prev) => new Set(prev).add(attachmentId))
+   }, [])
+   ```
+
+   **Handle pending attachment add/remove:**
+   ```typescript
+   const handleAddPendingAttachment = useCallback((attachment: ParsedAttachment) => {
+     setPendingAttachments((prev) => [...prev, attachment])
+   }, [])
+
+   const handleRemovePendingAttachment = useCallback((index: number) => {
+     setPendingAttachments((prev) => prev.filter((_, i) => i !== index))
+   }, [])
+   ```
+
+   **JSX additions** (below the notes grid, before the action buttons):
+
+   ```tsx
+   {/* Attachments section */}
+   <div className="flex flex-col gap-2">
+     <Label className="text-xs text-muted-foreground">Attachments</Label>
+
+     {/* Saved attachments */}
+     {isLoadingAttachments ? (
+       <div className="flex items-center gap-2 py-2 text-xs text-muted-foreground">
+         <Loader2 className="size-3.5 animate-spin" /> Loading attachments…
+       </div>
+     ) : (
+       <SavedAttachmentList
+         attachments={savedAttachments}
+         sessionId={session.id}
+         canEdit={canEdit}
+         hasStructuredNotes={!!structuredNotes}
+         onDeleted={handleSavedAttachmentDeleted}
+       />
+     )}
+
+     {/* Pending (new) attachments */}
+     <AttachmentList
+       attachments={pendingAttachments}
+       onRemove={handleRemovePendingAttachment}
+     />
+
+     {/* Upload zone (only when editable) */}
+     {canEdit && (
+       <FileUploadZone
+         onFileParsed={handleAddPendingAttachment}
+         disabled={isSaving || extractionState === "extracting"}
+         currentCount={totalAttachmentCount}
+       />
+     )}
+
+     {/* Character counter */}
+     {(savedAttachments.length > 0 || pendingAttachments.length > 0 || rawNotes.length > 0) && (
+       <div className="flex items-center justify-between text-xs">
+         <span className={cn(
+           "text-muted-foreground",
+           isOverLimit && "font-medium text-destructive"
+         )}>
+           {totalChars.toLocaleString()} / {MAX_COMBINED_CHARS.toLocaleString()} characters
+         </span>
+         {isOverLimit && (
+           <span className="text-destructive">
+             Over limit — remove content or attachments
+           </span>
+         )}
+       </div>
+     )}
+   </div>
+   ```
+
+#### Increment 3.4: Code Quality Audit
+
+**What:** Review all files created or modified in Part 3 for adherence to development rules.
+
+**Scope:** `lib/services/session-service.ts`, `app/api/sessions/[id]/attachments/route.ts`, `app/api/sessions/[id]/attachments/[attachmentId]/download/route.ts`, `app/api/sessions/[id]/route.ts`, `app/capture/_components/past-sessions-table.tsx`, `app/capture/_components/expanded-session-row.tsx`, `app/capture/_components/saved-attachment-list.tsx`.
+
+**Checklist:**
+1. **SRP** — each file and function does one thing.
+2. **DRY** — no duplicated patterns. Specific areas to check:
+   - `FILE_ICONS` map is used in both `attachment-list.tsx` and `saved-attachment-list.tsx` — extract to a shared constant if duplicated.
+   - `composeExpandedAIInput()` in `expanded-session-row.tsx` vs `composeAIInput()` in `session-capture-form.tsx` — evaluate whether a shared utility is warranted.
+   - `checkSessionWriteAccess` used for both read (GET) and write operations — consider renaming to `checkSessionAccess` if it better describes the shared purpose.
+3. **Design tokens** — no hardcoded colours or font sizes.
+4. **Logging** — all API routes and service functions log entry, exit, and errors.
+5. **Dead code** — no unused imports or variables.
+6. **Convention compliance** — naming, exports, import order, TypeScript strictness.
+
+This increment produces fixes, not a report.
+
+### Summary of Increments
+
+| Increment | Scope | PRD Requirements |
+|-----------|-------|------------------|
+| 3.1 | Attachment count in collapsed rows + GET attachments API | P3.R1 |
+| 3.2 | Download API + saved attachment list component | P3.R2, P3.R3 |
+| 3.3 | Expanded session row — attachments integration | P3.R4, P3.R5, P3.R2 (delete) |
+| 3.4 | Code quality audit | Convention compliance |
+
+### Forward Compatibility Notes (for Part 4)
+
+- **P4.R3 — Max attachments:** `MAX_ATTACHMENTS` is already enforced client-side (upload zone) and server-side (`POST /api/sessions/[id]/attachments`). The expanded view passes `totalAttachmentCount` (saved + pending) to the upload zone's `currentCount`.
+- **P4.R4 — Combined limit:** The character counter in both the capture form and the expanded view enforces `MAX_COMBINED_CHARS` client-side. Part 4 adds server-side validation on the attachment upload route.
+- **P4.R5 — Session without raw notes:** The `updateSessionSchema` (Increment 3.3) and `createSessionSchema` (Part 2) both support empty `rawNotes` when `hasAttachments` is true.

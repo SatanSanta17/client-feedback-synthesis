@@ -23,6 +23,7 @@ export interface Session {
 export interface SessionWithClient extends Session {
   client_name: string;
   created_by_email?: string;
+  attachment_count: number;
 }
 
 export interface SessionFilters {
@@ -97,6 +98,25 @@ export async function getSessions(
     );
   }
 
+  // Batch-fetch attachment counts for the returned sessions
+  const attachmentCountMap = new Map<string, number>();
+  const sessionIds = rows.map((r) => r.id);
+
+  if (sessionIds.length > 0) {
+    const { data: attachmentRows } = await supabase
+      .from("session_attachments")
+      .select("session_id")
+      .in("session_id", sessionIds)
+      .is("deleted_at", null);
+
+    for (const row of attachmentRows ?? []) {
+      attachmentCountMap.set(
+        row.session_id,
+        (attachmentCountMap.get(row.session_id) ?? 0) + 1
+      );
+    }
+  }
+
   const sessions: SessionWithClient[] = rows.map((row) => {
     const clientData = row.clients as unknown as { name: string } | null;
     return {
@@ -109,6 +129,7 @@ export async function getSessions(
       created_at: row.created_at,
       client_name: clientData?.name ?? "Unknown",
       created_by_email: emailByUserId?.get(row.created_by) ?? undefined,
+      attachment_count: attachmentCountMap.get(row.id) ?? 0,
     };
   });
 

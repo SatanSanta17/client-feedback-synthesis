@@ -3,6 +3,7 @@ import { NextRequest, NextResponse } from "next/server";
 import {
   uploadAndCreateAttachment,
   getAttachmentCountForSession,
+  getAttachmentsBySessionId,
 } from "@/lib/services/attachment-service";
 import {
   MAX_FILE_SIZE_BYTES,
@@ -10,6 +11,42 @@ import {
   ACCEPTED_FILE_TYPES,
 } from "@/lib/constants";
 import { checkSessionWriteAccess } from "@/app/api/sessions/_helpers";
+
+// --- GET /api/sessions/[id]/attachments ---
+
+export async function GET(
+  _request: NextRequest,
+  { params }: { params: Promise<{ id: string }> }
+) {
+  const { id: sessionId } = await params;
+
+  console.log("[api/sessions/[id]/attachments] GET — session:", sessionId);
+
+  const access = await checkSessionWriteAccess(sessionId);
+  if (access.error) return access.error;
+
+  try {
+    const attachments = await getAttachmentsBySessionId(sessionId);
+
+    console.log(
+      "[api/sessions/[id]/attachments] GET — returning",
+      attachments.length,
+      "attachments"
+    );
+    return NextResponse.json({ attachments });
+  } catch (err) {
+    console.error(
+      "[api/sessions/[id]/attachments] GET error:",
+      err instanceof Error ? err.message : err
+    );
+    return NextResponse.json(
+      { message: "Failed to fetch attachments" },
+      { status: 500 }
+    );
+  }
+}
+
+// --- POST /api/sessions/[id]/attachments ---
 
 export async function POST(
   request: NextRequest,

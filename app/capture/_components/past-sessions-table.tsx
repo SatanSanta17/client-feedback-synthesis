@@ -1,7 +1,7 @@
 "use client"
 
 import { useState, useEffect, useCallback, useRef } from "react"
-import { Loader2, Sparkles } from "lucide-react"
+import { Loader2, Sparkles, Paperclip } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
 import { useAuth } from "@/components/providers/auth-provider"
@@ -376,6 +376,12 @@ function SessionTableRow({
         <td className="px-4 py-2.5 text-muted-foreground">
           <span className="flex items-center gap-1.5">
             {truncateNotes(session.raw_notes)}
+            {session.attachment_count > 0 && (
+              <span className="flex shrink-0 items-center gap-0.5 text-muted-foreground">
+                <Paperclip className="size-3.5" />
+                <span className="text-xs">{session.attachment_count}</span>
+              </span>
+            )}
             {session.structured_notes && (
               <Sparkles className="size-3.5 shrink-0 text-primary/60" />
             )}
