@@ -6,6 +6,15 @@ All notable changes to this project are documented here, grouped by PRD and part
 
 ## [Unreleased]
 
+### PRD-013 Part 1: File Upload Infrastructure — 2026-04-02
+- Created `lib/constants.ts` with file upload limits (`MAX_FILE_SIZE_BYTES`, `MAX_COMBINED_CHARS`, `MAX_ATTACHMENTS`, `ACCEPTED_FILE_TYPES`, `ACCEPTED_EXTENSIONS`)
+- Created `lib/services/file-parser-service.ts` with parsers for TXT, PDF, CSV, DOCX, JSON files and WhatsApp/Slack chat format detection and restructuring
+- Created `POST /api/files/parse` stateless API route — accepts `multipart/form-data`, validates file, returns parsed content with `source_format`
+- Created `file-upload-zone.tsx` — drag-and-drop upload zone with inline validation, multi-file support, and server-side parse calls
+- Created `attachment-list.tsx` — displays attached files with type icon, size, format badge, and remove button
+- Integrated file attachments into `session-capture-form.tsx` — combined character counter (notes + attachments vs 50k limit), composed AI input merges raw notes with attachment content, attachments sent in save payload, form reset clears attachments
+- Installed `pdf-parse`, `mammoth`, `papaparse` npm packages with TypeScript type definitions
+
 ### Workspace Switcher: Always Visible + Create Team in Dropdown — 2026-04-02
 - Workspace switcher now renders for all authenticated users (not just those with teams)
 - Shows a skeleton shimmer while loading instead of disappearing

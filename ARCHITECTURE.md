@@ -20,10 +20,10 @@ Synthesiser is a web application for teams to capture structured client session 
 
 ## Current State
 
-**Status:** PRD-002 through PRD-010 implemented. The app is a fully functional team-capable client feedback capture and synthesis platform. Google OAuth login (open to any Google account), working capture form with AI signal extraction, past sessions table with filters/inline editing/soft delete, master signal page with AI synthesis and PDF download, prompt editor with version history, and team access with role-based permissions.
+**Status:** PRD-002 through PRD-010 implemented. PRD-013 Part 1 (File Upload Infrastructure) implemented. The app is a fully functional team-capable client feedback capture and synthesis platform. Google OAuth login (open to any Google account), working capture form with AI signal extraction and file attachment upload, past sessions table with filters/inline editing/soft delete, master signal page with AI synthesis and PDF download, prompt editor with version history, and team access with role-based permissions.
 
 **Core features live:**
-- Session capture with AI signal extraction (Vercel AI SDK, multi-provider)
+- Session capture with AI signal extraction (Vercel AI SDK, multi-provider) and file attachment upload (TXT, PDF, CSV, DOCX, JSON) with server-side parsing and chat format detection (WhatsApp, Slack)
 - Master signal synthesis (cold start + incremental, tainted flag on deletion)
 - Per-user prompt editor with version history and revert
 - Team workspaces with role-based access (owner, admin, sales)
@@ -61,6 +61,9 @@ synthesiser/
 │   │   │       └── route.ts     # POST — generate/regenerate master signal (team admin check)
 │   │   ├── clients/
 │   │   │   └── route.ts         # GET (search, hasSession filter) and POST (create) — team-scoped
+│   │   ├── files/
+│   │   │   └── parse/
+│   │   │       └── route.ts     # POST — stateless file parse (multipart/form-data) — returns parsed content + source format
 │   │   ├── invite/
 │   │   │   └── [token]/
 │   │   │       └── accept/
@@ -99,14 +102,16 @@ synthesiser/
 │   ├── capture/
 │   │   ├── page.tsx             # Capture tab — server component, renders CapturePageContent
 │   │   └── _components/
+│   │       ├── attachment-list.tsx          # Attachment chips — file name, size, format badge, remove button
 │   │       ├── capture-page-content.tsx    # Client wrapper — manages refreshKey between form and table
 │   │       ├── client-combobox.tsx         # Type-to-create text input with existing client suggestions
 │   │       ├── client-filter-combobox.tsx  # Client combobox for filters (hasSession, no create-new)
 │   │       ├── date-picker.tsx            # Styled native date input (max: today, optional min/max)
 │   │       ├── expanded-session-row.tsx   # Expanded row with side-by-side raw/structured notes, edit/read-only
+│   │       ├── file-upload-zone.tsx      # Drag-and-drop file upload zone with client-side validation and server parse
 │   │       ├── markdown-panel.tsx         # Reusable markdown view/edit panel with rendered preview and raw edit toggle
 │   │       ├── past-sessions-table.tsx    # Past sessions table with expand/collapse, inline edit, delete, "Captured by" column
-│   │       ├── session-capture-form.tsx   # Capture form — client, date, notes, extract signals, save
+│   │       ├── session-capture-form.tsx   # Capture form — client, date, notes, file attachments, extract signals, save
 │   │       ├── session-filters.tsx        # Filter bar — client combobox + date range with auto-sync
 │   │       └── unsaved-changes-dialog.tsx # Save/Discard/Cancel prompt for dirty expanded rows
 │   ├── invite/
@@ -159,6 +164,7 @@ synthesiser/
 │       ├── tabs.tsx
 │       └── textarea.tsx
 ├── lib/
+│   ├── constants.ts             # Shared constants (file upload limits, accepted types)
 │   ├── utils.ts                 # cn() utility (clsx + tailwind-merge)
 │   ├── email-templates/
 │   │   └── invite-email.ts      # HTML email template for team invitations
@@ -169,6 +175,7 @@ synthesiser/
 │   │   ├── ai-service.ts        # AI service — extractSignals(), synthesiseMasterSignal(), provider-agnostic via Vercel AI SDK
 │   │   ├── client-service.ts    # Client search and creation — team-scoped via getActiveTeamId()
 │   │   ├── email-service.ts     # Provider-agnostic email sending — sendEmail(), resolveEmailProvider(), Resend adapter
+│   │   ├── file-parser-service.ts # File parsing — TXT, PDF, CSV, DOCX, JSON + WhatsApp/Slack chat detection
 │   │   ├── invitation-service.ts # Invitation CRUD — create, list pending, revoke, resend, accept, getByToken
 │   │   ├── master-signal-service.ts # Master signal CRUD — team-scoped via getActiveTeamId()
 │   │   ├── profile-service.ts   # Server-side profile fetch (getCurrentProfile)
@@ -413,6 +420,7 @@ Stores versioned AI system prompts per user or team workspace. Each save/reset/r
 | POST | `/api/ai/extract-signals` | Extract signals from raw notes via AI model. Body: `{ rawNotes }`. Returns `{ structuredNotes }`. | Yes |
 | POST | `/api/ai/generate-master-signal` | Generate/regenerate master signal. Team: admin only (403 for sales). | Yes |
 | GET | `/api/master-signal` | Fetch current master signal + staleness count. Workspace-scoped. | Yes |
+| POST | `/api/files/parse` | Stateless file parse. Body: `multipart/form-data` with `file`. Returns `{ parsed_content, file_name, file_type, file_size, source_format }`. | Yes |
 | GET | `/api/clients?q=&hasSession=` | Search clients. Workspace-scoped. | Yes (RLS) |
 | POST | `/api/clients` | Create client. Workspace-scoped. | Yes (RLS) |
 | GET | `/api/sessions?clientId=&dateFrom=&dateTo=&offset=&limit=` | List sessions. Workspace-scoped. Includes `created_by_email` for team context. | Yes (RLS) |

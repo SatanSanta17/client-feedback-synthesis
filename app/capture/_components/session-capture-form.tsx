@@ -7,6 +7,7 @@ import { z } from "zod"
 import { toast } from "sonner"
 import { Loader2, Sparkles, RefreshCw } from "lucide-react"
 
+import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
@@ -16,6 +17,9 @@ import {
 } from "./client-combobox"
 import { DatePicker } from "./date-picker"
 import { MarkdownPanel } from "./markdown-panel"
+import { FileUploadZone, type ParsedAttachment } from "./file-upload-zone"
+import { AttachmentList } from "./attachment-list"
+import { MAX_COMBINED_CHARS } from "@/lib/constants"
 
 function getToday(): string {
   return new Date().toISOString().split("T")[0]
@@ -37,10 +41,7 @@ const captureFormSchema = z.object({
       message: "Client is required",
     }),
   sessionDate: z.string().min(1, "Session date is required"),
-  rawNotes: z
-    .string()
-    .min(1, "Notes are required")
-    .max(50000, "Notes must be 50,000 characters or fewer"),
+  rawNotes: z.string().max(50000, "Notes must be 50,000 characters or fewer"),
 })
 
 type CaptureFormValues = z.infer<typeof captureFormSchema>
@@ -49,6 +50,27 @@ type ExtractionState = "idle" | "extracting" | "done"
 
 export interface SessionCaptureFormProps {
   onSessionSaved?: () => void
+}
+
+function composeAIInput(
+  rawNotes: string,
+  attachments: ParsedAttachment[]
+): string {
+  const parts: string[] = []
+
+  if (rawNotes.trim()) {
+    parts.push(rawNotes.trim())
+  }
+
+  for (const a of attachments) {
+    const label =
+      a.source_format !== "generic"
+        ? `[Attached file: ${a.file_name} (${a.source_format} format)]`
+        : `[Attached file: ${a.file_name}]`
+    parts.push(`${label}\n${a.parsed_content}`)
+  }
+
+  return parts.join("\n\n---\n\n")
 }
 
 export function SessionCaptureForm({ onSessionSaved }: SessionCaptureFormProps) {
@@ -76,20 +98,32 @@ export function SessionCaptureForm({ onSessionSaved }: SessionCaptureFormProps) 
   const [extractionState, setExtractionState] = useState<ExtractionState>("idle")
   const [showReextractConfirm, setShowReextractConfirm] = useState(false)
 
+  // File attachments — managed outside react-hook-form
+  const [attachments, setAttachments] = useState<ParsedAttachment[]>([])
+
   // Watch rawNotes to enable/disable the extract button
   const rawNotes = watch("rawNotes")
   const hasNotes = rawNotes?.trim().length > 0
+  const hasInput = hasNotes || attachments.length > 0
   const isStructuredDirty = structuredNotes !== lastExtractedNotes
+
+  // Combined character counter
+  const attachmentChars = attachments.reduce(
+    (sum, a) => sum + a.parsed_content.length, 0
+  )
+  const totalChars = (rawNotes?.length ?? 0) + attachmentChars
+  const isOverLimit = totalChars > MAX_COMBINED_CHARS
 
   const performExtraction = async () => {
     const notes = getValues("rawNotes")
+    const composedInput = composeAIInput(notes, attachments)
     setExtractionState("extracting")
 
     try {
       const response = await fetch("/api/ai/extract-signals", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ rawNotes: notes }),
+        body: JSON.stringify({ rawNotes: composedInput }),
       })
 
       if (!response.ok) {
@@ -115,6 +149,14 @@ export function SessionCaptureForm({ onSessionSaved }: SessionCaptureFormProps) 
     }
   }
 
+  const handleAddAttachment = (attachment: ParsedAttachment) => {
+    setAttachments((prev) => [...prev, attachment])
+  }
+
+  const handleRemoveAttachment = (index: number) => {
+    setAttachments((prev) => prev.filter((_, i) => i !== index))
+  }
+
   const handleExtractSignals = async () => {
     // Re-extraction confirmation if user has edited the structured notes
     if (extractionState === "done" && isStructuredDirty) {
@@ -131,7 +173,21 @@ export function SessionCaptureForm({ onSessionSaved }: SessionCaptureFormProps) 
   }
 
   const onSubmit = async (data: CaptureFormValues) => {
+    if (!hasInput) {
+      toast.error("Provide notes or attach files before saving.")
+      return
+    }
+
     const client = data.client as ClientSelection
+    const composedInput = composeAIInput(data.rawNotes, attachments)
+
+    const attachmentsMeta = attachments.map((a) => ({
+      file_name: a.file_name,
+      file_type: a.file_type,
+      file_size: a.file_size,
+      source_format: a.source_format,
+      parsed_content: a.parsed_content,
+    }))
 
     try {
       const response = await fetch("/api/sessions", {
@@ -141,8 +197,9 @@ export function SessionCaptureForm({ onSessionSaved }: SessionCaptureFormProps) 
           clientId: client.id,
           clientName: client.name,
           sessionDate: data.sessionDate,
-          rawNotes: data.rawNotes,
+          rawNotes: composedInput,
           structuredNotes: structuredNotes,
+          attachments: attachmentsMeta.length > 0 ? attachmentsMeta : undefined,
         }),
       })
 
@@ -164,10 +221,10 @@ export function SessionCaptureForm({ onSessionSaved }: SessionCaptureFormProps) 
         sessionDate: getToday(),
         rawNotes: "",
       })
-      // Reset extraction state
       setStructuredNotes(null)
       setLastExtractedNotes(null)
       setExtractionState("idle")
+      setAttachments([])
       onSessionSaved?.()
     } catch (err) {
       console.error(
@@ -227,6 +284,37 @@ export function SessionCaptureForm({ onSessionSaved }: SessionCaptureFormProps) 
           />
         </div>
 
+        {/* Attachments */}
+        <div className="flex flex-col gap-2">
+          <Label>Attachments</Label>
+          <FileUploadZone
+            onFileParsed={handleAddAttachment}
+            disabled={extractionState === "extracting" || isSubmitting}
+            currentCount={attachments.length}
+          />
+          <AttachmentList
+            attachments={attachments}
+            onRemove={handleRemoveAttachment}
+          />
+        </div>
+
+        {/* Character counter */}
+        <div className="flex items-center justify-between text-xs">
+          <span
+            className={cn(
+              "text-muted-foreground",
+              isOverLimit && "font-medium text-destructive"
+            )}
+          >
+            {totalChars.toLocaleString()} / {MAX_COMBINED_CHARS.toLocaleString()} characters
+          </span>
+          {isOverLimit && (
+            <span className="text-destructive">
+              Over limit — remove content or attachments
+            </span>
+          )}
+        </div>
+
         {/* Action buttons */}
         <div className="flex items-center gap-3">
           {/* Extract Signals button */}
@@ -234,7 +322,7 @@ export function SessionCaptureForm({ onSessionSaved }: SessionCaptureFormProps) 
             type="button"
             variant="outline"
             size="lg"
-            disabled={!hasNotes || extractionState === "extracting"}
+            disabled={!hasInput || isOverLimit || extractionState === "extracting"}
             onClick={handleExtractSignals}
           >
             {extractionState === "extracting" ? (
@@ -258,7 +346,7 @@ export function SessionCaptureForm({ onSessionSaved }: SessionCaptureFormProps) 
           {/* Submit button */}
           <Button
             type="submit"
-            disabled={!isValid || isSubmitting}
+            disabled={!isValid || !hasInput || isOverLimit || isSubmitting}
             size="lg"
           >
             {isSubmitting && <Loader2 className="mr-2 size-4 animate-spin" />}
