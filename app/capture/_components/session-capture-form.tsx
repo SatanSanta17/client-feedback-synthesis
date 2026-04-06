@@ -7,23 +7,22 @@ import { z } from "zod"
 import { toast } from "sonner"
 import { Loader2, Sparkles, RefreshCw } from "lucide-react"
 
-import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
+import { MAX_COMBINED_CHARS } from "@/lib/constants"
 import {
   ClientCombobox,
   type ClientSelection,
 } from "./client-combobox"
 import { DatePicker } from "./date-picker"
-import { MarkdownPanel } from "./markdown-panel"
-import { FileUploadZone, type ParsedAttachment } from "./file-upload-zone"
-import { AttachmentList } from "./attachment-list"
-import { MAX_COMBINED_CHARS } from "@/lib/constants"
+import { type ParsedAttachment } from "./file-upload-zone"
 import { composeAIInput } from "@/lib/utils/compose-ai-input"
 import { uploadAttachmentsToSession } from "@/lib/utils/upload-attachments"
 import { useSignalExtraction } from "@/lib/hooks/use-signal-extraction"
 import { ReextractConfirmDialog } from "@/components/capture/reextract-confirm-dialog"
+import { CaptureAttachmentSection } from "./capture-attachment-section"
+import { StructuredNotesPanel } from "./structured-notes-panel"
 
 function getToday(): string {
   return new Date().toISOString().split("T")[0]
@@ -53,7 +52,6 @@ type CaptureFormValues = z.infer<typeof captureFormSchema>
 export interface SessionCaptureFormProps {
   onSessionSaved?: () => void
 }
-
 
 export function SessionCaptureForm({ onSessionSaved }: SessionCaptureFormProps) {
   const {
@@ -221,36 +219,14 @@ export function SessionCaptureForm({ onSessionSaved }: SessionCaptureFormProps) 
           />
         </div>
 
-        {/* Attachments */}
-        <div className="flex flex-col gap-2">
-          <Label>Attachments</Label>
-          <FileUploadZone
-            onFileParsed={handleAddAttachment}
-            disabled={extractionState === "extracting" || isSubmitting}
-            currentCount={attachments.length}
-          />
-          <AttachmentList
-            attachments={attachments}
-            onRemove={handleRemoveAttachment}
-          />
-        </div>
-
-        {/* Character counter */}
-        <div className="flex items-center justify-between text-xs">
-          <span
-            className={cn(
-              "text-muted-foreground",
-              isOverLimit && "font-medium text-destructive"
-            )}
-          >
-            {totalChars.toLocaleString()} / {MAX_COMBINED_CHARS.toLocaleString()} characters
-          </span>
-          {isOverLimit && (
-            <span className="text-destructive">
-              Over limit — remove content or attachments
-            </span>
-          )}
-        </div>
+        <CaptureAttachmentSection
+          attachments={attachments}
+          onFileParsed={handleAddAttachment}
+          onRemove={handleRemoveAttachment}
+          disabled={extractionState === "extracting" || isSubmitting}
+          totalChars={totalChars}
+          isOverLimit={isOverLimit}
+        />
 
         {/* Action buttons */}
         <div className="flex items-center gap-3">
@@ -293,16 +269,11 @@ export function SessionCaptureForm({ onSessionSaved }: SessionCaptureFormProps) 
       </form>
 
       {/* Structured notes panel — visible after extraction */}
-      {extractionState === "done" && structuredNotes && (
-        <div className="mt-6">
-          <h3 className="mb-3 text-sm font-medium text-foreground">
-            Extracted Signals
-          </h3>
-          <MarkdownPanel
-            content={structuredNotes}
-            onChange={setStructuredNotes}
-          />
-        </div>
+      {extractionState === "done" && (
+        <StructuredNotesPanel
+          structuredNotes={structuredNotes}
+          onChange={setStructuredNotes}
+        />
       )}
 
       <ReextractConfirmDialog
