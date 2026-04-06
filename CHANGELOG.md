@@ -6,6 +6,23 @@ All notable changes to this project are documented here, grouped by PRD and part
 
 ## [Unreleased]
 
+### PRD-013 Part 4: Edge Cases & Limits — 2026-04-06
+- Replaced hardcoded `.max(50000)` with `MAX_COMBINED_CHARS` constant in `extract-signals/route.ts`, `sessions/route.ts`, `sessions/[id]/route.ts`, and `session-capture-form.tsx` — server and client now reference the same shared limit
+- Added input length logging to the extract-signals route before AI calls
+
+### PRD-013 UI Polish — 2026-04-06
+- Made the entire file upload zone clickable (not just the "browse" link) — added `onClick` on the container div, `cursor-pointer` styling, and hover feedback
+- Moved the attachments section (upload zone, saved/pending lists, character counter) below raw notes inside the left column of the expanded session row grid
+- Made saved attachment rows fully clickable to toggle expand/collapse — added `e.stopPropagation()` on download/delete buttons to prevent unintended toggles
+
+### Bug Fix: PDF Parsing — 2026-04-06
+- Downgraded `pdf-parse` from v2.4.5 to v1.1.1 — v2 depends on `DOMMatrix` and other browser APIs unavailable in Vercel's serverless runtime
+- Fixed import to `pdf-parse/lib/pdf-parse` to bypass v1's test-file-loading entrypoint (`ENOENT: ./test/data/05-versions-space.pdf`)
+- Removed `@types/pdf-parse` (v2 types); added custom type declaration in `types/pdf-parse.d.ts`
+
+### Docs: Storage Bucket Name Correction — 2026-04-06
+- Updated ARCHITECTURE.md, CHANGELOG.md, PRD-013, and TRD-013 to reference the actual Supabase Storage bucket name (`SYNTHESISER_FILE_UPLOAD`) instead of the previously documented `session-attachments`
+
 ### PRD-013 Part 3: Past Sessions — Attachment Display & Management — 2026-04-02
 - Added `attachment_count` to `SessionWithClient` with batch-fetch in `getSessions()` — displays paperclip icon with count in collapsed session rows
 - Created `GET /api/sessions/[id]/attachments` — returns non-deleted attachments for a session
@@ -39,6 +56,12 @@ All notable changes to this project are documented here, grouped by PRD and part
 - Created `attachment-list.tsx` — displays attached files with type icon, size, format badge, and remove button
 - Integrated file attachments into `session-capture-form.tsx` — combined character counter (notes + attachments vs 50k limit), composed AI input merges raw notes with attachment content, attachments sent in save payload, form reset clears attachments
 - Installed `pdf-parse`, `mammoth`, `papaparse` npm packages with TypeScript type definitions
+
+### PRD-011: Email + Password Authentication — 2026-04-02
+- **Part 1 — Sign-Up & Sign-In:** Created `/signup` page with email/password form (Zod validation: 8+ chars, 1 digit, 1 special char), email confirmation flow via Supabase, and Google OAuth button. Updated `/login` with email/password form alongside existing Google OAuth. Added shared `PasswordInput` component (toggleable show/hide) and `passwordField` Zod schema in `lib/schemas/password-schema.ts`. Created `GoogleIcon` shared component.
+- **Part 2 — Password Reset:** Created `/forgot-password` page (sends reset email via `supabase.auth.resetPasswordForEmail` with `type=recovery` redirect). Created `/reset-password` page (new password + confirm, calls `supabase.auth.updateUser`). Auth callback handles `type=recovery` and redirects to reset page.
+- **Part 3 — Invite Flow:** Updated `/invite/[token]` with four states: authenticated + email match (accept card), authenticated + mismatch (warning + sign-out option), unauthenticated + existing user (sign-in form with pre-filled email), unauthenticated + new user (sign-up form with pre-filled email). Email match verification in auth callback prevents wrong-account acceptance. Created `invite-sign-in-form.tsx`, `invite-sign-up-form.tsx`, `invite-accept-card.tsx`, `invite-mismatch-card.tsx`, `invite-shell.tsx`, `invite-helpers.ts`.
+- **Part 4 — Middleware:** Added `/signup`, `/forgot-password`, and `/invite/*` to public routes. `/reset-password` requires authentication (user arrives via recovery link which establishes session). Authenticated users redirected away from auth pages to `/capture`.
 
 ### Workspace Switcher: Always Visible + Create Team in Dropdown — 2026-04-02
 - Workspace switcher now renders for all authenticated users (not just those with teams)

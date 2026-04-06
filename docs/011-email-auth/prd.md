@@ -1,6 +1,6 @@
 # PRD-011: Email + Password Authentication
 
-> **Status:** Draft
+> **Status:** Implemented
 
 ## Purpose
 

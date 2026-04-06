@@ -1,6 +1,6 @@
 # TRD-011: Email + Password Authentication
 
-> **Status:** Draft (Parts 1–3)
+> **Status:** Implemented (Parts 1–4)
 >
 > Mirrors **PRD-011**. Each part maps to the corresponding PRD part.
 
