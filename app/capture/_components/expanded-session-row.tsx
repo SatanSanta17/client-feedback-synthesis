@@ -1,27 +1,23 @@
 "use client"
 
 import { useState, useEffect, useCallback } from "react"
-import { Loader2, Save, X, Trash2, Sparkles, RefreshCw } from "lucide-react"
+import { Loader2, Sparkles, RefreshCw } from "lucide-react"
 import { toast } from "sonner"
 
-import { cn } from "@/lib/utils"
 import { MAX_COMBINED_CHARS } from "@/lib/constants"
 import { Button } from "@/components/ui/button"
 import { Label } from "@/components/ui/label"
-import {
-  ClientCombobox,
-  type ClientSelection,
-} from "./client-combobox"
-import { DatePicker } from "./date-picker"
+import { type ClientSelection } from "./client-combobox"
 import { MarkdownPanel } from "./markdown-panel"
-import { FileUploadZone, type ParsedAttachment } from "./file-upload-zone"
-import { AttachmentList } from "./attachment-list"
-import { SavedAttachmentList } from "./saved-attachment-list"
+import { type ParsedAttachment } from "./file-upload-zone"
 import { composeAIInput } from "@/lib/utils/compose-ai-input"
 import { uploadAttachmentsToSession } from "@/lib/utils/upload-attachments"
 import type { SessionAttachment } from "@/lib/services/attachment-service"
 import { useSignalExtraction } from "@/lib/hooks/use-signal-extraction"
 import { ReextractConfirmDialog } from "@/components/capture/reextract-confirm-dialog"
+import { ExpandedSessionMetadata } from "./expanded-session-metadata"
+import { ExpandedSessionNotes } from "./expanded-session-notes"
+import { ExpandedSessionActions } from "./expanded-session-actions"
 
 export interface SessionRow {
   id: string
@@ -100,7 +96,6 @@ export function ExpandedSessionRow({
   const {
     extractionState,
     structuredNotes,
-    isStructuredDirty,
     showReextractConfirm,
     setStructuredNotes,
     handleExtractSignals,
@@ -111,6 +106,7 @@ export function ExpandedSessionRow({
     initialStructuredNotes: session.structured_notes,
   })
 
+  // Derived state
   const isDirty =
     client.id !== session.client_id ||
     client.name !== session.client_name ||
@@ -130,7 +126,6 @@ export function ExpandedSessionRow({
     sessionDate.length > 0 &&
     hasInput
 
-  // Combined character counter
   const savedAttachmentChars = savedAttachments.reduce(
     (sum, a) => sum + a.parsed_content.length, 0
   )
@@ -251,106 +246,36 @@ export function ExpandedSessionRow({
 
   return (
     <div className="flex flex-col gap-4 p-4 bg-muted/20 border-t border-border">
-      {canEdit ? (
-        <>
-          <div className="flex flex-col gap-1.5">
-            <Label className="text-xs text-muted-foreground">Client</Label>
-            <ClientCombobox
-              value={client}
-              onChange={(c) => {
-                if (c) setClient(c)
-              }}
-            />
-          </div>
-
-          <div className="flex flex-col gap-1.5">
-            <Label className="text-xs text-muted-foreground">Session Date</Label>
-            <DatePicker
-              value={sessionDate}
-              onChange={setSessionDate}
-              className="w-48"
-            />
-          </div>
-        </>
-      ) : (
-        <div className="flex items-center gap-6 text-sm">
-          <div>
-            <span className="text-xs text-muted-foreground">Client</span>
-            <p className="font-medium">{session.client_name}</p>
-          </div>
-          <div>
-            <span className="text-xs text-muted-foreground">Date</span>
-            <p className="font-medium">{session.session_date}</p>
-          </div>
-          {session.created_by_email && (
-            <div>
-              <span className="text-xs text-muted-foreground">Captured by</span>
-              <p className="font-medium">{session.created_by_email}</p>
-            </div>
-          )}
-        </div>
-      )}
+      <ExpandedSessionMetadata
+        canEdit={canEdit}
+        client={client}
+        onClientChange={setClient}
+        sessionDate={sessionDate}
+        onSessionDateChange={setSessionDate}
+        session={session}
+      />
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        <div className="flex flex-col gap-1.5">
-          <Label className="text-xs text-muted-foreground">Raw Notes</Label>
-          <MarkdownPanel
-            content={rawNotes}
-            onChange={canEdit ? setRawNotes : undefined}
-            readOnly={!canEdit}
-          />
+        <ExpandedSessionNotes
+          rawNotes={rawNotes}
+          onRawNotesChange={setRawNotes}
+          canEdit={canEdit}
+          sessionId={session.id}
+          savedAttachments={savedAttachments}
+          pendingAttachments={pendingAttachments}
+          isLoadingAttachments={isLoadingAttachments}
+          structuredNotes={structuredNotes}
+          extractionState={extractionState}
+          isSaving={isSaving}
+          totalChars={totalChars}
+          isOverLimit={isOverLimit}
+          totalAttachmentCount={totalAttachmentCount}
+          onSavedAttachmentDeleted={handleSavedAttachmentDeleted}
+          onAddPendingAttachment={handleAddPendingAttachment}
+          onRemovePendingAttachment={handleRemovePendingAttachment}
+        />
 
-          {/* Attachments section — below raw notes */}
-          <div className="mt-2 flex flex-col gap-2">
-            <Label className="text-xs text-muted-foreground">Attachments</Label>
-
-            {isLoadingAttachments ? (
-              <div className="flex items-center gap-2 py-2 text-xs text-muted-foreground">
-                <Loader2 className="size-3.5 animate-spin" /> Loading attachments…
-              </div>
-            ) : (
-              <SavedAttachmentList
-                attachments={savedAttachments}
-                sessionId={session.id}
-                canEdit={canEdit}
-                hasStructuredNotes={!!structuredNotes}
-                onDeleted={handleSavedAttachmentDeleted}
-              />
-            )}
-
-            <AttachmentList
-              attachments={pendingAttachments}
-              onRemove={handleRemovePendingAttachment}
-            />
-
-            {canEdit && (
-              <FileUploadZone
-                onFileParsed={handleAddPendingAttachment}
-                disabled={isSaving || extractionState === "extracting"}
-                currentCount={totalAttachmentCount}
-              />
-            )}
-
-            {(savedAttachments.length > 0 || pendingAttachments.length > 0 || rawNotes.length > 0) && (
-              <div className="flex items-center justify-between text-xs">
-                <span
-                  className={cn(
-                    "text-muted-foreground",
-                    isOverLimit && "font-medium text-destructive"
-                  )}
-                >
-                  {totalChars.toLocaleString()} / {MAX_COMBINED_CHARS.toLocaleString()} characters
-                </span>
-                {isOverLimit && (
-                  <span className="text-destructive">
-                    Over limit — remove content or attachments
-                  </span>
-                )}
-              </div>
-            )}
-          </div>
-        </div>
-
+        {/* Extracted signals panel — kept inline (minimal logic) */}
         <div className="flex flex-col gap-1.5">
           <div className="flex items-center justify-between">
             <Label className="text-xs text-muted-foreground">Extracted Signals</Label>
@@ -400,88 +325,19 @@ export function ExpandedSessionRow({
         </div>
       </div>
 
-      <div className="flex items-center gap-2">
-        {canEdit ? (
-          <>
-            <Button
-              size="sm"
-              onClick={handleSave}
-              disabled={!isFormValid || !isDirty || isSaving || isDeleting || isOverLimit}
-            >
-              {isSaving ? (
-                <Loader2 className="mr-1.5 size-3.5 animate-spin" />
-              ) : (
-                <Save className="mr-1.5 size-3.5" />
-              )}
-              {isSaving ? "Saving..." : "Save"}
-            </Button>
-
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={onCancel}
-              disabled={isSaving || isDeleting}
-            >
-              <X className="mr-1.5 size-3.5" />
-              Cancel
-            </Button>
-
-            <div className="ml-auto">
-              {showDeleteConfirm ? (
-                <div className="flex items-center gap-2">
-                  <span className="text-xs text-muted-foreground">
-                    Delete this session?
-                  </span>
-                  <Button
-                    variant="destructive"
-                    size="sm"
-                    onClick={handleDelete}
-                    disabled={isDeleting}
-                  >
-                    {isDeleting && (
-                      <Loader2 className="mr-1.5 size-3.5 animate-spin" />
-                    )}
-                    {isDeleting ? "Deleting..." : "Confirm"}
-                  </Button>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => setShowDeleteConfirm(false)}
-                    disabled={isDeleting}
-                  >
-                    No
-                  </Button>
-                </div>
-              ) : (
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => setShowDeleteConfirm(true)}
-                  disabled={isSaving || isDeleting}
-                  className="text-destructive hover:text-destructive hover:bg-destructive/10"
-                >
-                  <Trash2 className="mr-1.5 size-3.5" />
-                  Delete
-                </Button>
-              )}
-            </div>
-          </>
-        ) : (
-          <div className="flex items-center gap-2">
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={onCancel}
-            >
-              <X className="mr-1.5 size-3.5" />
-              Close
-            </Button>
-            <span className="text-xs text-muted-foreground">
-              View only — you can only edit your own sessions
-            </span>
-          </div>
-        )}
-      </div>
+      <ExpandedSessionActions
+        canEdit={canEdit}
+        isFormValid={isFormValid}
+        isDirty={isDirty}
+        isSaving={isSaving}
+        isDeleting={isDeleting}
+        isOverLimit={isOverLimit}
+        showDeleteConfirm={showDeleteConfirm}
+        onSave={handleSave}
+        onCancel={onCancel}
+        onDelete={handleDelete}
+        onShowDeleteConfirm={setShowDeleteConfirm}
+      />
 
       <ReextractConfirmDialog
         show={showReextractConfirm}
