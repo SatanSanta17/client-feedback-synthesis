@@ -7,13 +7,6 @@ import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
-import {
   Dialog,
   DialogContent,
   DialogDescription,
@@ -22,8 +15,7 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
-
-type Role = "admin" | "sales";
+import { RolePicker, type Role } from "@/components/settings/role-picker";
 
 interface InviteBulkDialogProps {
   teamId: string;
@@ -109,15 +101,7 @@ export function InviteBulkDialog({ teamId, onInvitesSent }: InviteBulkDialogProp
           />
           <div className="flex items-center gap-2">
             <Label>Role</Label>
-            <Select value={role} onValueChange={(v) => setRole(v as Role)}>
-              <SelectTrigger className="w-28">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="sales">Sales</SelectItem>
-                <SelectItem value="admin">Admin</SelectItem>
-              </SelectContent>
-            </Select>
+            <RolePicker value={role} onValueChange={setRole} />
           </div>
         </div>
         <DialogFooter>

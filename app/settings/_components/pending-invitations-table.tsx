@@ -6,8 +6,7 @@ import { RotateCw, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { formatRelativeTime } from "@/lib/utils/format-relative-time";
-
-type Role = "admin" | "sales";
+import type { Role } from "@/components/settings/role-picker";
 
 interface Invitation {
   id: string;

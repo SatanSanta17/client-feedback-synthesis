@@ -6,15 +6,7 @@ import { Send } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
-
-type Role = "admin" | "sales";
+import { RolePicker, type Role } from "@/components/settings/role-picker";
 
 interface InviteSingleFormProps {
   teamId: string;
@@ -74,15 +66,7 @@ export function InviteSingleForm({ teamId, onInviteSent }: InviteSingleFormProps
             }}
           />
         </div>
-        <Select value={role} onValueChange={(v) => setRole(v as Role)}>
-          <SelectTrigger className="w-28">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="sales">Sales</SelectItem>
-            <SelectItem value="admin">Admin</SelectItem>
-          </SelectContent>
-        </Select>
+        <RolePicker value={role} onValueChange={setRole} />
         <Button
           size="sm"
           onClick={handleSend}
