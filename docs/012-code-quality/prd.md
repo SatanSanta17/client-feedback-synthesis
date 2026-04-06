@@ -6,12 +6,14 @@
 
 A full codebase audit revealed systematic violations of the project's own CLAUDE.md rules: scattered inline Tailwind colors instead of centralised CSS tokens, duplicated logic across files, and monolithic components with 400+ lines handling 5–7 responsibilities each. These issues slow development — every change requires understanding unrelated concerns in the same file, and a single-line style update (e.g., changing the error colour) requires editing 10+ files.
 
-This PRD addresses three categories:
-1. **Design token consistency** — centralise status colours and eliminate arbitrary font sizes per the styling rules.
-2. **DRY extraction** — remove duplicated logic (cookie helpers, auth form patterns, signal extraction, AI error mapping).
-3. **SRP decomposition** — split oversized components and routes into focused, single-responsibility units.
+This PRD addresses five categories:
+1. **Design token consistency** — centralise status colours, AI action colours, and eliminate arbitrary font sizes per the styling rules.
+2. **Convention compliance** — fix navigation and type safety violations against the project's own CLAUDE.md rules.
+3. **DRY extraction** — remove duplicated logic (cookie helpers, auth form patterns, signal extraction, AI error mapping).
+4. **SRP decomposition** — split oversized components and routes into focused, single-responsibility units.
+5. **Dependency Inversion** — introduce an injectable data-access layer so services depend on interfaces, not Supabase internals.
 
-This is a refactoring effort. No user-visible features change. No database changes. No API contract changes. The product behaves identically before and after.
+This is a refactoring effort. The only user-visible change is the AI action buttons gaining a gold/amber colour treatment. No database changes. No API contract changes.
 
 ## User Story
 
@@ -25,16 +27,28 @@ As a developer, I want each file in the codebase to have a single reason to chan
 
 **P1.R1 — Centralise status colours in globals.css.** Define CSS custom properties for error, success, warning, and info status colours (both text and light background variants). These replace the scattered Tailwind utility colours (`text-red-500`, `bg-green-50`, `border-amber-200`, etc.) used across components.
 
-**P1.R2 — Replace inline status colours with tokens.** Every component currently using hardcoded Tailwind colour classes for status indication (errors, success states, warning banners, info banners) must switch to the new CSS custom properties. No hardcoded `red-500`, `green-50`, `amber-*`, or `blue-*` classes for status purposes.
+**P1.R2 — Replace inline status colours with tokens.** Every component currently using hardcoded Tailwind colour classes for status indication (errors, success states, warning banners, info banners) must switch to the new CSS custom properties. No hardcoded `red-500`, `green-50`, `amber-*`, or `blue-*` classes for status purposes. This includes the hardcoded colour map object in `invite-shell.tsx` (lines 57–62) where status colours are stored as string literals (`"bg-red-50"`, `"text-amber-500"`, etc.) inside a JS object — these must also migrate to CSS custom property references so that a theme-wide colour change is a single-file edit.
 
 **P1.R3 — Fix arbitrary font sizes.** Replace the `text-[10px]` in `workspace-switcher.tsx` with a standard Tailwind type scale class. No arbitrary `text-[Npx]` values in the codebase.
+
+**P1.R4 — Define AI action colour tokens in globals.css.** Add CSS custom properties for a warm gold/amber AI action palette: `--ai-action` (primary gold for button backgrounds), `--ai-action-foreground` (text colour on gold backgrounds), `--ai-action-hover` (darker gold for hover state), and `--ai-action-light` (subtle gold tint for secondary/outline AI uses). The gold should complement the existing indigo/purple primary — warm amber in the `oklch(0.75–0.82, 0.14–0.18, 75–85)` range, not a flat bright yellow.
+
+**P1.R5 — Add an `ai` variant to the Button component.** Create a new `"ai"` variant in `button.tsx` that uses the `--ai-action` tokens. The variant should have a warm gold background with legible foreground text, a visible hover state, and the same disabled/focus patterns as existing variants. Apply this variant to all AI-powered action buttons: "Extract Signals" / "Re-extract Signals" in `session-capture-form.tsx`, "Extract Signals" / "Re-extract" in `expanded-session-row.tsx`, and "Generate Master Signal" / "Re-generate" in `master-signal-page-content.tsx`.
 
 ### Acceptance Criteria
 
 - [ ] P1.AC1 — `globals.css` contains `--status-error`, `--status-error-light`, `--status-success`, `--status-success-light`, `--status-warning`, `--status-warning-light`, `--status-info`, `--status-info-light` (plus text variants as needed)
-- [ ] P1.AC2 — No component uses `text-red-500`, `bg-red-50`, `text-green-500`, `bg-green-50`, `text-amber-*`, `bg-amber-*`, `text-blue-*`, or `bg-blue-*` for status styling — all reference CSS custom properties
+- [ ] P1.AC2 — No component uses `text-red-500`, `bg-red-50`, `text-green-500`, `bg-green-50`, `text-amber-*`, `bg-amber-*`, `text-blue-*`, or `bg-blue-*` for status styling — all reference CSS custom properties, including JS objects that store colour class strings (e.g., `invite-shell.tsx` colour map)
 - [ ] P1.AC3 — No arbitrary `text-[Npx]` font sizes exist in any component
 - [ ] P1.AC4 — Visual appearance of all error messages, success panels, warning banners, and info banners is unchanged
+- [ ] P1.AC5 — `globals.css` contains `--ai-action`, `--ai-action-foreground`, `--ai-action-hover`, and `--ai-action-light` CSS custom properties with warm gold/amber values
+- [ ] P1.AC6 — `button.tsx` has an `"ai"` variant that uses the `--ai-action` tokens for background, text, and hover states
+- [ ] P1.AC7 — All three AI action buttons (Extract Signals in capture form, Extract Signals in expanded row, Generate Master Signal) use the `"ai"` button variant instead of `"outline"` or `"default"`
+- [ ] P1.AC8 — AI buttons are visually distinct from standard actions — gold/amber background with clear hover feedback, readable text, and consistent disabled/focus states
+
+**P1.R6 — Replace `window.location.href` navigation with Next.js router.** Two components use `window.location.href` for page transitions instead of `useRouter().push()`: `login-form.tsx` (`window.location.href = "/capture"`) and `reset-password-form.tsx` (`window.location.href = "/capture"`). These are plain navigation — no reactivity gap — so a simple `router.push("/capture")` replacement is sufficient. Note: `window.location.origin` usage in OAuth redirect URLs is acceptable — those construct external callback URLs, not client-side navigation.
+
+- [ ] P1.AC9 — No component uses `window.location.href` for client-side page transitions — `login-form.tsx` and `reset-password-form.tsx` use `useRouter().push()` from `next/navigation` (OAuth `window.location.origin` for callback URL construction is exempt)
 
 ---
 
@@ -42,7 +56,7 @@ As a developer, I want each file in the codebase to have a single reason to chan
 
 ### Requirements
 
-**P2.R1 — Team cookie helpers.** Extract `getActiveTeamId()`, `setActiveTeamCookie()`, and `clearActiveTeamCookie()` into a single shared module. All consumers import from this module. Remove all inline/local implementations.
+**P2.R1 — Reactive team context and shared cookie helpers.** The active team ID is currently read from `document.cookie` via inline `getActiveTeamId()` functions scattered across 3+ components. Because cookie reads are not reactive, `workspace-switcher.tsx`, `create-team-dialog.tsx`, and `invite-mismatch-card.tsx` use `window.location.reload()` to force the UI to reflect the new team — the sessions table has no way to know the cookie changed. Fix this in two parts: (a) Extract `getActiveTeamId()`, `setActiveTeamCookie()`, and `clearActiveTeamCookie()` into a single shared client module under `lib/`. Remove all inline/local implementations. (b) Add a reactive `activeTeamId` value to the existing `AuthProvider` context (or a dedicated `useActiveTeam` hook/context). When workspace-switcher or create-team-dialog changes the active team, the context value updates, which triggers re-renders in consuming components (`PastSessionsTable`, `MasterSignalPageContent`, etc.). This eliminates every `window.location.reload()` call — the cookie is still set for server-side reads, but client-side components react to the context change instead of needing a hard reload.
 
 **P2.R2 — Signal extraction hook.** Extract the duplicated AI signal extraction flow from `session-capture-form.tsx` and `expanded-session-row.tsx` into a shared custom hook (`useSignalExtraction` or similar). The hook encapsulates `ExtractionState`, `performExtraction`, re-extract confirmation state, and toast/error handling. Both components consume the hook instead of duplicating the logic.
 
@@ -60,7 +74,10 @@ As a developer, I want each file in the codebase to have a single reason to chan
 
 ### Acceptance Criteria
 
-- [ ] P2.AC1 — `getActiveTeamId`, `setActiveTeamCookie`, `clearActiveTeamCookie` exist in one file under `lib/`; no other file contains inline implementations of these
+- [ ] P2.AC1a — `getActiveTeamId`, `setActiveTeamCookie`, `clearActiveTeamCookie` exist in one file under `lib/`; no other file contains inline implementations of these
+- [ ] P2.AC1b — A reactive `activeTeamId` is available via context or hook; `PastSessionsTable` and other team-dependent components consume it and refetch when it changes
+- [ ] P2.AC1c — `workspace-switcher.tsx`, `create-team-dialog.tsx`, and `invite-mismatch-card.tsx` no longer call `window.location.reload()` — team switch and team creation update the reactive context and the cookie, and the UI updates without a hard reload
+- [ ] P2.AC1d — Switching workspace correctly updates the sessions table to show the new workspace's sessions; creating a new team redirects to that team's workspace with the correct sessions displayed
 - [ ] P2.AC2 — Signal extraction state, API call, and re-extract flow exist in one custom hook; `session-capture-form.tsx` and `expanded-session-row.tsx` import and use the hook
 - [ ] P2.AC3 — Re-extract confirmation UI exists as one shared component; both capture form and expanded row render it
 - [ ] P2.AC4 — Auth forms (login, signup, forgot-password, reset-password) use a shared card shell component; no four-way duplication of the centred card layout
@@ -84,13 +101,16 @@ As a developer, I want each file in the codebase to have a single reason to chan
 
 **P3.R4 — Split `past-sessions-table.tsx`.** Extract the nested `SessionTableRow` into its own file. Separate the pagination/fetch logic from the expand/dirty coordination and the presentational table.
 
+**P3.R5 — Split `session-capture-form.tsx`.** Decompose the 382-line component. It currently handles form state (react-hook-form), file upload/attachment parsing, AI signal extraction, structured notes editing, and the full submit flow — all in one file. Extract the file upload section, the signal extraction section (via the Part 2 shared hook), and the structured notes panel into focused subcomponents. The parent becomes a form coordinator that composes these sections.
+
 ### Acceptance Criteria
 
 - [ ] P3.AC1 — `expanded-session-row.tsx` is split into ≥3 focused files, none exceeding ~150 lines, each with a single responsibility
 - [ ] P3.AC2 — `prompt-editor-page-content.tsx` is split into ≥3 focused files; API orchestration lives in a custom hook
 - [ ] P3.AC3 — `master-signal-page-content.tsx` is split into ≥2 focused files; data fetching lives in a custom hook
 - [ ] P3.AC4 — `SessionTableRow` lives in its own file; `past-sessions-table.tsx` is reduced in scope
-- [ ] P3.AC5 — All session capture, editing, prompt management, and master signal flows work identically after decomposition
+- [ ] P3.AC5 — `session-capture-form.tsx` is split into ≥3 focused files; file upload, extraction, and structured notes are separate components
+- [ ] P3.AC6 — All session capture, editing, prompt management, and master signal flows work identically after decomposition
 
 ---
 
@@ -119,10 +139,31 @@ As a developer, I want each file in the codebase to have a single reason to chan
 
 ---
 
+## Part 5: Dependency Inversion — Injectable Data-Access Layer
+
+### Requirements
+
+**P5.R1 — Define a data-access interface for each service domain.** Every service file (`session-service.ts`, `client-service.ts`, `team-service.ts`, `master-signal-service.ts`, `invitation-service.ts`, `prompt-service.ts`, `profile-service.ts`, `attachment-service.ts`) currently imports `createClient` / `createServiceRoleClient` from `@/lib/supabase/server` and makes direct Supabase queries inline. This violates Dependency Inversion — high-level business logic depends on low-level database implementation details. Define a TypeScript interface (or set of functions) for each domain's data operations (e.g., `SessionRepository` with `getById`, `list`, `create`, `update`, `softDelete`). These interfaces describe *what* data is needed, not *how* it's fetched.
+
+**P5.R2 — Implement Supabase adapters for each repository interface.** Create concrete implementations of each repository interface that use the existing Supabase client calls. These adapters live in a dedicated directory (e.g., `lib/repositories/supabase/`). The adapters contain all Supabase-specific query logic — no other file imports from `@/lib/supabase/server` except the adapter layer and middleware.
+
+**P5.R3 — Refactor services to accept injected repositories.** Service functions receive their data-access dependency via parameter injection (factory function or direct argument) rather than importing Supabase clients. In production, API routes wire services to Supabase adapters. In tests, mock implementations can be injected without touching the database. Service files no longer import from `@/lib/supabase/server`.
+
+### Acceptance Criteria
+
+- [ ] P5.AC1 — Each service domain has a corresponding repository interface in `lib/repositories/` (or equivalent location) defining its data operations
+- [ ] P5.AC2 — Each repository interface has a Supabase adapter implementation that contains all Supabase-specific query logic
+- [ ] P5.AC3 — No service file under `lib/services/` imports from `@/lib/supabase/server` — all data access goes through injected repository interfaces
+- [ ] P5.AC4 — API route handlers wire services to Supabase adapters; the wiring is explicit and visible
+- [ ] P5.AC5 — At least one service has a mock repository implementation demonstrating testability (e.g., `session-service` with an in-memory mock)
+- [ ] P5.AC6 — All API endpoints return identical responses before and after — this is a pure structural refactor
+
+---
+
 ## Backlog
 
 - Add missing entry logs to GET route handlers (low impact, consistency improvement)
 - Extract shared table shell component for team-members-table and pending-invitations-table (similar bordered table header styling)
 - Extract `ConfirmDialog` from `team-members-table.tsx` into `components/ui/` for reuse
 - Replace `router.push("/login")` in auth provider sign-out with a configurable redirect path
-- Consider injectable data-access layer for services (testability improvement, high effort)
+- Replace `as unknown as` type casts in `session-service.ts` (line 121) and `invitation-service.ts` (line 260) with proper Supabase type inference or `satisfies` — these force-cast Supabase join results instead of handling the types correctly
