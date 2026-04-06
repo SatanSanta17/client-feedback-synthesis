@@ -1,13 +1,7 @@
 import { NextResponse } from "next/server";
 import { createClient, getActiveTeamId } from "@/lib/supabase/server";
-import {
-  synthesiseMasterSignal,
-  AIServiceError,
-  AIEmptyResponseError,
-  AIRequestError,
-  AIConfigError,
-  AIQuotaError,
-} from "@/lib/services/ai-service";
+import { synthesiseMasterSignal } from "@/lib/services/ai-service";
+import { mapAIErrorToResponse } from "@/lib/utils/map-ai-error";
 import {
   getLatestMasterSignal,
   getAllSignalSessions,
@@ -166,88 +160,13 @@ export async function POST() {
 
     return NextResponse.json({ masterSignal: saved });
   } catch (err) {
-    // Map AI error types to HTTP status codes
-    if (err instanceof AIConfigError) {
-      console.error(
-        "[api/ai/generate-master-signal] config error:",
-        err.message
-      );
-      return NextResponse.json(
-        {
-          message:
-            "AI service is not configured correctly. Please contact support.",
-        },
-        { status: 500 }
-      );
-    }
-
-    if (err instanceof AIQuotaError) {
-      console.error(
-        "[api/ai/generate-master-signal] quota error:",
-        err.message
-      );
-      return NextResponse.json(
-        {
-          message:
-            "We've hit our AI usage limit — looks like a lot of people are finding this useful! Please try again later or reach out so we can get things running again.",
-        },
-        { status: 402 }
-      );
-    }
-
-    if (err instanceof AIRequestError) {
-      console.error(
-        "[api/ai/generate-master-signal] request error:",
-        err.message
-      );
-      return NextResponse.json(
-        {
-          message:
-            "Could not generate master signal. The input may be too large — try extracting signals from fewer sessions.",
-        },
-        { status: 400 }
-      );
-    }
-
-    if (err instanceof AIEmptyResponseError) {
-      console.error(
-        "[api/ai/generate-master-signal] empty response:",
-        err.message
-      );
-      return NextResponse.json(
-        {
-          message:
-            "AI could not produce a master signal from the available data. Please ensure sessions have extracted signals and try again.",
-        },
-        { status: 422 }
-      );
-    }
-
-    if (err instanceof AIServiceError) {
-      console.error(
-        "[api/ai/generate-master-signal] service error:",
-        err.message
-      );
-      return NextResponse.json(
-        {
-          message:
-            "Master signal generation is temporarily unavailable. Please try again in a few moments.",
-        },
-        { status: 503 }
-      );
-    }
-
-    // Unexpected error
-    console.error(
-      "[api/ai/generate-master-signal] unexpected error:",
-      err instanceof Error ? err.message : err
-    );
-    return NextResponse.json(
-      {
-        message:
-          "An unexpected error occurred during master signal generation.",
-      },
-      { status: 500 }
-    );
+    return mapAIErrorToResponse(err, "api/ai/generate-master-signal", {
+      request:
+        "Could not generate master signal. The input may be too large — try extracting signals from fewer sessions.",
+      empty:
+        "AI could not produce a master signal from the available data. Please ensure sessions have extracted signals and try again.",
+      unexpected:
+        "An unexpected error occurred during master signal generation.",
+    });
   }
 }
