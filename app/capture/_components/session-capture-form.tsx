@@ -1,6 +1,6 @@
 "use client"
 
-import { useState } from "react"
+import { useState, useCallback } from "react"
 import { useForm, Controller } from "react-hook-form"
 import { zodResolver } from "@hookform/resolvers/zod"
 import { z } from "zod"
@@ -22,6 +22,8 @@ import { AttachmentList } from "./attachment-list"
 import { MAX_COMBINED_CHARS } from "@/lib/constants"
 import { composeAIInput } from "@/lib/utils/compose-ai-input"
 import { uploadAttachmentsToSession } from "@/lib/utils/upload-attachments"
+import { useSignalExtraction } from "@/lib/hooks/use-signal-extraction"
+import { ReextractConfirmDialog } from "@/components/capture/reextract-confirm-dialog"
 
 function getToday(): string {
   return new Date().toISOString().split("T")[0]
@@ -48,8 +50,6 @@ const captureFormSchema = z.object({
 
 type CaptureFormValues = z.infer<typeof captureFormSchema>
 
-type ExtractionState = "idle" | "extracting" | "done"
-
 export interface SessionCaptureFormProps {
   onSessionSaved?: () => void
 }
@@ -74,12 +74,6 @@ export function SessionCaptureForm({ onSessionSaved }: SessionCaptureFormProps) 
     mode: "onChange",
   })
 
-  // Structured notes — managed outside react-hook-form
-  const [structuredNotes, setStructuredNotes] = useState<string | null>(null)
-  const [lastExtractedNotes, setLastExtractedNotes] = useState<string | null>(null)
-  const [extractionState, setExtractionState] = useState<ExtractionState>("idle")
-  const [showReextractConfirm, setShowReextractConfirm] = useState(false)
-
   // File attachments — managed outside react-hook-form
   const [attachments, setAttachments] = useState<ParsedAttachment[]>([])
 
@@ -87,7 +81,6 @@ export function SessionCaptureForm({ onSessionSaved }: SessionCaptureFormProps) 
   const rawNotes = watch("rawNotes")
   const hasNotes = rawNotes?.trim().length > 0
   const hasInput = hasNotes || attachments.length > 0
-  const isStructuredDirty = structuredNotes !== lastExtractedNotes
 
   // Combined character counter
   const attachmentChars = attachments.reduce(
@@ -96,40 +89,22 @@ export function SessionCaptureForm({ onSessionSaved }: SessionCaptureFormProps) 
   const totalChars = (rawNotes?.length ?? 0) + attachmentChars
   const isOverLimit = totalChars > MAX_COMBINED_CHARS
 
-  const performExtraction = async () => {
-    const notes = getValues("rawNotes")
-    const composedInput = composeAIInput(notes, attachments)
-    setExtractionState("extracting")
+  // Signal extraction via shared hook
+  const getExtractionInput = useCallback(
+    () => composeAIInput(getValues("rawNotes"), attachments),
+    [getValues, attachments]
+  )
 
-    try {
-      const response = await fetch("/api/ai/extract-signals", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ rawNotes: composedInput }),
-      })
-
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => null)
-        const msg = errorData?.message ?? "Failed to extract signals"
-        response.status === 402 ? toast.warning(msg) : toast.error(msg)
-        setExtractionState(structuredNotes ? "done" : "idle")
-        return
-      }
-
-      const { structuredNotes: extracted } = await response.json()
-      setStructuredNotes(extracted)
-      setLastExtractedNotes(extracted)
-      setExtractionState("done")
-      toast.success("Signals extracted")
-    } catch (err) {
-      console.error(
-        "[SessionCaptureForm] extraction error:",
-        err instanceof Error ? err.message : err
-      )
-      toast.error("Failed to extract signals — please try again")
-      setExtractionState(structuredNotes ? "done" : "idle")
-    }
-  }
+  const {
+    extractionState,
+    structuredNotes,
+    showReextractConfirm,
+    setStructuredNotes,
+    handleExtractSignals,
+    handleConfirmReextract,
+    dismissReextractConfirm,
+    resetExtraction,
+  } = useSignalExtraction({ getInput: getExtractionInput })
 
   const handleAddAttachment = (attachment: ParsedAttachment) => {
     setAttachments((prev) => [...prev, attachment])
@@ -137,21 +112,6 @@ export function SessionCaptureForm({ onSessionSaved }: SessionCaptureFormProps) 
 
   const handleRemoveAttachment = (index: number) => {
     setAttachments((prev) => prev.filter((_, i) => i !== index))
-  }
-
-  const handleExtractSignals = async () => {
-    // Re-extraction confirmation if user has edited the structured notes
-    if (extractionState === "done" && isStructuredDirty) {
-      setShowReextractConfirm(true)
-      return
-    }
-
-    await performExtraction()
-  }
-
-  const handleConfirmReextract = async () => {
-    setShowReextractConfirm(false)
-    await performExtraction()
   }
 
   const onSubmit = async (data: CaptureFormValues) => {
@@ -200,9 +160,7 @@ export function SessionCaptureForm({ onSessionSaved }: SessionCaptureFormProps) 
         sessionDate: getToday(),
         rawNotes: "",
       })
-      setStructuredNotes(null)
-      setLastExtractedNotes(null)
-      setExtractionState("idle")
+      resetExtraction()
       setAttachments([])
       onSessionSaved?.()
     } catch (err) {
@@ -347,36 +305,11 @@ export function SessionCaptureForm({ onSessionSaved }: SessionCaptureFormProps) 
         </div>
       )}
 
-      {/* Re-extraction confirmation dialog */}
-      {showReextractConfirm && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
-          <div className="w-full max-w-sm rounded-lg border border-border bg-card p-6 shadow-lg">
-            <h3 className="text-base font-semibold text-foreground">
-              Re-extract Signals?
-            </h3>
-            <p className="mt-2 text-sm text-muted-foreground">
-              Re-extracting will replace your edited signals. Continue?
-            </p>
-            <div className="mt-4 flex justify-end gap-3">
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                onClick={() => setShowReextractConfirm(false)}
-              >
-                Cancel
-              </Button>
-              <Button
-                type="button"
-                size="sm"
-                onClick={handleConfirmReextract}
-              >
-                Re-extract
-              </Button>
-            </div>
-          </div>
-        </div>
-      )}
+      <ReextractConfirmDialog
+        show={showReextractConfirm}
+        onConfirm={handleConfirmReextract}
+        onCancel={dismissReextractConfirm}
+      />
     </div>
   )
 }

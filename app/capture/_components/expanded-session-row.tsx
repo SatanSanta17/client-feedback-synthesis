@@ -20,8 +20,8 @@ import { SavedAttachmentList } from "./saved-attachment-list"
 import { composeAIInput } from "@/lib/utils/compose-ai-input"
 import { uploadAttachmentsToSession } from "@/lib/utils/upload-attachments"
 import type { SessionAttachment } from "@/lib/services/attachment-service"
-
-type ExtractionState = "idle" | "extracting" | "done"
+import { useSignalExtraction } from "@/lib/hooks/use-signal-extraction"
+import { ReextractConfirmDialog } from "@/components/capture/reextract-confirm-dialog"
 
 export interface SessionRow {
   id: string
@@ -65,13 +65,6 @@ export function ExpandedSessionRow({
   const [isDeleting, setIsDeleting] = useState(false)
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
 
-  const [structuredNotes, setStructuredNotes] = useState<string | null>(session.structured_notes)
-  const [lastExtractedNotes, setLastExtractedNotes] = useState<string | null>(session.structured_notes)
-  const [extractionState, setExtractionState] = useState<ExtractionState>(
-    session.structured_notes ? "done" : "idle"
-  )
-  const [showReextractConfirm, setShowReextractConfirm] = useState(false)
-
   // Attachment state
   const [savedAttachments, setSavedAttachments] = useState<SessionAttachment[]>([])
   const [pendingAttachments, setPendingAttachments] = useState<ParsedAttachment[]>([])
@@ -98,7 +91,25 @@ export function ExpandedSessionRow({
     return () => { cancelled = true }
   }, [session.id])
 
-  const isStructuredDirty = structuredNotes !== lastExtractedNotes
+  // Signal extraction via shared hook
+  const getExtractionInput = useCallback(
+    () => composeAIInput(rawNotes, [...savedAttachments, ...pendingAttachments]),
+    [rawNotes, savedAttachments, pendingAttachments]
+  )
+
+  const {
+    extractionState,
+    structuredNotes,
+    isStructuredDirty,
+    showReextractConfirm,
+    setStructuredNotes,
+    handleExtractSignals,
+    handleConfirmReextract,
+    dismissReextractConfirm,
+  } = useSignalExtraction({
+    getInput: getExtractionInput,
+    initialStructuredNotes: session.structured_notes,
+  })
 
   const isDirty =
     client.id !== session.client_id ||
@@ -133,58 +144,6 @@ export function ExpandedSessionRow({
   useEffect(() => {
     onDirtyChange(isDirty)
   }, [isDirty, onDirtyChange])
-
-  const composeExpandedAIInput = useCallback(
-    () => composeAIInput(rawNotes, [...savedAttachments, ...pendingAttachments]),
-    [rawNotes, savedAttachments, pendingAttachments]
-  )
-
-  // --- Signal extraction ---
-  const performExtraction = useCallback(async () => {
-    setExtractionState("extracting")
-
-    try {
-      const response = await fetch("/api/ai/extract-signals", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ rawNotes: composeExpandedAIInput() }),
-      })
-
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => null)
-        const msg = errorData?.message ?? "Failed to extract signals"
-        response.status === 402 ? toast.warning(msg) : toast.error(msg)
-        setExtractionState(structuredNotes ? "done" : "idle")
-        return
-      }
-
-      const { structuredNotes: extracted } = await response.json()
-      setStructuredNotes(extracted)
-      setLastExtractedNotes(extracted)
-      setExtractionState("done")
-      toast.success("Signals extracted")
-    } catch (err) {
-      console.error(
-        "[ExpandedSessionRow] extraction error:",
-        err instanceof Error ? err.message : err
-      )
-      toast.error("Failed to extract signals — please try again")
-      setExtractionState(structuredNotes ? "done" : "idle")
-    }
-  }, [composeExpandedAIInput, structuredNotes])
-
-  const handleExtractSignals = useCallback(async () => {
-    if (extractionState === "done" && isStructuredDirty) {
-      setShowReextractConfirm(true)
-      return
-    }
-    await performExtraction()
-  }, [extractionState, isStructuredDirty, performExtraction])
-
-  const handleConfirmReextract = useCallback(async () => {
-    setShowReextractConfirm(false)
-    await performExtraction()
-  }, [performExtraction])
 
   // --- Attachment handlers ---
   const handleSavedAttachmentDeleted = useCallback((attachmentId: string) => {
@@ -524,35 +483,11 @@ export function ExpandedSessionRow({
         )}
       </div>
 
-      {showReextractConfirm && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
-          <div className="w-full max-w-sm rounded-lg border border-border bg-card p-6 shadow-lg">
-            <h3 className="text-base font-semibold text-foreground">
-              Re-extract Signals?
-            </h3>
-            <p className="mt-2 text-sm text-muted-foreground">
-              Re-extracting will replace your edited signals. Continue?
-            </p>
-            <div className="mt-4 flex justify-end gap-3">
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                onClick={() => setShowReextractConfirm(false)}
-              >
-                Cancel
-              </Button>
-              <Button
-                type="button"
-                size="sm"
-                onClick={handleConfirmReextract}
-              >
-                Re-extract
-              </Button>
-            </div>
-          </div>
-        </div>
-      )}
+      <ReextractConfirmDialog
+        show={showReextractConfirm}
+        onConfirm={handleConfirmReextract}
+        onCancel={dismissReextractConfirm}
+      />
     </div>
   )
 }
