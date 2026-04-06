@@ -363,7 +363,7 @@ export function PromptEditorPageContent({ embedded = false, readOnly = false }: 
                     </>
                   )}
                   {displayedMasterKey === autoSelectedMasterKey && (
-                    <span className="ml-1.5 inline-flex items-center rounded bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary">
+                    <span className="ml-1.5 inline-flex items-center rounded bg-primary/10 px-1.5 py-0.5 text-xs font-medium text-primary">
                       active
                     </span>
                   )}

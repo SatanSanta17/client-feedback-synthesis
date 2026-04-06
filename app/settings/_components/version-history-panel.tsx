@@ -86,7 +86,7 @@ export function VersionHistoryPanel({
                           {version.is_active && (
                             <Badge
                               variant="default"
-                              className="text-[10px] px-1.5 py-0"
+                              className="text-xs px-1.5 py-0"
                             >
                               Active
                             </Badge>

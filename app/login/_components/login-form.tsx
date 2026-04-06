@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { useForm } from "react-hook-form";
 import { z } from "zod";
@@ -33,6 +34,7 @@ function friendlyAuthError(message: string): string {
 
 export function LoginForm() {
   const [serverError, setServerError] = useState<string | null>(null);
+  const router = useRouter();
   const supabase = createClient();
 
   const {
@@ -57,7 +59,7 @@ export function LoginForm() {
       return;
     }
 
-    window.location.href = "/capture";
+    router.push("/capture");
   }
 
   async function handleGoogleSignIn() {

@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { useForm } from "react-hook-form";
 import { z } from "zod";
@@ -27,6 +28,7 @@ type ResetPasswordFields = z.infer<typeof resetPasswordSchema>;
 
 export function ResetPasswordForm() {
   const [serverError, setServerError] = useState<string | null>(null);
+  const router = useRouter();
   const supabase = createClient();
 
   const {
@@ -51,7 +53,7 @@ export function ResetPasswordForm() {
     }
 
     toast.success("Password updated successfully");
-    window.location.href = "/capture";
+    router.push("/capture");
   }
 
   return (

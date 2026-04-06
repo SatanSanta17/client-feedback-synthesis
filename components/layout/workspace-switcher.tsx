@@ -112,7 +112,7 @@ export function WorkspaceSwitcher() {
             >
               <Users className="size-4 text-[var(--text-secondary)]" />
               <span className="flex-1 truncate">{team.name}</span>
-              <Badge variant="secondary" className="ml-1 text-[10px] capitalize">
+              <Badge variant="secondary" className="ml-1 text-xs capitalize">
                 {team.role}
               </Badge>
               {activeTeamId === team.id && (

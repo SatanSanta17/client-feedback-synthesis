@@ -241,7 +241,7 @@ export function TeamMembersTable({
                         {isMemberOwner && (
                           <Badge
                             variant="default"
-                            className="gap-1 text-[10px]"
+                            className="gap-1 text-xs"
                           >
                             <Crown className="size-2.5" />
                             Owner
@@ -264,7 +264,7 @@ export function TeamMembersTable({
                           </Select>
                         ) : (
                           !isMemberOwner && (
-                            <Badge variant="secondary" className="capitalize text-[10px]">
+                            <Badge variant="secondary" className="capitalize text-xs">
                               {member.role}
                             </Badge>
                           )
