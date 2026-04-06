@@ -6,6 +6,17 @@ All notable changes to this project are documented here, grouped by PRD and part
 
 ## [Unreleased]
 
+### PRD-012 Part 2: DRY — Shared Utilities and Patterns — 2026-04-07
+- Created `lib/cookies/active-team.ts` — single source of truth for client-side `active_team_id` cookie operations (`getActiveTeamId`, `setActiveTeamCookie`, `clearActiveTeamCookie`), replacing 7+ inline implementations
+- Added reactive `activeTeamId` and `setActiveTeam()` to AuthProvider context — workspace switching now updates React state instead of calling `window.location.reload()`, enabling reactive data refetching across all consuming components
+- Extracted `fetchCanCreateTeam` helper within `auth-provider.tsx` — deduplicated profile query used by both auth paths
+- Created `lib/hooks/use-signal-extraction.ts` — shared extraction state machine hook (`ExtractionState`, re-extract confirmation flow, `resetExtraction`) consumed by `session-capture-form.tsx` and `expanded-session-row.tsx`
+- Created `components/capture/reextract-confirm-dialog.tsx` — shared presentational re-extract confirmation dialog
+- Created `components/auth/auth-form-shell.tsx` — shared centered auth card layout (`title`, `subtitle`, `children`), replacing 4× duplicated full-screen centering markup in login, signup, forgot-password, and reset-password forms
+- Created `components/auth/email-confirmation-panel.tsx` — shared "Check your email" success panel (`children`, `linkText`, `linkHref`), replacing 2× duplicated confirmation UI in signup and forgot-password forms
+- Created `lib/utils/map-ai-error.ts` — `mapAIErrorToResponse()` shared AI error-to-HTTP mapper handling 5 error types + unexpected fallback, replacing 2× duplicated ~70-line catch blocks in `extract-signals/route.ts` and `generate-master-signal/route.ts`
+- Created `components/settings/role-picker.tsx` — controlled `RolePicker` component with exported `Role` type, replacing 3× duplicated role select + type definitions in `invite-single-form.tsx`, `invite-bulk-dialog.tsx`, and `pending-invitations-table.tsx`
+
 ### PRD-012 Part 1: Design Tokens and Typography — 2026-04-07
 - Added 14 status colour tokens (`--status-error`, `--status-success`, `--status-warning`, `--status-info` with `-light`, `-border`, `-text` variants) and 4 AI action tokens (`--ai-action`, `--ai-action-foreground`, `--ai-action-hover`, `--ai-action-light`) to `globals.css` using oklch colour space
 - Added `ai` button variant (warm gold) to `button.tsx` CVA config

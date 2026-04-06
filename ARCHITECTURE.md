@@ -20,7 +20,7 @@ Synthesiser is a web application for teams to capture structured client session 
 
 ## Current State
 
-**Status:** PRD-002 through PRD-010 implemented. PRD-012 Part 1 (Design Tokens and Typography) implemented. PRD-013 Parts 1–2 (File Upload Infrastructure + Persistence & Signal Extraction Integration) implemented. The app is a fully functional team-capable client feedback capture and synthesis platform. Google OAuth login (open to any Google account), working capture form with AI signal extraction and file attachment upload with server-side persistence, past sessions table with filters/inline editing/soft delete, master signal page with AI synthesis and PDF download, prompt editor with version history, and team access with role-based permissions.
+**Status:** PRD-002 through PRD-010 implemented. PRD-012 Parts 1–2 (Design Tokens and Typography + DRY Extraction) implemented. PRD-013 Parts 1–2 (File Upload Infrastructure + Persistence & Signal Extraction Integration) implemented. The app is a fully functional team-capable client feedback capture and synthesis platform. Google OAuth login (open to any Google account), working capture form with AI signal extraction and file attachment upload with server-side persistence, past sessions table with filters/inline editing/soft delete, master signal page with AI synthesis and PDF download, prompt editor with version history, and team access with role-based permissions.
 
 **Core features live:**
 - Session capture with AI signal extraction (Vercel AI SDK, multi-provider) and file attachment upload (TXT, PDF, CSV, DOCX, JSON) with server-side parsing and chat format detection (WhatsApp, Slack)
@@ -146,8 +146,15 @@ synthesiser/
 │           ├── version-history-panel.tsx       # Collapsible version history with view/revert
 │           └── version-view-dialog.tsx         # Read-only dialog for viewing past prompt versions
 ├── components/
+│   ├── auth/
+│   │   ├── auth-form-shell.tsx          # Shared centered auth card layout (title, subtitle, children)
+│   │   └── email-confirmation-panel.tsx # Shared "Check your email" success panel (children, linkText, linkHref)
+│   ├── capture/
+│   │   └── reextract-confirm-dialog.tsx # Shared re-extract confirmation dialog (show, onConfirm, onCancel)
 │   ├── providers/
-│   │   └── auth-provider.tsx    # AuthProvider context — user, isAuthenticated, isLoading, canCreateTeam, signOut
+│   │   └── auth-provider.tsx    # AuthProvider context — user, isAuthenticated, isLoading, canCreateTeam, activeTeamId, setActiveTeam, signOut
+│   ├── settings/
+│   │   └── role-picker.tsx      # Controlled role picker (value, onValueChange) + exported Role type
 │   ├── layout/
 │   │   ├── app-footer.tsx       # Footer — developer contact (name, email, GitHub, LinkedIn)
 │   │   ├── app-header.tsx       # Top bar — TabNav + WorkspaceSwitcher + UserMenu
@@ -172,6 +179,10 @@ synthesiser/
 │   ├── constants.ts             # Shared constants (file upload limits, accepted types)
 │   ├── constants/
 │   │   └── file-icons.ts        # FILE_ICONS map (MIME type → lucide icon component)
+│   ├── cookies/
+│   │   └── active-team.ts       # Client-side active team cookie helpers (getActiveTeamId, setActiveTeamCookie, clearActiveTeamCookie)
+│   ├── hooks/
+│   │   └── use-signal-extraction.ts # Shared extraction state machine hook (ExtractionState, getInput callback, re-extract confirm flow)
 │   ├── utils.ts                 # cn() utility (clsx + tailwind-merge)
 │   ├── email-templates/
 │   │   └── invite-email.ts      # HTML email template for team invitations
@@ -194,6 +205,7 @@ synthesiser/
 │   │   ├── compose-ai-input.ts    # Composes raw notes + attachments into a single AI input string
 │   │   ├── format-file-size.ts    # File size formatting (bytes → "1.2 KB", "3.4 MB")
 │   │   ├── format-relative-time.ts # Relative time formatting ("just now", "5m ago", "3d ago")
+│   │   ├── map-ai-error.ts       # mapAIErrorToResponse() — shared AI error-to-HTTP mapper (5 error types + unexpected)
 │   │   └── upload-attachments.ts  # Uploads pending attachments to a session (shared by capture form + expanded row)
 │   └── supabase/
 │       ├── server.ts            # Server-side Supabase clients (anon + service role) + getActiveTeamId()
@@ -427,7 +439,7 @@ Stores versioned AI system prompts per user or team workspace. Each save/reset/r
 4. Google redirects back to `/auth/callback?code=...`.
 5. The callback route handler exchanges the code for a session via `supabase.auth.exchangeCodeForSession(code)`.
 6. On success: redirect to `/capture`. On failure: redirect to `/login?error=exchange_failed`.
-7. **AuthProvider** (`components/providers/auth-provider.tsx`) wraps the app in `layout.tsx`. It reads the initial session on mount and subscribes to `onAuthStateChange`. Exposes `user`, `isAuthenticated`, `isLoading`, `canCreateTeam`, and `signOut` via React context.
+7. **AuthProvider** (`components/providers/auth-provider.tsx`) wraps the app in `layout.tsx`. It reads the initial session on mount and subscribes to `onAuthStateChange`. Exposes `user`, `isAuthenticated`, `isLoading`, `canCreateTeam`, `activeTeamId`, `setActiveTeam`, and `signOut` via React context.
 8. **UserMenu** consumes the auth context. Shows a loading skeleton while `isLoading`, a "Sign in" link when unauthenticated, and the user's Google avatar + email with a sign-out dropdown when authenticated.
 
 **Invite acceptance flow:**
@@ -440,8 +452,9 @@ Stores versioned AI system prompts per user or team workspace. Each save/reset/r
 **Workspace context:**
 
 - The `active_team_id` cookie determines the current workspace (personal or team). Absence = personal workspace.
-- The **WorkspaceSwitcher** component in the header lets users switch between workspaces by setting/clearing this cookie.
-- All data services read the active team ID via `getActiveTeamId()` from `lib/supabase/server.ts`.
+- The **AuthProvider** exposes `activeTeamId` and `setActiveTeam()` via React context. `setActiveTeam` writes the cookie and updates context state, triggering reactive re-renders in all consuming components — no page reload needed.
+- The **WorkspaceSwitcher** and **CreateTeamDialog** call `setActiveTeam()` to switch workspaces. Client-side cookie helpers live in `lib/cookies/active-team.ts`.
+- All server-side data services read the active team ID via `getActiveTeamId()` from `lib/supabase/server.ts`.
 
 ---
 
