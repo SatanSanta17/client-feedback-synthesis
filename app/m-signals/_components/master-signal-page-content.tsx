@@ -184,6 +184,7 @@ export function MasterSignalPageContent() {
           {/* Generate / Regenerate — only for admins in team context */}
           {canGenerate && (
             <Button
+              variant="ai"
               size="sm"
               onClick={handleGenerate}
               disabled={

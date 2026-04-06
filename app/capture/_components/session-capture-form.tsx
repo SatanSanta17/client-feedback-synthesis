@@ -299,7 +299,7 @@ export function SessionCaptureForm({ onSessionSaved }: SessionCaptureFormProps) 
           {/* Extract Signals button */}
           <Button
             type="button"
-            variant="outline"
+            variant="ai"
             size="lg"
             disabled={!hasInput || isOverLimit || extractionState === "extracting"}
             onClick={handleExtractSignals}

@@ -398,7 +398,7 @@ export function ExpandedSessionRow({
             {canEdit && (
               <Button
                 type="button"
-                variant="outline"
+                variant="ai"
                 size="sm"
                 disabled={!hasInput || isOverLimit || extractionState === "extracting"}
                 onClick={handleExtractSignals}
