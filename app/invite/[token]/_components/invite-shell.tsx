@@ -54,12 +54,12 @@ export function StatusIcon({
   variant: "error" | "expired" | "accepted";
 }) {
   const config = {
-    error: { icon: AlertCircle, bg: "bg-red-50", text: "text-red-500" },
-    expired: { icon: Clock, bg: "bg-amber-50", text: "text-amber-500" },
+    error: { icon: AlertCircle, bg: "bg-[var(--status-error-light)]", text: "text-[var(--status-error)]" },
+    expired: { icon: Clock, bg: "bg-[var(--status-warning-light)]", text: "text-[var(--status-warning)]" },
     accepted: {
       icon: CheckCircle2,
-      bg: "bg-green-50",
-      text: "text-green-500",
+      bg: "bg-[var(--status-success-light)]",
+      text: "text-[var(--status-success)]",
     },
   }[variant];
 

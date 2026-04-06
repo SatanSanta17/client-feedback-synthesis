@@ -32,9 +32,9 @@ export function InviteMismatchCard({
     <InviteShell>
       <InviteHeader teamName={teamName} role={role} />
       <div className="mt-6 w-full space-y-4">
-        <div className="rounded-md border border-amber-200 bg-amber-50 p-4 text-left">
+        <div className="rounded-md border border-[var(--status-warning-border)] bg-[var(--status-warning-light)] p-4 text-left">
           <div className="flex items-start gap-3">
-            <AlertTriangle className="mt-0.5 size-5 shrink-0 text-amber-500" />
+            <AlertTriangle className="mt-0.5 size-5 shrink-0 text-[var(--status-warning)]" />
             <div className="space-y-1 text-sm">
               <p className="text-[var(--text-primary)]">
                 This invitation is for <strong>{invitedEmail}</strong>

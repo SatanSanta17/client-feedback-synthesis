@@ -214,7 +214,7 @@ export function MasterSignalPageContent() {
 
       {/* Tainted banner — takes priority over staleness */}
       {masterSignal && isTainted && (
-        <div className="flex items-center gap-2 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+        <div className="flex items-center gap-2 rounded-lg border border-[var(--status-warning-border)] bg-[var(--status-warning-light)] px-4 py-3 text-sm text-[var(--status-warning-text)]">
           <AlertTriangle className="size-4 shrink-0" />
           <span>
             A session with extracted signals was deleted — regenerate to remove
@@ -231,7 +231,7 @@ export function MasterSignalPageContent() {
 
       {/* Standard staleness banner — only when NOT tainted */}
       {masterSignal && !isTainted && staleCount > 0 && (
-        <div className="flex items-center gap-2 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+        <div className="flex items-center gap-2 rounded-lg border border-[var(--status-warning-border)] bg-[var(--status-warning-light)] px-4 py-3 text-sm text-[var(--status-warning-text)]">
           <AlertTriangle className="size-4 shrink-0" />
           <span>
             Master signal may be out of date — <strong>{staleCount}</strong>{" "}
@@ -243,7 +243,7 @@ export function MasterSignalPageContent() {
 
       {/* Read-only info for non-admin team members */}
       {!canGenerate && (
-        <div className="flex items-center gap-2 rounded-lg border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-800">
+        <div className="flex items-center gap-2 rounded-lg border border-[var(--status-info-border)] bg-[var(--status-info-light)] px-4 py-3 text-sm text-[var(--status-info-text)]">
           <Info className="size-4 shrink-0" />
           <span>Only team admins can generate or regenerate the master signal.</span>
         </div>

@@ -120,12 +120,12 @@ export function InviteSignInForm({
             {...register("password")}
           />
           {errors.password && (
-            <p className="text-xs text-red-500">{errors.password.message}</p>
+            <p className="text-xs text-[var(--status-error)]">{errors.password.message}</p>
           )}
         </div>
 
         {serverError && (
-          <p className="text-xs text-red-500">{serverError}</p>
+          <p className="text-xs text-[var(--status-error)]">{serverError}</p>
         )}
 
         <Button

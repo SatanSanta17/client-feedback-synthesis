@@ -42,8 +42,8 @@ export function ForgotPasswordForm() {
     return (
       <div className="flex min-h-screen items-center justify-center bg-[var(--surface-page)]">
         <div className="w-full max-w-sm rounded-lg border border-[var(--border-default)] bg-white p-8 text-center shadow-sm">
-          <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-full bg-green-50">
-            <CheckCircle2 className="size-6 text-green-500" />
+          <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-full bg-[var(--status-success-light)]">
+            <CheckCircle2 className="size-6 text-[var(--status-success)]" />
           </div>
           <h1 className="text-xl font-semibold text-[var(--text-primary)]">
             Check your email
@@ -86,7 +86,7 @@ export function ForgotPasswordForm() {
               {...register("email")}
             />
             {errors.email && (
-              <p className="text-xs text-red-500">{errors.email.message}</p>
+              <p className="text-xs text-[var(--status-error)]">{errors.email.message}</p>
             )}
           </div>
 

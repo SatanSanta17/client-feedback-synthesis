@@ -138,7 +138,7 @@ export function InviteSignUpForm({
             {...register("password")}
           />
           {errors.password && (
-            <p className="text-xs text-red-500">{errors.password.message}</p>
+            <p className="text-xs text-[var(--status-error)]">{errors.password.message}</p>
           )}
         </div>
 
@@ -151,14 +151,14 @@ export function InviteSignUpForm({
             {...register("confirmPassword")}
           />
           {errors.confirmPassword && (
-            <p className="text-xs text-red-500">
+            <p className="text-xs text-[var(--status-error)]">
               {errors.confirmPassword.message}
             </p>
           )}
         </div>
 
         {serverError && (
-          <p className="text-xs text-red-500">{serverError}</p>
+          <p className="text-xs text-[var(--status-error)]">{serverError}</p>
         )}
 
         <Button

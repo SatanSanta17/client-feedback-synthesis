@@ -382,7 +382,7 @@ export function PromptEditorPageContent({ embedded = false, readOnly = false }: 
             )}
 
             {readOnly && (
-              <div className="mb-3 flex items-center gap-2 rounded-lg border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-800">
+              <div className="mb-3 flex items-center gap-2 rounded-lg border border-[var(--status-info-border)] bg-[var(--status-info-light)] px-4 py-3 text-sm text-[var(--status-info-text)]">
                 <Info className="size-4 shrink-0" />
                 <span>Only team admins can edit prompts. You can view them here.</span>
               </div>
