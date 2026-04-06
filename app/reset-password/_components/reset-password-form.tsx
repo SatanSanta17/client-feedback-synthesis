@@ -13,6 +13,7 @@ import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { PasswordInput } from "@/components/ui/password-input";
 import { passwordField } from "@/lib/schemas/password-schema";
+import { AuthFormShell } from "@/components/auth/auth-form-shell";
 
 const resetPasswordSchema = z
   .object({
@@ -57,76 +58,68 @@ export function ResetPasswordForm() {
   }
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-[var(--surface-page)]">
-      <div className="w-full max-w-sm rounded-lg border border-[var(--border-default)] bg-white p-8 shadow-sm">
-        <div className="mb-8 text-center">
-          <h1 className="text-xl font-semibold text-[var(--text-primary)]">
-            Reset your password
-          </h1>
-          <p className="mt-2 text-sm text-[var(--text-secondary)]">
-            Enter your new password below.
-          </p>
+    <AuthFormShell
+      title="Reset your password"
+      subtitle="Enter your new password below."
+    >
+      <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
+        <div className="space-y-1.5">
+          <Label htmlFor="password">New Password</Label>
+          <PasswordInput
+            id="password"
+            placeholder="password"
+            autoComplete="new-password"
+            {...register("password")}
+          />
+          {errors.password && (
+            <p className="text-xs text-[var(--status-error)]">{errors.password.message}</p>
+          )}
         </div>
 
-        <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
-          <div className="space-y-1.5">
-            <Label htmlFor="password">New Password</Label>
-            <PasswordInput
-              id="password"
-              placeholder="password"
-              autoComplete="new-password"
-              {...register("password")}
-            />
-            {errors.password && (
-              <p className="text-xs text-[var(--status-error)]">{errors.password.message}</p>
-            )}
-          </div>
-
-          <div className="space-y-1.5">
-            <Label htmlFor="confirmPassword">Confirm New Password</Label>
-            <PasswordInput
-              id="confirmPassword"
-              placeholder="Re-enter your new password"
-              autoComplete="new-password"
-              {...register("confirmPassword")}
-            />
-            {errors.confirmPassword && (
-              <p className="text-xs text-[var(--status-error)]">
-                {errors.confirmPassword.message}
-              </p>
-            )}
-          </div>
-
-          {serverError && (
-            <p className="text-xs text-[var(--status-error)]">{serverError}</p>
+        <div className="space-y-1.5">
+          <Label htmlFor="confirmPassword">Confirm New Password</Label>
+          <PasswordInput
+            id="confirmPassword"
+            placeholder="Re-enter your new password"
+            autoComplete="new-password"
+            {...register("confirmPassword")}
+          />
+          {errors.confirmPassword && (
+            <p className="text-xs text-[var(--status-error)]">
+              {errors.confirmPassword.message}
+            </p>
           )}
+        </div>
 
-          <Button
-            type="submit"
-            disabled={isSubmitting}
-            className="w-full cursor-pointer"
-            size="lg"
-          >
-            {isSubmitting ? (
-              <>
-                <Loader2 className="mr-2 size-4 animate-spin" />
-                Updating…
-              </>
-            ) : (
-              "Reset Password"
-            )}
-          </Button>
-        </form>
+        {serverError && (
+          <p className="text-xs text-[var(--status-error)]">{serverError}</p>
+        )}
 
-        <p className="mt-6 text-center text-sm text-[var(--text-secondary)]">
-          <Link
-            href="/login"
-            className="font-medium text-[var(--brand-primary)] hover:underline"
-          >
-            Back to sign in
-          </Link>
-        </p>
-      </div>
-    </div>
+        <Button
+          type="submit"
+          disabled={isSubmitting}
+          className="w-full cursor-pointer"
+          size="lg"
+        >
+          {isSubmitting ? (
+            <>
+              <Loader2 className="mr-2 size-4 animate-spin" />
+              Updating…
+            </>
+          ) : (
+            "Reset Password"
+          )}
+        </Button>
+      </form>
+
+      <p className="mt-6 text-center text-sm text-[var(--text-secondary)]">
+        <Link
+          href="/login"
+          className="font-medium text-[var(--brand-primary)] hover:underline"
+        >
+          Back to sign in
+        </Link>
+      </p>
+    </AuthFormShell>
   );
 }
