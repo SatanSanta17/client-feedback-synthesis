@@ -7,6 +7,7 @@ import { Loader2, Sparkles, RefreshCw, AlertTriangle, FileText, Download, Info }
 import { toast } from "sonner"
 
 import { Button } from "@/components/ui/button"
+import { useAuth } from "@/components/providers/auth-provider"
 
 interface MasterSignal {
   id: string
@@ -17,13 +18,8 @@ interface MasterSignal {
 
 type PageState = "loading" | "empty-no-sessions" | "empty-ready" | "has-signal"
 
-function getActiveTeamId(): string | null {
-  if (typeof document === "undefined") return null
-  const match = document.cookie.match(/(?:^|;\s*)active_team_id=([^;]*)/)
-  return match ? decodeURIComponent(match[1]) : null
-}
-
 export function MasterSignalPageContent() {
+  const { activeTeamId } = useAuth()
   const [pageState, setPageState] = useState<PageState>("loading")
   const [masterSignal, setMasterSignal] = useState<MasterSignal | null>(null)
   const [staleCount, setStaleCount] = useState(0)
@@ -32,7 +28,6 @@ export function MasterSignalPageContent() {
   const [isDownloading, setIsDownloading] = useState(false)
   const [isTeamAdmin, setIsTeamAdmin] = useState(true)
 
-  const activeTeamId = getActiveTeamId()
   const isTeamContext = !!activeTeamId
   const canGenerate = !isTeamContext || isTeamAdmin
 
@@ -84,7 +79,7 @@ export function MasterSignalPageContent() {
 
   useEffect(() => {
     fetchMasterSignal()
-  }, [fetchMasterSignal])
+  }, [fetchMasterSignal, activeTeamId])
 
   // --- Generate / Regenerate ---
   const handleGenerate = useCallback(async () => {

@@ -1,9 +1,9 @@
 "use client";
 
 import { useState } from "react";
-import { createClient } from "@/lib/supabase/client";
 import { Button } from "@/components/ui/button";
 import { AlertTriangle, Loader2 } from "lucide-react";
+import { useAuth } from "@/components/providers/auth-provider";
 import { InviteShell, InviteHeader } from "./invite-shell";
 
 interface InviteMismatchCardProps {
@@ -20,12 +20,11 @@ export function InviteMismatchCard({
   userEmail,
 }: InviteMismatchCardProps) {
   const [signingOut, setSigningOut] = useState(false);
-  const supabase = createClient();
+  const { signOut } = useAuth();
 
   async function handleSignOut() {
     setSigningOut(true);
-    await supabase.auth.signOut();
-    window.location.reload();
+    await signOut();
   }
 
   return (

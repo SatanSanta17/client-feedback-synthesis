@@ -13,10 +13,7 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-
-function setActiveTeamCookie(teamId: string) {
-  document.cookie = `active_team_id=${teamId}; path=/; max-age=${60 * 60 * 24 * 365}; SameSite=Lax`;
-}
+import { useAuth } from "@/components/providers/auth-provider";
 
 interface CreateTeamDialogProps {
   open: boolean;
@@ -26,6 +23,7 @@ interface CreateTeamDialogProps {
 export function CreateTeamDialog({ open, onOpenChange }: CreateTeamDialogProps) {
   const [name, setName] = useState("");
   const [isCreating, setIsCreating] = useState(false);
+  const { setActiveTeam } = useAuth();
 
   const handleCreate = useCallback(async () => {
     const trimmed = name.trim();
@@ -51,18 +49,17 @@ export function CreateTeamDialog({ open, onOpenChange }: CreateTeamDialogProps) 
       }
 
       const { team } = await response.json();
-      setActiveTeamCookie(team.id);
+      setActiveTeam(team.id);
       toast.success(`Team "${team.name}" created`);
       onOpenChange(false);
       setName("");
-      window.location.reload();
     } catch (err) {
       console.error("Create team error:", err);
       toast.error("Something went wrong");
     } finally {
       setIsCreating(false);
     }
-  }, [name, onOpenChange]);
+  }, [name, onOpenChange, setActiveTeam]);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>

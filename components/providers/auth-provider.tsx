@@ -10,12 +10,19 @@ import {
 import { useRouter } from "next/navigation";
 import type { User } from "@supabase/supabase-js";
 import { createClient } from "@/lib/supabase/client";
+import {
+  getActiveTeamId,
+  setActiveTeamCookie,
+  clearActiveTeamCookie,
+} from "@/lib/cookies/active-team";
 
 interface AuthContextValue {
   user: User | null;
   isAuthenticated: boolean;
   isLoading: boolean;
   canCreateTeam: boolean;
+  activeTeamId: string | null;
+  setActiveTeam: (teamId: string | null) => void;
   signOut: () => Promise<void>;
 }
 
@@ -25,10 +32,29 @@ interface AuthProviderProps {
   children: React.ReactNode;
 }
 
+/** Fetch `can_create_team` from the profiles table. Shared by both auth paths. */
+function fetchCanCreateTeam(
+  supabase: ReturnType<typeof createClient>,
+  userId: string,
+  setter: (v: boolean) => void
+) {
+  supabase
+    .from("profiles")
+    .select("can_create_team")
+    .eq("id", userId)
+    .single()
+    .then(({ data }) => {
+      setter(data?.can_create_team ?? false);
+    });
+}
+
 export function AuthProvider({ children }: AuthProviderProps) {
   const [user, setUser] = useState<User | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [canCreateTeam, setCanCreateTeam] = useState(false);
+  const [activeTeamId, setActiveTeamId] = useState<string | null>(
+    () => getActiveTeamId()
+  );
   const router = useRouter();
   const supabase = createClient();
 
@@ -38,14 +64,7 @@ export function AuthProvider({ children }: AuthProviderProps) {
       setIsLoading(false);
 
       if (currentUser) {
-        supabase
-          .from("profiles")
-          .select("can_create_team")
-          .eq("id", currentUser.id)
-          .single()
-          .then(({ data }) => {
-            setCanCreateTeam(data?.can_create_team ?? false);
-          });
+        fetchCanCreateTeam(supabase, currentUser.id, setCanCreateTeam);
       }
     });
 
@@ -56,14 +75,7 @@ export function AuthProvider({ children }: AuthProviderProps) {
       setIsLoading(false);
 
       if (session?.user) {
-        supabase
-          .from("profiles")
-          .select("can_create_team")
-          .eq("id", session.user.id)
-          .single()
-          .then(({ data }) => {
-            setCanCreateTeam(data?.can_create_team ?? false);
-          });
+        fetchCanCreateTeam(supabase, session.user.id, setCanCreateTeam);
       } else {
         setCanCreateTeam(false);
       }
@@ -74,10 +86,20 @@ export function AuthProvider({ children }: AuthProviderProps) {
     };
   }, [supabase]);
 
+  const setActiveTeam = useCallback((teamId: string | null) => {
+    if (teamId) {
+      setActiveTeamCookie(teamId);
+    } else {
+      clearActiveTeamCookie();
+    }
+    setActiveTeamId(teamId);
+  }, []);
+
   const signOut = useCallback(async () => {
     await supabase.auth.signOut();
     setUser(null);
     setCanCreateTeam(false);
+    setActiveTeamId(null);
     router.push("/login");
   }, [supabase, router]);
 
@@ -88,6 +110,8 @@ export function AuthProvider({ children }: AuthProviderProps) {
         isAuthenticated: !!user,
         isLoading,
         canCreateTeam,
+        activeTeamId,
+        setActiveTeam,
         signOut,
       }}
     >

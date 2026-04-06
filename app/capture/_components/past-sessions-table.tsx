@@ -16,12 +16,6 @@ export interface PastSessionsTableProps {
   refreshKey: number
 }
 
-function getActiveTeamId(): string | null {
-  if (typeof document === "undefined") return null
-  const match = document.cookie.match(/(?:^|;\s*)active_team_id=([^;]*)/)
-  return match ? decodeURIComponent(match[1]) : null
-}
-
 const PAGE_SIZE = 20
 
 function formatDate(dateStr: string): string {
@@ -41,7 +35,7 @@ function truncateNotes(notes: string, maxLength = 100): string {
 export function PastSessionsTable({
   refreshKey,
 }: PastSessionsTableProps) {
-  const { user } = useAuth()
+  const { user, activeTeamId } = useAuth()
   const [sessions, setSessions] = useState<SessionRow[]>([])
   const [total, setTotal] = useState(0)
   const [offset, setOffset] = useState(0)
@@ -52,7 +46,6 @@ export function PastSessionsTable({
     dateTo: "",
   })
   const [teamRole, setTeamRole] = useState<string | null>(null)
-  const activeTeamId = getActiveTeamId()
   const isTeamContext = !!activeTeamId
 
   useEffect(() => {
@@ -132,7 +125,7 @@ export function PastSessionsTable({
   useEffect(() => {
     setOffset(0)
     fetchSessions(0, false)
-  }, [filters, refreshKey, fetchSessions])
+  }, [filters, refreshKey, fetchSessions, activeTeamId])
 
   const handleLoadMore = () => {
     const newOffset = offset + PAGE_SIZE

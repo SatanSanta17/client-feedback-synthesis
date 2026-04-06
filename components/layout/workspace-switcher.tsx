@@ -20,30 +20,13 @@ interface TeamEntry {
   role: string;
 }
 
-function getActiveTeamId(): string | null {
-  if (typeof document === "undefined") return null;
-  const match = document.cookie.match(/(?:^|;\s*)active_team_id=([^;]*)/);
-  return match ? decodeURIComponent(match[1]) : null;
-}
-
-function setActiveTeamCookie(teamId: string | null) {
-  if (teamId) {
-    document.cookie = `active_team_id=${teamId}; path=/; max-age=${60 * 60 * 24 * 365}; SameSite=Lax`;
-  } else {
-    document.cookie = "active_team_id=; path=/; max-age=0; SameSite=Lax";
-  }
-}
-
 export function WorkspaceSwitcher() {
   const [teams, setTeams] = useState<TeamEntry[]>([]);
-  const [activeTeamId, setActiveTeamId] = useState<string | null>(null);
   const [loaded, setLoaded] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
-  const { canCreateTeam } = useAuth();
+  const { canCreateTeam, activeTeamId, setActiveTeam } = useAuth();
 
   useEffect(() => {
-    setActiveTeamId(getActiveTeamId());
-
     fetch("/api/teams")
       .then((res) => (res.ok ? res.json() : { teams: [] }))
       .then((data) => {
@@ -56,11 +39,9 @@ export function WorkspaceSwitcher() {
   const handleSwitch = useCallback(
     (teamId: string | null) => {
       if (teamId === activeTeamId) return;
-      setActiveTeamCookie(teamId);
-      setActiveTeamId(teamId);
-      window.location.reload();
+      setActiveTeam(teamId);
     },
-    [activeTeamId]
+    [activeTeamId, setActiveTeam]
   );
 
   if (!loaded) {

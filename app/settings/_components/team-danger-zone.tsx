@@ -15,6 +15,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { clearActiveTeamCookie } from "@/lib/cookies/active-team";
 
 interface TeamDangerZoneProps {
   teamId: string;
@@ -22,10 +23,6 @@ interface TeamDangerZoneProps {
   isOwner: boolean;
   onTeamRenamed: (newName: string) => void;
   onTeamDeleted: () => void;
-}
-
-function clearActiveTeamCookie() {
-  document.cookie = "active_team_id=; path=/; max-age=0; SameSite=Lax";
 }
 
 export function TeamDangerZone({

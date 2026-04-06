@@ -15,14 +15,8 @@ interface TeamContext {
   isOwner: boolean;
 }
 
-function getActiveTeamId(): string | null {
-  if (typeof document === "undefined") return null;
-  const match = document.cookie.match(/(?:^|;\s*)active_team_id=([^;]*)/);
-  return match ? decodeURIComponent(match[1]) : null;
-}
-
 export function SettingsPageContent() {
-  const { user, isAuthenticated } = useAuth();
+  const { user, isAuthenticated, activeTeamId } = useAuth();
   const [teamCtx, setTeamCtx] = useState<TeamContext | null>(null);
   const [isCheckingTeam, setIsCheckingTeam] = useState(true);
 
@@ -32,7 +26,6 @@ export function SettingsPageContent() {
       return;
     }
 
-    const activeTeamId = getActiveTeamId();
     if (!activeTeamId) {
       setIsCheckingTeam(false);
       return;
@@ -73,7 +66,7 @@ export function SettingsPageContent() {
       isOwner: team.owner_id === user.id,
     });
     setIsCheckingTeam(false);
-  }, [user]);
+  }, [user, activeTeamId]);
 
   useEffect(() => {
     if (isAuthenticated) {

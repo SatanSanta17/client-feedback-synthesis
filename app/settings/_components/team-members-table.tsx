@@ -22,6 +22,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { clearActiveTeamCookie } from "@/lib/cookies/active-team";
 
 interface MemberEntry {
   user_id: string;
@@ -44,10 +45,6 @@ type ConfirmAction =
   | { type: "remove"; member: MemberEntry }
   | { type: "transfer"; member: MemberEntry }
   | { type: "leave" };
-
-function clearActiveTeamCookie() {
-  document.cookie = "active_team_id=; path=/; max-age=0; SameSite=Lax";
-}
 
 export function TeamMembersTable({
   teamId,
