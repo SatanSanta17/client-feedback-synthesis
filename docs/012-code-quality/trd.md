@@ -1,6 +1,6 @@
 # TRD-012: Code Quality — SOLID, DRY, and Design Consistency
 
-> **Status:** Draft — Part 1 only
+> **Status:** Part 1 complete — Parts 2–5 pending
 > **PRD:** `docs/012-code-quality/prd.md` (draft)
 > **Mirrors:** PRD Part 1 (Design Tokens and Typography). Parts 2–5 will be added after Part 1 implementation.
 
@@ -251,18 +251,29 @@ The audit found no remaining `text-[Npx]` values in the codebase. P1.R3 / P1.AC3
 
 ---
 
-### End-of-Part Audit Checklist
+### Increment 6: End-of-part audit and documentation updates
 
-Per CLAUDE.md Quality Gates (end-of-part):
+**Covers:** CLAUDE.md Quality Gates (end-of-part audit) + post-part documentation
 
-1. **SRP violations** — Part 1 does not introduce new components or split existing ones. Each file change has a single concern (token migration or variant swap).
-2. **DRY violations** — Status token names are defined once in `globals.css`. No duplication introduced.
-3. **Design token adherence** — This is the entire point of Part 1. After completion, zero hardcoded status colours remain.
-4. **Logging** — No API routes or services are modified. No logging changes.
-5. **Dead code** — No imports or variables become unused. The old Tailwind colour classes are replaced, not left alongside new ones.
-6. **Convention compliance** — Token naming follows the existing pattern (`--brand-primary`, `--text-primary`). New tokens use `--status-*` and `--ai-action-*` prefixes consistently.
+This increment produces fixes (if any violations are found) and documentation updates — not a report.
 
-### Post-Part Documentation Updates
+#### End-of-part audit checklist
 
-1. **`ARCHITECTURE.md`** — Update the `globals.css` entry in the File Map to mention status and AI action tokens.
-2. **`CHANGELOG.md`** — Add entry: "PRD-012 Part 1: Centralised status colour tokens and AI action tokens in globals.css. Added `ai` button variant. Replaced all hardcoded status colours with CSS custom properties. Replaced `window.location.href` navigation with Next.js router."
+1. **SRP violations** — Part 1 does not introduce new components or split existing ones. Each file change has a single concern (token migration or variant swap). ✅ No violations.
+2. **DRY violations** — Status token names are defined once in `globals.css`. No duplication introduced. ✅ No violations.
+3. **Design token adherence** — This is the entire point of Part 1. After completion, zero hardcoded status colours remain. ✅ Verified: `grep` for `text-red-`, `bg-red-`, `text-green-`, `bg-green-`, `text-amber-`, `bg-amber-`, `text-blue-`, `bg-blue-` returns zero matches across all `.tsx` files.
+4. **Logging** — No API routes or services are modified. No logging changes needed. ✅ N/A.
+5. **Dead code** — No imports or variables become unused. The old Tailwind colour classes are replaced, not left alongside new ones. ✅ No unused imports found.
+6. **Convention compliance** — Token naming follows the existing pattern (`--brand-primary`, `--text-primary`). New tokens use `--status-*` and `--ai-action-*` prefixes consistently. ✅ All 18 tokens present in `globals.css`.
+
+Additional verification:
+- Zero `window.location.href` for navigation in `.tsx` files ✅
+- Zero `text-[Npx]` arbitrary font sizes in `.tsx` files ✅
+- All 3 AI action buttons use `variant="ai"` ✅
+
+#### Documentation updates
+
+1. **`ARCHITECTURE.md`** — Update the `globals.css` entry in the File Map to mention status and AI action tokens. Update the `button.tsx` entry to note the `ai` variant. Add file map entries for any new files added by Part 1 (none — all changes are to existing files).
+2. **`CHANGELOG.md`** — Add entry summarising Part 1 delivery.
+
+**Verification:** Read back both files after editing to confirm accuracy. Cross-reference file map entries against actual files on disk.

@@ -20,7 +20,7 @@ Synthesiser is a web application for teams to capture structured client session 
 
 ## Current State
 
-**Status:** PRD-002 through PRD-010 implemented. PRD-013 Parts 1–2 (File Upload Infrastructure + Persistence & Signal Extraction Integration) implemented. The app is a fully functional team-capable client feedback capture and synthesis platform. Google OAuth login (open to any Google account), working capture form with AI signal extraction and file attachment upload with server-side persistence, past sessions table with filters/inline editing/soft delete, master signal page with AI synthesis and PDF download, prompt editor with version history, and team access with role-based permissions.
+**Status:** PRD-002 through PRD-010 implemented. PRD-012 Part 1 (Design Tokens and Typography) implemented. PRD-013 Parts 1–2 (File Upload Infrastructure + Persistence & Signal Extraction Integration) implemented. The app is a fully functional team-capable client feedback capture and synthesis platform. Google OAuth login (open to any Google account), working capture form with AI signal extraction and file attachment upload with server-side persistence, past sessions table with filters/inline editing/soft delete, master signal page with AI synthesis and PDF download, prompt editor with version history, and team access with role-based permissions.
 
 **Core features live:**
 - Session capture with AI signal extraction (Vercel AI SDK, multi-provider) and file attachment upload (TXT, PDF, CSV, DOCX, JSON) with server-side parsing and chat format detection (WhatsApp, Slack)
@@ -49,7 +49,7 @@ synthesiser/
 ├── middleware.ts                # Route protection + active_team_id cookie validation
 ├── next.config.ts               # Next.js config — image remote patterns (Google avatars)
 ├── app/
-│   ├── globals.css              # Global CSS tokens (brand colours, typography, surfaces)
+│   ├── globals.css              # Global CSS tokens (brand colours, status colours, AI action colours, typography, surfaces)
 │   ├── layout.tsx               # Root layout — AuthProvider + AppHeader + AppFooter + Toaster
 │   ├── page.tsx                 # Root redirect → /capture
 │   ├── favicon.ico
@@ -157,7 +157,7 @@ synthesiser/
 │   │   └── workspace-switcher.tsx # Always-visible workspace dropdown — switch, create team, CTA
 │   └── ui/                      # shadcn/ui primitives (do not modify)
 │       ├── badge.tsx
-│       ├── button.tsx
+│       ├── button.tsx           # Includes `ai` variant (gold) for AI action buttons
 │       ├── command.tsx
 │       ├── dialog.tsx
 │       ├── dropdown-menu.tsx

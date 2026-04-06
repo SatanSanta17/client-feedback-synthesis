@@ -6,6 +6,15 @@ All notable changes to this project are documented here, grouped by PRD and part
 
 ## [Unreleased]
 
+### PRD-012 Part 1: Design Tokens and Typography — 2026-04-07
+- Added 14 status colour tokens (`--status-error`, `--status-success`, `--status-warning`, `--status-info` with `-light`, `-border`, `-text` variants) and 4 AI action tokens (`--ai-action`, `--ai-action-foreground`, `--ai-action-hover`, `--ai-action-light`) to `globals.css` using oklch colour space
+- Added `ai` button variant (warm gold) to `button.tsx` CVA config
+- Applied `variant="ai"` to Extract Signals, Re-extract Signals, and Generate Master Signal buttons
+- Replaced all hardcoded Tailwind status colours (`text-red-500`, `bg-red-50`, `bg-green-50`, `text-green-500`, `bg-amber-*`, `text-amber-*`, `bg-blue-*`, `text-blue-*`) with CSS custom property tokens across 14 files
+- Migrated `invite-shell.tsx` StatusIcon colour map from hardcoded Tailwind classes to token references
+- Replaced `window.location.href = "/capture"` with `router.push("/capture")` in `login-form.tsx` and `reset-password-form.tsx`
+- Replaced all `text-[10px]` arbitrary font sizes with `text-xs` across 5 files
+
 ### PRD-013 Part 4: Edge Cases & Limits — 2026-04-06
 - Replaced hardcoded `.max(50000)` with `MAX_COMBINED_CHARS` constant in `extract-signals/route.ts`, `sessions/route.ts`, `sessions/[id]/route.ts`, and `session-capture-form.tsx` — server and client now reference the same shared limit
 - Added input length logging to the extract-signals route before AI calls
