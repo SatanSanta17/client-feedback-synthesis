@@ -6,6 +6,14 @@ All notable changes to this project are documented here, grouped by PRD and part
 
 ## [Unreleased]
 
+### PRD-012 Part 3: SRP — Component Decomposition — 2026-04-07
+- Extracted `SessionTableRow` + `formatDate`, `truncateNotes`, `formatEmail` helpers from `past-sessions-table.tsx` into `session-table-row.tsx` (past-sessions-table 401 → 298 lines)
+- Split `expanded-session-row.tsx` (493 lines) into thin coordinator + 3 presentational subcomponents: `expanded-session-metadata.tsx` (73), `expanded-session-notes.tsx` (111), `expanded-session-actions.tsx` (118) — coordinator reduced to 349 lines with signals panel kept inline per design decision
+- Split `session-capture-form.tsx` (315 lines) into coordinator + 2 subcomponents: `capture-attachment-section.tsx` (60), `structured-notes-panel.tsx` (27) — coordinator reduced to 286 lines
+- Split `master-signal-page-content.tsx` (330 lines) into coordinator + hook + 3 subcomponents: `use-master-signal.ts` (170), `master-signal-status-banner.tsx` (74), `master-signal-empty-state.tsx` (76), `master-signal-content.tsx` (44) — coordinator reduced to 107 lines
+- Split `prompt-editor-page-content.tsx` (497 lines) into coordinator + hook + 2 subcomponents: `use-prompt-editor.ts` (358), `prompt-master-signal-notice.tsx` (54), `prompt-unsaved-dialog.tsx` (50) — coordinator reduced to 144 lines
+- All new presentational components are pure renderers with no side effects; hooks own state + logic; coordinators compose children
+
 ### PRD-012 Part 2: DRY — Shared Utilities and Patterns — 2026-04-07
 - Created `lib/cookies/active-team.ts` — single source of truth for client-side `active_team_id` cookie operations (`getActiveTeamId`, `setActiveTeamCookie`, `clearActiveTeamCookie`), replacing 7+ inline implementations
 - Added reactive `activeTeamId` and `setActiveTeam()` to AuthProvider context — workspace switching now updates React state instead of calling `window.location.reload()`, enabling reactive data refetching across all consuming components

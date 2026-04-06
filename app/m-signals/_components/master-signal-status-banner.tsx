@@ -2,6 +2,8 @@
 
 import { AlertTriangle, Info } from "lucide-react"
 
+import { cn } from "@/lib/utils"
+
 type BannerVariant = "tainted" | "stale" | "info"
 
 interface MasterSignalStatusBannerProps {
@@ -65,7 +67,7 @@ export function MasterSignalStatusBanner({
   const Icon = variant === "info" ? Info : AlertTriangle
 
   return (
-    <div className={`flex items-center gap-2 rounded-lg border ${styles.border} ${styles.bg} px-4 py-3 text-sm ${styles.text}`}>
+    <div className={cn("flex items-center gap-2 rounded-lg border px-4 py-3 text-sm", styles.border, styles.bg, styles.text)}>
       <Icon className="size-4 shrink-0" />
       {getBannerContent(variant, staleCount)}
     </div>

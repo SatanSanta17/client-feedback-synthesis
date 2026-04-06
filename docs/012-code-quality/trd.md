@@ -1,6 +1,6 @@
 # TRD-012: Code Quality — SOLID, DRY, and Design Consistency
 
-> **Status:** Parts 1–2 complete, Part 3 TRD ready — Parts 4–5 pending
+> **Status:** Parts 1–3 complete — Parts 4–5 pending
 > **PRD:** `docs/012-code-quality/prd.md` (draft)
 > **Mirrors:** PRD Parts 1–3. Parts 4–5 TRDs will be added after Part 3 implementation.
 

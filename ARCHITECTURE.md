@@ -20,7 +20,7 @@ Synthesiser is a web application for teams to capture structured client session 
 
 ## Current State
 
-**Status:** PRD-002 through PRD-010 implemented. PRD-012 Parts 1–2 (Design Tokens and Typography + DRY Extraction) implemented. PRD-013 Parts 1–2 (File Upload Infrastructure + Persistence & Signal Extraction Integration) implemented. The app is a fully functional team-capable client feedback capture and synthesis platform. Google OAuth login (open to any Google account), working capture form with AI signal extraction and file attachment upload with server-side persistence, past sessions table with filters/inline editing/soft delete, master signal page with AI synthesis and PDF download, prompt editor with version history, and team access with role-based permissions.
+**Status:** PRD-002 through PRD-010 implemented. PRD-012 Parts 1–3 (Design Tokens and Typography + DRY Extraction + SRP Component Decomposition) implemented. PRD-013 Parts 1–2 (File Upload Infrastructure + Persistence & Signal Extraction Integration) implemented. The app is a fully functional team-capable client feedback capture and synthesis platform. Google OAuth login (open to any Google account), working capture form with AI signal extraction and file attachment upload with server-side persistence, past sessions table with filters/inline editing/soft delete, master signal page with AI synthesis and PDF download, prompt editor with version history, and team access with role-based permissions.
 
 **Core features live:**
 - Session capture with AI signal extraction (Vercel AI SDK, multi-provider) and file attachment upload (TXT, PDF, CSV, DOCX, JSON) with server-side parsing and chat format detection (WhatsApp, Slack)
@@ -112,12 +112,18 @@ synthesiser/
 │   │       ├── client-combobox.tsx         # Type-to-create text input with existing client suggestions
 │   │       ├── client-filter-combobox.tsx  # Client combobox for filters (hasSession, no create-new)
 │   │       ├── date-picker.tsx            # Styled native date input (max: today, optional min/max)
-│   │       ├── expanded-session-row.tsx   # Expanded row with side-by-side raw/structured notes, edit/read-only
+│   │       ├── capture-attachment-section.tsx  # Attachments block for capture form — upload zone, list, char counter
+│   │       ├── expanded-session-actions.tsx    # Save/cancel/delete action bar for expanded session row
+│   │       ├── expanded-session-metadata.tsx   # Client/date fields (edit mode) or read-only display
+│   │       ├── expanded-session-notes.tsx      # Raw notes + attachments section with char counter
+│   │       ├── expanded-session-row.tsx   # Coordinator — state, hooks, handlers; composes metadata/notes/actions subcomponents
 │   │       ├── file-upload-zone.tsx      # Drag-and-drop file upload zone with client-side validation and server parse
 │   │       ├── markdown-panel.tsx         # Reusable markdown view/edit panel with rendered preview and raw edit toggle
 │   │       ├── past-sessions-table.tsx    # Past sessions table with expand/collapse, inline edit, delete, "Captured by" column
-│   │       ├── session-capture-form.tsx   # Capture form — client, date, notes, file attachments, extract signals, save
+│   │       ├── session-capture-form.tsx   # Coordinator — react-hook-form, submit, extract; composes attachment/notes subcomponents
 │   │       ├── session-filters.tsx        # Filter bar — client combobox + date range with auto-sync
+│   │       ├── session-table-row.tsx      # Single table row — formatDate, truncateNotes, formatEmail helpers
+│   │       ├── structured-notes-panel.tsx # Post-extraction markdown display for capture form
 │   │       └── unsaved-changes-dialog.tsx # Save/Discard/Cancel prompt for dirty expanded rows
 │   ├── invite/
 │   │   └── [token]/
@@ -129,17 +135,24 @@ synthesiser/
 │   ├── m-signals/
 │   │   ├── page.tsx             # Master Signals tab — server component
 │   │   └── _components/
-│   │       ├── master-signal-page-content.tsx  # Fetch, generate, display, staleness, PDF, team role awareness
-│   │       └── master-signal-pdf.ts            # Client-side PDF generation via pdf-lib
+│   │       ├── master-signal-content.tsx       # Rendered markdown content + metadata bar
+│   │       ├── master-signal-empty-state.tsx   # Empty/loading/generating state displays
+│   │       ├── master-signal-page-content.tsx  # Coordinator — composes header, banners, empty states, content
+│   │       ├── master-signal-pdf.ts            # Client-side PDF generation via pdf-lib
+│   │       ├── master-signal-status-banner.tsx # Presentational banner for tainted/stale/info states
+│   │       └── use-master-signal.ts           # Hook — fetch, generate, download PDF, all state + derived values
 │   └── settings/
 │       ├── page.tsx             # Settings page — renders SettingsPageContent
 │       └── _components/
 │           ├── invite-bulk-dialog.tsx          # Bulk invite dialog (CSV/paste, max 20 emails)
 │           ├── invite-single-form.tsx          # Single email invite form
 │           ├── pending-invitations-table.tsx   # Table of pending invitations with revoke/resend
-│           ├── prompt-editor-page-content.tsx  # Prompt editor with tabs, dirty tracking, version history
+│           ├── prompt-editor-page-content.tsx  # Coordinator — composes tabs, editor, notices, dialogs
 │           ├── prompt-editor.tsx               # Monospace textarea with loading skeleton
+│           ├── prompt-master-signal-notice.tsx # Contextual cold-start/incremental info box with toggle
+│           ├── prompt-unsaved-dialog.tsx       # Unsaved changes confirmation dialog
 │           ├── settings-page-content.tsx       # Orchestrator — tabs for Prompts + Team Settings
+│           ├── use-prompt-editor.ts           # Hook — fetch, save, reset, revert, dirty guard, tab state
 │           ├── team-danger-zone.tsx            # Rename + delete team (owner only)
 │           ├── team-members-table.tsx          # Members list with role change, remove, transfer, leave
 │           ├── team-settings.tsx               # Team settings orchestrator — members, invites, danger zone
