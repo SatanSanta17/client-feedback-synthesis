@@ -1,7 +1,7 @@
 "use client"
 
 import { useState, useEffect, useCallback, useRef } from "react"
-import { Loader2, Sparkles, Paperclip } from "lucide-react"
+import { Loader2 } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
 import { useAuth } from "@/components/providers/auth-provider"
@@ -10,27 +10,14 @@ import {
   type SessionFiltersState,
 } from "./session-filters"
 import { UnsavedChangesDialog } from "./unsaved-changes-dialog"
-import { ExpandedSessionRow, type SessionRow } from "./expanded-session-row"
+import { type SessionRow } from "./expanded-session-row"
+import { SessionTableRow } from "./session-table-row"
 
 export interface PastSessionsTableProps {
   refreshKey: number
 }
 
 const PAGE_SIZE = 20
-
-function formatDate(dateStr: string): string {
-  const date = new Date(dateStr + "T00:00:00")
-  return date.toLocaleDateString("en-US", {
-    year: "numeric",
-    month: "short",
-    day: "numeric",
-  })
-}
-
-function truncateNotes(notes: string, maxLength = 100): string {
-  if (notes.length <= maxLength) return notes
-  return notes.slice(0, maxLength).trimEnd() + "…"
-}
 
 export function PastSessionsTable({
   refreshKey,
@@ -307,95 +294,5 @@ export function PastSessionsTable({
         onCancel={handleUnsavedCancel}
       />
     </div>
-  )
-}
-
-// ---------------------------------------------------------------------------
-// Session table row — thin wrapper that delegates to ExpandedSessionRow
-// ---------------------------------------------------------------------------
-
-interface SessionTableRowProps {
-  session: SessionRow
-  isExpanded: boolean
-  isTeamContext: boolean
-  canEdit: boolean
-  onRowClick: () => void
-  onDirtyChange: (dirty: boolean) => void
-  onSave: () => void
-  onCancel: () => void
-  onDelete: () => void
-  saveRef: React.MutableRefObject<(() => Promise<boolean>) | null>
-}
-
-function formatEmail(email?: string): string {
-  if (!email) return ""
-  const [local] = email.split("@")
-  return local
-}
-
-function SessionTableRow({
-  session,
-  isExpanded,
-  isTeamContext,
-  canEdit,
-  onRowClick,
-  onDirtyChange,
-  onSave,
-  onCancel,
-  onDelete,
-  saveRef,
-}: SessionTableRowProps) {
-  const colSpan = isTeamContext ? 4 : 3
-
-  return (
-    <>
-      <tr
-        onClick={onRowClick}
-        className={`cursor-pointer border-b last:border-b-0 transition-colors hover:bg-muted/30 ${
-          isExpanded ? "bg-muted/40" : ""
-        }`}
-      >
-        <td className="px-4 py-2.5 font-medium">
-          {session.client_name}
-        </td>
-        <td className="px-4 py-2.5 text-muted-foreground whitespace-nowrap">
-          {formatDate(session.session_date)}
-        </td>
-        {isTeamContext && (
-          <td className="px-4 py-2.5 text-muted-foreground whitespace-nowrap">
-            {formatEmail(session.created_by_email)}
-          </td>
-        )}
-        <td className="px-4 py-2.5 text-muted-foreground">
-          <span className="flex items-center gap-1.5">
-            {truncateNotes(session.raw_notes)}
-            {session.attachment_count > 0 && (
-              <span className="flex shrink-0 items-center gap-0.5 text-muted-foreground">
-                <Paperclip className="size-3.5" />
-                <span className="text-xs">{session.attachment_count}</span>
-              </span>
-            )}
-            {session.structured_notes && (
-              <Sparkles className="size-3.5 shrink-0 text-primary/60" />
-            )}
-          </span>
-        </td>
-      </tr>
-      {isExpanded && (
-        <tr>
-          <td colSpan={colSpan} className="p-0">
-            <ExpandedSessionRow
-              session={session}
-              canEdit={canEdit}
-              onSave={onSave}
-              onCancel={onCancel}
-              onDelete={onDelete}
-              onDirtyChange={onDirtyChange}
-              registerSave={(saveFn) => { saveRef.current = saveFn }}
-            />
-          </td>
-        </tr>
-      )}
-    </>
   )
 }

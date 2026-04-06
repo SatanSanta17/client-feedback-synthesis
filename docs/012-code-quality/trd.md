@@ -1,8 +1,8 @@
 # TRD-012: Code Quality — SOLID, DRY, and Design Consistency
 
-> **Status:** Part 1 complete, Part 2 TRD ready — Parts 3–5 pending
+> **Status:** Parts 1–2 complete, Part 3 TRD ready — Parts 4–5 pending
 > **PRD:** `docs/012-code-quality/prd.md` (draft)
-> **Mirrors:** PRD Parts 1–2. Parts 3–5 TRDs will be added after Part 2 implementation.
+> **Mirrors:** PRD Parts 1–3. Parts 4–5 TRDs will be added after Part 3 implementation.
 
 ---
 
@@ -1076,3 +1076,500 @@ This increment produces fixes (if any violations are found) and documentation up
 2. **`CHANGELOG.md`** — Add entry summarising Part 2 delivery.
 
 **Verification:** Read back both files after editing to confirm accuracy. `grep` for all eliminated patterns to confirm zero remaining duplicates. Cross-reference file map entries against actual files on disk.
+
+---
+---
+
+## Part 3: SRP — Component Decomposition
+
+### Technical Decisions
+
+1. **Decomposition splits responsibilities, not features.** Each extraction produces files grouped by concern: data fetching hooks, presentational subcomponents, and a thin coordinator parent. No feature behaviour changes — only file boundaries move. All exports remain co-located in the route's `_components/` directory (never promoted to `components/` unless used by 2+ routes).
+
+2. **Custom hooks for data-fetching and orchestration.** Components like `MasterSignalPageContent` and `PromptEditorPageContent` mix API orchestration with rendering. The hooks (`useMasterSignal`, `usePromptEditor`) encapsulate fetch, generate, save, revert, and state machine logic. The parent component receives hook output and composes presentational children. This follows Dependency Inversion — the view depends on a hook interface, not raw fetch calls.
+
+3. **`SessionTableRow` becomes its own file but stays private to the route.** It lives at `app/capture/_components/session-table-row.tsx`, not in `components/`. It is only rendered by `PastSessionsTable` — no other route imports it. The helper functions `formatDate`, `truncateNotes`, and `formatEmail` move with it since they are presentation concerns.
+
+4. **`expanded-session-row.tsx` splits into a coordinator + 3 section components.** The coordinator holds the editing state, attachment state, and delegates to: (a) a metadata section (client/date fields or read-only display), (b) a notes-and-attachments section (raw notes, file upload, saved/pending attachments, char counter), and (c) an action bar (save/cancel/delete buttons). The signal extraction panel stays inline in the coordinator because it's a single `MarkdownPanel` + button — extracting it would create a component with almost zero logic of its own. The coordinator remains the largest file at ~150 lines.
+
+5. **`session-capture-form.tsx` splits into form coordinator + 2 section components.** The capture form extracts: (a) an attachment section (upload zone, attachment list, char counter) — identical pattern to expanded-row attachments but simpler (no saved attachments), and (b) a structured notes panel (the post-extraction markdown display). The form coordinator keeps react-hook-form, submit logic, and the extract button because they are tightly coupled to the form's `getValues` and `reset`.
+
+6. **`master-signal-page-content.tsx` splits into hook + banner component + content states.** The `useMasterSignal` hook handles fetch, generate, download-PDF, and all state (pageState, staleCount, isTainted, isTeamAdmin). A shared `StatusBanner` presentational component replaces the three near-identical banner blocks (tainted, stale, info). The page content becomes composition of header, banners, and content area — each driven by hook state.
+
+7. **`prompt-editor-page-content.tsx` splits into hook + unsaved-changes dialog + master-signal tab notice.** The `usePromptEditor` hook encapsulates: fetch, save, reset, revert, dirty tracking, tab switch guard, and version history. The master-signal tab notice (the contextual cold-start/incremental info box) becomes a separate component because it has its own toggle logic. The unsaved-changes dialog is extracted as a local component. The page content renders tabs + editor + action bar, driven by hook state.
+
+8. **Forward compatibility with Part 4.** Part 4 extracts orchestration from API routes into services. The client-side hooks created here call the same API endpoints — Part 4 only changes server-side internals. No hook interfaces change.
+
+9. **Forward compatibility with Part 5.** Part 5 introduces repository interfaces for services. The hooks created here don't import from services — they call HTTP endpoints. No impact.
+
+---
+
+### Files Changed
+
+| File | Change |
+|------|--------|
+| `app/capture/_components/expanded-session-row.tsx` | Thin coordinator; delegates to 3 subcomponents |
+| `app/capture/_components/expanded-session-metadata.tsx` | **New.** Client/date fields (edit) or read-only display |
+| `app/capture/_components/expanded-session-notes.tsx` | **New.** Raw notes + attachments section with char counter |
+| `app/capture/_components/expanded-session-actions.tsx` | **New.** Save/cancel/delete action bar |
+| `app/capture/_components/session-capture-form.tsx` | Thin form coordinator; delegates to subcomponents |
+| `app/capture/_components/capture-attachment-section.tsx` | **New.** Upload zone + attachment list + char counter for new sessions |
+| `app/capture/_components/structured-notes-panel.tsx` | **New.** Post-extraction markdown display |
+| `app/capture/_components/past-sessions-table.tsx` | Remove `SessionTableRow` + helpers to own file |
+| `app/capture/_components/session-table-row.tsx` | **New.** `SessionTableRow` + `formatDate`, `truncateNotes`, `formatEmail` |
+| `app/m-signals/_components/master-signal-page-content.tsx` | Thin composition; delegates to hook + subcomponents |
+| `app/m-signals/_components/use-master-signal.ts` | **New.** Hook: fetch, generate, download PDF, all state |
+| `app/m-signals/_components/master-signal-status-banner.tsx` | **New.** Presentational banner for tainted/stale/info states |
+| `app/m-signals/_components/master-signal-empty-state.tsx` | **New.** Empty state displays (no-sessions, ready, generating) |
+| `app/m-signals/_components/master-signal-content.tsx` | **New.** Rendered markdown content + metadata bar |
+| `app/settings/_components/prompt-editor-page-content.tsx` | Thin composition; delegates to hook + subcomponents |
+| `app/settings/_components/use-prompt-editor.ts` | **New.** Hook: fetch, save, reset, revert, dirty guard, tab state |
+| `app/settings/_components/prompt-master-signal-notice.tsx` | **New.** Cold-start/incremental contextual notice with toggle |
+| `app/settings/_components/prompt-unsaved-dialog.tsx` | **New.** Unsaved changes confirmation dialog |
+
+---
+
+### Increment 1: Extract `SessionTableRow` from `past-sessions-table.tsx`
+
+**Covers:** P3.R4, P3.AC4
+
+This is the lowest-risk extraction — `SessionTableRow` is already a separate function at the bottom of the file with its own props interface. It's a straight cut-and-paste into its own file.
+
+#### Step 1: Create `app/capture/_components/session-table-row.tsx`
+
+Move from `past-sessions-table.tsx`:
+- `formatDate` function (lines 21–28)
+- `truncateNotes` function (lines 30–33)
+- `formatEmail` function (lines 330–334)
+- `SessionTableRowProps` interface (lines 317–328)
+- `SessionTableRow` component (lines 336–401)
+
+The new file imports `SessionRow` from `./expanded-session-row` and `ExpandedSessionRow` from `./expanded-session-row`. It imports `Sparkles`, `Paperclip` from `lucide-react`.
+
+Export: `export function SessionTableRow(...)` as a named export.
+
+#### Step 2: Update `past-sessions-table.tsx`
+
+- Remove `formatDate`, `truncateNotes`, `formatEmail`, `SessionTableRowProps`, and the `SessionTableRow` component
+- Add import: `import { SessionTableRow } from "./session-table-row"`
+- Remove `Sparkles`, `Paperclip` from lucide-react import (they were only used by `SessionTableRow`)
+- Keep `SessionRow` import from `./expanded-session-row` (still used for the `sessions` state type)
+
+**Verification:**
+- `past-sessions-table.tsx` should be ~215 lines (down from 401)
+- `session-table-row.tsx` should be ~90 lines
+- Sessions table renders, rows expand, unsaved changes dialog works
+- `npx tsc --noEmit` passes
+
+---
+
+### Increment 2: Split `expanded-session-row.tsx` into coordinator + subcomponents
+
+**Covers:** P3.R1, P3.AC1
+
+#### Step 1: Create `app/capture/_components/expanded-session-metadata.tsx`
+
+Extract the metadata section (lines 254–292 in the current file). This component renders either editable fields (client combobox + date picker) or a read-only display.
+
+```typescript
+interface ExpandedSessionMetadataProps {
+  canEdit: boolean
+  client: ClientSelection
+  onClientChange: (client: ClientSelection) => void
+  sessionDate: string
+  onSessionDateChange: (date: string) => void
+  session: Pick<SessionRow, "client_name" | "session_date" | "created_by_email">
+}
+```
+
+Imports: `ClientCombobox`, `DatePicker`, `Label` from co-located files.
+
+#### Step 2: Create `app/capture/_components/expanded-session-notes.tsx`
+
+Extract the notes + attachments grid column (lines 295–351). This component renders raw notes, the attachments subsection (saved, pending, upload zone), and the character counter.
+
+```typescript
+interface ExpandedSessionNotesProps {
+  rawNotes: string
+  onRawNotesChange?: (notes: string) => void
+  canEdit: boolean
+  sessionId: string
+  savedAttachments: SessionAttachment[]
+  pendingAttachments: ParsedAttachment[]
+  isLoadingAttachments: boolean
+  structuredNotes: string | null
+  extractionState: ExtractionState
+  isSaving: boolean
+  totalChars: number
+  isOverLimit: boolean
+  totalAttachmentCount: number
+  onSavedAttachmentDeleted: (id: string) => void
+  onAddPendingAttachment: (a: ParsedAttachment) => void
+  onRemovePendingAttachment: (index: number) => void
+}
+```
+
+Imports: `MarkdownPanel`, `FileUploadZone`, `AttachmentList`, `SavedAttachmentList`, `Label`, `Loader2`, `cn`, `MAX_COMBINED_CHARS`.
+
+#### Step 3: Create `app/capture/_components/expanded-session-actions.tsx`
+
+Extract the action bar (lines 403–483). This component renders save/cancel/delete buttons (or close + view-only message).
+
+```typescript
+interface ExpandedSessionActionsProps {
+  canEdit: boolean
+  isFormValid: boolean
+  isDirty: boolean
+  isSaving: boolean
+  isDeleting: boolean
+  isOverLimit: boolean
+  showDeleteConfirm: boolean
+  onSave: () => void
+  onCancel: () => void
+  onDelete: () => void
+  onShowDeleteConfirm: (show: boolean) => void
+}
+```
+
+Imports: `Button`, `Loader2`, `Save`, `X`, `Trash2`.
+
+#### Step 4: Update `expanded-session-row.tsx`
+
+The coordinator keeps:
+- All `useState` declarations (client, date, notes, saving, deleting, attachments)
+- The attachment fetch `useEffect`
+- `useSignalExtraction` hook call
+- `isDirty`, `hasInput`, `isFormValid` derived state
+- Character counting logic
+- `handleSave`, `handleDelete`, and attachment handlers
+- `registerSave` effect
+
+The render becomes:
+```tsx
+<div className="flex flex-col gap-4 p-4 bg-muted/20 border-t border-border">
+  <ExpandedSessionMetadata ... />
+  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+    <ExpandedSessionNotes ... />
+    <div className="flex flex-col gap-1.5">
+      {/* Extract signals button + panel — stays inline */}
+    </div>
+  </div>
+  <ExpandedSessionActions ... />
+  <ReextractConfirmDialog ... />
+</div>
+```
+
+**Verification:**
+- `expanded-session-row.tsx` should be ~180 lines (down from 493)
+- `expanded-session-metadata.tsx` should be ~55 lines
+- `expanded-session-notes.tsx` should be ~85 lines
+- `expanded-session-actions.tsx` should be ~95 lines
+- All editing, save, delete, extraction, attachment flows work identically
+- `npx tsc --noEmit` passes
+
+---
+
+### Increment 3: Split `session-capture-form.tsx` into coordinator + subcomponents
+
+**Covers:** P3.R5, P3.AC5
+
+#### Step 1: Create `app/capture/_components/capture-attachment-section.tsx`
+
+Extract the attachments block (lines 224–253). This component renders the upload zone, attachment list, and character counter.
+
+```typescript
+interface CaptureAttachmentSectionProps {
+  attachments: ParsedAttachment[]
+  onFileParsed: (attachment: ParsedAttachment) => void
+  onRemove: (index: number) => void
+  disabled: boolean
+  totalChars: number
+  isOverLimit: boolean
+}
+```
+
+Imports: `FileUploadZone`, `AttachmentList`, `Label`, `cn`, `MAX_COMBINED_CHARS`.
+
+#### Step 2: Create `app/capture/_components/structured-notes-panel.tsx`
+
+Extract the post-extraction display (lines 296–306). This component renders the "Extracted Signals" heading and `MarkdownPanel` when extraction is done.
+
+```typescript
+interface StructuredNotesPanelProps {
+  structuredNotes: string | null
+  onChange: (notes: string | null) => void
+}
+```
+
+Imports: `MarkdownPanel`.
+
+#### Step 3: Update `session-capture-form.tsx`
+
+The coordinator keeps:
+- `useForm`, `useSignalExtraction`, submit handler, attachment state
+- Form fields (client, date, raw notes)
+- Extract and Submit buttons
+
+The render replaces the inline attachment block with `<CaptureAttachmentSection ... />` and the inline structured notes with `<StructuredNotesPanel ... />`.
+
+**Verification:**
+- `session-capture-form.tsx` should be ~230 lines (down from 315)
+- `capture-attachment-section.tsx` should be ~55 lines
+- `structured-notes-panel.tsx` should be ~30 lines
+- Capture form works: type notes → attach files → extract → save
+- `npx tsc --noEmit` passes
+
+---
+
+### Increment 4: Split `master-signal-page-content.tsx` into hook + subcomponents
+
+**Covers:** P3.R3, P3.AC3
+
+#### Step 1: Create `app/m-signals/_components/use-master-signal.ts`
+
+Extract all state and logic into a custom hook:
+
+```typescript
+interface UseMasterSignalReturn {
+  pageState: PageState
+  masterSignal: MasterSignal | null
+  staleCount: number
+  isTainted: boolean
+  isGenerating: boolean
+  isDownloading: boolean
+  isTeamAdmin: boolean
+  canGenerate: boolean
+  handleGenerate: () => Promise<void>
+  handleDownloadPdf: () => Promise<void>
+}
+
+export function useMasterSignal(): UseMasterSignalReturn
+```
+
+The hook owns:
+- All `useState` declarations
+- Team admin check `useEffect`
+- `fetchMasterSignal` callback + mount effect
+- `handleGenerate` callback
+- `handleDownloadPdf` callback
+- `canGenerate` derived state
+
+Imports: `useAuth` from auth-provider.
+
+#### Step 2: Create `app/m-signals/_components/master-signal-status-banner.tsx`
+
+A presentational component for the three banner types:
+
+```typescript
+type BannerVariant = "tainted" | "stale" | "info"
+
+interface MasterSignalStatusBannerProps {
+  variant: BannerVariant
+  staleCount?: number
+}
+```
+
+Uses `AlertTriangle` for tainted/stale, `Info` for info. Maps variant to border/bg/text token classes.
+
+#### Step 3: Create `app/m-signals/_components/master-signal-empty-state.tsx`
+
+Extract the three empty/generating states (lines 248–294):
+
+```typescript
+interface MasterSignalEmptyStateProps {
+  pageState: PageState
+  isGenerating: boolean
+  masterSignal: MasterSignal | null
+  staleCount: number
+}
+```
+
+#### Step 4: Create `app/m-signals/_components/master-signal-content.tsx`
+
+Extract the signal display (lines 297–327):
+
+```typescript
+interface MasterSignalContentProps {
+  masterSignal: MasterSignal
+}
+```
+
+Renders metadata bar + markdown content.
+
+#### Step 5: Update `master-signal-page-content.tsx`
+
+The page content becomes pure composition:
+
+```tsx
+export function MasterSignalPageContent() {
+  const { pageState, masterSignal, staleCount, isTainted, ... } = useMasterSignal()
+
+  return (
+    <div className="flex w-full max-w-4xl flex-col gap-6">
+      <MasterSignalHeader ... />
+      {masterSignal && isTainted && <MasterSignalStatusBanner variant="tainted" staleCount={staleCount} />}
+      {masterSignal && !isTainted && staleCount > 0 && <MasterSignalStatusBanner variant="stale" staleCount={staleCount} />}
+      {!canGenerate && <MasterSignalStatusBanner variant="info" />}
+      <MasterSignalEmptyState ... />
+      {masterSignal && <MasterSignalContent masterSignal={masterSignal} />}
+    </div>
+  )
+}
+```
+
+Note: the header (title + buttons) stays inline in the page content — it's only ~30 lines and tightly coupled to hook state (`isGenerating`, `canGenerate`, `masterSignal`). Extracting it would create a component with 8+ props for minimal gain.
+
+**Verification:**
+- `master-signal-page-content.tsx` should be ~75 lines (down from 330)
+- `use-master-signal.ts` should be ~120 lines
+- `master-signal-status-banner.tsx` should be ~45 lines
+- `master-signal-empty-state.tsx` should be ~55 lines
+- `master-signal-content.tsx` should be ~40 lines
+- All master signal flows work: loading, empty, generate, regenerate, tainted banner, stale banner, PDF download
+- `npx tsc --noEmit` passes
+
+---
+
+### Increment 5: Split `prompt-editor-page-content.tsx` into hook + subcomponents
+
+**Covers:** P3.R2, P3.AC2
+
+#### Step 1: Create `app/settings/_components/use-prompt-editor.ts`
+
+Extract all state and orchestration:
+
+```typescript
+interface UsePromptEditorReturn {
+  activeTab: PromptKey
+  effectiveKey: PromptKey
+  autoSelectedMasterKey: PromptKey
+  displayedMasterKey: PromptKey
+  promptTabs: { key: PromptKey; label: string }[]
+  currentContent: string
+  isDirty: boolean
+  isLoading: boolean
+  isSaving: boolean
+  isReverting: boolean
+  history: PromptVersion[]
+  isHistoryOpen: boolean
+  pendingTab: PromptKey | null
+  isViewingAlternate: boolean
+  hasMasterSignal: boolean
+  viewingVersion: PromptVersion | null
+  viewingVersionNumber: number
+  setCurrentContent: (content: string) => void
+  setIsHistoryOpen: (open: boolean) => void
+  setViewingVersion: (version: PromptVersion | null) => void
+  setViewingVersionNumber: (n: number) => void
+  handleTabChange: (value: string) => void
+  handleTogglePromptVariant: () => void
+  handleSave: () => Promise<void>
+  handleReset: () => Promise<void>
+  handleRevert: (version: PromptVersion) => Promise<void>
+  handleDiscardAndSwitch: () => void
+  handleCancelSwitch: () => void
+}
+
+export function usePromptEditor(): UsePromptEditorReturn
+```
+
+The hook owns:
+- All `useState` declarations
+- `DEFAULT_PROMPTS` config
+- Master signal check effect
+- `fetchPrompt` callback + effect
+- `beforeunload` effect
+- Tab switch with dirty guard
+- Toggle prompt variant
+- Save, reset, revert handlers
+
+#### Step 2: Create `app/settings/_components/prompt-master-signal-notice.tsx`
+
+Extract the contextual cold-start/incremental info box (lines 347–382):
+
+```typescript
+interface PromptMasterSignalNoticeProps {
+  displayedMasterKey: PromptKey
+  autoSelectedMasterKey: PromptKey
+  onToggle: () => void
+  disabled: boolean
+}
+```
+
+#### Step 3: Create `app/settings/_components/prompt-unsaved-dialog.tsx`
+
+Extract the unsaved changes dialog (lines 441–465):
+
+```typescript
+interface PromptUnsavedDialogProps {
+  open: boolean
+  onStay: () => void
+  onDiscard: () => void
+}
+```
+
+#### Step 4: Update `prompt-editor-page-content.tsx`
+
+The page content becomes composition:
+
+```tsx
+export function PromptEditorPageContent({ embedded, readOnly }: PromptEditorPageContentProps) {
+  const editor = usePromptEditor()
+
+  const content = (
+    <>
+      <Tabs value={editor.activeTab} onValueChange={editor.handleTabChange} ...>
+        <TabsList>...</TabsList>
+        {editor.promptTabs.map((tab) => (
+          <TabsContent key={tab.key} value={tab.key} ...>
+            {tab.key === editor.autoSelectedMasterKey && (
+              <PromptMasterSignalNotice ... />
+            )}
+            {readOnly && <ReadOnlyBanner />}
+            <PromptEditor ... />
+            <ActionBar ... />
+            <VersionHistoryPanel ... />
+          </TabsContent>
+        ))}
+      </Tabs>
+      <PromptUnsavedDialog ... />
+      <VersionViewDialog ... />
+    </>
+  )
+
+  if (embedded) return content
+  return <div className="flex flex-1 flex-col p-6">...</div>
+}
+```
+
+**Verification:**
+- `prompt-editor-page-content.tsx` should be ~120 lines (down from 497)
+- `use-prompt-editor.ts` should be ~230 lines
+- `prompt-master-signal-notice.tsx` should be ~50 lines
+- `prompt-unsaved-dialog.tsx` should be ~40 lines
+- All prompt editor flows work: load, edit, save, reset, revert, tab switch with dirty guard, version history, master signal toggle
+- `npx tsc --noEmit` passes
+
+---
+
+### Increment 6: End-of-part audit and documentation updates
+
+**Covers:** CLAUDE.md Quality Gates (end-of-part audit) + post-part documentation
+
+This increment produces fixes (if any violations are found) and documentation updates — not a report.
+
+#### End-of-part audit checklist
+
+1. **SRP violations** — Every new file has a single responsibility: hooks contain state + logic, presentational components render UI from props, coordinators compose children. No file should exceed ~230 lines (the `usePromptEditor` hook will be the largest).
+2. **DRY violations** — The `MasterSignalStatusBanner` eliminates the 3× duplicated banner markup. `CaptureAttachmentSection` is used only once — it's an SRP extraction, not a DRY extraction; if a second consumer appears, it's already isolated.
+3. **Design token adherence** — No new hardcoded colours. All banners use existing `--status-*` tokens.
+4. **Logging** — All existing `console.error` logging preserved inside hooks and handlers. No logging moved to presentational components.
+5. **Dead code** — All removed inline code confirmed unused after extraction. No orphaned imports.
+6. **Convention compliance** — File names: kebab-case. Components: PascalCase. Hooks: `use-` prefix with `.ts` extension. Props interfaces: `*Props` suffix. Named exports.
+
+#### Documentation updates
+
+1. **`ARCHITECTURE.md`** — Add entries for all new files under their respective `_components/` directories. Update descriptions for the 5 decomposed files to note their new coordinator role.
+2. **`CHANGELOG.md`** — Add entry summarising Part 3 delivery.
+
+**Verification:** Read back both files after editing to confirm accuracy. Verify line counts for all modified files match expectations (±10 lines). Run `npx tsc --noEmit` for final type check. Cross-reference file map entries against actual files on disk.
