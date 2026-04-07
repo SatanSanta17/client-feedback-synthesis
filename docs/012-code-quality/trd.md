@@ -2,7 +2,7 @@
 
 > **Status:** Parts 1–3 complete — Parts 4–5 pending
 > **PRD:** `docs/012-code-quality/prd.md` (draft)
-> **Mirrors:** PRD Parts 1–3. Parts 4–5 TRDs will be added after Part 3 implementation.
+> **Mirrors:** PRD Parts 1–4. Part 5 TRD will be added after Part 4 implementation.
 
 ---
 
@@ -1573,3 +1573,420 @@ This increment produces fixes (if any violations are found) and documentation up
 2. **`CHANGELOG.md`** — Add entry summarising Part 3 delivery.
 
 **Verification:** Read back both files after editing to confirm accuracy. Verify line counts for all modified files match expectations (±10 lines). Run `npx tsc --noEmit` for final type check. Cross-reference file map entries against actual files on disk.
+
+---
+
+## Part 4: SRP — API Route and Service Layer Cleanup
+
+### Technical Decisions
+
+12. **The generate-master-signal orchestration moves to `master-signal-service.ts`, not a new file.** The cold-start/tainted/incremental branching logic is master-signal domain logic — it decides *which* sessions to fetch and *how* to call the AI service. It belongs alongside the existing `getLatestMasterSignal`, `getAllSignalSessions`, `getSignalSessionsSince`, and `saveMasterSignal` functions that it already calls. Creating a separate orchestration file would split the domain in two. The new function is `generateOrUpdateMasterSignal()` and returns a result object the route handler maps to HTTP responses.
+
+13. **The orchestration function returns a discriminated union, not HTTP responses.** The service layer must not import from `next/server` (per CLAUDE.md). The return type uses a discriminated union: `{ outcome: "created" | "unchanged"; masterSignal: MasterSignal }` or `{ outcome: "no-sessions"; message: string }`. The route handler maps outcomes to status codes — `created` → 200 with masterSignal, `unchanged` → 200 with `unchanged: true`, `no-sessions` → 422. This keeps the service framework-agnostic.
+
+14. **Team members data assembly moves to `team-service.ts` as `getTeamMembersWithProfiles()`.** The route currently makes two sequential Supabase queries (team_members + profiles) and joins them in-route. This is data assembly — it belongs in the service layer. The new function takes `teamId` and returns `{ user_id, role, joined_at, email }[]`. The route handler reduces to auth check + service call + JSON response.
+
+15. **`checkSessionAccess` moves to `session-service.ts` as a pure service function.** Currently in `app/api/sessions/_helpers.ts`, it imports `NextResponse` and returns HTTP error objects — mixing concerns. The service version returns a discriminated union (`{ allowed: true; userId; teamId }` | `{ allowed: false; reason: "unauthenticated" | "not-found" | "forbidden" }`), and the route handler maps reasons to HTTP status codes. The `_helpers.ts` file is deleted.
+
+16. **`checkSessionAccess` needs the Supabase client passed in.** Currently it calls `createClient()` internally. Since the route handler already creates a client for auth, we pass it through to avoid a second client instantiation. The service function signature becomes `checkSessionAccess(supabase, sessionId)` where `supabase` is the anon client already created by the route. This is consistent with Dependency Inversion — the function receives its dependency rather than creating it.
+
+17. **Zod validation for GET query params uses `.safeParse()` on extracted params.** For `GET /api/clients`, we validate `q` (string, optional, max 255) and `hasSession` (boolean-like string, optional). For `GET /api/prompts`, we validate `key` against the `PromptKey` enum. The existing inline `VALID_PROMPT_KEYS` check is replaced by a Zod schema. Validation errors return 400 with descriptive messages, matching the existing POST handler pattern.
+
+18. **`SignalSession` moves to `lib/types/signal-session.ts`.** Currently defined in `master-signal-service.ts` and imported by both `master-signal-synthesis.ts` (prompts layer) and `ai-service.ts` (service layer). The prompts layer importing from the service layer violates the dependency direction — prompts are consumed by services, not the other way around. Moving the type to a shared `lib/types/` location breaks the circular dependency. Both `master-signal-service.ts`, `ai-service.ts`, and `master-signal-synthesis.ts` import from the shared location.
+
+19. **The `GET /api/teams` route's inline membership query moves to `team-service.ts`.** The route currently calls `getTeamsForUser()` for team data, then makes a separate inline Supabase query for `team_members` to get roles — splitting the domain logic between route and service. The new `getTeamsWithRolesForUser()` function in `team-service.ts` returns `{ id, name, role }[]` in a single call, and the route handler becomes auth check + service call + JSON response.
+
+20. **Forward compatibility with Part 5.** Part 5 introduces repository interfaces. The service functions created/modified here will be the primary targets for repository injection. By ensuring services don't make direct Supabase calls in Part 4 (they delegate to existing service-level query functions or to the newly centralised query functions), Part 5 has clear extraction points. The discriminated union return types created here carry over unchanged — Part 5 only changes how the data is fetched internally.
+
+---
+
+### Files Changed
+
+| File | Change |
+|------|--------|
+| `lib/services/master-signal-service.ts` | Add `generateOrUpdateMasterSignal()` orchestration function with discriminated union return |
+| `app/api/ai/generate-master-signal/route.ts` | Reduce to auth check + admin check + `generateOrUpdateMasterSignal()` call + outcome mapping |
+| `lib/services/team-service.ts` | Add `getTeamMembersWithProfiles(teamId)` and `getTeamsWithRolesForUser(userId)` |
+| `app/api/teams/[teamId]/members/route.ts` | Remove inline Supabase queries; delegate to `getTeamMembersWithProfiles()` |
+| `app/api/teams/route.ts` | Remove inline membership query from GET; delegate to `getTeamsWithRolesForUser()` |
+| `lib/services/session-service.ts` | Add `checkSessionAccess(supabase, sessionId)` with discriminated union return |
+| `app/api/sessions/_helpers.ts` | **Deleted.** Logic moved to `session-service.ts` |
+| `app/api/sessions/[id]/route.ts` | Import `checkSessionAccess` from session-service; map result to HTTP responses |
+| `app/api/sessions/[id]/attachments/route.ts` | Import `checkSessionAccess` from session-service (if it uses `_helpers.ts`) |
+| `app/api/sessions/[id]/attachments/[attachmentId]/route.ts` | Import `checkSessionAccess` from session-service (if it uses `_helpers.ts`) |
+| `app/api/clients/route.ts` | Add Zod schema for GET query params; validate before calling service |
+| `app/api/prompts/route.ts` | Replace `VALID_PROMPT_KEYS` check with Zod schema for GET query params |
+| `lib/types/signal-session.ts` | **New.** `SignalSession` interface (moved from `master-signal-service.ts`) |
+| `lib/services/master-signal-service.ts` | Remove `SignalSession` export; re-export from `lib/types/signal-session.ts` |
+| `lib/services/ai-service.ts` | Import `SignalSession` from `lib/types/signal-session.ts` |
+| `lib/prompts/master-signal-synthesis.ts` | Import `SignalSession` from `lib/types/signal-session.ts` |
+
+### Files not changed
+
+| File | Reason |
+|------|--------|
+| `app/api/sessions/route.ts` | GET handler already uses Zod for query params (added in PRD-013). POST handler already validates with Zod. No orchestration to extract. |
+| `app/api/ai/extract-signals/route.ts` | Already thin — auth check + Zod validation + service call + `mapAIErrorToResponse`. No orchestration to extract. |
+| `lib/services/ai-service.ts` | Only `SignalSession` import path changes. No structural changes. |
+
+---
+
+### Increment 1: Move `SignalSession` to shared types
+
+**Covers:** P4.R5, P4.AC5
+
+This is the lowest-risk change — a type relocation with no runtime impact. Ship first to unblock the rest.
+
+#### Step 1: Create `lib/types/signal-session.ts`
+
+Move the `SignalSession` interface from `lib/services/master-signal-service.ts`:
+
+```typescript
+export interface SignalSession {
+  id: string
+  clientName: string
+  sessionDate: string
+  structuredNotes: string
+  updatedAt: string
+}
+```
+
+#### Step 2: Update imports in 3 files
+
+- `lib/services/master-signal-service.ts` — Remove `SignalSession` interface definition. Add `import type { SignalSession } from "@/lib/types/signal-session"`. Keep `export type { SignalSession }` re-export for backward compatibility (other files may import from here).
+- `lib/services/ai-service.ts` — Change `import type { SignalSession } from "@/lib/services/master-signal-service"` to `import type { SignalSession } from "@/lib/types/signal-session"`.
+- `lib/prompts/master-signal-synthesis.ts` — Change `import type { SignalSession } from "@/lib/services/master-signal-service"` to `import type { SignalSession } from "@/lib/types/signal-session"`.
+
+**Verification:**
+- `npx tsc --noEmit` passes
+- `master-signal-synthesis.ts` no longer imports from `lib/services/`
+- `grep -r "from.*master-signal-service" lib/prompts/` returns no results
+
+---
+
+### Increment 2: Extract generate-master-signal orchestration to service
+
+**Covers:** P4.R1, P4.AC1
+
+#### Step 1: Add orchestration function to `lib/services/master-signal-service.ts`
+
+Add `generateOrUpdateMasterSignal()` below the existing query functions. The function encapsulates the cold-start/tainted/incremental branching:
+
+```typescript
+type GenerateResult =
+  | { outcome: "created"; masterSignal: MasterSignal }
+  | { outcome: "unchanged"; masterSignal: MasterSignal }
+  | { outcome: "no-sessions"; message: string }
+
+export async function generateOrUpdateMasterSignal(): Promise<GenerateResult> {
+  const latest = await getLatestMasterSignal()
+
+  if (!latest || latest.isTainted) {
+    const mode = latest?.isTainted ? "tainted cold start" : "cold start"
+    console.log(`[master-signal-service] generateOrUpdateMasterSignal — ${mode}`)
+
+    const sessions = await getAllSignalSessions()
+    if (sessions.length === 0) {
+      const message = latest?.isTainted
+        ? "No extracted signals found. All sessions with signals have been deleted."
+        : "No extracted signals found. Extract signals from individual sessions on the Capture page first."
+      return { outcome: "no-sessions", message }
+    }
+
+    console.log(`[master-signal-service] generateOrUpdateMasterSignal — synthesising from ${sessions.length} sessions`)
+    const content = await synthesiseMasterSignal({ sessions })
+    const saved = await saveMasterSignal(content, sessions.length)
+    console.log(`[master-signal-service] generateOrUpdateMasterSignal — saved: ${saved.id}`)
+    return { outcome: "created", masterSignal: saved }
+  }
+
+  // Incremental
+  console.log(`[master-signal-service] generateOrUpdateMasterSignal — incremental since ${latest.generatedAt}`)
+  const newSessions = await getSignalSessionsSince(latest.generatedAt)
+
+  if (newSessions.length === 0) {
+    console.log("[master-signal-service] generateOrUpdateMasterSignal — no new sessions")
+    return { outcome: "unchanged", masterSignal: latest }
+  }
+
+  console.log(`[master-signal-service] generateOrUpdateMasterSignal — merging ${newSessions.length} new session(s)`)
+  const content = await synthesiseMasterSignal({
+    previousMasterSignal: latest.content,
+    sessions: newSessions,
+  })
+  const totalSessions = latest.sessionsIncluded + newSessions.length
+  const saved = await saveMasterSignal(content, totalSessions)
+  console.log(`[master-signal-service] generateOrUpdateMasterSignal — saved: ${saved.id}`)
+  return { outcome: "created", masterSignal: saved }
+}
+```
+
+Note: `synthesiseMasterSignal` is imported from `ai-service.ts` — this is an existing cross-service dependency (service calls service). The import already exists in the route; moving it to the service is cleaner because the orchestration logic belongs here.
+
+#### Step 2: Rewrite `app/api/ai/generate-master-signal/route.ts`
+
+The route handler reduces to:
+
+```typescript
+export async function POST() {
+  // 1. Auth check (same as before)
+  // 2. Team admin check (same as before)
+  // 3. Call generateOrUpdateMasterSignal()
+  // 4. Map outcome to HTTP response:
+  //    - "created" → 200 { masterSignal }
+  //    - "unchanged" → 200 { masterSignal, unchanged: true }
+  //    - "no-sessions" → 422 { message }
+  // 5. catch → mapAIErrorToResponse (same as before)
+}
+```
+
+**Verification:**
+- Route handler is ≤50 lines (target: ~45)
+- `generateOrUpdateMasterSignal` contains all branching logic with full logging
+- Master signal generation works: cold start, tainted, incremental, no-sessions
+- `npx tsc --noEmit` passes
+
+---
+
+### Increment 3: Extract team data assembly to service
+
+**Covers:** P4.R2, P4.AC2
+
+#### Step 1: Add `getTeamMembersWithProfiles()` to `lib/services/team-service.ts`
+
+Extract the two-query join from the members route:
+
+```typescript
+export interface TeamMemberWithProfile {
+  user_id: string
+  role: string
+  joined_at: string
+  email: string
+}
+
+export async function getTeamMembersWithProfiles(
+  teamId: string
+): Promise<TeamMemberWithProfile[]> {
+  const serviceClient = createServiceRoleClient()
+
+  const { data: members, error } = await serviceClient
+    .from("team_members")
+    .select("user_id, role, joined_at")
+    .eq("team_id", teamId)
+    .is("removed_at", null)
+    .order("joined_at", { ascending: true })
+
+  if (error) {
+    console.error("[team-service] getTeamMembersWithProfiles — error:", error.message)
+    throw new Error("Failed to fetch team members")
+  }
+
+  const userIds = (members ?? []).map((m) => m.user_id)
+  const { data: profiles } = await serviceClient
+    .from("profiles")
+    .select("id, email")
+    .in("id", userIds)
+
+  const emailByUserId = new Map(
+    (profiles ?? []).map((p) => [p.id, p.email])
+  )
+
+  return (members ?? []).map((m) => ({
+    user_id: m.user_id,
+    role: m.role,
+    joined_at: m.joined_at,
+    email: emailByUserId.get(m.user_id) ?? "unknown",
+  }))
+}
+```
+
+#### Step 2: Add `getTeamsWithRolesForUser()` to `lib/services/team-service.ts`
+
+Extract the teams + membership join from `GET /api/teams`:
+
+```typescript
+export interface TeamWithRole {
+  id: string
+  name: string
+  role: string
+}
+
+export async function getTeamsWithRolesForUser(
+  userId: string
+): Promise<TeamWithRole[]> {
+  const teams = await getTeamsForUser()
+
+  const supabase = await createClient()
+  const { data: memberships } = await supabase
+    .from("team_members")
+    .select("team_id, role")
+    .eq("user_id", userId)
+    .is("removed_at", null)
+
+  const roleByTeamId = new Map(
+    (memberships ?? []).map((m) => [m.team_id, m.role])
+  )
+
+  return teams.map((t) => ({
+    id: t.id,
+    name: t.name,
+    role: roleByTeamId.get(t.id) ?? "sales",
+  }))
+}
+```
+
+#### Step 3: Simplify `app/api/teams/[teamId]/members/route.ts`
+
+The route reduces to auth check + membership check + `getTeamMembersWithProfiles(teamId)` + JSON response. Remove the inline `createServiceRoleClient` import and both Supabase queries.
+
+#### Step 4: Simplify `GET` handler in `app/api/teams/route.ts`
+
+The route reduces to auth check + `getTeamsWithRolesForUser(user.id)` + JSON response. Remove the inline `team_members` query and the `roleByTeamId` mapping.
+
+**Verification:**
+- Members route is ~30 lines (down from 83)
+- Teams GET handler is ~25 lines (down from ~50)
+- Team members page loads correctly with roles and emails
+- Workspace switcher loads teams correctly
+- `npx tsc --noEmit` passes
+
+---
+
+### Increment 4: Move session permission check to service layer
+
+**Covers:** P4.R3, P4.AC3
+
+#### Step 1: Add `checkSessionAccess()` to `lib/services/session-service.ts`
+
+The service version accepts a Supabase client and returns a discriminated union:
+
+```typescript
+import type { SupabaseClient } from "@supabase/supabase-js"
+
+type SessionAccessResult =
+  | { allowed: true; userId: string; teamId: string | null }
+  | { allowed: false; reason: "unauthenticated" | "not-found" | "forbidden" }
+
+export async function checkSessionAccess(
+  supabase: SupabaseClient,
+  sessionId: string
+): Promise<SessionAccessResult> {
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return { allowed: false, reason: "unauthenticated" }
+
+  const teamId = await getActiveTeamId()
+
+  const { data: session } = await supabase
+    .from("sessions")
+    .select("id, created_by")
+    .eq("id", sessionId)
+    .is("deleted_at", null)
+    .single()
+
+  if (!session) return { allowed: false, reason: "not-found" }
+
+  if (teamId && session.created_by !== user.id) {
+    const member = await getTeamMember(teamId, user.id)
+    if (member?.role !== "admin") {
+      return { allowed: false, reason: "forbidden" }
+    }
+  }
+
+  return { allowed: true, userId: user.id, teamId }
+}
+```
+
+Note: `getActiveTeamId` is imported from `@/lib/supabase/server` (already imported in this file). `getTeamMember` is imported from `team-service.ts` (need to add this import).
+
+#### Step 2: Create a route-level helper for HTTP mapping
+
+Add a small mapping helper in the route file (or inline) that converts reasons to HTTP responses:
+
+```typescript
+function mapAccessError(reason: "unauthenticated" | "not-found" | "forbidden"): NextResponse {
+  const map = {
+    unauthenticated: { message: "Authentication required", status: 401 },
+    "not-found": { message: "Session not found", status: 404 },
+    forbidden: { message: "You can only modify your own sessions", status: 403 },
+  } as const
+  const { message, status } = map[reason]
+  return NextResponse.json({ message }, { status })
+}
+```
+
+#### Step 3: Update `app/api/sessions/[id]/route.ts`
+
+Replace `import { checkSessionAccess } from "@/app/api/sessions/_helpers"` with `import { checkSessionAccess } from "@/lib/services/session-service"`. Update the call site: `const access = await checkSessionAccess(supabase, id)` and `if (!access.allowed) return mapAccessError(access.reason)`.
+
+#### Step 4: Update attachment routes that use `_helpers.ts`
+
+Check `app/api/sessions/[id]/attachments/route.ts` and `app/api/sessions/[id]/attachments/[attachmentId]/route.ts` — if they import from `_helpers.ts`, update to import from session-service and use the same mapping pattern.
+
+#### Step 5: Delete `app/api/sessions/_helpers.ts`
+
+Confirm no remaining imports, then delete.
+
+**Verification:**
+- `_helpers.ts` is deleted; `grep -r "_helpers" app/api/sessions/` returns no results
+- Session PUT, DELETE, and attachment routes work correctly
+- Permission checks work: own sessions editable, team admin can edit others, sales cannot edit others
+- `npx tsc --noEmit` passes
+
+---
+
+### Increment 5: Add Zod validation to GET routes
+
+**Covers:** P4.R4, P4.AC4
+
+#### Step 1: Add Zod schema to `GET /api/clients`
+
+```typescript
+const clientSearchSchema = z.object({
+  q: z.string().max(255).optional().default(""),
+  hasSession: z.enum(["true", "false"]).optional().default("false"),
+})
+```
+
+Parse `Object.fromEntries(request.nextUrl.searchParams)` with `.safeParse()`. Map `hasSession` string to boolean after validation. Return 400 with descriptive message on failure.
+
+#### Step 2: Replace `VALID_PROMPT_KEYS` check in `GET /api/prompts`
+
+```typescript
+const promptQuerySchema = z.object({
+  key: z.enum(["signal_extraction", "master_signal_cold_start", "master_signal_incremental"]),
+})
+```
+
+Parse `{ key: searchParams.get("key") }` with `.safeParse()`. Remove the manual `VALID_PROMPT_KEYS` array and `includes()` check. The `PromptKey` type inference now comes from Zod.
+
+**Verification:**
+- `GET /api/clients?q=test&hasSession=true` works as before
+- `GET /api/clients?q=` + 256-char string returns 400
+- `GET /api/prompts?key=signal_extraction` works as before
+- `GET /api/prompts?key=invalid` returns 400 with descriptive message
+- `GET /api/prompts` (no key param) returns 400
+- `npx tsc --noEmit` passes
+
+---
+
+### Increment 6: End-of-part audit and documentation updates
+
+**Covers:** CLAUDE.md Quality Gates (end-of-part audit) + post-part documentation
+
+This increment produces fixes (if any violations are found) and documentation updates — not a report.
+
+#### End-of-part audit checklist
+
+1. **SRP violations** — Route handlers only do: auth, validation, service call, response mapping. Service functions only do: data queries, business logic, return typed results. No route imports from `next/server` leak into services.
+2. **DRY violations** — `mapAccessError` is used 3× (sessions PUT, DELETE, attachments) — if duplicated, extract to a shared utility. The `generateOrUpdateMasterSignal` eliminates the 160-line branching block in the route.
+3. **Design token adherence** — N/A for this part (no CSS changes).
+4. **Logging** — All existing `console.log`/`console.error` logging preserved in service functions. Route handlers retain entry/exit logs.
+5. **Dead code** — `_helpers.ts` is deleted. `VALID_PROMPT_KEYS` array is removed. No orphaned imports.
+6. **Convention compliance** — Service function names: camelCase. Return types: discriminated unions with `outcome`/`allowed` discriminants. Interface names: PascalCase with descriptive suffix (`TeamMemberWithProfile`, `TeamWithRole`, `SessionAccessResult`, `GenerateResult`).
+
+#### Documentation updates
+
+1. **`ARCHITECTURE.md`** — Remove `_helpers.ts` entry. Add `lib/types/signal-session.ts` entry. Update descriptions for modified route handlers and service files.
+2. **`CHANGELOG.md`** — Add entry summarising Part 4 delivery.
+
+**Verification:** Read back both files after editing to confirm accuracy. Run `npx tsc --noEmit` for final type check. Test all affected API routes end-to-end.

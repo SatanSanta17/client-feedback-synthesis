@@ -1,4 +1,5 @@
 import { createClient, createServiceRoleClient, getActiveTeamId } from "@/lib/supabase/server";
+import type { SignalSession } from "@/lib/types/signal-session";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -12,14 +13,6 @@ export interface MasterSignal {
   createdBy: string;
   createdAt: string;
   isTainted: boolean;
-}
-
-export interface SignalSession {
-  id: string;
-  clientName: string;
-  sessionDate: string;
-  structuredNotes: string;
-  updatedAt: string;
 }
 
 // ---------------------------------------------------------------------------

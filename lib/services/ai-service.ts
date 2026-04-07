@@ -13,7 +13,7 @@ import {
   buildMasterSignalUserMessage,
 } from "@/lib/prompts/master-signal-synthesis";
 import { getActivePrompt } from "@/lib/services/prompt-service";
-import type { SignalSession } from "@/lib/services/master-signal-service";
+import type { SignalSession } from "@/lib/types/signal-session";
 
 const MAX_RETRIES = 3;
 const INITIAL_RETRY_DELAY_MS = 1000;

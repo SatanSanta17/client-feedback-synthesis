@@ -8,7 +8,7 @@
  * Changes to this file are code changes that go through review.
  */
 
-import type { SignalSession } from "@/lib/services/master-signal-service";
+import type { SignalSession } from "@/lib/types/signal-session";
 
 // ---------------------------------------------------------------------------
 // Cold start — first generation, no previous master signal
