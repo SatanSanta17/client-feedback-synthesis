@@ -92,6 +92,7 @@
   --text-muted: oklch(0.708 0 0);
   --border-default: oklch(0.922 0 0);
   --surface-page: oklch(1 0 0);
+  --surface-page-translucent: oklch(1 0 0 / 0.8);
   --surface-raised: oklch(0.985 0 0);
 
   /* Status tokens */
