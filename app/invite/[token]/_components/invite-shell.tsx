@@ -4,7 +4,7 @@ import { AlertCircle, Clock, CheckCircle2, Users } from "lucide-react";
 export function InviteShell({ children }: { children: React.ReactNode }) {
   return (
     <div className="flex min-h-screen items-center justify-center bg-[var(--surface-page)]">
-      <div className="w-full max-w-sm rounded-lg border border-[var(--border-default)] bg-white p-8 text-center shadow-sm">
+      <div className="w-full max-w-sm rounded-lg border border-[var(--border-default)] bg-[var(--surface-page)] p-8 text-center shadow-sm">
         <div className="flex flex-col items-center">{children}</div>
       </div>
     </div>

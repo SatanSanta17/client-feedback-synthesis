@@ -14,7 +14,7 @@ export function EmailConfirmationPanel({
 }: EmailConfirmationPanelProps) {
   return (
     <div className="flex min-h-screen items-center justify-center bg-[var(--surface-page)]">
-      <div className="w-full max-w-sm rounded-lg border border-[var(--border-default)] bg-white p-8 text-center shadow-sm">
+      <div className="w-full max-w-sm rounded-lg border border-[var(--border-default)] bg-[var(--surface-page)] p-8 text-center shadow-sm">
         <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-full bg-[var(--status-success-light)]">
           <CheckCircle2 className="size-6 text-[var(--status-success)]" />
         </div>
