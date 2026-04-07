@@ -58,7 +58,7 @@ synthesiser/
 │   │   │   ├── extract-signals/
 │   │   │   │   └── route.ts     # POST — extract signals from raw notes via AI model
 │   │   │   └── generate-master-signal/
-│   │   │       └── route.ts     # POST — generate/regenerate master signal (team admin check)
+│   │   │       └── route.ts     # POST — generate/regenerate master signal — delegates to generateOrUpdateMasterSignal() service
 │   │   ├── clients/
 │   │   │   └── route.ts         # GET (search, hasSession filter) and POST (create) — team-scoped
 │   │   ├── files/
@@ -73,14 +73,15 @@ synthesiser/
 │   │   ├── prompts/
 │   │   │   └── route.ts         # GET/POST — prompt CRUD (team admin check) — workspace-scoped
 │   │   ├── sessions/
-│   │   │   ├── _helpers.ts      # Shared helpers — checkSessionAccess (auth + session ownership + team role)
 │   │   │   ├── route.ts         # GET/POST — session list and create — team-scoped
 │   │   │   └── [id]/
-│   │   │       ├── route.ts     # PUT/DELETE — update/soft-delete session (uses _helpers)
+│   │   │       ├── route.ts     # PUT/DELETE — update/soft-delete session (checkSessionAccess via session-service)
 │   │   │       └── attachments/
-│   │   │           ├── route.ts         # POST — upload single attachment to session (multipart/form-data)
+│   │   │           ├── route.ts         # GET/POST — list and upload attachments for a session
 │   │   │           └── [attachmentId]/
-│   │   │               └── route.ts     # DELETE — soft-delete attachment + hard-delete from storage
+│   │   │               ├── route.ts     # DELETE — soft-delete attachment + hard-delete from storage
+│   │   │               └── download/
+│   │   │                   └── route.ts # GET — signed download URL for attachment
 │   │   └── teams/
 │   │       ├── route.ts         # GET (list user's teams) and POST (create team)
 │   │       └── [teamId]/
@@ -196,6 +197,8 @@ synthesiser/
 │   │   └── active-team.ts       # Client-side active team cookie helpers (getActiveTeamId, setActiveTeamCookie, clearActiveTeamCookie)
 │   ├── hooks/
 │   │   └── use-signal-extraction.ts # Shared extraction state machine hook (ExtractionState, getInput callback, re-extract confirm flow)
+│   ├── types/
+│   │   └── signal-session.ts    # SignalSession interface — shared between ai-service and master-signal-service
 │   ├── utils.ts                 # cn() utility (clsx + tailwind-merge)
 │   ├── email-templates/
 │   │   └── invite-email.ts      # HTML email template for team invitations
@@ -209,56 +212,37 @@ synthesiser/
 │   │   ├── email-service.ts     # Provider-agnostic email sending — sendEmail(), resolveEmailProvider(), Resend adapter
 │   │   ├── file-parser-service.ts # File parsing — TXT, PDF, CSV, DOCX, JSON + WhatsApp/Slack chat detection
 │   │   ├── invitation-service.ts # Invitation CRUD — create, list pending, revoke, resend, accept, getByToken
-│   │   ├── master-signal-service.ts # Master signal CRUD — team-scoped via getActiveTeamId()
+│   │   ├── master-signal-service.ts # Master signal CRUD + generateOrUpdateMasterSignal() orchestration — team-scoped via getActiveTeamId()
 │   │   ├── profile-service.ts   # Server-side profile fetch (getCurrentProfile)
 │   │   ├── prompt-service.ts    # Prompt CRUD — workspace-scoped (user or team)
-│   │   ├── session-service.ts   # Session CRUD — team-scoped via getActiveTeamId()
-│   │   └── team-service.ts      # Team CRUD — create, list, members, rename, delete, roles, transfer, leave
+│   │   ├── session-service.ts   # Session CRUD + checkSessionAccess() (discriminated union) — team-scoped via getActiveTeamId()
+│   │   └── team-service.ts      # Team CRUD + getTeamMembersWithProfiles(), getTeamsWithRolesForUser() — create, list, members, rename, delete, roles, transfer, leave
 │   ├── utils/
 │   │   ├── compose-ai-input.ts    # Composes raw notes + attachments into a single AI input string
 │   │   ├── format-file-size.ts    # File size formatting (bytes → "1.2 KB", "3.4 MB")
 │   │   ├── format-relative-time.ts # Relative time formatting ("just now", "5m ago", "3d ago")
+│   │   ├── map-access-error.ts    # mapAccessError() — maps session access denial reasons to HTTP responses
 │   │   ├── map-ai-error.ts       # mapAIErrorToResponse() — shared AI error-to-HTTP mapper (5 error types + unexpected)
 │   │   └── upload-attachments.ts  # Uploads pending attachments to a session (shared by capture form + expanded row)
 │   └── supabase/
 │       ├── server.ts            # Server-side Supabase clients (anon + service role) + getActiveTeamId()
 │       └── client.ts            # Browser-side Supabase client factory
-└── docs/
-    ├── master-prd/
-    │   └── prd.md               # Master PRD — full product scope
+└── docs/                            # Each folder contains prd.md + trd.md (and optional SQL migrations)
+    ├── master-prd/              # Master PRD — full product scope
     ├── 001-foundation/
-    │   ├── prd.md               # PRD-001 — Foundation (implemented)
-    │   └── trd.md               # TRD-001 — Foundation
     ├── 002-capture-tab/
-    │   ├── prd.md               # PRD-002 — Capture Tab (implemented)
-    │   └── trd.md               # TRD-002 — Capture Tab
     ├── 003-signal-extraction/
-    │   ├── prd.md               # PRD-003 — Signal Extraction (implemented)
-    │   └── trd.md               # TRD-003 — Signal Extraction
     ├── 004-master-signals/
-    │   ├── prd.md               # PRD-004 — Master Signal View (implemented)
-    │   ├── trd.md               # TRD-004 — Master Signal View
-    │   └── 001-create-master-signals-table.sql
     ├── 005-prompt-editor/
-    │   ├── prd.md               # PRD-005 — System Prompt Editor (implemented)
-    │   ├── trd.md               # TRD-005 — System Prompt Editor
-    │   ├── 002-create-prompt-versions-table.sql
-    │   └── 003-seed-prompt-versions.sql
     ├── 006-master-signal-cleanup/
-    │   ├── prd.md               # PRD-006 — Master Signal Cleanup (implemented)
-    │   └── trd.md               # TRD-006 — Master Signal Cleanup
     ├── 007-prompt-editor-toggle/
-    │   ├── prd.md               # PRD-007 — Prompt Editor Toggle (implemented)
-    │   └── trd.md               # TRD-007 — Prompt Editor Toggle
     ├── 008-open-access/
-    │   ├── prd.md               # PRD-008 — Open Access (implemented)
-    │   └── trd.md               # TRD-008 — Open Access
     ├── 009-ai-provider-abstraction/
-    │   ├── prd.md               # PRD-009 — AI Provider Abstraction (implemented)
-    │   └── trd.md               # TRD-009 — AI Provider Abstraction
-    └── 010-team-access/
-        ├── prd.md               # PRD-010 — Team Access (implemented)
-        └── trd.md               # TRD-010 — Team Access (Parts 1–8)
+    ├── 010-team-access/
+    ├── 011-email-auth/
+    ├── 012-code-quality/
+    ├── 013-file-upload/
+    └── 014-prompt-traceability/
 ```
 
 > This map is updated after each increment ships. Only files that exist in the codebase are listed here.
@@ -487,8 +471,10 @@ Stores versioned AI system prompts per user or team workspace. Each save/reset/r
 | POST | `/api/sessions` | Create session. Workspace-scoped. | Yes (RLS) |
 | PUT | `/api/sessions/[id]` | Update session. Team: admin can edit any, sales own only. | Yes (RLS) |
 | DELETE | `/api/sessions/[id]` | Soft-delete session. Team: admin can delete any, sales own only. | Yes (RLS) |
+| GET | `/api/sessions/[id]/attachments` | List attachments for a session. | Yes (RLS) |
 | POST | `/api/sessions/[id]/attachments` | Upload single attachment (multipart). Validates file size/type/count. | Yes (RLS) |
 | DELETE | `/api/sessions/[id]/attachments/[attachmentId]` | Soft-delete attachment + hard-delete from Storage. | Yes |
+| GET | `/api/sessions/[id]/attachments/[attachmentId]/download` | Signed download URL for attachment. | Yes |
 | GET | `/api/prompts?key=` | Fetch active prompt + history. Workspace-scoped. | Yes (RLS) |
 | POST | `/api/prompts` | Save new prompt version. Team: admin only. | Yes (RLS) |
 

@@ -59,6 +59,14 @@ This increment produces fixes, not a report.
 4. Test the flows affected by the part
 5. If modifying the database schema, regenerate Supabase types
 
+**End-of-PRD audit** (after the final part of every PRD completes):
+
+1. Run the full end-of-part audit checklist (above) across all files touched by the PRD
+2. Verify `ARCHITECTURE.md` file map is complete and accurate — every file, directory, route, and doc folder that exists in the codebase must be reflected
+3. Verify `CHANGELOG.md` has entries for every completed part
+4. Run `npx tsc --noEmit` for a final type check
+5. This audit produces fixes and documentation updates, not a report
+
 `ARCHITECTURE.md` reflects what exists in the codebase — never pre-fill with planned-but-unbuilt structures.
 
 ### Architecture

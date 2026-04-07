@@ -6,6 +6,14 @@ All notable changes to this project are documented here, grouped by PRD and part
 
 ## [Unreleased]
 
+### PRD-012 Part 4: API Route and Service Layer Cleanup — 2026-04-07
+- Moved `SignalSession` type from `master-signal-service.ts` to `lib/types/signal-session.ts` — fixes dependency direction (prompts layer no longer imports from services)
+- Extracted `generateOrUpdateMasterSignal()` orchestration into `master-signal-service.ts` with discriminated union return (`GenerateResult`), reducing `generate-master-signal/route.ts` from 173 → 68 lines
+- Extracted `getTeamMembersWithProfiles()` and `getTeamsWithRolesForUser()` into `team-service.ts`, simplifying `teams/[teamId]/members/route.ts` (83 → 49 lines) and `teams/route.ts` GET handler
+- Moved `checkSessionAccess()` from `app/api/sessions/_helpers.ts` to `session-service.ts` with discriminated union return (`SessionAccessResult`); created shared `mapAccessError()` in `lib/utils/map-access-error.ts`; deleted `_helpers.ts`
+- Added Zod validation to `GET /api/clients` (`clientSearchSchema`) and `GET /api/prompts` (`promptQuerySchema`), replacing manual `VALID_PROMPT_KEYS` array with shared `PROMPT_KEYS` const used by both GET and POST schemas
+- All route handlers now follow the pattern: auth → validate → service call → map result to HTTP response. No route contains inline Supabase queries for business logic.
+
 ### PRD-012 Part 3: SRP — Component Decomposition — 2026-04-07
 - Extracted `SessionTableRow` + `formatDate`, `truncateNotes`, `formatEmail` helpers from `past-sessions-table.tsx` into `session-table-row.tsx` (past-sessions-table 401 → 298 lines)
 - Split `expanded-session-row.tsx` (493 lines) into thin coordinator + 3 presentational subcomponents: `expanded-session-metadata.tsx` (73), `expanded-session-notes.tsx` (111), `expanded-session-actions.tsx` (118) — coordinator reduced to 349 lines with signals panel kept inline per design decision
