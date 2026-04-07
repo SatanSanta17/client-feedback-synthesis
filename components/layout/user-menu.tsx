@@ -2,9 +2,8 @@
 
 import Image from "next/image";
 import Link from "next/link";
-import { LogOut, Moon, Sun, User } from "lucide-react";
+import { LogOut, User } from "lucide-react";
 import { useAuth } from "@/components/providers/auth-provider";
-import { useTheme } from "@/lib/hooks/use-theme";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -15,7 +14,6 @@ import {
 
 export function UserMenu() {
   const { user, isAuthenticated, isLoading, signOut } = useAuth();
-  const { theme, setTheme } = useTheme();
 
   // Loading skeleton
   if (isLoading) {
@@ -79,17 +77,6 @@ export function UserMenu() {
           <p className="text-xs text-[var(--text-muted)]">{email}</p>
         </div>
         <DropdownMenuSeparator />
-        <DropdownMenuItem
-          onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
-          className="cursor-pointer"
-        >
-          {theme === "dark" ? (
-            <Sun className="mr-2 h-4 w-4" />
-          ) : (
-            <Moon className="mr-2 h-4 w-4" />
-          )}
-          {theme === "dark" ? "Light mode" : "Dark mode"}
-        </DropdownMenuItem>
         <DropdownMenuItem
           onClick={signOut}
           className="cursor-pointer"

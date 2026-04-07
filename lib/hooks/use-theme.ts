@@ -20,18 +20,6 @@ interface UseThemeReturn {
 const COOKIE_NAME = "theme";
 const COOKIE_MAX_AGE = 60 * 60 * 24 * 365; // 1 year
 
-function getThemeCookie(): Theme {
-  if (typeof document === "undefined") return "light";
-
-  const match = document.cookie.match(
-    new RegExp(`(?:^|; )${COOKIE_NAME}=([^;]*)`)
-  );
-  const value = match ? match[1] : null;
-
-  if (value === "dark" || value === "light") return value;
-  return "light";
-}
-
 function setThemeCookie(value: Theme): void {
   document.cookie = `${COOKIE_NAME}=${value}; path=/; max-age=${COOKIE_MAX_AGE}; SameSite=Lax`;
 }
@@ -41,7 +29,23 @@ function setThemeCookie(value: Theme): void {
 /* ------------------------------------------------------------------ */
 
 export function useTheme(): UseThemeReturn {
-  const [theme, setThemeState] = useState<Theme>(getThemeCookie);
+  /*
+   * Always initialise as "light" so server and client produce identical
+   * HTML during hydration — no DOM structure or attribute mismatches.
+   *
+   * After mount, the effect reads the <html> class that the server
+   * layout already set (based on the cookie) and syncs state to match.
+   * This triggers a single re-render that updates the toggle icon/label.
+   */
+  const [theme, setThemeState] = useState<Theme>("light");
+
+  /* Sync with the server-rendered <html> class on first mount */
+  useEffect(() => {
+    const serverTheme = document.documentElement.classList.contains("dark")
+      ? "dark"
+      : "light";
+    setThemeState(serverTheme);
+  }, []);
 
   /* Apply the dark class on <html> whenever theme changes */
   useEffect(() => {
