@@ -2,7 +2,7 @@
 
 > **Status:** Parts 1–4 complete — Part 5 pending
 > **PRD:** `docs/012-code-quality/prd.md` (draft)
-> **Mirrors:** PRD Parts 1–4. Part 5 TRD will be added after Part 4 implementation.
+> **Mirrors:** PRD Parts 1–5.
 
 ---
 
@@ -1990,3 +1990,346 @@ This increment produces fixes (if any violations are found) and documentation up
 2. **`CHANGELOG.md`** — Add entry summarising Part 4 delivery.
 
 **Verification:** Read back both files after editing to confirm accuracy. Run `npx tsc --noEmit` for final type check. Test all affected API routes end-to-end.
+
+---
+
+## Part 5: Dependency Inversion — Injectable Data-Access Layer
+
+### Technical Decisions
+
+21. **Repository interfaces define data operations, not Supabase operations.** Each interface describes *what* the service needs (e.g., `findById`, `list`, `create`) using domain types — not `SupabaseClient`, `PostgrestResponse`, or table names. This keeps the interface stable even if the underlying database changes.
+
+22. **One repository interface per service domain.** The 8 services that import from `@/lib/supabase/server` map to 8 repository interfaces: `SessionRepository`, `ClientRepository`, `TeamRepository`, `MasterSignalRepository`, `InvitationRepository`, `PromptRepository`, `ProfileRepository`, `AttachmentRepository`. Services that don't touch Supabase (`ai-service.ts`, `email-service.ts`, `file-parser-service.ts`) are unaffected.
+
+23. **`getActiveTeamId()` becomes a context parameter, not a repository concern.** Currently, services call `getActiveTeamId()` directly from `@/lib/supabase/server` to scope queries by workspace. This is a request-scoped context concern (reads from cookies), not a data-access concern. The workspace context (`teamId: string | null`) will be passed as a parameter to service functions or to a factory that creates scoped repository instances. This eliminates the hidden coupling between services and the cookie layer.
+
+24. **Factory functions create pre-configured repository instances.** Rather than passing raw `SupabaseClient` + `teamId` to every service call, a factory function like `createSessionRepository(supabase, teamId)` returns a `SessionRepository` instance pre-bound to the workspace context. Route handlers call the factory once and pass the resulting repository to the service. This keeps the wiring explicit and the service signatures clean.
+
+25. **Supabase adapters live in `lib/repositories/supabase/`.** Each adapter file implements its repository interface using the existing Supabase query logic (moved from the corresponding service file). The adapter receives a `SupabaseClient` (anon or service-role as needed) and optional `teamId` via the factory constructor. File naming: `supabase-session-repository.ts`, `supabase-client-repository.ts`, etc.
+
+26. **Repository interfaces live in `lib/repositories/`.** Each interface file is named after its domain: `session-repository.ts`, `client-repository.ts`, etc. The interface and the adapter are separate files to keep the contract independent of its implementation. Re-exported from `lib/repositories/index.ts` for convenience.
+
+27. **Service functions accept repositories via parameter injection.** Service functions gain a repository parameter (e.g., `createSession(repo: SessionRepository, input: CreateSessionInput)`). In production, route handlers pass the Supabase adapter. In tests, a mock implementation can be injected. This is constructor-less DI — no class instantiation, just function arguments.
+
+28. **`createClient()` and `createServiceRoleClient()` calls move to the route handler wiring layer.** After Part 5, no service file imports from `@/lib/supabase/server`. The route handler creates the Supabase client, creates the repository via the factory, and passes it to the service. The middleware and `app/layout.tsx` still import Supabase directly for auth — that's outside the service layer.
+
+29. **Cross-service calls go through repositories, not direct imports.** Currently `session-service.ts` calls `createNewClient()` from `client-service.ts` and `taintLatestMasterSignal()` from `master-signal-service.ts`. After Part 5, the session service receives `ClientRepository` and `MasterSignalRepository` alongside `SessionRepository`. This makes all dependencies explicit and injectable.
+
+30. **The `checkSessionAccess` function (already accepting `SupabaseClient`) migrates to accept `SessionRepository` instead.** Since it was already designed with dependency injection in Part 4 (takes `supabase` as a parameter), the migration is straightforward — replace the inline Supabase query with a `repo.findById(sessionId)` call.
+
+31. **One mock repository for testability demonstration.** Per P5.AC5, at least one domain gets an in-memory mock implementation. `SessionRepository` is the best candidate — it has the most varied query surface (list with filters, create, update, soft-delete, access check) and the mock demonstrates how all patterns work.
+
+32. **Incremental migration, one service at a time.** Each increment migrates a single service + its consumers. This keeps each change small and verifiable. Services are ordered by dependency depth — leaf services first (profile, client), then services with cross-domain calls (session, master-signal) last.
+
+---
+
+### Files Changed
+
+| File | Change |
+|------|--------|
+| `lib/repositories/session-repository.ts` | **New** — `SessionRepository` interface |
+| `lib/repositories/client-repository.ts` | **New** — `ClientRepository` interface |
+| `lib/repositories/team-repository.ts` | **New** — `TeamRepository` interface |
+| `lib/repositories/master-signal-repository.ts` | **New** — `MasterSignalRepository` interface |
+| `lib/repositories/invitation-repository.ts` | **New** — `InvitationRepository` interface |
+| `lib/repositories/prompt-repository.ts` | **New** — `PromptRepository` interface |
+| `lib/repositories/profile-repository.ts` | **New** — `ProfileRepository` interface |
+| `lib/repositories/attachment-repository.ts` | **New** — `AttachmentRepository` interface |
+| `lib/repositories/index.ts` | **New** — Re-exports all interfaces |
+| `lib/repositories/supabase/supabase-session-repository.ts` | **New** — Supabase adapter for `SessionRepository` |
+| `lib/repositories/supabase/supabase-client-repository.ts` | **New** — Supabase adapter for `ClientRepository` |
+| `lib/repositories/supabase/supabase-team-repository.ts` | **New** — Supabase adapter for `TeamRepository` |
+| `lib/repositories/supabase/supabase-master-signal-repository.ts` | **New** — Supabase adapter for `MasterSignalRepository` |
+| `lib/repositories/supabase/supabase-invitation-repository.ts` | **New** — Supabase adapter for `InvitationRepository` |
+| `lib/repositories/supabase/supabase-prompt-repository.ts` | **New** — Supabase adapter for `PromptRepository` |
+| `lib/repositories/supabase/supabase-profile-repository.ts` | **New** — Supabase adapter for `ProfileRepository` |
+| `lib/repositories/supabase/supabase-attachment-repository.ts` | **New** — Supabase adapter for `AttachmentRepository` |
+| `lib/repositories/supabase/index.ts` | **New** — Factory functions (`createSessionRepository`, etc.) |
+| `lib/repositories/mock/mock-session-repository.ts` | **New** — In-memory mock for testability demo |
+| `lib/services/session-service.ts` | Remove Supabase imports; accept `SessionRepository` + `ClientRepository` + `MasterSignalRepository` |
+| `lib/services/client-service.ts` | Remove Supabase imports; accept `ClientRepository` |
+| `lib/services/team-service.ts` | Remove Supabase imports; accept `TeamRepository` |
+| `lib/services/master-signal-service.ts` | Remove Supabase imports; accept `MasterSignalRepository` |
+| `lib/services/invitation-service.ts` | Remove Supabase imports; accept `InvitationRepository` + `TeamRepository` |
+| `lib/services/prompt-service.ts` | Remove Supabase imports; accept `PromptRepository` |
+| `lib/services/profile-service.ts` | Remove Supabase imports; accept `ProfileRepository` |
+| `lib/services/attachment-service.ts` | Remove Supabase imports; accept `AttachmentRepository` |
+| All API route handlers under `app/api/` | Add repository factory wiring — `createClient()` → factory → pass repo to service |
+
+### No files changed
+
+| File | Reason |
+|------|--------|
+| `lib/services/ai-service.ts` | Does not touch Supabase — calls AI providers only |
+| `lib/services/email-service.ts` | Does not touch Supabase — sends emails via Resend |
+| `lib/services/file-parser-service.ts` | Does not touch Supabase — pure file parsing |
+| `lib/utils/*` | Utility functions unaffected — `mapAccessError` already works with the discriminated union type, not Supabase internals |
+| `lib/prompts/*` | Prompt templates already import from `lib/types/`, not services |
+| `components/*` | Frontend components don't touch the service layer |
+
+---
+
+### Increment 1: Define repository interfaces and scaffold adapters
+
+**Covers:** P5.R1 (partially), project scaffolding
+
+Create the `lib/repositories/` directory structure and define all 8 repository interfaces. Each interface specifies the data operations its service currently performs, using domain types (not Supabase types).
+
+#### Step 1: Create `ProfileRepository` interface
+
+```typescript
+// lib/repositories/profile-repository.ts
+export interface ProfileRepository {
+  getByUserId(userId: string): Promise<Profile | null>;
+}
+```
+
+Smallest interface — one method. Sets the pattern for all others.
+
+#### Step 2: Create `ClientRepository` interface
+
+```typescript
+// lib/repositories/client-repository.ts
+export interface ClientRepository {
+  search(query: string, teamId: string | null, limit: number): Promise<Array<{ id: string; name: string }>>;
+  searchWithSessions(query: string, teamId: string | null, limit: number): Promise<Array<{ id: string; name: string }>>;
+  create(name: string, teamId: string | null): Promise<{ id: string; name: string }>;
+}
+```
+
+#### Step 3: Create `SessionRepository` interface
+
+```typescript
+// lib/repositories/session-repository.ts
+export interface SessionRepository {
+  list(filters: SessionListFilters): Promise<{ rows: SessionRow[]; total: number }>;
+  findById(sessionId: string): Promise<{ id: string; created_by: string } | null>;
+  create(input: SessionInsert): Promise<SessionRow>;
+  update(id: string, input: SessionUpdate): Promise<SessionRow>;
+  softDelete(id: string): Promise<SessionDeleteResult>;
+  getAttachmentCounts(sessionIds: string[]): Promise<Map<string, number>>;
+  getCreatorEmails(userIds: string[]): Promise<Map<string, string>>;
+}
+```
+
+`SessionListFilters`, `SessionRow`, `SessionInsert`, `SessionUpdate`, and `SessionDeleteResult` are defined as types in the same file. These are the data shapes the service needs — not 1:1 with the DB schema.
+
+#### Step 4: Create remaining interfaces
+
+- `TeamRepository` — `create`, `getById`, `getForUser`, `getWithRolesForUser`, `getMember`, `getActiveMembers`, `getMembersWithProfiles`, `rename`, `softDelete`, `removeMember`, `changeMemberRole`, `transferOwnership`, `leave`
+- `MasterSignalRepository` — `getLatest`, `getStaleSessionCount`, `getAllSignalSessions`, `getSignalSessionsSince`, `save`, `taintLatest`
+- `InvitationRepository` — `create`, `getPending`, `revoke`, `getByToken`, `accept`, `findExistingForEmail`
+- `PromptRepository` — `getActive`, `getHistory`, `deactivateCurrent`, `create`
+- `AttachmentRepository` — `create`, `getBySessionId`, `softDelete`, `getSignedUrl`, `getCountForSession`, `uploadToStorage`
+
+#### Step 5: Create `lib/repositories/index.ts` re-export barrel
+
+#### Step 6: Scaffold empty Supabase adapter files
+
+Create one file per adapter in `lib/repositories/supabase/` with the class skeleton implementing the interface, method stubs that throw `new Error("Not implemented")`, and a factory function export. Also create `lib/repositories/supabase/index.ts` that re-exports all factories.
+
+**Verification:** `npx tsc --noEmit` passes. All interfaces compile. All stubs exist. No runtime code changed — existing service logic untouched.
+
+---
+
+### Increment 2: Migrate `profile-service` and `client-service`
+
+**Covers:** P5.R2 (partially), P5.R3 (partially)
+
+Leaf services with no cross-domain dependencies. Simplest migration path.
+
+#### Step 1: Implement `SupabaseProfileRepository`
+
+Move the Supabase query from `profile-service.ts` `getCurrentProfile()` into the adapter. The adapter receives a `SupabaseClient` via the factory.
+
+```typescript
+// lib/repositories/supabase/supabase-profile-repository.ts
+export function createProfileRepository(supabase: SupabaseClient): ProfileRepository {
+  return {
+    async getByUserId(userId) {
+      const { data, error } = await supabase
+        .from("profiles")
+        .select("*")
+        .eq("id", userId)
+        .single();
+      // ... error handling, return data
+    },
+  };
+}
+```
+
+#### Step 2: Refactor `profile-service.ts`
+
+Remove `import { createClient } from "@/lib/supabase/server"`. The `getCurrentProfile` function now accepts `ProfileRepository` and a `userId` parameter (the auth check moves to the route handler).
+
+#### Step 3: Implement `SupabaseClientRepository`
+
+Move Supabase queries from `client-service.ts` into the adapter. The adapter receives `SupabaseClient` and handles the workspace scoping internally (teamId passed per-method or via factory).
+
+#### Step 4: Refactor `client-service.ts`
+
+Remove Supabase imports. `searchClients` and `createNewClient` now accept `ClientRepository`. The `teamId` parameter is passed through from the route handler.
+
+#### Step 5: Update route handlers
+
+- `app/api/clients/route.ts` — Create `SupabaseClient` → `createClientRepository(supabase, teamId)` → pass to `searchClients(repo, query)` / `createNewClient(repo, name)`
+- Any route that calls `getCurrentProfile()` — pass the repository
+
+**Verification:** `npx tsc --noEmit` passes. `GET/POST /api/clients` returns identical responses. `profile-service.ts` and `client-service.ts` have zero imports from `@/lib/supabase/server`.
+
+---
+
+### Increment 3: Migrate `prompt-service` and `attachment-service`
+
+**Covers:** P5.R2 (partially), P5.R3 (partially)
+
+Both are leaf services — no cross-domain dependencies.
+
+#### Step 1: Implement `SupabasePromptRepository`
+
+Move workspace-scoped prompt queries (getActive, getHistory, deactivate, insert) into the adapter. The factory accepts `SupabaseClient` and `teamId`.
+
+#### Step 2: Refactor `prompt-service.ts`
+
+Remove Supabase imports. All three functions (`getActivePrompt`, `getPromptHistory`, `savePromptVersion`) accept `PromptRepository`.
+
+#### Step 3: Implement `SupabaseAttachmentRepository`
+
+Move upload-to-storage, DB insert, soft-delete + storage cleanup, signed URL, and count query into the adapter. The factory accepts both anon and service-role clients (since attachment operations span both).
+
+#### Step 4: Refactor `attachment-service.ts`
+
+Remove Supabase imports. All functions accept `AttachmentRepository`.
+
+#### Step 5: Update route handlers
+
+- `app/api/prompts/route.ts` — Wire `createPromptRepository(supabase, teamId)` for both GET and POST
+- `app/api/sessions/[id]/attachments/route.ts` — Wire `createAttachmentRepository(supabase, serviceClient)`
+- `app/api/sessions/[id]/attachments/[attachmentId]/route.ts` — Same wiring
+- `app/api/sessions/[id]/attachments/[attachmentId]/download/route.ts` — Same wiring
+
+**Verification:** `npx tsc --noEmit` passes. Prompt and attachment endpoints return identical responses. Both services have zero Supabase imports.
+
+---
+
+### Increment 4: Migrate `team-service` and `invitation-service`
+
+**Covers:** P5.R2 (partially), P5.R3 (partially)
+
+`invitation-service` depends on `team-service` (`getActiveTeamMembers`). Migrate both together.
+
+#### Step 1: Implement `SupabaseTeamRepository`
+
+Largest adapter — 13 methods. Move all team Supabase queries. The factory accepts both anon and service-role clients (some operations need service-role for cross-user queries).
+
+#### Step 2: Refactor `team-service.ts`
+
+Remove Supabase imports. All functions accept `TeamRepository`. Functions that currently call `createServiceRoleClient()` internally now receive a repository pre-configured with the service-role client.
+
+#### Step 3: Implement `SupabaseInvitationRepository`
+
+Move invitation Supabase queries into the adapter.
+
+#### Step 4: Refactor `invitation-service.ts`
+
+Remove Supabase imports. Functions accept `InvitationRepository` and `TeamRepository` (for the member count check in `createInvitations`).
+
+#### Step 5: Update all team and invitation route handlers
+
+All routes under `app/api/teams/` and `app/api/invite/` wire repositories via factories.
+
+**Verification:** `npx tsc --noEmit` passes. All team/invitation endpoints return identical responses. Both services have zero Supabase imports.
+
+---
+
+### Increment 5: Migrate `session-service` and `master-signal-service`
+
+**Covers:** P5.R2 (partially), P5.R3 (partially)
+
+These have cross-domain dependencies (`session-service` calls `client-service` and `master-signal-service`). They migrate last since their dependencies are already repository-based from earlier increments.
+
+#### Step 1: Implement `SupabaseMasterSignalRepository`
+
+Move all master signal queries (getLatest, stale count, signal sessions, save, taint). The factory accepts both client types.
+
+#### Step 2: Refactor `master-signal-service.ts`
+
+Remove Supabase imports. `getLatestMasterSignal()`, `getStaleSessionCount()`, etc. accept `MasterSignalRepository`. `generateOrUpdateMasterSignal()` accepts `MasterSignalRepository` and continues to call `ai-service` directly (AI service doesn't need a repository).
+
+#### Step 3: Implement `SupabaseSessionRepository`
+
+Move session queries (list with joins, findById, create, update, softDelete, attachment counts, creator emails).
+
+#### Step 4: Refactor `session-service.ts`
+
+Remove Supabase imports. `getSessions()` accepts `SessionRepository`. `createSession()` accepts `SessionRepository` + `ClientRepository`. `deleteSession()` accepts `SessionRepository` + `MasterSignalRepository`. `checkSessionAccess()` accepts `SessionRepository` (replaces the `SupabaseClient` parameter from Part 4).
+
+#### Step 5: Update route handlers
+
+- `app/api/sessions/route.ts` — Wire session + client repositories
+- `app/api/sessions/[id]/route.ts` — Wire session repository (already passes `supabase` to `checkSessionAccess`, now passes `sessionRepo`)
+- `app/api/ai/generate-master-signal/route.ts` — Wire master signal repository
+- `app/api/master-signal/route.ts` — Wire master signal repository
+
+**Verification:** `npx tsc --noEmit` passes. All session and master signal endpoints return identical responses. Both services have zero Supabase imports.
+
+---
+
+### Increment 6: Mock repository and final verification
+
+**Covers:** P5.AC5, P5.R2 (complete), P5.R3 (complete)
+
+#### Step 1: Create `MockSessionRepository`
+
+```typescript
+// lib/repositories/mock/mock-session-repository.ts
+export function createMockSessionRepository(
+  initialSessions?: SessionRow[]
+): SessionRepository {
+  const sessions = new Map<string, SessionRow>();
+  // ... in-memory implementation of all SessionRepository methods
+}
+```
+
+The mock stores data in a `Map`, supports all CRUD operations, and demonstrates that service functions work identically with a non-Supabase backend.
+
+#### Step 2: Final verification
+
+1. `npx tsc --noEmit` — zero errors
+2. Grep `from "@/lib/supabase/server"` in `lib/services/` — zero matches
+3. Grep `createClient` in `lib/services/` — zero matches
+4. All 8 repository interfaces have Supabase adapter implementations
+5. All route handlers wire repositories via factories
+6. `SessionRepository` has a mock implementation
+
+---
+
+### Increment 7: End-of-part audit and documentation updates
+
+**Covers:** CLAUDE.md Quality Gates (end-of-part audit + end-of-PRD audit)
+
+This is the final increment of the final part of PRD-012, so it runs both the end-of-part audit and the end-of-PRD audit.
+
+#### End-of-part audit checklist
+
+1. **SRP violations** — Repository interfaces define data contracts only. Adapters contain only Supabase query logic. Services contain only business logic. Route handlers only do auth, validation, wiring, and response mapping.
+2. **DRY violations** — Workspace scoping (`teamId` filtering) may be duplicated across adapters. If a pattern emerges, extract a `withTeamScope(query, teamId)` helper within the adapter layer. Factory functions avoid duplication of client + teamId plumbing.
+3. **Design token adherence** — N/A for this part (no CSS changes).
+4. **Logging** — All existing logging preserved. Adapters log at the data-access level. Services log at the business-logic level.
+5. **Dead code** — No orphaned Supabase imports in services. No unused repository methods.
+6. **Convention compliance** — Interface names: PascalCase with `Repository` suffix. Adapter files: `supabase-<domain>-repository.ts`. Factory functions: `create<Domain>Repository()`. Mock files: `mock-<domain>-repository.ts`.
+
+#### End-of-PRD audit (PRD-012 complete)
+
+1. Run end-of-part checklist across all files touched by PRD-012 (Parts 1–5)
+2. Verify `ARCHITECTURE.md` file map includes `lib/repositories/`, all adapter files, mock file, and updated service descriptions
+3. Verify `CHANGELOG.md` has entries for all 5 parts
+4. Run `npx tsc --noEmit` for final type check
+5. Produce fixes and documentation updates, not a report
+
+#### Documentation updates
+
+1. **`ARCHITECTURE.md`** — Add `lib/repositories/` directory tree with interfaces, `supabase/` adapters, and `mock/` directory. Update service descriptions to note they accept injected repositories. Update the "Data Flow" section to reflect the new layers: Route → Repository Factory → Service(repo) → Repository → Supabase.
+2. **`CHANGELOG.md`** — Add Part 5 entry summarising the repository layer introduction.
+
+**Verification:** Read back both files after editing. Run `npx tsc --noEmit`. Verify zero `@/lib/supabase/server` imports in `lib/services/`.
