@@ -2,12 +2,14 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { MAX_COMBINED_CHARS } from "@/lib/constants";
 import {
+  checkSessionAccess,
   updateSession,
   deleteSession,
   SessionNotFoundError,
   ClientDuplicateError,
 } from "@/lib/services/session-service";
-import { checkSessionAccess } from "@/app/api/sessions/_helpers";
+import { createClient } from "@/lib/supabase/server";
+import { mapAccessError } from "@/lib/utils/map-access-error";
 
 // --- PUT /api/sessions/[id] ---
 
@@ -54,8 +56,9 @@ export async function PUT(
 
   console.log("[api/sessions/[id]] PUT — id:", id);
 
-  const access = await checkSessionAccess(id);
-  if (access.error) return access.error;
+  const supabase = await createClient();
+  const access = await checkSessionAccess(supabase, id);
+  if (!access.allowed) return mapAccessError(access.reason);
 
   let body: unknown;
   try {
@@ -116,8 +119,9 @@ export async function DELETE(
 
   console.log("[api/sessions/[id]] DELETE — id:", id);
 
-  const access = await checkSessionAccess(id);
-  if (access.error) return access.error;
+  const supabase = await createClient();
+  const access = await checkSessionAccess(supabase, id);
+  if (!access.allowed) return mapAccessError(access.reason);
 
   try {
     await deleteSession(id);

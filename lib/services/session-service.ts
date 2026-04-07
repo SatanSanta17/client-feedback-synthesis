@@ -1,6 +1,65 @@
+import { type SupabaseClient } from "@supabase/supabase-js";
+
 import { createClient, createServiceRoleClient, getActiveTeamId } from "@/lib/supabase/server";
 import { createNewClient, ClientDuplicateError } from "./client-service";
+import { getTeamMember } from "./team-service";
 import { taintLatestMasterSignal } from "./master-signal-service";
+
+// ---------------------------------------------------------------------------
+// Session Access Check
+// ---------------------------------------------------------------------------
+
+export type SessionAccessResult =
+  | { allowed: true; userId: string; teamId: string | null }
+  | { allowed: false; reason: "unauthenticated" | "not-found" | "forbidden" };
+
+/**
+ * Checks whether the current user has access to a session.
+ * Framework-agnostic — returns a discriminated union, not HTTP responses.
+ *
+ * - unauthenticated: no valid user session
+ * - not-found: session does not exist or is soft-deleted
+ * - forbidden: team context and user is neither the owner nor an admin
+ */
+export async function checkSessionAccess(
+  supabase: SupabaseClient,
+  sessionId: string
+): Promise<SessionAccessResult> {
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  if (!user) {
+    return { allowed: false, reason: "unauthenticated" };
+  }
+
+  const teamId = await getActiveTeamId();
+
+  const { data: session } = await supabase
+    .from("sessions")
+    .select("id, created_by")
+    .eq("id", sessionId)
+    .is("deleted_at", null)
+    .single();
+
+  if (!session) {
+    return { allowed: false, reason: "not-found" };
+  }
+
+  if (teamId && session.created_by !== user.id) {
+    const member = await getTeamMember(teamId, user.id);
+    if (member?.role !== "admin") {
+      return { allowed: false, reason: "forbidden" };
+    }
+  }
+
+  console.log(`[session-service] checkSessionAccess — allowed for user ${user.id}, session ${sessionId}`);
+  return { allowed: true, userId: user.id, teamId };
+}
+
+// ---------------------------------------------------------------------------
+// Session CRUD
+// ---------------------------------------------------------------------------
 
 export interface CreateSessionInput {
   clientId: string | null;

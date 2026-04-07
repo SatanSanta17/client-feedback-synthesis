@@ -1,10 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 
-import { createServiceRoleClient } from "@/lib/supabase/server";
+import { createClient, createServiceRoleClient } from "@/lib/supabase/server";
 import {
   getSignedDownloadUrl,
 } from "@/lib/services/attachment-service";
-import { checkSessionAccess } from "@/app/api/sessions/_helpers";
+import { checkSessionAccess } from "@/lib/services/session-service";
+import { mapAccessError } from "@/lib/utils/map-access-error";
 
 export async function GET(
   _request: NextRequest,
@@ -19,8 +20,9 @@ export async function GET(
     attachmentId
   );
 
-  const access = await checkSessionAccess(sessionId);
-  if (access.error) return access.error;
+  const supabase = await createClient();
+  const access = await checkSessionAccess(supabase, sessionId);
+  if (!access.allowed) return mapAccessError(access.reason);
 
   const serviceClient = createServiceRoleClient();
   const { data: attachment, error: fetchError } = await serviceClient

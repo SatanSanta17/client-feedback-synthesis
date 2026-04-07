@@ -10,7 +10,9 @@ import {
   MAX_ATTACHMENTS,
   ACCEPTED_FILE_TYPES,
 } from "@/lib/constants";
-import { checkSessionAccess } from "@/app/api/sessions/_helpers";
+import { checkSessionAccess } from "@/lib/services/session-service";
+import { createClient } from "@/lib/supabase/server";
+import { mapAccessError } from "@/lib/utils/map-access-error";
 
 // --- GET /api/sessions/[id]/attachments ---
 
@@ -22,8 +24,9 @@ export async function GET(
 
   console.log("[api/sessions/[id]/attachments] GET — session:", sessionId);
 
-  const access = await checkSessionAccess(sessionId);
-  if (access.error) return access.error;
+  const supabase = await createClient();
+  const access = await checkSessionAccess(supabase, sessionId);
+  if (!access.allowed) return mapAccessError(access.reason);
 
   try {
     const attachments = await getAttachmentsBySessionId(sessionId);
@@ -56,8 +59,9 @@ export async function POST(
 
   console.log("[api/sessions/[id]/attachments] POST — session:", sessionId);
 
-  const access = await checkSessionAccess(sessionId);
-  if (access.error) return access.error;
+  const supabase = await createClient();
+  const access = await checkSessionAccess(supabase, sessionId);
+  if (!access.allowed) return mapAccessError(access.reason);
 
   const { teamId } = access;
 
