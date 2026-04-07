@@ -8,9 +8,23 @@ import {
 
 // --- GET /api/clients?q=<search>&hasSession=true ---
 
+const clientSearchSchema = z.object({
+  q: z.string().max(255, "Search query must be 255 characters or fewer").optional().default(""),
+  hasSession: z.enum(["true", "false"]).optional().default("false"),
+});
+
 export async function GET(request: NextRequest) {
-  const query = request.nextUrl.searchParams.get("q") ?? "";
-  const hasSession = request.nextUrl.searchParams.get("hasSession") === "true";
+  const raw = Object.fromEntries(request.nextUrl.searchParams);
+  const parsed = clientSearchSchema.safeParse(raw);
+
+  if (!parsed.success) {
+    const message = parsed.error.issues.map((issue) => issue.message).join(", ");
+    console.warn("[api/clients] GET — validation failed:", message);
+    return NextResponse.json({ message }, { status: 400 });
+  }
+
+  const query = parsed.data.q;
+  const hasSession = parsed.data.hasSession === "true";
 
   console.log("[api/clients] GET — query:", JSON.stringify(query), "hasSession:", hasSession);
 

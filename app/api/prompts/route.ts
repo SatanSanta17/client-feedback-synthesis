@@ -4,15 +4,20 @@ import { createClient, getActiveTeamId } from "@/lib/supabase/server";
 import {
   getPromptHistory,
   savePromptVersion,
-  type PromptKey,
 } from "@/lib/services/prompt-service";
 import { getTeamMember } from "@/lib/services/team-service";
 
-const VALID_PROMPT_KEYS: PromptKey[] = [
+const PROMPT_KEYS = [
   "signal_extraction",
   "master_signal_cold_start",
   "master_signal_incremental",
-];
+] as const;
+
+const promptQuerySchema = z.object({
+  key: z.enum(PROMPT_KEYS, {
+    message: `Invalid or missing 'key' parameter. Must be one of: ${PROMPT_KEYS.join(", ")}`,
+  }),
+});
 
 // ---------------------------------------------------------------------------
 // GET /api/prompts?key=<prompt_key>
@@ -36,19 +41,17 @@ export async function GET(request: NextRequest) {
   }
 
   // Validate query param
-  const { searchParams } = new URL(request.url);
-  const key = searchParams.get("key");
+  const parsed = promptQuerySchema.safeParse({
+    key: request.nextUrl.searchParams.get("key"),
+  });
 
-  if (!key || !VALID_PROMPT_KEYS.includes(key as PromptKey)) {
-    return NextResponse.json(
-      {
-        message: `Invalid or missing 'key' parameter. Must be one of: ${VALID_PROMPT_KEYS.join(", ")}`,
-      },
-      { status: 400 }
-    );
+  if (!parsed.success) {
+    const message = parsed.error.issues.map((issue) => issue.message).join(", ");
+    console.warn("[api/prompts] GET — validation failed:", message);
+    return NextResponse.json({ message }, { status: 400 });
   }
 
-  const promptKey = key as PromptKey;
+  const promptKey = parsed.data.key;
 
   try {
     const history = await getPromptHistory(promptKey);
@@ -77,11 +80,7 @@ export async function GET(request: NextRequest) {
 // ---------------------------------------------------------------------------
 
 const savePromptSchema = z.object({
-  promptKey: z.enum([
-    "signal_extraction",
-    "master_signal_cold_start",
-    "master_signal_incremental",
-  ]),
+  promptKey: z.enum(PROMPT_KEYS),
   content: z
     .string()
     .min(1, "Prompt content is required")
