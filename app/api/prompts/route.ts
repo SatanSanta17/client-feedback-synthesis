@@ -5,6 +5,7 @@ import {
   getPromptHistory,
   savePromptVersion,
 } from "@/lib/services/prompt-service";
+import { createPromptRepository } from "@/lib/repositories/supabase/supabase-prompt-repository";
 import { getTeamMember } from "@/lib/services/team-service";
 
 const PROMPT_KEYS = [
@@ -52,9 +53,11 @@ export async function GET(request: NextRequest) {
   }
 
   const promptKey = parsed.data.key;
+  const teamId = await getActiveTeamId();
+  const promptRepo = createPromptRepository(supabase, teamId);
 
   try {
-    const history = await getPromptHistory(promptKey);
+    const history = await getPromptHistory(promptRepo, promptKey);
     const active = history.find((v) => v.is_active) ?? null;
 
     console.log(
@@ -135,8 +138,10 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ message }, { status: 400 });
   }
 
+  const promptRepo = createPromptRepository(supabase, teamId);
+
   try {
-    const version = await savePromptVersion({
+    const version = await savePromptVersion(promptRepo, {
       promptKey: parsed.data.promptKey,
       content: parsed.data.content,
       authorId: user.id,

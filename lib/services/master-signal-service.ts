@@ -1,4 +1,5 @@
 import { createClient, createServiceRoleClient, getActiveTeamId } from "@/lib/supabase/server";
+import type { PromptRepository } from "@/lib/repositories/prompt-repository";
 import type { SignalSession } from "@/lib/types/signal-session";
 import { synthesiseMasterSignal } from "@/lib/services/ai-service";
 
@@ -329,7 +330,9 @@ export type GenerateResult =
  *
  * Returns a discriminated union — the caller maps outcomes to HTTP responses.
  */
-export async function generateOrUpdateMasterSignal(): Promise<GenerateResult> {
+export async function generateOrUpdateMasterSignal(
+  promptRepo: PromptRepository
+): Promise<GenerateResult> {
   const latest = await getLatestMasterSignal();
 
   // Cold start or tainted — synthesise from all sessions
@@ -350,7 +353,7 @@ export async function generateOrUpdateMasterSignal(): Promise<GenerateResult> {
       `[master-signal-service] generateOrUpdateMasterSignal — synthesising from ${sessions.length} sessions`
     );
 
-    const content = await synthesiseMasterSignal({ sessions });
+    const content = await synthesiseMasterSignal(promptRepo, { sessions });
     const saved = await saveMasterSignal(content, sessions.length);
 
     console.log(`[master-signal-service] generateOrUpdateMasterSignal — saved: ${saved.id}`);
@@ -373,7 +376,7 @@ export async function generateOrUpdateMasterSignal(): Promise<GenerateResult> {
     `[master-signal-service] generateOrUpdateMasterSignal — merging ${newSessions.length} new session(s)`
   );
 
-  const content = await synthesiseMasterSignal({
+  const content = await synthesiseMasterSignal(promptRepo, {
     previousMasterSignal: latest.content,
     sessions: newSessions,
   });

@@ -5,8 +5,9 @@ import {
   AttachmentNotFoundError,
 } from "@/lib/services/attachment-service";
 import { checkSessionAccess } from "@/lib/services/session-service";
-import { createClient } from "@/lib/supabase/server";
+import { createClient, createServiceRoleClient } from "@/lib/supabase/server";
 import { mapAccessError } from "@/lib/utils/map-access-error";
+import { createAttachmentRepository } from "@/lib/repositories/supabase/supabase-attachment-repository";
 
 export async function DELETE(
   _request: NextRequest,
@@ -25,8 +26,11 @@ export async function DELETE(
   const access = await checkSessionAccess(supabase, sessionId);
   if (!access.allowed) return mapAccessError(access.reason);
 
+  const serviceClient = createServiceRoleClient();
+  const attachmentRepo = createAttachmentRepository(supabase, serviceClient);
+
   try {
-    await deleteAttachment(attachmentId);
+    await deleteAttachment(attachmentRepo, attachmentId);
 
     console.log(
       "[api/sessions/[id]/attachments/[attachmentId]] DELETE — deleted:",

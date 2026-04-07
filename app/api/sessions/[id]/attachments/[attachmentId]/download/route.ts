@@ -6,6 +6,7 @@ import {
 } from "@/lib/services/attachment-service";
 import { checkSessionAccess } from "@/lib/services/session-service";
 import { mapAccessError } from "@/lib/utils/map-access-error";
+import { createAttachmentRepository } from "@/lib/repositories/supabase/supabase-attachment-repository";
 
 export async function GET(
   _request: NextRequest,
@@ -25,14 +26,11 @@ export async function GET(
   if (!access.allowed) return mapAccessError(access.reason);
 
   const serviceClient = createServiceRoleClient();
-  const { data: attachment, error: fetchError } = await serviceClient
-    .from("session_attachments")
-    .select("id, storage_path")
-    .eq("id", attachmentId)
-    .is("deleted_at", null)
-    .single();
+  const attachmentRepo = createAttachmentRepository(supabase, serviceClient);
 
-  if (fetchError || !attachment) {
+  const storagePath = await attachmentRepo.getStoragePath(attachmentId);
+
+  if (!storagePath) {
     return NextResponse.json(
       { message: "Attachment not found" },
       { status: 404 }
@@ -40,7 +38,7 @@ export async function GET(
   }
 
   try {
-    const url = await getSignedDownloadUrl(attachment.storage_path);
+    const url = await getSignedDownloadUrl(attachmentRepo, storagePath);
 
     console.log(
       "[api/sessions/[id]/attachments/[attachmentId]/download] GET — signed URL generated"

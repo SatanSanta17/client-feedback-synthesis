@@ -12,6 +12,7 @@ import {
   MASTER_SIGNAL_INCREMENTAL_SYSTEM_PROMPT,
   buildMasterSignalUserMessage,
 } from "@/lib/prompts/master-signal-synthesis";
+import type { PromptRepository } from "@/lib/repositories/prompt-repository";
 import { getActivePrompt } from "@/lib/services/prompt-service";
 import type { SignalSession } from "@/lib/types/signal-session";
 
@@ -70,8 +71,11 @@ function resolveModel(): { model: LanguageModel; label: string } {
  * Returns a markdown-formatted signal extraction report.
  * Retries transient failures (429, 5xx, network) with exponential backoff.
  */
-export async function extractSignals(rawNotes: string): Promise<string> {
-  const dbPrompt = await getActivePrompt("signal_extraction");
+export async function extractSignals(
+  promptRepo: PromptRepository,
+  rawNotes: string
+): Promise<string> {
+  const dbPrompt = await getActivePrompt(promptRepo, "signal_extraction");
   const systemPrompt = dbPrompt ?? SIGNAL_EXTRACTION_SYSTEM_PROMPT;
 
   const userMessage = buildSignalExtractionUserMessage(rawNotes);
@@ -105,6 +109,7 @@ export interface MasterSignalInput {
  * Retries transient failures with exponential backoff.
  */
 export async function synthesiseMasterSignal(
+  promptRepo: PromptRepository,
   input: MasterSignalInput
 ): Promise<string> {
   const { previousMasterSignal, sessions } = input;
@@ -114,7 +119,7 @@ export async function synthesiseMasterSignal(
     ? "master_signal_incremental" as const
     : "master_signal_cold_start" as const;
 
-  const dbPrompt = await getActivePrompt(promptKey);
+  const dbPrompt = await getActivePrompt(promptRepo, promptKey);
   const systemPrompt = dbPrompt
     ?? (isIncremental
       ? MASTER_SIGNAL_INCREMENTAL_SYSTEM_PROMPT

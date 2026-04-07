@@ -1,9 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
-import { createClient } from "@/lib/supabase/server";
+import { createClient, getActiveTeamId } from "@/lib/supabase/server";
 import { MAX_COMBINED_CHARS } from "@/lib/constants";
 import { extractSignals } from "@/lib/services/ai-service";
 import { mapAIErrorToResponse } from "@/lib/utils/map-ai-error";
+import { createPromptRepository } from "@/lib/repositories/supabase/supabase-prompt-repository";
 
 const extractSignalsSchema = z.object({
   rawNotes: z
@@ -59,8 +60,11 @@ export async function POST(request: NextRequest) {
   );
 
   // Call the AI service
+  const teamId = await getActiveTeamId();
+  const promptRepo = createPromptRepository(supabase, teamId);
+
   try {
-    const structuredNotes = await extractSignals(parsed.data.rawNotes);
+    const structuredNotes = await extractSignals(promptRepo, parsed.data.rawNotes);
 
     console.log(
       "[api/ai/extract-signals] POST — extraction complete,",

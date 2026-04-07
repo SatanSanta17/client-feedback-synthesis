@@ -3,6 +3,7 @@ import { createClient, getActiveTeamId } from "@/lib/supabase/server";
 import { mapAIErrorToResponse } from "@/lib/utils/map-ai-error";
 import { generateOrUpdateMasterSignal } from "@/lib/services/master-signal-service";
 import { getTeamMember } from "@/lib/services/team-service";
+import { createPromptRepository } from "@/lib/repositories/supabase/supabase-prompt-repository";
 
 /**
  * POST /api/ai/generate-master-signal
@@ -40,8 +41,10 @@ export async function POST() {
     }
   }
 
+  const promptRepo = createPromptRepository(supabase, teamId);
+
   try {
-    const result = await generateOrUpdateMasterSignal();
+    const result = await generateOrUpdateMasterSignal(promptRepo);
 
     if (result.outcome === "no-sessions") {
       return NextResponse.json({ message: result.message }, { status: 422 });
