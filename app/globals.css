@@ -125,8 +125,8 @@
   --card-foreground: oklch(0.985 0 0);
   --popover: oklch(0.205 0 0);
   --popover-foreground: oklch(0.985 0 0);
-  --primary: oklch(0.922 0 0);
-  --primary-foreground: oklch(0.205 0 0);
+  --primary: oklch(0.52 0.19 277.023);
+  --primary-foreground: oklch(0.985 0 0);
   --secondary: oklch(0.269 0 0);
   --secondary-foreground: oklch(0.985 0 0);
   --muted: oklch(0.269 0 0);
@@ -136,7 +136,7 @@
   --destructive: oklch(0.704 0.191 22.216);
   --border: oklch(1 0 0 / 10%);
   --input: oklch(1 0 0 / 15%);
-  --ring: oklch(0.556 0 0);
+  --ring: oklch(0.52 0.19 277.023);
   --chart-1: oklch(0.87 0 0);
   --chart-2: oklch(0.556 0 0);
   --chart-3: oklch(0.439 0 0);
@@ -149,7 +149,41 @@
   --sidebar-accent: oklch(0.269 0 0);
   --sidebar-accent-foreground: oklch(0.985 0 0);
   --sidebar-border: oklch(1 0 0 / 10%);
-  --sidebar-ring: oklch(0.556 0 0);
+  --sidebar-ring: oklch(0.52 0.19 277.023);
+
+  /* Brand tokens */
+  --brand-primary: oklch(0.52 0.19 277.023);
+  --brand-primary-light: oklch(0.24 0.05 277.023);
+  --brand-primary-vivid: oklch(0.55 0.18 300);
+  --text-primary: oklch(0.93 0 0);
+  --text-secondary: oklch(0.65 0 0);
+  --text-muted: oklch(0.45 0 0);
+  --border-default: oklch(1 0 0 / 0.1);
+  --surface-page: oklch(0.145 0 0);
+  --surface-page-translucent: oklch(0.145 0 0 / 0.8);
+  --surface-raised: oklch(0.205 0 0);
+
+  /* Status tokens */
+  --status-error: oklch(0.65 0.18 25.331);
+  --status-error-light: oklch(0.22 0.04 17.38);
+  --status-error-border: oklch(0.35 0.07 18.334);
+  --status-success: oklch(0.65 0.15 149.579);
+  --status-success-light: oklch(0.22 0.03 155.826);
+  --status-success-border: oklch(0.35 0.06 164.15);
+  --status-warning: oklch(0.7 0.14 70.08);
+  --status-warning-light: oklch(0.22 0.03 95.277);
+  --status-warning-border: oklch(0.35 0.06 95.277);
+  --status-warning-text: oklch(0.72 0.13 48.998);
+  --status-info: oklch(0.6 0.16 259.815);
+  --status-info-light: oklch(0.22 0.03 254.604);
+  --status-info-border: oklch(0.35 0.05 254.128);
+  --status-info-text: oklch(0.65 0.15 265.638);
+
+  /* AI action tokens */
+  --ai-action: oklch(0.7 0.12 75);
+  --ai-action-foreground: oklch(0.93 0.03 75);
+  --ai-action-hover: oklch(0.63 0.13 75);
+  --ai-action-light: oklch(0.22 0.04 75);
 }
 
 @layer base {

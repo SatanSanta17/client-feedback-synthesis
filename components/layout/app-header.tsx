@@ -4,6 +4,7 @@ import { usePathname } from "next/navigation";
 import { useAuth } from "@/components/providers/auth-provider";
 import { TabNav } from "@/components/layout/tab-nav";
 import { UserMenu } from "@/components/layout/user-menu";
+import { ThemeToggle } from "@/components/layout/theme-toggle";
 import { WorkspaceSwitcher } from "@/components/layout/workspace-switcher";
 
 export function AppHeader() {
@@ -29,6 +30,7 @@ export function AppHeader() {
         <TabNav />
       </div>
       <div className="flex items-center gap-3">
+        <ThemeToggle />
         <UserMenu />
       </div>
     </header>

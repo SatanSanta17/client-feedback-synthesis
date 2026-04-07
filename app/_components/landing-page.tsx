@@ -17,6 +17,7 @@ import {
 import type { LucideIcon } from "lucide-react";
 import { useAuth } from "@/components/providers/auth-provider";
 import { Button } from "@/components/ui/button";
+import { ThemeToggle } from "@/components/layout/theme-toggle";
 
 /* ------------------------------------------------------------------ */
 /*  Data                                                               */
@@ -155,11 +156,14 @@ export function LandingPage() {
           <span className="text-lg font-bold tracking-tight text-[var(--text-primary)]">
             Synthesiser
           </span>
-          <Link href="/login">
-            <Button size="lg" className="cursor-pointer px-6">
-              Get Started
-            </Button>
-          </Link>
+          <div className="flex items-center gap-3">
+            <ThemeToggle />
+            <Link href="/login">
+              <Button size="lg" className="cursor-pointer px-6">
+                Get Started
+              </Button>
+            </Link>
+          </div>
         </div>
       </nav>
 

@@ -1,3 +1,3 @@
 - Instead of one huge master signal lets make a chat interface and the master signal is the content from where the LLM answer we store the master signals in a vector db and use LLM support to interact with the master signals
 - Dashboard for maximum value addition to clients
-- Landing page self explanatory and displaying the value addition of the product build it like a sales pitch to the customer
+- cookies are retained on logout
