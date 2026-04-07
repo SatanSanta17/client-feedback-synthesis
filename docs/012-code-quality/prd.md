@@ -1,6 +1,6 @@
 # PRD-012: Code Quality — SOLID, DRY, and Design Consistency
 
-> **Status:** Draft
+> **Status:** Complete
 
 ## Purpose
 
@@ -37,18 +37,18 @@ As a developer, I want each file in the codebase to have a single reason to chan
 
 ### Acceptance Criteria
 
-- [ ] P1.AC1 — `globals.css` contains `--status-error`, `--status-error-light`, `--status-success`, `--status-success-light`, `--status-warning`, `--status-warning-light`, `--status-info`, `--status-info-light` (plus text variants as needed)
-- [ ] P1.AC2 — No component uses `text-red-500`, `bg-red-50`, `text-green-500`, `bg-green-50`, `text-amber-*`, `bg-amber-*`, `text-blue-*`, or `bg-blue-*` for status styling — all reference CSS custom properties, including JS objects that store colour class strings (e.g., `invite-shell.tsx` colour map)
-- [ ] P1.AC3 — No arbitrary `text-[Npx]` font sizes exist in any component
-- [ ] P1.AC4 — Visual appearance of all error messages, success panels, warning banners, and info banners is unchanged
-- [ ] P1.AC5 — `globals.css` contains `--ai-action`, `--ai-action-foreground`, `--ai-action-hover`, and `--ai-action-light` CSS custom properties with warm gold/amber values
-- [ ] P1.AC6 — `button.tsx` has an `"ai"` variant that uses the `--ai-action` tokens for background, text, and hover states
-- [ ] P1.AC7 — All three AI action buttons (Extract Signals in capture form, Extract Signals in expanded row, Generate Master Signal) use the `"ai"` button variant instead of `"outline"` or `"default"`
-- [ ] P1.AC8 — AI buttons are visually distinct from standard actions — gold/amber background with clear hover feedback, readable text, and consistent disabled/focus states
+- [x] P1.AC1 — `globals.css` contains `--status-error`, `--status-error-light`, `--status-success`, `--status-success-light`, `--status-warning`, `--status-warning-light`, `--status-info`, `--status-info-light` (plus text variants as needed)
+- [x] P1.AC2 — No component uses `text-red-500`, `bg-red-50`, `text-green-500`, `bg-green-50`, `text-amber-*`, `bg-amber-*`, `text-blue-*`, or `bg-blue-*` for status styling — all reference CSS custom properties, including JS objects that store colour class strings (e.g., `invite-shell.tsx` colour map)
+- [x] P1.AC3 — No arbitrary `text-[Npx]` font sizes exist in any component
+- [x] P1.AC4 — Visual appearance of all error messages, success panels, warning banners, and info banners is unchanged
+- [x] P1.AC5 — `globals.css` contains `--ai-action`, `--ai-action-foreground`, `--ai-action-hover`, and `--ai-action-light` CSS custom properties with warm gold/amber values
+- [x] P1.AC6 — `button.tsx` has an `"ai"` variant that uses the `--ai-action` tokens for background, text, and hover states
+- [x] P1.AC7 — All three AI action buttons (Extract Signals in capture form, Extract Signals in expanded row, Generate Master Signal) use the `"ai"` button variant instead of `"outline"` or `"default"`
+- [x] P1.AC8 — AI buttons are visually distinct from standard actions — gold/amber background with clear hover feedback, readable text, and consistent disabled/focus states
 
 **P1.R6 — Replace `window.location.href` navigation with Next.js router.** Two components use `window.location.href` for page transitions instead of `useRouter().push()`: `login-form.tsx` (`window.location.href = "/capture"`) and `reset-password-form.tsx` (`window.location.href = "/capture"`). These are plain navigation — no reactivity gap — so a simple `router.push("/capture")` replacement is sufficient. Note: `window.location.origin` usage in OAuth redirect URLs is acceptable — those construct external callback URLs, not client-side navigation.
 
-- [ ] P1.AC9 — No component uses `window.location.href` for client-side page transitions — `login-form.tsx` and `reset-password-form.tsx` use `useRouter().push()` from `next/navigation` (OAuth `window.location.origin` for callback URL construction is exempt)
+- [x] P1.AC9 — No component uses `window.location.href` for client-side page transitions — `login-form.tsx` and `reset-password-form.tsx` use `useRouter().push()` from `next/navigation` (OAuth `window.location.origin` for callback URL construction is exempt)
 
 ---
 
@@ -74,18 +74,18 @@ As a developer, I want each file in the codebase to have a single reason to chan
 
 ### Acceptance Criteria
 
-- [ ] P2.AC1a — `getActiveTeamId`, `setActiveTeamCookie`, `clearActiveTeamCookie` exist in one file under `lib/`; no other file contains inline implementations of these
-- [ ] P2.AC1b — A reactive `activeTeamId` is available via context or hook; `PastSessionsTable` and other team-dependent components consume it and refetch when it changes
-- [ ] P2.AC1c — `workspace-switcher.tsx`, `create-team-dialog.tsx`, and `invite-mismatch-card.tsx` no longer call `window.location.reload()` — team switch and team creation update the reactive context and the cookie, and the UI updates without a hard reload
-- [ ] P2.AC1d — Switching workspace correctly updates the sessions table to show the new workspace's sessions; creating a new team redirects to that team's workspace with the correct sessions displayed
-- [ ] P2.AC2 — Signal extraction state, API call, and re-extract flow exist in one custom hook; `session-capture-form.tsx` and `expanded-session-row.tsx` import and use the hook
-- [ ] P2.AC3 — Re-extract confirmation UI exists as one shared component; both capture form and expanded row render it
-- [ ] P2.AC4 — Auth forms (login, signup, forgot-password, reset-password) use a shared card shell component; no four-way duplication of the centred card layout
-- [ ] P2.AC5 — "Check your email" success state exists as one component; signup and forgot-password import it
-- [ ] P2.AC6 — AI error mapping exists in one helper; both AI route handlers import it
-- [ ] P2.AC7 — Role type and select block exist in one component; both invite forms import it
-- [ ] P2.AC8 — `auth-provider.tsx` has no duplicated profile query — one helper, called from both paths
-- [ ] P2.AC9 — All existing functionality works identically after extraction — no behavioural changes
+- [x] P2.AC1a — `getActiveTeamId`, `setActiveTeamCookie`, `clearActiveTeamCookie` exist in one file under `lib/`; no other file contains inline implementations of these
+- [x] P2.AC1b — A reactive `activeTeamId` is available via context or hook; `PastSessionsTable` and other team-dependent components consume it and refetch when it changes
+- [x] P2.AC1c — `workspace-switcher.tsx`, `create-team-dialog.tsx`, and `invite-mismatch-card.tsx` no longer call `window.location.reload()` — team switch and team creation update the reactive context and the cookie, and the UI updates without a hard reload
+- [x] P2.AC1d — Switching workspace correctly updates the sessions table to show the new workspace's sessions; creating a new team redirects to that team's workspace with the correct sessions displayed
+- [x] P2.AC2 — Signal extraction state, API call, and re-extract flow exist in one custom hook; `session-capture-form.tsx` and `expanded-session-row.tsx` import and use the hook
+- [x] P2.AC3 — Re-extract confirmation UI exists as one shared component; both capture form and expanded row render it
+- [x] P2.AC4 — Auth forms (login, signup, forgot-password, reset-password) use a shared card shell component; no four-way duplication of the centred card layout
+- [x] P2.AC5 — "Check your email" success state exists as one component; signup and forgot-password import it
+- [x] P2.AC6 — AI error mapping exists in one helper; both AI route handlers import it
+- [x] P2.AC7 — Role type and select block exist in one component; both invite forms import it
+- [x] P2.AC8 — `auth-provider.tsx` has no duplicated profile query — one helper, called from both paths
+- [x] P2.AC9 — All existing functionality works identically after extraction — no behavioural changes
 
 ---
 
@@ -105,12 +105,12 @@ As a developer, I want each file in the codebase to have a single reason to chan
 
 ### Acceptance Criteria
 
-- [ ] P3.AC1 — `expanded-session-row.tsx` is split into ≥3 focused files, none exceeding ~150 lines, each with a single responsibility
-- [ ] P3.AC2 — `prompt-editor-page-content.tsx` is split into ≥3 focused files; API orchestration lives in a custom hook
-- [ ] P3.AC3 — `master-signal-page-content.tsx` is split into ≥2 focused files; data fetching lives in a custom hook
-- [ ] P3.AC4 — `SessionTableRow` lives in its own file; `past-sessions-table.tsx` is reduced in scope
-- [ ] P3.AC5 — `session-capture-form.tsx` is split into ≥3 focused files; file upload, extraction, and structured notes are separate components
-- [ ] P3.AC6 — All session capture, editing, prompt management, and master signal flows work identically after decomposition
+- [x] P3.AC1 — `expanded-session-row.tsx` is split into ≥3 focused files, none exceeding ~150 lines, each with a single responsibility
+- [x] P3.AC2 — `prompt-editor-page-content.tsx` is split into ≥3 focused files; API orchestration lives in a custom hook
+- [x] P3.AC3 — `master-signal-page-content.tsx` is split into ≥2 focused files; data fetching lives in a custom hook
+- [x] P3.AC4 — `SessionTableRow` lives in its own file; `past-sessions-table.tsx` is reduced in scope
+- [x] P3.AC5 — `session-capture-form.tsx` is split into ≥3 focused files; file upload, extraction, and structured notes are separate components
+- [x] P3.AC6 — All session capture, editing, prompt management, and master signal flows work identically after decomposition
 
 ---
 
@@ -130,12 +130,12 @@ As a developer, I want each file in the codebase to have a single reason to chan
 
 ### Acceptance Criteria
 
-- [ ] P4.AC1 — `generate-master-signal` route handler is ≤50 lines; orchestration lives in a service function
-- [ ] P4.AC2 — Team members data assembly lives in `team-service.ts`; the route handler only validates and delegates
-- [ ] P4.AC3 — Session permission logic lives in the service layer; the route does not make direct Supabase queries for permission checks
-- [ ] P4.AC4 — `GET /api/clients` and `GET /api/prompts` validate query params with Zod schemas
-- [ ] P4.AC5 — `master-signal-synthesis.ts` does not import from `lib/services/`; shared types live in `lib/types/`
-- [ ] P4.AC6 — All API endpoints return identical responses before and after
+- [x] P4.AC1 — `generate-master-signal` route handler is ≤50 lines; orchestration lives in a service function
+- [x] P4.AC2 — Team members data assembly lives in `team-service.ts`; the route handler only validates and delegates
+- [x] P4.AC3 — Session permission logic lives in the service layer; the route does not make direct Supabase queries for permission checks
+- [x] P4.AC4 — `GET /api/clients` and `GET /api/prompts` validate query params with Zod schemas
+- [x] P4.AC5 — `master-signal-synthesis.ts` does not import from `lib/services/`; shared types live in `lib/types/`
+- [x] P4.AC6 — All API endpoints return identical responses before and after
 
 ---
 
@@ -151,19 +151,19 @@ As a developer, I want each file in the codebase to have a single reason to chan
 
 ### Acceptance Criteria
 
-- [ ] P5.AC1 — Each service domain has a corresponding repository interface in `lib/repositories/` (or equivalent location) defining its data operations
-- [ ] P5.AC2 — Each repository interface has a Supabase adapter implementation that contains all Supabase-specific query logic
-- [ ] P5.AC3 — No service file under `lib/services/` imports from `@/lib/supabase/server` — all data access goes through injected repository interfaces
-- [ ] P5.AC4 — API route handlers wire services to Supabase adapters; the wiring is explicit and visible
-- [ ] P5.AC5 — At least one service has a mock repository implementation demonstrating testability (e.g., `session-service` with an in-memory mock)
-- [ ] P5.AC6 — All API endpoints return identical responses before and after — this is a pure structural refactor
+- [x] P5.AC1 — Each service domain has a corresponding repository interface in `lib/repositories/` (or equivalent location) defining its data operations
+- [x] P5.AC2 — Each repository interface has a Supabase adapter implementation that contains all Supabase-specific query logic
+- [x] P5.AC3 — No service file under `lib/services/` imports from `@/lib/supabase/server` — all data access goes through injected repository interfaces
+- [x] P5.AC4 — API route handlers wire services to Supabase adapters; the wiring is explicit and visible
+- [x] P5.AC5 — At least one service has a mock repository implementation demonstrating testability (e.g., `session-service` with an in-memory mock)
+- [x] P5.AC6 — All API endpoints return identical responses before and after — this is a pure structural refactor
 
 ---
 
 ## Backlog
 
-- Add missing entry logs to GET route handlers (low impact, consistency improvement)
-- Extract shared table shell component for team-members-table and pending-invitations-table (similar bordered table header styling)
-- Extract `ConfirmDialog` from `team-members-table.tsx` into `components/ui/` for reuse
+- ~~Add missing entry logs to GET route handlers (low impact, consistency improvement)~~ ✓ Done
+- ~~Extract shared table shell component for team-members-table and pending-invitations-table (similar bordered table header styling)~~ ✓ Done
+- ~~Extract `ConfirmDialog` from `team-members-table.tsx` into `components/ui/` for reuse~~ ✓ Done
 - Replace `router.push("/login")` in auth provider sign-out with a configurable redirect path
 - Replace `as unknown as` type casts in `session-service.ts` (line 121) and `invitation-service.ts` (line 260) with proper Supabase type inference or `satisfies` — these force-cast Supabase join results instead of handling the types correctly

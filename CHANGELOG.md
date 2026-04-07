@@ -6,6 +6,12 @@ All notable changes to this project are documented here, grouped by PRD and part
 
 ## [Unreleased]
 
+### PRD-012 Backlog: Polish fixes — 2026-04-07
+- Added missing entry logs to 3 GET route handlers (`/api/teams`, `/api/teams/[teamId]`, `/api/teams/[teamId]/members`) for logging consistency
+- Extracted `TableShell` and `TableHeadCell` into `components/settings/table-shell.tsx` — shared bordered table wrapper used by `team-members-table` and `pending-invitations-table`, normalised to design tokens
+- Extracted `ConfirmDialog` into `components/ui/confirm-dialog.tsx` — reusable config-driven confirmation dialog (title, description, destructive variant, loading state); replaces inline implementation in `team-members-table.tsx`
+- Updated PRD-012 status to Complete; checked off all acceptance criteria across Parts 1–5; updated TRD status
+
 ### PRD-012 Part 5: Dependency Inversion — Injectable Data-Access Layer — 2026-04-07
 - Introduced repository pattern: 8 interfaces in `lib/repositories/` defining data-access contracts (SessionRepository, ClientRepository, TeamRepository, MasterSignalRepository, InvitationRepository, PromptRepository, ProfileRepository, AttachmentRepository)
 - Created Supabase adapter implementations in `lib/repositories/supabase/` — one per interface, instantiated via factory functions (`createSessionRepository`, `createClientRepository`, etc.)

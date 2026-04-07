@@ -20,6 +20,8 @@ interface RouteContext {
 export async function GET(_request: NextRequest, context: RouteContext) {
   const { teamId } = await context.params;
 
+  console.log(`[api/teams/[teamId]] GET — teamId: ${teamId}`);
+
   const supabase = await createClient();
   const {
     data: { user },

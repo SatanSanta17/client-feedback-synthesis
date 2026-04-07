@@ -168,7 +168,8 @@ synthesiser/
 │   ├── providers/
 │   │   └── auth-provider.tsx    # AuthProvider context — user, isAuthenticated, isLoading, canCreateTeam, activeTeamId, setActiveTeam, signOut
 │   ├── settings/
-│   │   └── role-picker.tsx      # Controlled role picker (value, onValueChange) + exported Role type
+│   │   ├── role-picker.tsx      # Controlled role picker (value, onValueChange) + exported Role type
+│   │   └── table-shell.tsx      # Shared bordered table wrapper (TableShell) + standardised header cell (TableHeadCell)
 │   ├── layout/
 │   │   ├── app-footer.tsx       # Footer — developer contact (name, email, GitHub, LinkedIn)
 │   │   ├── app-header.tsx       # Top bar — TabNav + WorkspaceSwitcher + UserMenu
@@ -176,8 +177,9 @@ synthesiser/
 │   │   ├── tab-nav.tsx          # Route-based tab navigation with active indicator
 │   │   ├── user-menu.tsx        # Auth-aware user menu — avatar, email, sign-out dropdown
 │   │   └── workspace-switcher.tsx # Always-visible workspace dropdown — switch, create team, CTA
-│   └── ui/                      # shadcn/ui primitives (do not modify)
+│   └── ui/                      # shadcn/ui primitives (do not modify) + shared dialogs
 │       ├── badge.tsx
+│       ├── confirm-dialog.tsx    # Reusable confirmation dialog (config-driven: title, description, destructive variant, loading state)
 │       ├── button.tsx           # Includes `ai` variant (gold) for AI action buttons
 │       ├── command.tsx
 │       ├── dialog.tsx

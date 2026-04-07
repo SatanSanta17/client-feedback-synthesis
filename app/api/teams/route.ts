@@ -7,6 +7,8 @@ import { createTeamRepository } from "@/lib/repositories/supabase/supabase-team-
 // --- GET /api/teams ---
 
 export async function GET() {
+  console.log("[api/teams] GET — fetching teams for current user");
+
   const supabase = await createClient();
   const {
     data: { user },

@@ -5,6 +5,7 @@ import { toast } from "sonner";
 import { RotateCw, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { TableShell, TableHeadCell } from "@/components/settings/table-shell";
 import { formatRelativeTime } from "@/lib/utils/format-relative-time";
 import type { Role } from "@/components/settings/role-picker";
 
@@ -111,81 +112,69 @@ export function PendingInvitationsTable({
           No pending invitations.
         </p>
       ) : (
-        <div className="overflow-x-auto rounded-lg border border-[var(--border-default)]">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b border-[var(--border-default)] bg-[var(--surface-raised)]">
-                <th className="px-3 py-2 text-left font-medium text-[var(--text-secondary)]">
-                  Email
-                </th>
-                <th className="px-3 py-2 text-left font-medium text-[var(--text-secondary)]">
-                  Role
-                </th>
-                <th className="px-3 py-2 text-left font-medium text-[var(--text-secondary)]">
-                  Status
-                </th>
-                <th className="px-3 py-2 text-left font-medium text-[var(--text-secondary)]">
-                  Sent
-                </th>
-                <th className="px-3 py-2 text-right font-medium text-[var(--text-secondary)]">
-                  Actions
-                </th>
-              </tr>
-            </thead>
-            <tbody>
-              {invitations.map((inv) => {
-                const status = getInviteStatus(inv);
-                const isBusy = actionInFlight === inv.id;
+        <TableShell>
+          <thead>
+            <tr className="border-b border-[var(--border-default)] bg-[var(--surface-raised)]">
+              <TableHeadCell>Email</TableHeadCell>
+              <TableHeadCell>Role</TableHeadCell>
+              <TableHeadCell>Status</TableHeadCell>
+              <TableHeadCell>Sent</TableHeadCell>
+              <TableHeadCell align="right">Actions</TableHeadCell>
+            </tr>
+          </thead>
+          <tbody>
+            {invitations.map((inv) => {
+              const status = getInviteStatus(inv);
+              const isBusy = actionInFlight === inv.id;
 
-                return (
-                  <tr
-                    key={inv.id}
-                    className="border-b border-[var(--border-default)] last:border-0"
-                  >
-                    <td className="px-3 py-2 text-[var(--text-primary)]">
-                      {inv.email}
-                    </td>
-                    <td className="px-3 py-2 capitalize text-[var(--text-secondary)]">
-                      {inv.role}
-                    </td>
-                    <td className="px-3 py-2">
-                      {status === "expired" ? (
-                        <Badge variant="destructive">Expired</Badge>
-                      ) : (
-                        <Badge variant="secondary">Pending</Badge>
-                      )}
-                    </td>
-                    <td className="px-3 py-2 text-[var(--text-muted)]">
-                      {formatRelativeTime(inv.created_at)}
-                    </td>
-                    <td className="px-3 py-2 text-right">
-                      <div className="flex items-center justify-end gap-1">
-                        <Button
-                          variant="ghost"
-                          size="icon-xs"
-                          title="Resend"
-                          onClick={() => handleResend(inv.id)}
-                          disabled={isBusy}
-                        >
-                          <RotateCw className="size-3.5" />
-                        </Button>
-                        <Button
-                          variant="ghost"
-                          size="icon-xs"
-                          title="Revoke"
-                          onClick={() => handleRevoke(inv.id)}
-                          disabled={isBusy}
-                        >
-                          <Trash2 className="size-3.5 text-destructive" />
-                        </Button>
-                      </div>
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
+              return (
+                <tr
+                  key={inv.id}
+                  className="border-b border-[var(--border-default)] last:border-0"
+                >
+                  <td className="px-3 py-2 text-[var(--text-primary)]">
+                    {inv.email}
+                  </td>
+                  <td className="px-3 py-2 capitalize text-[var(--text-secondary)]">
+                    {inv.role}
+                  </td>
+                  <td className="px-3 py-2">
+                    {status === "expired" ? (
+                      <Badge variant="destructive">Expired</Badge>
+                    ) : (
+                      <Badge variant="secondary">Pending</Badge>
+                    )}
+                  </td>
+                  <td className="px-3 py-2 text-[var(--text-muted)]">
+                    {formatRelativeTime(inv.created_at)}
+                  </td>
+                  <td className="px-3 py-2 text-right">
+                    <div className="flex items-center justify-end gap-1">
+                      <Button
+                        variant="ghost"
+                        size="icon-xs"
+                        title="Resend"
+                        onClick={() => handleResend(inv.id)}
+                        disabled={isBusy}
+                      >
+                        <RotateCw className="size-3.5" />
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="icon-xs"
+                        title="Revoke"
+                        onClick={() => handleRevoke(inv.id)}
+                        disabled={isBusy}
+                      >
+                        <Trash2 className="size-3.5 text-destructive" />
+                      </Button>
+                    </div>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </TableShell>
       )}
     </div>
   );

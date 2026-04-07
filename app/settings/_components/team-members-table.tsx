@@ -14,14 +14,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
+import { ConfirmDialog, type ConfirmDialogConfig } from "@/components/ui/confirm-dialog";
+import { TableShell, TableHeadCell } from "@/components/settings/table-shell";
 import { clearActiveTeamCookie } from "@/lib/cookies/active-team";
 
 interface MemberEntry {
@@ -193,29 +187,16 @@ export function TeamMembersTable({
 
   return (
     <>
-      <div>
-        <h3 className="text-sm font-semibold text-[var(--text-primary)]">
-          Members ({members.length})
-        </h3>
-        <div className="mt-2 overflow-hidden rounded-lg border border-[var(--border-default)]">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b bg-muted/50">
-                <th className="px-4 py-2.5 text-left font-medium text-muted-foreground">
-                  Email
-                </th>
-                <th className="px-4 py-2.5 text-left font-medium text-muted-foreground">
-                  Role
-                </th>
-                <th className="px-4 py-2.5 text-left font-medium text-muted-foreground">
-                  Joined
-                </th>
-                <th className="px-4 py-2.5 text-right font-medium text-muted-foreground">
-                  Actions
-                </th>
-              </tr>
-            </thead>
-            <tbody>
+      <TableShell title={`Members (${members.length})`}>
+        <thead>
+          <tr className="border-b border-[var(--border-default)] bg-[var(--surface-raised)]">
+            <TableHeadCell>Email</TableHeadCell>
+            <TableHeadCell>Role</TableHeadCell>
+            <TableHeadCell>Joined</TableHeadCell>
+            <TableHeadCell align="right">Actions</TableHeadCell>
+          </tr>
+        </thead>
+        <tbody>
               {members.map((member) => {
                 const isSelf = member.user_id === currentUserId;
                 const isMemberOwner = member.user_id === ownerId;
@@ -225,7 +206,7 @@ export function TeamMembersTable({
                     key={member.user_id}
                     className="border-b last:border-b-0"
                   >
-                    <td className="px-4 py-2.5 font-medium">
+                    <td className="px-3 py-2 font-medium">
                       {member.email}
                       {isSelf && (
                         <span className="ml-1.5 text-xs text-muted-foreground">
@@ -233,7 +214,7 @@ export function TeamMembersTable({
                         </span>
                       )}
                     </td>
-                    <td className="px-4 py-2.5">
+                    <td className="px-3 py-2">
                       <div className="flex items-center gap-1.5">
                         {isMemberOwner && (
                           <Badge
@@ -268,14 +249,14 @@ export function TeamMembersTable({
                         )}
                       </div>
                     </td>
-                    <td className="px-4 py-2.5 text-muted-foreground whitespace-nowrap">
+                    <td className="px-3 py-2 text-muted-foreground whitespace-nowrap">
                       {new Date(member.joined_at).toLocaleDateString("en-GB", {
                         day: "numeric",
                         month: "short",
                         year: "numeric",
                       })}
                     </td>
-                    <td className="px-4 py-2.5">
+                    <td className="px-3 py-2">
                       <div className="flex items-center justify-end gap-1">
                         {isSelf ? (
                           <Button
@@ -325,13 +306,11 @@ export function TeamMembersTable({
                   </tr>
                 );
               })}
-            </tbody>
-          </table>
-        </div>
-      </div>
+        </tbody>
+      </TableShell>
 
       <ConfirmDialog
-        action={confirmAction}
+        config={confirmAction ? confirmActionConfig(confirmAction) : null}
         isActing={isActing}
         onConfirm={() => {
           if (!confirmAction) return;
@@ -345,20 +324,8 @@ export function TeamMembersTable({
   );
 }
 
-function ConfirmDialog({
-  action,
-  isActing,
-  onConfirm,
-  onCancel,
-}: {
-  action: ConfirmAction | null;
-  isActing: boolean;
-  onConfirm: () => void;
-  onCancel: () => void;
-}) {
-  if (!action) return null;
-
-  const config = {
+function confirmActionConfig(action: ConfirmAction): ConfirmDialogConfig {
+  const configs: Record<ConfirmAction["type"], ConfirmDialogConfig> = {
     remove: {
       title: "Remove Member",
       description: `Remove ${action.type === "remove" ? action.member.email : ""} from the team? Their existing data will remain with the team.`,
@@ -378,29 +345,6 @@ function ConfirmDialog({
       confirm: "Leave",
       destructive: true,
     },
-  }[action.type];
-
-  return (
-    <Dialog open onOpenChange={(open) => { if (!open) onCancel(); }}>
-      <DialogContent showCloseButton={false}>
-        <DialogHeader>
-          <DialogTitle>{config.title}</DialogTitle>
-          <DialogDescription>{config.description}</DialogDescription>
-        </DialogHeader>
-        <DialogFooter>
-          <Button variant="outline" onClick={onCancel} disabled={isActing}>
-            Cancel
-          </Button>
-          <Button
-            variant={config.destructive ? "destructive" : "default"}
-            onClick={onConfirm}
-            disabled={isActing}
-          >
-            {isActing && <Loader2 className="mr-1.5 size-3.5 animate-spin" />}
-            {isActing ? "Processing..." : config.confirm}
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
-  );
+  };
+  return configs[action.type];
 }
