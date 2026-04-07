@@ -11,6 +11,7 @@ export function AppHeader() {
   const { isAuthenticated } = useAuth();
 
   const isAuthPage =
+    pathname === "/" ||
     pathname === "/login" ||
     pathname === "/signup" ||
     pathname === "/forgot-password" ||

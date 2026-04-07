@@ -1,3 +1,6 @@
+"use client";
+
+import { usePathname } from "next/navigation";
 import Link from "next/link";
 import { Mail, Github, Linkedin } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
@@ -9,6 +12,10 @@ const LINKS: { label: string; href: string; icon: LucideIcon }[] = [
 ];
 
 export function AppFooter() {
+  const pathname = usePathname();
+
+  if (pathname === "/") return null;
+
   return (
     <footer className="border-t border-[var(--border-default)] bg-[var(--surface-page)] px-6 py-3">
       <div className="flex items-center justify-center gap-2 text-sm text-[var(--text-muted)]">

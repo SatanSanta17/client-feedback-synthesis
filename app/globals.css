@@ -86,6 +86,7 @@
   /* Brand tokens */
   --brand-primary: oklch(0.457 0.24 277.023);
   --brand-primary-light: oklch(0.926 0.047 277.023);
+  --brand-primary-vivid: oklch(0.6 0.24 300);
   --text-primary: oklch(0.145 0 0);
   --text-secondary: oklch(0.556 0 0);
   --text-muted: oklch(0.708 0 0);

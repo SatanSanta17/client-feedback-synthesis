@@ -20,9 +20,10 @@ Synthesiser is a web application for teams to capture structured client session 
 
 ## Current State
 
-**Status:** PRD-002 through PRD-010 implemented. PRD-012 Parts 1–5 (Design Tokens and Typography + DRY Extraction + SRP Component Decomposition + API Route/Service Cleanup + Dependency Inversion) implemented. PRD-013 Parts 1–2 (File Upload Infrastructure + Persistence & Signal Extraction Integration) implemented. The app is a fully functional team-capable client feedback capture and synthesis platform. Google OAuth login (open to any Google account), working capture form with AI signal extraction and file attachment upload with server-side persistence, past sessions table with filters/inline editing/soft delete, master signal page with AI synthesis and PDF download, prompt editor with version history, and team access with role-based permissions.
+**Status:** PRD-002 through PRD-010 implemented. PRD-012 Parts 1–5 (Design Tokens and Typography + DRY Extraction + SRP Component Decomposition + API Route/Service Cleanup + Dependency Inversion) implemented. PRD-013 Parts 1–2 (File Upload Infrastructure + Persistence & Signal Extraction Integration) implemented. PRD-015 Part 1 (Public Landing Page) implemented. The app is a fully functional team-capable client feedback capture and synthesis platform with a public landing page. Google OAuth login (open to any Google account), working capture form with AI signal extraction and file attachment upload with server-side persistence, past sessions table with filters/inline editing/soft delete, master signal page with AI synthesis and PDF download, prompt editor with version history, and team access with role-based permissions.
 
 **Core features live:**
+- Public landing page at `/` with hero, feature cards, how-it-works flow, and CTA (authenticated users auto-redirect to `/capture`)
 - Session capture with AI signal extraction (Vercel AI SDK, multi-provider) and file attachment upload (TXT, PDF, CSV, DOCX, JSON) with server-side parsing and chat format detection (WhatsApp, Slack)
 - Master signal synthesis (cold start + incremental, tainted flag on deletion)
 - Per-user prompt editor with version history and revert
@@ -51,7 +52,9 @@ synthesiser/
 ├── app/
 │   ├── globals.css              # Global CSS tokens (brand colours, status colours, AI action colours, typography, surfaces)
 │   ├── layout.tsx               # Root layout — AuthProvider + AppHeader + AppFooter + Toaster
-│   ├── page.tsx                 # Root redirect → /capture
+│   ├── page.tsx                 # Landing page (public) — authenticated users redirect to /capture
+│   ├── _components/
+│   │   └── landing-page.tsx     # Client component — auth-aware landing page (hero, features, how-it-works, CTA)
 │   ├── favicon.ico
 │   ├── api/
 │   │   ├── ai/
@@ -267,7 +270,8 @@ synthesiser/
     ├── 011-email-auth/
     ├── 012-code-quality/
     ├── 013-file-upload/
-    └── 014-prompt-traceability/
+    ├── 014-prompt-traceability/
+    └── 015-landing-page/
 ```
 
 > This map is updated after each increment ships. Only files that exist in the codebase are listed here.
@@ -455,7 +459,7 @@ Stores versioned AI system prompts per user or team workspace. Each save/reset/r
 
 **Standard flow:**
 
-1. **Middleware** (`middleware.ts`) runs on every request. It refreshes the Supabase session via `getUser()`, redirects unauthenticated users to `/login`, and validates the `active_team_id` cookie (clears if user is no longer a member). Public routes (`/login`, `/auth/callback`, `/invite`) are excluded.
+1. **Middleware** (`middleware.ts`) runs on every request. It refreshes the Supabase session via `getUser()`, redirects unauthenticated users to `/login`, and validates the `active_team_id` cookie (clears if user is no longer a member). Public routes (`/`, `/login`, `/auth/callback`, `/invite`) are excluded.
 2. User visits `/login` and clicks "Sign in with Google."
 3. `supabase.auth.signInWithOAuth({ provider: 'google' })` redirects to Google consent screen.
 4. Google redirects back to `/auth/callback?code=...`.

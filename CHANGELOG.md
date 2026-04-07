@@ -6,6 +6,15 @@ All notable changes to this project are documented here, grouped by PRD and part
 
 ## [Unreleased]
 
+### PRD-015 Part 1: Public Landing Page — 2026-04-07
+- Added public landing page at `/` with hero section (gradient headline, pill badge, dual CTAs), 4-card feature grid, 3-step "How It Works" flow, and bottom CTA
+- Features defined as a data array for easy extension as new capabilities ship
+- Authenticated users auto-redirect to `/capture` with no flash of landing page
+- Updated middleware to allow unauthenticated access to `/`
+- Updated `AppHeader` and `AppFooter` to hide on the landing page (footer converted to client component for `usePathname` access)
+- Landing page renders its own lightweight nav (logo + Get Started) and minimal footer (copyright + sign-in link)
+- All styling uses existing CSS custom properties and Tailwind tokens — no new dependencies
+
 ### PRD-012 Backlog: Polish fixes — 2026-04-07
 - Added missing entry logs to 3 GET route handlers (`/api/teams`, `/api/teams/[teamId]`, `/api/teams/[teamId]/members`) for logging consistency
 - Extracted `TableShell` and `TableHeadCell` into `components/settings/table-shell.tsx` — shared bordered table wrapper used by `team-members-table` and `pending-invitations-table`, normalised to design tokens
