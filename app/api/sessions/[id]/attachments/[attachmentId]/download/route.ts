@@ -1,12 +1,14 @@
 import { NextRequest, NextResponse } from "next/server";
 
-import { createClient, createServiceRoleClient } from "@/lib/supabase/server";
+import { createClient, createServiceRoleClient, getActiveTeamId } from "@/lib/supabase/server";
 import {
   getSignedDownloadUrl,
 } from "@/lib/services/attachment-service";
 import { checkSessionAccess } from "@/lib/services/session-service";
 import { mapAccessError } from "@/lib/utils/map-access-error";
 import { createAttachmentRepository } from "@/lib/repositories/supabase/supabase-attachment-repository";
+import { createSessionRepository } from "@/lib/repositories/supabase/supabase-session-repository";
+import { createTeamRepository } from "@/lib/repositories/supabase/supabase-team-repository";
 
 export async function GET(
   _request: NextRequest,
@@ -22,10 +24,20 @@ export async function GET(
   );
 
   const supabase = await createClient();
-  const access = await checkSessionAccess(supabase, sessionId);
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  if (!user) return mapAccessError("unauthenticated");
+
+  const teamId = await getActiveTeamId();
+  const serviceClient = createServiceRoleClient();
+  const sessionRepo = createSessionRepository(supabase, serviceClient, teamId);
+  const teamRepo = createTeamRepository(supabase, serviceClient);
+
+  const access = await checkSessionAccess(sessionRepo, teamRepo, sessionId, user.id, teamId);
   if (!access.allowed) return mapAccessError(access.reason);
 
-  const serviceClient = createServiceRoleClient();
   const attachmentRepo = createAttachmentRepository(supabase, serviceClient);
 
   const storagePath = await attachmentRepo.getStoragePath(attachmentId);

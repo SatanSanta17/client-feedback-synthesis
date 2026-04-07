@@ -1,11 +1,15 @@
-import { type SupabaseClient } from "@supabase/supabase-js";
-
-import { createClient, createServiceRoleClient, getActiveTeamId } from "@/lib/supabase/server";
+import type {
+  SessionRepository,
+  SessionRow,
+  SessionAccessRow,
+} from "@/lib/repositories/session-repository";
+import type { ClientRepository } from "@/lib/repositories/client-repository";
+import type { TeamRepository } from "@/lib/repositories/team-repository";
+import type { MasterSignalRepository } from "@/lib/repositories/master-signal-repository";
 import { createNewClient, ClientDuplicateError } from "./client-service";
-import { createClientRepository } from "@/lib/repositories/supabase/supabase-client-repository";
 import { getTeamMember } from "./team-service";
-import { createTeamRepository } from "@/lib/repositories/supabase/supabase-team-repository";
 import { taintLatestMasterSignal } from "./master-signal-service";
+import { SessionNotFoundRepoError } from "@/lib/repositories/supabase/supabase-session-repository";
 
 // ---------------------------------------------------------------------------
 // Session Access Check
@@ -16,50 +20,40 @@ export type SessionAccessResult =
   | { allowed: false; reason: "unauthenticated" | "not-found" | "forbidden" };
 
 /**
- * Checks whether the current user has access to a session.
+ * Checks whether a user has access to a session.
  * Framework-agnostic — returns a discriminated union, not HTTP responses.
  *
- * - unauthenticated: no valid user session
  * - not-found: session does not exist or is soft-deleted
  * - forbidden: team context and user is neither the owner nor an admin
  */
 export async function checkSessionAccess(
-  supabase: SupabaseClient,
-  sessionId: string
+  sessionRepo: SessionRepository,
+  teamRepo: TeamRepository,
+  sessionId: string,
+  userId: string,
+  teamId: string | null
 ): Promise<SessionAccessResult> {
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  console.log(
+    `[session-service] checkSessionAccess — userId: ${userId}, sessionId: ${sessionId}, teamId: ${teamId}`
+  );
 
-  if (!user) {
-    return { allowed: false, reason: "unauthenticated" };
-  }
-
-  const teamId = await getActiveTeamId();
-
-  const { data: session } = await supabase
-    .from("sessions")
-    .select("id, created_by")
-    .eq("id", sessionId)
-    .is("deleted_at", null)
-    .single();
+  const session = await sessionRepo.findById(sessionId);
 
   if (!session) {
     return { allowed: false, reason: "not-found" };
   }
 
-  if (teamId && session.created_by !== user.id) {
-    // Bridge: create inline TeamRepository until session-service migrates in 5.5
-    const serviceClient = createServiceRoleClient();
-    const teamRepo = createTeamRepository(supabase, serviceClient);
-    const member = await getTeamMember(teamRepo, teamId, user.id);
+  if (teamId && session.created_by !== userId) {
+    const member = await getTeamMember(teamRepo, teamId, userId);
     if (member?.role !== "admin") {
       return { allowed: false, reason: "forbidden" };
     }
   }
 
-  console.log(`[session-service] checkSessionAccess — allowed for user ${user.id}, session ${sessionId}`);
-  return { allowed: true, userId: user.id, teamId };
+  console.log(
+    `[session-service] checkSessionAccess — allowed for user ${userId}, session ${sessionId}`
+  );
+  return { allowed: true, userId, teamId };
 }
 
 // ---------------------------------------------------------------------------
@@ -101,105 +95,66 @@ export interface SessionFilters {
 /**
  * Fetch paginated sessions with optional filters.
  * Joins with clients to include client_name.
- * Scopes by active workspace: personal (team_id IS NULL) or team.
  * Returns sessions and total count for pagination.
  */
 export async function getSessions(
-  filters: SessionFilters
+  sessionRepo: SessionRepository,
+  filters: SessionFilters,
+  teamId: string | null
 ): Promise<{ sessions: SessionWithClient[]; total: number }> {
   const { clientId, dateFrom, dateTo, offset, limit } = filters;
-  const teamId = await getActiveTeamId();
 
-  console.log("[session-service] getSessions — filters:", JSON.stringify(filters), "teamId:", teamId);
+  console.log(
+    "[session-service] getSessions — filters:",
+    JSON.stringify(filters),
+    "teamId:",
+    teamId
+  );
 
-  const supabase = await createClient();
-
-  let query = supabase
-    .from("sessions")
-    .select("id, client_id, session_date, raw_notes, structured_notes, created_by, created_at, clients(name)", { count: "exact" })
-    .is("deleted_at", null)
-    .order("session_date", { ascending: false })
-    .order("created_at", { ascending: false })
-    .range(offset, offset + limit - 1);
-
-  if (teamId) {
-    query = query.eq("team_id", teamId);
-  } else {
-    query = query.is("team_id", null);
-  }
-
-  if (clientId) {
-    query = query.eq("client_id", clientId);
-  }
-  if (dateFrom) {
-    query = query.gte("session_date", dateFrom);
-  }
-  if (dateTo) {
-    query = query.lte("session_date", dateTo);
-  }
-
-  const { data, error, count } = await query;
-
-  if (error) {
-    console.error("[session-service] getSessions error:", error);
-    throw new Error("Failed to fetch sessions");
-  }
-
-  const rows = data ?? [];
+  const { rows, total } = await sessionRepo.list({
+    clientId,
+    dateFrom,
+    dateTo,
+    offset,
+    limit,
+  });
 
   // In team context, resolve creator emails for attribution
   let emailByUserId: Map<string, string> | null = null;
   if (teamId && rows.length > 0) {
     const uniqueUserIds = [...new Set(rows.map((r) => r.created_by))];
-    const serviceClient = createServiceRoleClient();
-    const { data: profiles } = await serviceClient
-      .from("profiles")
-      .select("id, email")
-      .in("id", uniqueUserIds);
-
-    emailByUserId = new Map(
-      (profiles ?? []).map((p) => [p.id, p.email])
-    );
+    emailByUserId = await sessionRepo.getCreatorEmails(uniqueUserIds);
   }
 
   // Batch-fetch attachment counts for the returned sessions
-  const attachmentCountMap = new Map<string, number>();
   const sessionIds = rows.map((r) => r.id);
+  const attachmentCountMap =
+    sessionIds.length > 0
+      ? await sessionRepo.getAttachmentCounts(sessionIds)
+      : new Map<string, number>();
 
-  if (sessionIds.length > 0) {
-    const { data: attachmentRows } = await supabase
-      .from("session_attachments")
-      .select("session_id")
-      .in("session_id", sessionIds)
-      .is("deleted_at", null);
+  const sessions: SessionWithClient[] = rows.map((row) => ({
+    id: row.id,
+    client_id: row.client_id,
+    session_date: row.session_date,
+    raw_notes: row.raw_notes,
+    structured_notes: row.structured_notes ?? null,
+    created_by: row.created_by,
+    created_at: row.created_at,
+    client_name: row.client_name,
+    created_by_email: emailByUserId?.get(row.created_by) ?? undefined,
+    attachment_count: attachmentCountMap.get(row.id) ?? 0,
+  }));
 
-    for (const row of attachmentRows ?? []) {
-      attachmentCountMap.set(
-        row.session_id,
-        (attachmentCountMap.get(row.session_id) ?? 0) + 1
-      );
-    }
-  }
+  console.log(
+    "[session-service] getSessions — returning",
+    sessions.length,
+    "of",
+    total,
+    "total"
+  );
 
-  const sessions: SessionWithClient[] = rows.map((row) => {
-    const clientData = row.clients as unknown as { name: string } | null;
-    return {
-      id: row.id,
-      client_id: row.client_id,
-      session_date: row.session_date,
-      raw_notes: row.raw_notes,
-      structured_notes: row.structured_notes ?? null,
-      created_by: row.created_by,
-      created_at: row.created_at,
-      client_name: clientData?.name ?? "Unknown",
-      created_by_email: emailByUserId?.get(row.created_by) ?? undefined,
-      attachment_count: attachmentCountMap.get(row.id) ?? 0,
-    };
-  });
-
-  console.log("[session-service] getSessions — returning", sessions.length, "of", count, "total");
-
-  return { sessions, total: count ?? 0 };
+  return { sessions, total };
 }
 
 /**
@@ -208,45 +163,37 @@ export async function getSessions(
  * Re-throws ClientDuplicateError so the API route can return 409.
  */
 export async function createSession(
+  sessionRepo: SessionRepository,
+  clientRepo: ClientRepository,
   input: CreateSessionInput
 ): Promise<Session> {
   const { clientId, clientName, sessionDate, rawNotes, structuredNotes } = input;
 
-  console.log("[session-service] createSession — clientId:", clientId, "clientName:", clientName);
+  console.log(
+    "[session-service] createSession — clientId:",
+    clientId,
+    "clientName:",
+    clientName
+  );
 
   // Resolve the client ID
   let resolvedClientId = clientId;
 
-  const supabase = await createClient();
-  const teamId = await getActiveTeamId();
-
   if (!resolvedClientId) {
-    // Create the new client — let ClientDuplicateError propagate
-    const clientRepo = createClientRepository(supabase, teamId);
     const newClient = await createNewClient(clientRepo, clientName);
     resolvedClientId = newClient.id;
     console.log("[session-service] created new client:", resolvedClientId);
   }
 
-  const { data, error } = await supabase
-    .from("sessions")
-    .insert({
-      client_id: resolvedClientId,
-      session_date: sessionDate,
-      raw_notes: rawNotes,
-      structured_notes: structuredNotes ?? null,
-      team_id: teamId,
-    })
-    .select("id, client_id, session_date, raw_notes, structured_notes, created_by, created_at")
-    .single();
+  const row = await sessionRepo.create({
+    client_id: resolvedClientId,
+    session_date: sessionDate,
+    raw_notes: rawNotes,
+    structured_notes: structuredNotes ?? null,
+  });
 
-  if (error) {
-    console.error("[session-service] createSession insert error:", error);
-    throw new Error("Failed to create session");
-  }
-
-  console.log("[session-service] createSession success:", data.id, "teamId:", teamId);
-  return data;
+  console.log("[session-service] createSession success:", row.id);
+  return mapRowToSession(row);
 }
 
 export interface UpdateSessionInput {
@@ -264,6 +211,8 @@ export interface UpdateSessionInput {
  * Re-throws ClientDuplicateError so the API route can return 409.
  */
 export async function updateSession(
+  sessionRepo: SessionRepository,
+  clientRepo: ClientRepository,
   id: string,
   input: UpdateSessionInput
 ): Promise<Session> {
@@ -274,91 +223,90 @@ export async function updateSession(
   // Resolve the client ID
   let resolvedClientId = clientId;
 
-  const supabase = await createClient();
-
   if (!resolvedClientId) {
-    const teamId = await getActiveTeamId();
-    const clientRepo = createClientRepository(supabase, teamId);
     const newClient = await createNewClient(clientRepo, clientName);
     resolvedClientId = newClient.id;
     console.log("[session-service] updateSession created new client:", resolvedClientId);
   }
 
-  // Build update payload — only include structured_notes if explicitly provided
-  // undefined = "don't touch it", null = "clear it", string = "set it"
-  const updatePayload: Record<string, unknown> = {
-    client_id: resolvedClientId,
-    session_date: sessionDate,
-    raw_notes: rawNotes,
-  };
+  try {
+    const row = await sessionRepo.update(id, {
+      client_id: resolvedClientId,
+      session_date: sessionDate,
+      raw_notes: rawNotes,
+      structured_notes: structuredNotes,
+    });
 
-  if (structuredNotes !== undefined) {
-    updatePayload.structured_notes = structuredNotes;
-  }
-
-  const { data, error } = await supabase
-    .from("sessions")
-    .update(updatePayload)
-    .eq("id", id)
-    .is("deleted_at", null)
-    .select("id, client_id, session_date, raw_notes, structured_notes, created_by, created_at")
-    .single();
-
-  if (error) {
-    // PGRST116 = no rows returned (not found or already deleted)
-    if (error.code === "PGRST116") {
+    console.log("[session-service] updateSession success:", row.id);
+    return mapRowToSession(row);
+  } catch (err) {
+    if (err instanceof SessionNotFoundRepoError) {
       console.warn("[session-service] updateSession not found:", id);
-      throw new SessionNotFoundError(`Session ${id} not found`);
+      throw new SessionNotFoundError(err.message);
     }
-    console.error("[session-service] updateSession error:", error);
-    throw new Error("Failed to update session");
+    throw err;
   }
-
-  console.log("[session-service] updateSession success:", data.id);
-  return data;
 }
 
 /**
  * Soft-delete a session by setting deleted_at.
- * Uses the service role client to bypass the RLS WITH CHECK constraint
- * (which blocks updates that set deleted_at to a non-null value).
  * Throws SessionNotFoundError if the session doesn't exist or is already deleted.
+ * Taints the latest master signal if the session had structured notes.
  */
-export async function deleteSession(id: string): Promise<void> {
+export async function deleteSession(
+  sessionRepo: SessionRepository,
+  masterSignalRepo: MasterSignalRepository,
+  id: string
+): Promise<void> {
   console.log("[session-service] deleteSession — id:", id);
 
-  const supabase = createServiceRoleClient();
+  try {
+    const result = await sessionRepo.softDelete(id);
 
-  const { data, error } = await supabase
-    .from("sessions")
-    .update({ deleted_at: new Date().toISOString() })
-    .eq("id", id)
-    .is("deleted_at", null)
-    .select("id, structured_notes, created_by, team_id")
-    .single();
+    console.log("[session-service] deleteSession success:", result.id);
 
-  if (error) {
-    if (error.code === "PGRST116") {
+    if (result.structured_notes) {
+      try {
+        await taintLatestMasterSignal(
+          masterSignalRepo,
+          result.created_by,
+          result.team_id ?? undefined
+        );
+      } catch (taintErr) {
+        console.error(
+          "[session-service] failed to taint master signal:",
+          taintErr instanceof Error ? taintErr.message : taintErr
+        );
+      }
+    }
+  } catch (err) {
+    if (err instanceof SessionNotFoundRepoError) {
       console.warn("[session-service] deleteSession not found:", id);
-      throw new SessionNotFoundError(`Session ${id} not found`);
+      throw new SessionNotFoundError(err.message);
     }
-    console.error("[session-service] deleteSession error:", error);
-    throw new Error("Failed to delete session");
-  }
-
-  console.log("[session-service] deleteSession success:", data.id);
-
-  if (data.structured_notes) {
-    try {
-      await taintLatestMasterSignal(data.created_by, data.team_id ?? undefined);
-    } catch (taintErr) {
-      console.error(
-        "[session-service] failed to taint master signal:",
-        taintErr instanceof Error ? taintErr.message : taintErr
-      );
-    }
+    throw err;
   }
 }
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+function mapRowToSession(row: SessionRow): Session {
+  return {
+    id: row.id,
+    client_id: row.client_id,
+    session_date: row.session_date,
+    raw_notes: row.raw_notes,
+    structured_notes: row.structured_notes,
+    created_by: row.created_by,
+    created_at: row.created_at,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Errors
+// ---------------------------------------------------------------------------
 
 /**
  * Custom error for sessions that don't exist or are already deleted.

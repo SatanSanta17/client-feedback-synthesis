@@ -5,6 +5,7 @@ import { generateOrUpdateMasterSignal } from "@/lib/services/master-signal-servi
 import { getTeamMember } from "@/lib/services/team-service";
 import { createPromptRepository } from "@/lib/repositories/supabase/supabase-prompt-repository";
 import { createTeamRepository } from "@/lib/repositories/supabase/supabase-team-repository";
+import { createMasterSignalRepository } from "@/lib/repositories/supabase/supabase-master-signal-repository";
 
 /**
  * POST /api/ai/generate-master-signal
@@ -31,8 +32,9 @@ export async function POST() {
   }
 
   const teamId = await getActiveTeamId();
+  const serviceClient = createServiceRoleClient();
+
   if (teamId) {
-    const serviceClient = createServiceRoleClient();
     const teamRepo = createTeamRepository(supabase, serviceClient);
     const member = await getTeamMember(teamRepo, teamId, user.id);
     if (member?.role !== "admin") {
@@ -45,9 +47,10 @@ export async function POST() {
   }
 
   const promptRepo = createPromptRepository(supabase, teamId);
+  const masterSignalRepo = createMasterSignalRepository(supabase, serviceClient, teamId);
 
   try {
-    const result = await generateOrUpdateMasterSignal(promptRepo);
+    const result = await generateOrUpdateMasterSignal(masterSignalRepo, promptRepo);
 
     if (result.outcome === "no-sessions") {
       return NextResponse.json({ message: result.message }, { status: 422 });

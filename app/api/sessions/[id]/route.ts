@@ -8,8 +8,12 @@ import {
   SessionNotFoundError,
   ClientDuplicateError,
 } from "@/lib/services/session-service";
-import { createClient } from "@/lib/supabase/server";
+import { createClient, createServiceRoleClient, getActiveTeamId } from "@/lib/supabase/server";
 import { mapAccessError } from "@/lib/utils/map-access-error";
+import { createSessionRepository } from "@/lib/repositories/supabase/supabase-session-repository";
+import { createClientRepository } from "@/lib/repositories/supabase/supabase-client-repository";
+import { createTeamRepository } from "@/lib/repositories/supabase/supabase-team-repository";
+import { createMasterSignalRepository } from "@/lib/repositories/supabase/supabase-master-signal-repository";
 
 // --- PUT /api/sessions/[id] ---
 
@@ -57,7 +61,21 @@ export async function PUT(
   console.log("[api/sessions/[id]] PUT — id:", id);
 
   const supabase = await createClient();
-  const access = await checkSessionAccess(supabase, id);
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  if (!user) {
+    return mapAccessError("unauthenticated");
+  }
+
+  const teamId = await getActiveTeamId();
+  const serviceClient = createServiceRoleClient();
+  const sessionRepo = createSessionRepository(supabase, serviceClient, teamId);
+  const teamRepo = createTeamRepository(supabase, serviceClient);
+  const clientRepo = createClientRepository(supabase, teamId);
+
+  const access = await checkSessionAccess(sessionRepo, teamRepo, id, user.id, teamId);
   if (!access.allowed) return mapAccessError(access.reason);
 
   let body: unknown;
@@ -80,7 +98,7 @@ export async function PUT(
   }
 
   try {
-    const session = await updateSession(id, {
+    const session = await updateSession(sessionRepo, clientRepo, id, {
       clientId: parsed.data.clientId,
       clientName: parsed.data.clientName,
       sessionDate: parsed.data.sessionDate,
@@ -120,11 +138,25 @@ export async function DELETE(
   console.log("[api/sessions/[id]] DELETE — id:", id);
 
   const supabase = await createClient();
-  const access = await checkSessionAccess(supabase, id);
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  if (!user) {
+    return mapAccessError("unauthenticated");
+  }
+
+  const teamId = await getActiveTeamId();
+  const serviceClient = createServiceRoleClient();
+  const sessionRepo = createSessionRepository(supabase, serviceClient, teamId);
+  const teamRepo = createTeamRepository(supabase, serviceClient);
+  const masterSignalRepo = createMasterSignalRepository(supabase, serviceClient, teamId);
+
+  const access = await checkSessionAccess(sessionRepo, teamRepo, id, user.id, teamId);
   if (!access.allowed) return mapAccessError(access.reason);
 
   try {
-    await deleteSession(id);
+    await deleteSession(sessionRepo, masterSignalRepo, id);
 
     console.log("[api/sessions/[id]] DELETE — deleted:", id);
     return NextResponse.json({ message: "Session deleted" });

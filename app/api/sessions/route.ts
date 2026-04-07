@@ -6,6 +6,9 @@ import {
   createSession,
   ClientDuplicateError,
 } from "@/lib/services/session-service";
+import { createClient, createServiceRoleClient, getActiveTeamId } from "@/lib/supabase/server";
+import { createSessionRepository } from "@/lib/repositories/supabase/supabase-session-repository";
+import { createClientRepository } from "@/lib/repositories/supabase/supabase-client-repository";
 
 // --- GET /api/sessions?clientId=&dateFrom=&dateTo=&offset=&limit= ---
 
@@ -31,14 +34,19 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ message }, { status: 400 });
   }
 
+  const supabase = await createClient();
+  const teamId = await getActiveTeamId();
+  const serviceClient = createServiceRoleClient();
+  const sessionRepo = createSessionRepository(supabase, serviceClient, teamId);
+
   try {
-    const result = await getSessions({
+    const result = await getSessions(sessionRepo, {
       clientId: parsed.data.clientId,
       dateFrom: parsed.data.dateFrom,
       dateTo: parsed.data.dateTo,
       offset: parsed.data.offset,
       limit: parsed.data.limit,
-    });
+    }, teamId);
 
     console.log("[api/sessions] GET — returning", result.sessions.length, "of", result.total, "total");
     return NextResponse.json(result);
@@ -114,8 +122,14 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ message }, { status: 400 });
   }
 
+  const supabase = await createClient();
+  const teamId = await getActiveTeamId();
+  const serviceClient = createServiceRoleClient();
+  const sessionRepo = createSessionRepository(supabase, serviceClient, teamId);
+  const clientRepo = createClientRepository(supabase, teamId);
+
   try {
-    const session = await createSession({
+    const session = await createSession(sessionRepo, clientRepo, {
       clientId: parsed.data.clientId,
       clientName: parsed.data.clientName,
       sessionDate: parsed.data.sessionDate,

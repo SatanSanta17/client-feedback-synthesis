@@ -1,9 +1,10 @@
 import { NextResponse } from "next/server";
-import { createClient } from "@/lib/supabase/server";
+import { createClient, createServiceRoleClient, getActiveTeamId } from "@/lib/supabase/server";
 import {
   getLatestMasterSignal,
   getStaleSessionCount,
 } from "@/lib/services/master-signal-service";
+import { createMasterSignalRepository } from "@/lib/repositories/supabase/supabase-master-signal-repository";
 
 /**
  * GET /api/master-signal
@@ -34,11 +35,16 @@ export async function GET() {
     );
   }
 
+  const teamId = await getActiveTeamId();
+  const serviceClient = createServiceRoleClient();
+  const masterSignalRepo = createMasterSignalRepository(supabase, serviceClient, teamId);
+
   try {
-    const masterSignal = await getLatestMasterSignal();
+    const masterSignal = await getLatestMasterSignal(masterSignalRepo);
 
     // Count stale sessions: updated since last generation, or all if no generation yet
     const staleCount = await getStaleSessionCount(
+      masterSignalRepo,
       masterSignal?.generatedAt ?? null
     );
 
