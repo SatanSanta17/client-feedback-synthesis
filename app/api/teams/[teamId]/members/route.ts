@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createClient, createServiceRoleClient } from "@/lib/supabase/server";
-import { getTeamMember } from "@/lib/services/team-service";
+import { createClient } from "@/lib/supabase/server";
+import { getTeamMember, getTeamMembersWithProfiles } from "@/lib/services/team-service";
 
 interface RouteContext {
   params: Promise<{ teamId: string }>;
@@ -34,42 +34,8 @@ export async function GET(_request: NextRequest, context: RouteContext) {
   }
 
   try {
-    const serviceClient = createServiceRoleClient();
-
-    const { data: members, error } = await serviceClient
-      .from("team_members")
-      .select("user_id, role, joined_at")
-      .eq("team_id", teamId)
-      .is("removed_at", null)
-      .order("joined_at", { ascending: true });
-
-    if (error) {
-      console.error("[api/teams/[teamId]/members] GET — error:", error.message);
-      return NextResponse.json(
-        { message: "Failed to fetch members" },
-        { status: 500 }
-      );
-    }
-
-    const userIds = (members ?? []).map((m) => m.user_id);
-
-    const { data: profiles } = await serviceClient
-      .from("profiles")
-      .select("id, email")
-      .in("id", userIds);
-
-    const emailByUserId = new Map(
-      (profiles ?? []).map((p) => [p.id, p.email])
-    );
-
-    const result = (members ?? []).map((m) => ({
-      user_id: m.user_id,
-      role: m.role,
-      joined_at: m.joined_at,
-      email: emailByUserId.get(m.user_id) ?? "unknown",
-    }));
-
-    return NextResponse.json({ members: result });
+    const members = await getTeamMembersWithProfiles(teamId);
+    return NextResponse.json({ members });
   } catch (err) {
     console.error(
       "[api/teams/[teamId]/members] GET — error:",

@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { createClient } from "@/lib/supabase/server";
-import { createTeam, getTeamsForUser } from "@/lib/services/team-service";
+import { createTeam, getTeamsWithRolesForUser } from "@/lib/services/team-service";
 
 // --- GET /api/teams ---
 
@@ -19,25 +19,8 @@ export async function GET() {
   }
 
   try {
-    const teams = await getTeamsForUser();
-
-    const { data: memberships } = await supabase
-      .from("team_members")
-      .select("team_id, role")
-      .eq("user_id", user.id)
-      .is("removed_at", null);
-
-    const roleByTeamId = new Map(
-      (memberships ?? []).map((m) => [m.team_id, m.role])
-    );
-
-    const teamsWithRoles = teams.map((t) => ({
-      id: t.id,
-      name: t.name,
-      role: roleByTeamId.get(t.id) ?? "sales",
-    }));
-
-    return NextResponse.json({ teams: teamsWithRoles });
+    const teams = await getTeamsWithRolesForUser(user.id);
+    return NextResponse.json({ teams });
   } catch (err) {
     console.error(
       "[api/teams] GET — error:",

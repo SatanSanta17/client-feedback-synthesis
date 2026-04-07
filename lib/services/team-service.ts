@@ -153,6 +153,92 @@ export async function getActiveTeamMembers(
 }
 
 // ---------------------------------------------------------------------------
+// Data Assembly
+// ---------------------------------------------------------------------------
+
+export interface TeamMemberWithProfile {
+  user_id: string;
+  role: string;
+  joined_at: string;
+  email: string;
+}
+
+export async function getTeamMembersWithProfiles(
+  teamId: string
+): Promise<TeamMemberWithProfile[]> {
+  console.log("[team-service] getTeamMembersWithProfiles — teamId:", teamId);
+
+  const serviceClient = createServiceRoleClient();
+
+  const { data: members, error } = await serviceClient
+    .from("team_members")
+    .select("user_id, role, joined_at")
+    .eq("team_id", teamId)
+    .is("removed_at", null)
+    .order("joined_at", { ascending: true });
+
+  if (error) {
+    console.error("[team-service] getTeamMembersWithProfiles — error:", error.message);
+    throw new Error("Failed to fetch team members");
+  }
+
+  const userIds = (members ?? []).map((m) => m.user_id);
+
+  const { data: profiles } = await serviceClient
+    .from("profiles")
+    .select("id, email")
+    .in("id", userIds);
+
+  const emailByUserId = new Map(
+    (profiles ?? []).map((p) => [p.id, p.email])
+  );
+
+  const result = (members ?? []).map((m) => ({
+    user_id: m.user_id,
+    role: m.role,
+    joined_at: m.joined_at,
+    email: emailByUserId.get(m.user_id) ?? "unknown",
+  }));
+
+  console.log("[team-service] getTeamMembersWithProfiles —", result.length, "members");
+  return result;
+}
+
+export interface TeamWithRole {
+  id: string;
+  name: string;
+  role: string;
+}
+
+export async function getTeamsWithRolesForUser(
+  userId: string
+): Promise<TeamWithRole[]> {
+  console.log("[team-service] getTeamsWithRolesForUser — userId:", userId);
+
+  const teams = await getTeamsForUser();
+
+  const supabase = await createClient();
+  const { data: memberships } = await supabase
+    .from("team_members")
+    .select("team_id, role")
+    .eq("user_id", userId)
+    .is("removed_at", null);
+
+  const roleByTeamId = new Map(
+    (memberships ?? []).map((m) => [m.team_id, m.role])
+  );
+
+  const result = teams.map((t) => ({
+    id: t.id,
+    name: t.name,
+    role: roleByTeamId.get(t.id) ?? "sales",
+  }));
+
+  console.log("[team-service] getTeamsWithRolesForUser —", result.length, "teams");
+  return result;
+}
+
+// ---------------------------------------------------------------------------
 // Team Management
 // ---------------------------------------------------------------------------
 
