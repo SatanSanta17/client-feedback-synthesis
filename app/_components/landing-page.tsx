@@ -156,8 +156,8 @@ export function LandingPage() {
             Synthesiser
           </span>
           <Link href="/login">
-            <Button size="lg" className="cursor-pointer gap-2 px-6">
-              Get Started <ArrowRight className="size-4" />
+            <Button size="lg" className="cursor-pointer px-6">
+              Get Started
             </Button>
           </Link>
         </div>
@@ -202,8 +202,8 @@ export function LandingPage() {
 
           <div className="mt-12">
             <Link href="/login">
-              <Button size="lg" className="cursor-pointer gap-2.5 px-10 py-6 text-lg">
-                Try It Yourself <ArrowRight className="size-5" />
+              <Button size="lg" className="cursor-pointer px-10 py-6 text-lg">
+                Try It Yourself
               </Button>
             </Link>
           </div>
