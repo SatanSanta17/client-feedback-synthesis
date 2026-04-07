@@ -1,36 +1,23 @@
-import { createClient } from "@/lib/supabase/server";
+import type { ProfileRepository, Profile } from "@/lib/repositories/profile-repository";
 
-export interface Profile {
-  id: string;
-  email: string;
-  is_admin: boolean;
-  can_create_team: boolean;
-  created_at: string;
-  updated_at: string;
-}
+export type { Profile };
 
 /**
- * Fetches the profile for the currently authenticated user.
- * Uses the user-scoped client (respects RLS — user can only read own profile).
+ * Fetches the profile for the given user ID.
+ * Returns null if not found.
  */
-export async function getCurrentProfile(): Promise<Profile | null> {
-  const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+export async function getProfileByUserId(
+  repo: ProfileRepository,
+  userId: string
+): Promise<Profile | null> {
+  console.log("[profile-service] getProfileByUserId — userId:", userId);
 
-  if (!user) return null;
+  const profile = await repo.getByUserId(userId);
 
-  const { data, error } = await supabase
-    .from("profiles")
-    .select("*")
-    .eq("id", user.id)
-    .single();
-
-  if (error) {
-    console.error("Failed to fetch profile:", error.message);
+  if (!profile) {
+    console.warn("[profile-service] getProfileByUserId — not found for userId:", userId);
     return null;
   }
 
-  return data;
+  return profile;
 }

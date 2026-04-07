@@ -2,6 +2,7 @@ import { type SupabaseClient } from "@supabase/supabase-js";
 
 import { createClient, createServiceRoleClient, getActiveTeamId } from "@/lib/supabase/server";
 import { createNewClient, ClientDuplicateError } from "./client-service";
+import { createClientRepository } from "@/lib/repositories/supabase/supabase-client-repository";
 import { getTeamMember } from "./team-service";
 import { taintLatestMasterSignal } from "./master-signal-service";
 
@@ -212,15 +213,16 @@ export async function createSession(
   // Resolve the client ID
   let resolvedClientId = clientId;
 
+  const supabase = await createClient();
+  const teamId = await getActiveTeamId();
+
   if (!resolvedClientId) {
     // Create the new client — let ClientDuplicateError propagate
-    const newClient = await createNewClient(clientName);
+    const clientRepo = createClientRepository(supabase, teamId);
+    const newClient = await createNewClient(clientRepo, clientName);
     resolvedClientId = newClient.id;
     console.log("[session-service] created new client:", resolvedClientId);
   }
-
-  const supabase = await createClient();
-  const teamId = await getActiveTeamId();
 
   const { data, error } = await supabase
     .from("sessions")
@@ -268,13 +270,15 @@ export async function updateSession(
   // Resolve the client ID
   let resolvedClientId = clientId;
 
+  const supabase = await createClient();
+
   if (!resolvedClientId) {
-    const newClient = await createNewClient(clientName);
+    const teamId = await getActiveTeamId();
+    const clientRepo = createClientRepository(supabase, teamId);
+    const newClient = await createNewClient(clientRepo, clientName);
     resolvedClientId = newClient.id;
     console.log("[session-service] updateSession created new client:", resolvedClientId);
   }
-
-  const supabase = await createClient();
 
   // Build update payload — only include structured_notes if explicitly provided
   // undefined = "don't touch it", null = "clear it", string = "set it"

@@ -5,6 +5,8 @@ import {
   createNewClient,
   ClientDuplicateError,
 } from "@/lib/services/client-service";
+import { createClient, getActiveTeamId } from "@/lib/supabase/server";
+import { createClientRepository } from "@/lib/repositories/supabase/supabase-client-repository";
 
 // --- GET /api/clients?q=<search>&hasSession=true ---
 
@@ -28,8 +30,12 @@ export async function GET(request: NextRequest) {
 
   console.log("[api/clients] GET — query:", JSON.stringify(query), "hasSession:", hasSession);
 
+  const supabase = await createClient();
+  const teamId = await getActiveTeamId();
+  const repo = createClientRepository(supabase, teamId);
+
   try {
-    const clients = await searchClients(query, hasSession);
+    const clients = await searchClients(repo, query, hasSession);
 
     console.log("[api/clients] GET — returning", clients.length, "clients");
     return NextResponse.json({ clients });
@@ -76,8 +82,12 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ message }, { status: 400 });
   }
 
+  const supabase = await createClient();
+  const teamId = await getActiveTeamId();
+  const repo = createClientRepository(supabase, teamId);
+
   try {
-    const client = await createNewClient(parsed.data.name);
+    const client = await createNewClient(repo, parsed.data.name);
 
     console.log("[api/clients] POST — created:", client.id, client.name);
     return NextResponse.json({ client }, { status: 201 });
