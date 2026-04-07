@@ -6,6 +6,16 @@ All notable changes to this project are documented here, grouped by PRD and part
 
 ## [Unreleased]
 
+### PRD-012 Part 5: Dependency Inversion — Injectable Data-Access Layer — 2026-04-07
+- Introduced repository pattern: 8 interfaces in `lib/repositories/` defining data-access contracts (SessionRepository, ClientRepository, TeamRepository, MasterSignalRepository, InvitationRepository, PromptRepository, ProfileRepository, AttachmentRepository)
+- Created Supabase adapter implementations in `lib/repositories/supabase/` — one per interface, instantiated via factory functions (`createSessionRepository`, `createClientRepository`, etc.)
+- Extracted `scopeByTeam()` helper in `lib/repositories/supabase/scope-by-team.ts` — centralises workspace scoping logic (12+ occurrences DRY'd into one function)
+- Moved `SessionNotFoundRepoError` from Supabase adapter to `session-repository.ts` interface file — eliminates service-layer coupling to the Supabase implementation
+- Refactored all 8 data-access services to accept injected repository parameters instead of importing from `@/lib/supabase/server` — zero Supabase imports remain in `lib/services/`
+- Updated all 21 API route handlers to create Supabase clients, instantiate repositories via factories, and pass them to services
+- Created `MockSessionRepository` in `lib/repositories/mock/` — in-memory implementation demonstrating that services work with non-Supabase backends
+- **End-of-PRD audit (PRD-012 complete):** Full SRP/DRY/dead-code/convention sweep across all Parts 1–5; updated ARCHITECTURE.md file map, service descriptions, key design decisions, and workspace context flow
+
 ### PRD-012 Part 4: API Route and Service Layer Cleanup — 2026-04-07
 - Moved `SignalSession` type from `master-signal-service.ts` to `lib/types/signal-session.ts` — fixes dependency direction (prompts layer no longer imports from services)
 - Extracted `generateOrUpdateMasterSignal()` orchestration into `master-signal-service.ts` with discriminated union return (`GenerateResult`), reducing `generate-master-signal/route.ts` from 173 → 68 lines

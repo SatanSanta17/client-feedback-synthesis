@@ -1,6 +1,7 @@
 import { type SupabaseClient } from "@supabase/supabase-js";
 
 import type { PromptRepository, PromptKey, PromptVersionRow } from "../prompt-repository";
+import { scopeByTeam } from "./scope-by-team";
 
 export function createPromptRepository(
   supabase: SupabaseClient,
@@ -16,11 +17,7 @@ export function createPromptRepository(
         .eq("prompt_key", promptKey)
         .eq("is_active", true);
 
-      if (teamId) {
-        query = query.eq("team_id", teamId);
-      } else {
-        query = query.is("team_id", null);
-      }
+      query = scopeByTeam(query, teamId);
 
       const { data, error } = await query.maybeSingle();
 
@@ -44,11 +41,7 @@ export function createPromptRepository(
         .eq("prompt_key", promptKey)
         .order("created_at", { ascending: false });
 
-      if (teamId) {
-        query = query.eq("team_id", teamId);
-      } else {
-        query = query.is("team_id", null);
-      }
+      query = scopeByTeam(query, teamId);
 
       const { data, error } = await query;
 
@@ -72,11 +65,7 @@ export function createPromptRepository(
         .eq("prompt_key", promptKey)
         .eq("is_active", true);
 
-      if (teamId) {
-        query = query.eq("team_id", teamId);
-      } else {
-        query = query.is("team_id", null);
-      }
+      query = scopeByTeam(query, teamId);
 
       const { error } = await query;
 

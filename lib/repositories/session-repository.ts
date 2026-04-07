@@ -48,6 +48,17 @@ export interface SessionAccessRow {
   created_by: string;
 }
 
+// ---------------------------------------------------------------------------
+// Repo-level error for "not found" — the service layer catches and re-wraps.
+// ---------------------------------------------------------------------------
+
+export class SessionNotFoundRepoError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "SessionNotFoundRepoError";
+  }
+}
+
 export interface SessionRepository {
   /** Paginated list with optional filters. Returns rows + total count. */
   list(filters: SessionListFilters): Promise<{ rows: SessionRow[]; total: number }>;

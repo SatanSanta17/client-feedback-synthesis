@@ -4,6 +4,7 @@
 
 export type { ProfileRepository, Profile } from "./profile-repository";
 export type { ClientRepository, ClientRow } from "./client-repository";
+export { SessionNotFoundRepoError } from "./session-repository";
 export type {
   SessionRepository,
   SessionListFilters,

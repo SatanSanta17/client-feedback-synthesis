@@ -5,14 +5,15 @@
 // backend. All data is stored in a Map and lost when the instance is disposed.
 // ---------------------------------------------------------------------------
 
-import type {
-  SessionRepository,
-  SessionListFilters,
-  SessionRow,
-  SessionInsert,
-  SessionUpdate,
-  SessionDeleteResult,
-  SessionAccessRow,
+import {
+  SessionNotFoundRepoError,
+  type SessionRepository,
+  type SessionListFilters,
+  type SessionRow,
+  type SessionInsert,
+  type SessionUpdate,
+  type SessionDeleteResult,
+  type SessionAccessRow,
 } from "../session-repository";
 
 interface InternalSession {
@@ -146,7 +147,7 @@ export function createMockSessionRepository(
     async update(id: string, input: SessionUpdate): Promise<SessionRow> {
       const s = sessions.get(id);
       if (!s || s.deleted_at !== null) {
-        throw new Error(`Session ${id} not found`);
+        throw new SessionNotFoundRepoError(`Session ${id} not found`);
       }
 
       s.client_id = input.client_id;
@@ -162,7 +163,7 @@ export function createMockSessionRepository(
     async softDelete(id: string): Promise<SessionDeleteResult> {
       const s = sessions.get(id);
       if (!s || s.deleted_at !== null) {
-        throw new Error(`Session ${id} not found`);
+        throw new SessionNotFoundRepoError(`Session ${id} not found`);
       }
 
       s.deleted_at = new Date().toISOString();

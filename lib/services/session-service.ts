@@ -1,7 +1,8 @@
-import type {
-  SessionRepository,
-  SessionRow,
-  SessionAccessRow,
+import {
+  SessionNotFoundRepoError,
+  type SessionRepository,
+  type SessionRow,
+  type SessionAccessRow,
 } from "@/lib/repositories/session-repository";
 import type { ClientRepository } from "@/lib/repositories/client-repository";
 import type { TeamRepository } from "@/lib/repositories/team-repository";
@@ -9,7 +10,6 @@ import type { MasterSignalRepository } from "@/lib/repositories/master-signal-re
 import { createNewClient, ClientDuplicateError } from "./client-service";
 import { getTeamMember } from "./team-service";
 import { taintLatestMasterSignal } from "./master-signal-service";
-import { SessionNotFoundRepoError } from "@/lib/repositories/supabase/supabase-session-repository";
 
 // ---------------------------------------------------------------------------
 // Session Access Check

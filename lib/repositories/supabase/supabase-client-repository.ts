@@ -1,6 +1,7 @@
 import { type SupabaseClient } from "@supabase/supabase-js";
 
 import type { ClientRepository } from "../client-repository";
+import { scopeByTeam } from "./scope-by-team";
 
 export function createClientRepository(
   supabase: SupabaseClient,
@@ -16,11 +17,7 @@ export function createClientRepository(
         .order("name", { ascending: true })
         .limit(limit);
 
-      if (teamId) {
-        request = request.eq("team_id", teamId);
-      } else {
-        request = request.is("team_id", null);
-      }
+      request = scopeByTeam(request, teamId);
 
       if (query.trim().length > 0) {
         request = request.ilike("name", `%${query.trim()}%`);
@@ -45,11 +42,7 @@ export function createClientRepository(
         .select("client_id")
         .is("deleted_at", null);
 
-      if (teamId) {
-        sessionQuery = sessionQuery.eq("team_id", teamId);
-      } else {
-        sessionQuery = sessionQuery.is("team_id", null);
-      }
+      sessionQuery = scopeByTeam(sessionQuery, teamId);
 
       const { data: sessionClientIds, error: sessionError } = await sessionQuery;
 

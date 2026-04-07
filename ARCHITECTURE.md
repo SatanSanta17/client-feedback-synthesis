@@ -20,7 +20,7 @@ Synthesiser is a web application for teams to capture structured client session 
 
 ## Current State
 
-**Status:** PRD-002 through PRD-010 implemented. PRD-012 Parts 1–3 (Design Tokens and Typography + DRY Extraction + SRP Component Decomposition) implemented. PRD-013 Parts 1–2 (File Upload Infrastructure + Persistence & Signal Extraction Integration) implemented. The app is a fully functional team-capable client feedback capture and synthesis platform. Google OAuth login (open to any Google account), working capture form with AI signal extraction and file attachment upload with server-side persistence, past sessions table with filters/inline editing/soft delete, master signal page with AI synthesis and PDF download, prompt editor with version history, and team access with role-based permissions.
+**Status:** PRD-002 through PRD-010 implemented. PRD-012 Parts 1–5 (Design Tokens and Typography + DRY Extraction + SRP Component Decomposition + API Route/Service Cleanup + Dependency Inversion) implemented. PRD-013 Parts 1–2 (File Upload Infrastructure + Persistence & Signal Extraction Integration) implemented. The app is a fully functional team-capable client feedback capture and synthesis platform. Google OAuth login (open to any Google account), working capture form with AI signal extraction and file attachment upload with server-side persistence, past sessions table with filters/inline editing/soft delete, master signal page with AI synthesis and PDF download, prompt editor with version history, and team access with role-based permissions.
 
 **Core features live:**
 - Session capture with AI signal extraction (Vercel AI SDK, multi-provider) and file attachment upload (TXT, PDF, CSV, DOCX, JSON) with server-side parsing and chat format detection (WhatsApp, Slack)
@@ -205,18 +205,41 @@ synthesiser/
 │   ├── prompts/
 │   │   ├── master-signal-synthesis.ts # System prompts (cold start + incremental) and user message builder
 │   │   └── signal-extraction.ts # System prompt and user message template for signal extraction
+│   ├── repositories/
+│   │   ├── index.ts                    # Re-exports all repository interfaces and SessionNotFoundRepoError
+│   │   ├── attachment-repository.ts    # AttachmentRepository interface
+│   │   ├── client-repository.ts        # ClientRepository interface
+│   │   ├── invitation-repository.ts    # InvitationRepository interface
+│   │   ├── master-signal-repository.ts # MasterSignalRepository interface
+│   │   ├── profile-repository.ts       # ProfileRepository interface
+│   │   ├── prompt-repository.ts        # PromptRepository interface
+│   │   ├── session-repository.ts       # SessionRepository interface + domain types + SessionNotFoundRepoError
+│   │   ├── team-repository.ts          # TeamRepository interface
+│   │   ├── supabase/
+│   │   │   ├── index.ts                          # Re-exports all factory functions (createSessionRepository, etc.)
+│   │   │   ├── scope-by-team.ts                  # Shared helper — scopeByTeam(query, teamId) for workspace scoping
+│   │   │   ├── supabase-attachment-repository.ts  # Supabase adapter for AttachmentRepository
+│   │   │   ├── supabase-client-repository.ts      # Supabase adapter for ClientRepository
+│   │   │   ├── supabase-invitation-repository.ts  # Supabase adapter for InvitationRepository
+│   │   │   ├── supabase-master-signal-repository.ts # Supabase adapter for MasterSignalRepository
+│   │   │   ├── supabase-profile-repository.ts     # Supabase adapter for ProfileRepository
+│   │   │   ├── supabase-prompt-repository.ts      # Supabase adapter for PromptRepository
+│   │   │   ├── supabase-session-repository.ts     # Supabase adapter for SessionRepository
+│   │   │   └── supabase-team-repository.ts        # Supabase adapter for TeamRepository
+│   │   └── mock/
+│   │       └── mock-session-repository.ts         # In-memory mock for SessionRepository (testing)
 │   ├── services/
 │   │   ├── ai-service.ts        # AI service — extractSignals(), synthesiseMasterSignal(), provider-agnostic via Vercel AI SDK
-│   │   ├── attachment-service.ts # Attachment CRUD — upload to Storage, DB persist, soft-delete + storage cleanup, signed URLs
-│   │   ├── client-service.ts    # Client search and creation — team-scoped via getActiveTeamId()
+│   │   ├── attachment-service.ts # Attachment CRUD — accepts AttachmentRepository
+│   │   ├── client-service.ts    # Client search and creation — accepts ClientRepository
 │   │   ├── email-service.ts     # Provider-agnostic email sending — sendEmail(), resolveEmailProvider(), Resend adapter
 │   │   ├── file-parser-service.ts # File parsing — TXT, PDF, CSV, DOCX, JSON + WhatsApp/Slack chat detection
-│   │   ├── invitation-service.ts # Invitation CRUD — create, list pending, revoke, resend, accept, getByToken
-│   │   ├── master-signal-service.ts # Master signal CRUD + generateOrUpdateMasterSignal() orchestration — team-scoped via getActiveTeamId()
-│   │   ├── profile-service.ts   # Server-side profile fetch (getCurrentProfile)
-│   │   ├── prompt-service.ts    # Prompt CRUD — workspace-scoped (user or team)
-│   │   ├── session-service.ts   # Session CRUD + checkSessionAccess() (discriminated union) — team-scoped via getActiveTeamId()
-│   │   └── team-service.ts      # Team CRUD + getTeamMembersWithProfiles(), getTeamsWithRolesForUser() — create, list, members, rename, delete, roles, transfer, leave
+│   │   ├── invitation-service.ts # Invitation CRUD — accepts InvitationRepository + TeamRepository
+│   │   ├── master-signal-service.ts # Master signal CRUD + generateOrUpdateMasterSignal() — accepts MasterSignalRepository
+│   │   ├── profile-service.ts   # Server-side profile fetch — accepts ProfileRepository
+│   │   ├── prompt-service.ts    # Prompt CRUD — accepts PromptRepository
+│   │   ├── session-service.ts   # Session CRUD + checkSessionAccess() — accepts SessionRepository + ClientRepository + MasterSignalRepository
+│   │   └── team-service.ts      # Team CRUD + getTeamMembersWithProfiles(), getTeamsWithRolesForUser() — accepts TeamRepository
 │   ├── utils/
 │   │   ├── compose-ai-input.ts    # Composes raw notes + attachments into a single AI input string
 │   │   ├── format-file-size.ts    # File size formatting (bytes → "1.2 KB", "3.4 MB")
@@ -451,7 +474,7 @@ Stores versioned AI system prompts per user or team workspace. Each save/reset/r
 - The `active_team_id` cookie determines the current workspace (personal or team). Absence = personal workspace.
 - The **AuthProvider** exposes `activeTeamId` and `setActiveTeam()` via React context. `setActiveTeam` writes the cookie and updates context state, triggering reactive re-renders in all consuming components — no page reload needed.
 - The **WorkspaceSwitcher** and **CreateTeamDialog** call `setActiveTeam()` to switch workspaces. Client-side cookie helpers live in `lib/cookies/active-team.ts`.
-- All server-side data services read the active team ID via `getActiveTeamId()` from `lib/supabase/server.ts`.
+- Route handlers read the active team ID via `getActiveTeamId()` from `lib/supabase/server.ts`, then pass it to repository factories. Services receive pre-scoped repositories — they never call `getActiveTeamId()` directly.
 
 ---
 
@@ -536,3 +559,4 @@ See `.env.example` for the full template.
 10. **Team creation is a paid feature.** The `can_create_team` flag on `profiles` gates team creation. Developers enable this per user. No self-service payment gateway.
 11. **Data retention on member departure.** When a member is removed or leaves, their sessions and other data remain in the team (owned by `team_id`). The `team_members.removed_at` timestamp records the departure. Re-inviting a departed member restores full access.
 12. **Provider-agnostic email service.** Email sending is abstracted via `email-service.ts` with `resolveEmailProvider()` — supports Resend and Brevo, extensible to SMTP and others via `EMAIL_PROVIDER` env var.
+13. **Dependency Inversion via repository pattern.** All 8 data-access services accept injected repository interfaces instead of importing Supabase directly. Repository interfaces live in `lib/repositories/`, Supabase adapters in `lib/repositories/supabase/`, and an in-memory mock in `lib/repositories/mock/`. Route handlers create Supabase clients, instantiate repositories via factory functions (`createSessionRepository`, etc.), and pass them to services. Services have zero coupling to Supabase — the `lib/services/` directory contains no `@/lib/supabase/server` imports. Workspace scoping (`team_id` filtering) is centralised in a shared `scopeByTeam()` helper within the adapter layer.

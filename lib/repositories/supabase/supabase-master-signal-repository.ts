@@ -2,6 +2,7 @@ import { type SupabaseClient } from "@supabase/supabase-js";
 
 import type { MasterSignalRepository, MasterSignalRow } from "../master-signal-repository";
 import type { SignalSession } from "@/lib/types/signal-session";
+import { scopeByTeam } from "./scope-by-team";
 
 /**
  * Factory for creating a Supabase-backed MasterSignalRepository.
@@ -25,11 +26,7 @@ export function createMasterSignalRepository(
         .order("generated_at", { ascending: false })
         .limit(1);
 
-      if (teamId) {
-        query = query.eq("team_id", teamId);
-      } else {
-        query = query.is("team_id", null);
-      }
+      query = scopeByTeam(query, teamId);
 
       const { data, error } = await query.maybeSingle();
 
@@ -56,11 +53,7 @@ export function createMasterSignalRepository(
         .not("structured_notes", "is", null)
         .is("deleted_at", null);
 
-      if (teamId) {
-        query = query.eq("team_id", teamId);
-      } else {
-        query = query.is("team_id", null);
-      }
+      query = scopeByTeam(query, teamId);
 
       if (since) {
         query = query.gt("updated_at", since);
@@ -88,11 +81,7 @@ export function createMasterSignalRepository(
         .is("deleted_at", null)
         .order("session_date", { ascending: true });
 
-      if (teamId) {
-        query = query.eq("team_id", teamId);
-      } else {
-        query = query.is("team_id", null);
-      }
+      query = scopeByTeam(query, teamId);
 
       const { data, error } = await query;
 
@@ -117,11 +106,7 @@ export function createMasterSignalRepository(
         .gt("updated_at", since)
         .order("session_date", { ascending: true });
 
-      if (teamId) {
-        query = query.eq("team_id", teamId);
-      } else {
-        query = query.is("team_id", null);
-      }
+      query = scopeByTeam(query, teamId);
 
       const { data, error } = await query;
 

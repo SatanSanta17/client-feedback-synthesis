@@ -1,14 +1,16 @@
 import { type SupabaseClient } from "@supabase/supabase-js";
 
-import type {
-  SessionRepository,
-  SessionListFilters,
-  SessionRow,
-  SessionInsert,
-  SessionUpdate,
-  SessionDeleteResult,
-  SessionAccessRow,
+import {
+  SessionNotFoundRepoError,
+  type SessionRepository,
+  type SessionListFilters,
+  type SessionRow,
+  type SessionInsert,
+  type SessionUpdate,
+  type SessionDeleteResult,
+  type SessionAccessRow,
 } from "../session-repository";
+import { scopeByTeam } from "./scope-by-team";
 
 /**
  * Factory for creating a Supabase-backed SessionRepository.
@@ -36,11 +38,7 @@ export function createSessionRepository(
         .order("created_at", { ascending: false })
         .range(offset, offset + limit - 1);
 
-      if (teamId) {
-        query = query.eq("team_id", teamId);
-      } else {
-        query = query.is("team_id", null);
-      }
+      query = scopeByTeam(query, teamId);
 
       if (clientId) {
         query = query.eq("client_id", clientId);
@@ -256,13 +254,3 @@ export function createSessionRepository(
   };
 }
 
-// ---------------------------------------------------------------------------
-// Repo-level error for "not found" — the service layer catches and re-wraps.
-// ---------------------------------------------------------------------------
-
-export class SessionNotFoundRepoError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "SessionNotFoundRepoError";
-  }
-}
