@@ -1,5 +1,6 @@
 import { createClient, createServiceRoleClient, getActiveTeamId } from "@/lib/supabase/server";
 import type { SignalSession } from "@/lib/types/signal-session";
+import { synthesiseMasterSignal } from "@/lib/services/ai-service";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -311,6 +312,77 @@ export async function taintLatestMasterSignal(userId: string, teamId?: string): 
     "[master-signal-service] taintLatestMasterSignal — tainted:",
     latest.id
   );
+}
+
+// ---------------------------------------------------------------------------
+// Orchestration
+// ---------------------------------------------------------------------------
+
+export type GenerateResult =
+  | { outcome: "created"; masterSignal: MasterSignal }
+  | { outcome: "unchanged"; masterSignal: MasterSignal }
+  | { outcome: "no-sessions"; message: string }
+
+/**
+ * Orchestrates master signal generation. Determines cold start vs. incremental
+ * based on whether a previous master signal exists and whether it's tainted.
+ *
+ * Returns a discriminated union — the caller maps outcomes to HTTP responses.
+ */
+export async function generateOrUpdateMasterSignal(): Promise<GenerateResult> {
+  const latest = await getLatestMasterSignal();
+
+  // Cold start or tainted — synthesise from all sessions
+  if (!latest || latest.isTainted) {
+    const mode = latest?.isTainted ? "tainted cold start" : "cold start";
+    console.log(`[master-signal-service] generateOrUpdateMasterSignal — ${mode}`);
+
+    const sessions = await getAllSignalSessions();
+
+    if (sessions.length === 0) {
+      const message = latest?.isTainted
+        ? "No extracted signals found. All sessions with signals have been deleted."
+        : "No extracted signals found. Extract signals from individual sessions on the Capture page first.";
+      return { outcome: "no-sessions", message };
+    }
+
+    console.log(
+      `[master-signal-service] generateOrUpdateMasterSignal — synthesising from ${sessions.length} sessions`
+    );
+
+    const content = await synthesiseMasterSignal({ sessions });
+    const saved = await saveMasterSignal(content, sessions.length);
+
+    console.log(`[master-signal-service] generateOrUpdateMasterSignal — saved: ${saved.id}`);
+    return { outcome: "created", masterSignal: saved };
+  }
+
+  // Incremental — merge new sessions into existing master signal
+  console.log(
+    `[master-signal-service] generateOrUpdateMasterSignal — incremental since ${latest.generatedAt}`
+  );
+
+  const newSessions = await getSignalSessionsSince(latest.generatedAt);
+
+  if (newSessions.length === 0) {
+    console.log("[master-signal-service] generateOrUpdateMasterSignal — no new sessions");
+    return { outcome: "unchanged", masterSignal: latest };
+  }
+
+  console.log(
+    `[master-signal-service] generateOrUpdateMasterSignal — merging ${newSessions.length} new session(s)`
+  );
+
+  const content = await synthesiseMasterSignal({
+    previousMasterSignal: latest.content,
+    sessions: newSessions,
+  });
+
+  const totalSessions = latest.sessionsIncluded + newSessions.length;
+  const saved = await saveMasterSignal(content, totalSessions);
+
+  console.log(`[master-signal-service] generateOrUpdateMasterSignal — saved: ${saved.id}`);
+  return { outcome: "created", masterSignal: saved };
 }
 
 // ---------------------------------------------------------------------------
