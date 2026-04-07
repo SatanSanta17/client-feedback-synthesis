@@ -1,12 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
-import { createClient } from "@/lib/supabase/server";
+import { createClient, createServiceRoleClient } from "@/lib/supabase/server";
 import {
   getTeamById,
   getTeamMember,
   renameTeam,
   deleteTeam,
 } from "@/lib/services/team-service";
+import { createTeamRepository } from "@/lib/repositories/supabase/supabase-team-repository";
 
 interface RouteContext {
   params: Promise<{ teamId: string }>;
@@ -31,7 +32,10 @@ export async function GET(_request: NextRequest, context: RouteContext) {
     );
   }
 
-  const member = await getTeamMember(teamId, user.id);
+  const serviceClient = createServiceRoleClient();
+  const teamRepo = createTeamRepository(supabase, serviceClient);
+
+  const member = await getTeamMember(teamRepo, teamId, user.id);
   if (!member) {
     return NextResponse.json(
       { message: "You are not a member of this team" },
@@ -39,7 +43,7 @@ export async function GET(_request: NextRequest, context: RouteContext) {
     );
   }
 
-  const team = await getTeamById(teamId);
+  const team = await getTeamById(teamRepo, teamId);
   if (!team) {
     return NextResponse.json(
       { message: "Team not found" },
@@ -85,7 +89,10 @@ export async function PATCH(request: NextRequest, context: RouteContext) {
     );
   }
 
-  const team = await getTeamById(teamId);
+  const serviceClient = createServiceRoleClient();
+  const teamRepo = createTeamRepository(supabase, serviceClient);
+
+  const team = await getTeamById(teamRepo, teamId);
   if (!team) {
     return NextResponse.json(
       { message: "Team not found" },
@@ -117,7 +124,7 @@ export async function PATCH(request: NextRequest, context: RouteContext) {
   }
 
   try {
-    const updated = await renameTeam(teamId, parsed.data.name);
+    const updated = await renameTeam(teamRepo, teamId, parsed.data.name);
     console.log(`[api/teams/[teamId]] PATCH — renamed to: ${updated.name}`);
     return NextResponse.json({
       team: { id: updated.id, name: updated.name },
@@ -155,7 +162,10 @@ export async function DELETE(_request: NextRequest, context: RouteContext) {
     );
   }
 
-  const team = await getTeamById(teamId);
+  const serviceClient = createServiceRoleClient();
+  const teamRepo = createTeamRepository(supabase, serviceClient);
+
+  const team = await getTeamById(teamRepo, teamId);
   if (!team) {
     return NextResponse.json(
       { message: "Team not found" },
@@ -171,7 +181,7 @@ export async function DELETE(_request: NextRequest, context: RouteContext) {
   }
 
   try {
-    await deleteTeam(teamId);
+    await deleteTeam(teamRepo, teamId);
     console.log(`[api/teams/[teamId]] DELETE — deleted: ${teamId}`);
     return NextResponse.json({ message: "Team deleted" });
   } catch (err) {

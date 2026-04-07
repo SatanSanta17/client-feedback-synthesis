@@ -1,109 +1,45 @@
-import { createClient, createServiceRoleClient } from "@/lib/supabase/server";
+import type {
+  TeamRepository,
+  TeamRow,
+  TeamMemberRow,
+  TeamMemberWithProfileRow,
+  TeamWithRoleRow,
+} from "@/lib/repositories/team-repository";
 
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
-
-export interface Team {
-  id: string;
-  name: string;
-  owner_id: string;
-  created_by: string;
-  created_at: string;
-  deleted_at: string | null;
-}
-
-export interface TeamMember {
-  id: string;
-  team_id: string;
-  user_id: string;
-  role: "admin" | "sales";
-  joined_at: string;
-  removed_at: string | null;
-}
+// Re-export types for backward compatibility with existing consumers
+export type Team = TeamRow;
+export type TeamMember = TeamMemberRow;
+export type TeamMemberWithProfile = TeamMemberWithProfileRow;
+export type TeamWithRole = TeamWithRoleRow;
 
 // ---------------------------------------------------------------------------
 // Team CRUD
 // ---------------------------------------------------------------------------
 
 export async function createTeam(
+  repo: TeamRepository,
   name: string,
   userId: string
-): Promise<Team> {
-  const supabase = await createClient();
+): Promise<TeamRow> {
+  console.log(`[team-service] createTeam — name: ${name}, userId: ${userId}`);
 
-  const { data: team, error: teamError } = await supabase
-    .from("teams")
-    .insert({ name: name.trim(), owner_id: userId })
-    .select()
-    .single();
-
-  if (teamError) {
-    console.error("[team-service] createTeam error:", teamError.message);
-    throw new Error("Failed to create team");
-  }
-
-  const { error: memberError } = await supabase
-    .from("team_members")
-    .insert({ team_id: team.id, user_id: userId, role: "admin" });
-
-  if (memberError) {
-    console.error("[team-service] createTeam — failed to add owner as member:", memberError.message);
-    throw new Error("Failed to add owner as team member");
-  }
+  const team = await repo.create(name, userId);
 
   console.log(`[team-service] createTeam — created team ${team.id} with owner ${userId}`);
   return team;
 }
 
-export async function getTeamsForUser(): Promise<Team[]> {
-  const supabase = await createClient();
-
-  const { data: memberships, error: memberError } = await supabase
-    .from("team_members")
-    .select("team_id")
-    .is("removed_at", null);
-
-  if (memberError) {
-    console.error("[team-service] getTeamsForUser error:", memberError.message);
-    return [];
-  }
-
-  if (!memberships || memberships.length === 0) return [];
-
-  const teamIds = memberships.map((m) => m.team_id);
-
-  const { data: teams, error: teamError } = await supabase
-    .from("teams")
-    .select("*")
-    .in("id", teamIds)
-    .is("deleted_at", null)
-    .order("created_at", { ascending: true });
-
-  if (teamError) {
-    console.error("[team-service] getTeamsForUser error:", teamError.message);
-    return [];
-  }
-
-  return teams ?? [];
+export async function getTeamsForUser(
+  repo: TeamRepository
+): Promise<TeamRow[]> {
+  return repo.getForUser();
 }
 
-export async function getTeamById(teamId: string): Promise<Team | null> {
-  const supabase = await createClient();
-
-  const { data, error } = await supabase
-    .from("teams")
-    .select("*")
-    .eq("id", teamId)
-    .is("deleted_at", null)
-    .single();
-
-  if (error) {
-    console.error("[team-service] getTeamById error:", error.message);
-    return null;
-  }
-
-  return data;
+export async function getTeamById(
+  repo: TeamRepository,
+  teamId: string
+): Promise<TeamRow | null> {
+  return repo.getById(teamId);
 }
 
 // ---------------------------------------------------------------------------
@@ -111,128 +47,43 @@ export async function getTeamById(teamId: string): Promise<Team | null> {
 // ---------------------------------------------------------------------------
 
 export async function getTeamMember(
+  repo: TeamRepository,
   teamId: string,
   userId: string
-): Promise<TeamMember | null> {
-  const supabase = await createClient();
-
-  const { data, error } = await supabase
-    .from("team_members")
-    .select("*")
-    .eq("team_id", teamId)
-    .eq("user_id", userId)
-    .is("removed_at", null)
-    .maybeSingle();
-
-  if (error) {
-    console.error("[team-service] getTeamMember error:", error.message);
-    return null;
-  }
-
-  return data;
+): Promise<TeamMemberRow | null> {
+  return repo.getMember(teamId, userId);
 }
 
 export async function getActiveTeamMembers(
+  repo: TeamRepository,
   teamId: string
-): Promise<TeamMember[]> {
-  const supabase = await createClient();
-
-  const { data, error } = await supabase
-    .from("team_members")
-    .select("*")
-    .eq("team_id", teamId)
-    .is("removed_at", null)
-    .order("joined_at", { ascending: true });
-
-  if (error) {
-    console.error("[team-service] getActiveTeamMembers error:", error.message);
-    return [];
-  }
-
-  return data ?? [];
+): Promise<TeamMemberRow[]> {
+  return repo.getActiveMembers(teamId);
 }
 
 // ---------------------------------------------------------------------------
 // Data Assembly
 // ---------------------------------------------------------------------------
 
-export interface TeamMemberWithProfile {
-  user_id: string;
-  role: string;
-  joined_at: string;
-  email: string;
-}
-
 export async function getTeamMembersWithProfiles(
+  repo: TeamRepository,
   teamId: string
-): Promise<TeamMemberWithProfile[]> {
+): Promise<TeamMemberWithProfileRow[]> {
   console.log("[team-service] getTeamMembersWithProfiles — teamId:", teamId);
 
-  const serviceClient = createServiceRoleClient();
-
-  const { data: members, error } = await serviceClient
-    .from("team_members")
-    .select("user_id, role, joined_at")
-    .eq("team_id", teamId)
-    .is("removed_at", null)
-    .order("joined_at", { ascending: true });
-
-  if (error) {
-    console.error("[team-service] getTeamMembersWithProfiles — error:", error.message);
-    throw new Error("Failed to fetch team members");
-  }
-
-  const userIds = (members ?? []).map((m) => m.user_id);
-
-  const { data: profiles } = await serviceClient
-    .from("profiles")
-    .select("id, email")
-    .in("id", userIds);
-
-  const emailByUserId = new Map(
-    (profiles ?? []).map((p) => [p.id, p.email])
-  );
-
-  const result = (members ?? []).map((m) => ({
-    user_id: m.user_id,
-    role: m.role,
-    joined_at: m.joined_at,
-    email: emailByUserId.get(m.user_id) ?? "unknown",
-  }));
+  const result = await repo.getMembersWithProfiles(teamId);
 
   console.log("[team-service] getTeamMembersWithProfiles —", result.length, "members");
   return result;
 }
 
-export interface TeamWithRole {
-  id: string;
-  name: string;
-  role: string;
-}
-
 export async function getTeamsWithRolesForUser(
+  repo: TeamRepository,
   userId: string
-): Promise<TeamWithRole[]> {
+): Promise<TeamWithRoleRow[]> {
   console.log("[team-service] getTeamsWithRolesForUser — userId:", userId);
 
-  const teams = await getTeamsForUser();
-
-  const supabase = await createClient();
-  const { data: memberships } = await supabase
-    .from("team_members")
-    .select("team_id, role")
-    .eq("user_id", userId)
-    .is("removed_at", null);
-
-  const roleByTeamId = new Map(
-    (memberships ?? []).map((m) => [m.team_id, m.role])
-  );
-
-  const result = teams.map((t) => ({
-    id: t.id,
-    name: t.name,
-    role: roleByTeamId.get(t.id) ?? "sales",
-  }));
+  const result = await repo.getWithRolesForUser(userId);
 
   console.log("[team-service] getTeamsWithRolesForUser —", result.length, "teams");
   return result;
@@ -243,142 +94,69 @@ export async function getTeamsWithRolesForUser(
 // ---------------------------------------------------------------------------
 
 export async function renameTeam(
+  repo: TeamRepository,
   teamId: string,
   name: string
-): Promise<Team> {
+): Promise<TeamRow> {
   console.log(`[team-service] renameTeam — teamId: ${teamId}, name: ${name}`);
 
-  const supabase = await createClient();
+  const updated = await repo.rename(teamId, name);
 
-  const { data, error } = await supabase
-    .from("teams")
-    .update({ name: name.trim() })
-    .eq("id", teamId)
-    .is("deleted_at", null)
-    .select()
-    .single();
-
-  if (error) {
-    console.error("[team-service] renameTeam error:", error.message);
-    throw new Error("Failed to rename team");
-  }
-
-  console.log(`[team-service] renameTeam — success: ${data.id}`);
-  return data;
+  console.log(`[team-service] renameTeam — success: ${updated.id}`);
+  return updated;
 }
 
-export async function deleteTeam(teamId: string): Promise<void> {
+export async function deleteTeam(
+  repo: TeamRepository,
+  teamId: string
+): Promise<void> {
   console.log(`[team-service] deleteTeam — teamId: ${teamId}`);
 
-  const supabase = createServiceRoleClient();
-
-  const { error } = await supabase
-    .from("teams")
-    .update({ deleted_at: new Date().toISOString() })
-    .eq("id", teamId)
-    .is("deleted_at", null);
-
-  if (error) {
-    console.error("[team-service] deleteTeam error:", error.message);
-    throw new Error("Failed to delete team");
-  }
+  await repo.softDelete(teamId);
 
   console.log(`[team-service] deleteTeam — success: ${teamId}`);
 }
 
 export async function removeMember(
+  repo: TeamRepository,
   teamId: string,
   userId: string
 ): Promise<void> {
   console.log(`[team-service] removeMember — teamId: ${teamId}, userId: ${userId}`);
 
-  const supabase = createServiceRoleClient();
+  await repo.removeMember(teamId, userId);
 
-  const { data, error } = await supabase
-    .from("team_members")
-    .update({ removed_at: new Date().toISOString() })
-    .eq("team_id", teamId)
-    .eq("user_id", userId)
-    .is("removed_at", null)
-    .select("id")
-    .single();
-
-  if (error) {
-    console.error("[team-service] removeMember error:", error.message);
-    throw new Error("Failed to remove member");
-  }
-
-  console.log(`[team-service] removeMember — removed membership: ${data.id}`);
+  console.log(`[team-service] removeMember — success`);
 }
 
 export async function changeMemberRole(
+  repo: TeamRepository,
   teamId: string,
   userId: string,
   role: "admin" | "sales"
 ): Promise<void> {
   console.log(`[team-service] changeMemberRole — teamId: ${teamId}, userId: ${userId}, role: ${role}`);
 
-  const supabase = await createClient();
-
-  const { error } = await supabase
-    .from("team_members")
-    .update({ role })
-    .eq("team_id", teamId)
-    .eq("user_id", userId)
-    .is("removed_at", null);
-
-  if (error) {
-    console.error("[team-service] changeMemberRole error:", error.message);
-    throw new Error("Failed to change member role");
-  }
+  await repo.changeMemberRole(teamId, userId, role);
 
   console.log(`[team-service] changeMemberRole — success`);
 }
 
 export async function transferOwnership(
+  repo: TeamRepository,
   teamId: string,
   newOwnerId: string
 ): Promise<void> {
   console.log(`[team-service] transferOwnership — teamId: ${teamId}, newOwnerId: ${newOwnerId}`);
 
-  const supabase = createServiceRoleClient();
-
-  // Promote the new owner to admin if they are currently sales
-  const { data: member } = await supabase
-    .from("team_members")
-    .select("role")
-    .eq("team_id", teamId)
-    .eq("user_id", newOwnerId)
-    .is("removed_at", null)
-    .single();
-
-  if (member?.role === "sales") {
-    const { error: promoteError } = await supabase
-      .from("team_members")
-      .update({ role: "admin" })
-      .eq("team_id", teamId)
-      .eq("user_id", newOwnerId)
-      .is("removed_at", null);
-
-    if (promoteError) {
-      console.error("[team-service] transferOwnership — promote error:", promoteError.message);
-      throw new Error("Failed to promote new owner to admin");
-    }
-  }
-
-  const { error } = await supabase
-    .from("teams")
-    .update({ owner_id: newOwnerId })
-    .eq("id", teamId)
-    .is("deleted_at", null);
-
-  if (error) {
-    console.error("[team-service] transferOwnership error:", error.message);
-    throw new Error("Failed to transfer ownership");
-  }
+  await repo.transferOwnership(teamId, newOwnerId);
 
   console.log(`[team-service] transferOwnership — success: new owner ${newOwnerId}`);
 }
+
+// ---------------------------------------------------------------------------
+// Leave
+// ---------------------------------------------------------------------------
 
 export class LeaveBlockedError extends Error {
   constructor(message: string) {
@@ -388,6 +166,7 @@ export class LeaveBlockedError extends Error {
 }
 
 export async function leaveTeam(
+  repo: TeamRepository,
   teamId: string,
   userId: string,
   isOwner: boolean
@@ -397,31 +176,22 @@ export async function leaveTeam(
   let autoTransferredTo: string | undefined;
 
   if (isOwner) {
-    const supabase = createServiceRoleClient();
+    const admins = await repo.findOtherAdmins(teamId, userId);
 
-    const { data: admins } = await supabase
-      .from("team_members")
-      .select("user_id, joined_at")
-      .eq("team_id", teamId)
-      .eq("role", "admin")
-      .is("removed_at", null)
-      .neq("user_id", userId)
-      .order("joined_at", { ascending: true });
-
-    if (!admins || admins.length === 0) {
+    if (admins.length === 0) {
       throw new LeaveBlockedError(
         "You must promote another member to admin before leaving, or delete the team."
       );
     }
 
     const newOwner = admins[0];
-    await transferOwnership(teamId, newOwner.user_id);
+    await repo.transferOwnership(teamId, newOwner.user_id);
     autoTransferredTo = newOwner.user_id;
 
     console.log(`[team-service] leaveTeam — auto-transferred ownership to ${newOwner.user_id}`);
   }
 
-  await removeMember(teamId, userId);
+  await repo.removeMember(teamId, userId);
 
   console.log(`[team-service] leaveTeam — user ${userId} left team ${teamId}`);
   return { autoTransferredTo };

@@ -1,12 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
-import { createClient, getActiveTeamId } from "@/lib/supabase/server";
+import { createClient, createServiceRoleClient, getActiveTeamId } from "@/lib/supabase/server";
 import {
   getPromptHistory,
   savePromptVersion,
 } from "@/lib/services/prompt-service";
 import { createPromptRepository } from "@/lib/repositories/supabase/supabase-prompt-repository";
 import { getTeamMember } from "@/lib/services/team-service";
+import { createTeamRepository } from "@/lib/repositories/supabase/supabase-team-repository";
 
 const PROMPT_KEYS = [
   "signal_extraction",
@@ -108,7 +109,9 @@ export async function POST(request: NextRequest) {
 
   const teamId = await getActiveTeamId();
   if (teamId) {
-    const member = await getTeamMember(teamId, user.id);
+    const serviceClient = createServiceRoleClient();
+    const teamRepo = createTeamRepository(supabase, serviceClient);
+    const member = await getTeamMember(teamRepo, teamId, user.id);
     if (member?.role !== "admin") {
       console.warn("[api/prompts] POST — non-admin in team context");
       return NextResponse.json(

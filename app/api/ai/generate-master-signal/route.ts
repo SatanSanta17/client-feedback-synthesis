@@ -1,9 +1,10 @@
 import { NextResponse } from "next/server";
-import { createClient, getActiveTeamId } from "@/lib/supabase/server";
+import { createClient, createServiceRoleClient, getActiveTeamId } from "@/lib/supabase/server";
 import { mapAIErrorToResponse } from "@/lib/utils/map-ai-error";
 import { generateOrUpdateMasterSignal } from "@/lib/services/master-signal-service";
 import { getTeamMember } from "@/lib/services/team-service";
 import { createPromptRepository } from "@/lib/repositories/supabase/supabase-prompt-repository";
+import { createTeamRepository } from "@/lib/repositories/supabase/supabase-team-repository";
 
 /**
  * POST /api/ai/generate-master-signal
@@ -31,7 +32,9 @@ export async function POST() {
 
   const teamId = await getActiveTeamId();
   if (teamId) {
-    const member = await getTeamMember(teamId, user.id);
+    const serviceClient = createServiceRoleClient();
+    const teamRepo = createTeamRepository(supabase, serviceClient);
+    const member = await getTeamMember(teamRepo, teamId, user.id);
     if (member?.role !== "admin") {
       console.warn("[api/ai/generate-master-signal] POST — non-admin in team context");
       return NextResponse.json(

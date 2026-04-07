@@ -1,5 +1,6 @@
 import { getInvitationByToken } from "@/lib/services/invitation-service";
-import { createServiceRoleClient } from "@/lib/supabase/server";
+import { createClient, createServiceRoleClient } from "@/lib/supabase/server";
+import { createInvitationRepository } from "@/lib/repositories/supabase/supabase-invitation-repository";
 import { InvitePageContent } from "./_components/invite-page-content";
 
 interface InvitePageProps {
@@ -8,7 +9,12 @@ interface InvitePageProps {
 
 export default async function InvitePage({ params }: InvitePageProps) {
   const { token } = await params;
-  const result = await getInvitationByToken(token);
+
+  const supabase = await createClient();
+  const serviceClient = createServiceRoleClient();
+  const invitationRepo = createInvitationRepository(supabase, serviceClient);
+
+  const result = await getInvitationByToken(invitationRepo, token);
 
   if (!result) {
     return (
@@ -28,8 +34,7 @@ export default async function InvitePage({ params }: InvitePageProps) {
   let userExists = false;
 
   if (status === "valid") {
-    const supabase = createServiceRoleClient();
-    const { data: profile } = await supabase
+    const { data: profile } = await serviceClient
       .from("profiles")
       .select("id")
       .eq("email", invitation.email.toLowerCase())

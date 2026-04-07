@@ -4,6 +4,7 @@ import { createClient, createServiceRoleClient, getActiveTeamId } from "@/lib/su
 import { createNewClient, ClientDuplicateError } from "./client-service";
 import { createClientRepository } from "@/lib/repositories/supabase/supabase-client-repository";
 import { getTeamMember } from "./team-service";
+import { createTeamRepository } from "@/lib/repositories/supabase/supabase-team-repository";
 import { taintLatestMasterSignal } from "./master-signal-service";
 
 // ---------------------------------------------------------------------------
@@ -48,7 +49,10 @@ export async function checkSessionAccess(
   }
 
   if (teamId && session.created_by !== user.id) {
-    const member = await getTeamMember(teamId, user.id);
+    // Bridge: create inline TeamRepository until session-service migrates in 5.5
+    const serviceClient = createServiceRoleClient();
+    const teamRepo = createTeamRepository(supabase, serviceClient);
+    const member = await getTeamMember(teamRepo, teamId, user.id);
     if (member?.role !== "admin") {
       return { allowed: false, reason: "forbidden" };
     }

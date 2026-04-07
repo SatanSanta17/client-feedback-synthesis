@@ -1,9 +1,10 @@
 import { NextResponse } from "next/server";
-import { createClient } from "@/lib/supabase/server";
+import { createClient, createServiceRoleClient } from "@/lib/supabase/server";
 import {
   getInvitationByToken,
   acceptInvitation,
 } from "@/lib/services/invitation-service";
+import { createInvitationRepository } from "@/lib/repositories/supabase/supabase-invitation-repository";
 
 interface RouteContext {
   params: Promise<{ token: string }>;
@@ -21,7 +22,10 @@ export async function POST(_request: Request, context: RouteContext) {
     return NextResponse.json({ message: "Unauthorized" }, { status: 401 });
   }
 
-  const result = await getInvitationByToken(token);
+  const serviceClient = createServiceRoleClient();
+  const invitationRepo = createInvitationRepository(supabase, serviceClient);
+
+  const result = await getInvitationByToken(invitationRepo, token);
 
   if (!result) {
     return NextResponse.json(
@@ -55,6 +59,7 @@ export async function POST(_request: Request, context: RouteContext) {
 
   try {
     await acceptInvitation(
+      invitationRepo,
       invitation.id,
       user.id,
       invitation.team_id,

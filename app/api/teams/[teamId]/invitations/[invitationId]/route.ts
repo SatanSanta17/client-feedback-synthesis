@@ -1,7 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createClient } from "@/lib/supabase/server";
+import { createClient, createServiceRoleClient } from "@/lib/supabase/server";
 import { getTeamMember } from "@/lib/services/team-service";
 import { revokeInvitation } from "@/lib/services/invitation-service";
+import { createTeamRepository } from "@/lib/repositories/supabase/supabase-team-repository";
+import { createInvitationRepository } from "@/lib/repositories/supabase/supabase-invitation-repository";
 
 export async function DELETE(
   _request: NextRequest,
@@ -24,7 +26,10 @@ export async function DELETE(
     );
   }
 
-  const member = await getTeamMember(teamId, user.id);
+  const serviceClient = createServiceRoleClient();
+  const teamRepo = createTeamRepository(supabase, serviceClient);
+
+  const member = await getTeamMember(teamRepo, teamId, user.id);
   if (!member || member.role !== "admin") {
     return NextResponse.json(
       { message: "Only team admins can revoke invitations" },
@@ -32,8 +37,10 @@ export async function DELETE(
     );
   }
 
+  const invitationRepo = createInvitationRepository(supabase, serviceClient);
+
   try {
-    await revokeInvitation(teamId, invitationId);
+    await revokeInvitation(invitationRepo, teamId, invitationId);
     return NextResponse.json({ message: "Invitation revoked" });
   } catch (err) {
     console.error(

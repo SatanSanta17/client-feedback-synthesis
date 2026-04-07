@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createClient } from "@/lib/supabase/server";
+import { createClient, createServiceRoleClient } from "@/lib/supabase/server";
 import { getTeamMember, getTeamMembersWithProfiles } from "@/lib/services/team-service";
+import { createTeamRepository } from "@/lib/repositories/supabase/supabase-team-repository";
 
 interface RouteContext {
   params: Promise<{ teamId: string }>;
@@ -25,7 +26,10 @@ export async function GET(_request: NextRequest, context: RouteContext) {
     );
   }
 
-  const member = await getTeamMember(teamId, user.id);
+  const serviceClient = createServiceRoleClient();
+  const teamRepo = createTeamRepository(supabase, serviceClient);
+
+  const member = await getTeamMember(teamRepo, teamId, user.id);
   if (!member) {
     return NextResponse.json(
       { message: "You are not a member of this team" },
@@ -34,7 +38,7 @@ export async function GET(_request: NextRequest, context: RouteContext) {
   }
 
   try {
-    const members = await getTeamMembersWithProfiles(teamId);
+    const members = await getTeamMembersWithProfiles(teamRepo, teamId);
     return NextResponse.json({ members });
   } catch (err) {
     console.error(

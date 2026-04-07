@@ -1,9 +1,10 @@
 import { NextResponse } from "next/server";
-import { createClient } from "@/lib/supabase/server";
+import { createClient, createServiceRoleClient } from "@/lib/supabase/server";
 import {
   getInvitationByToken,
   acceptInvitation,
 } from "@/lib/services/invitation-service";
+import { createInvitationRepository } from "@/lib/repositories/supabase/supabase-invitation-repository";
 
 export async function GET(request: Request) {
   const { searchParams, origin } = new URL(request.url);
@@ -45,7 +46,10 @@ export async function GET(request: Request) {
   }
 
   try {
-    const result = await getInvitationByToken(pendingToken);
+    const serviceClient = createServiceRoleClient();
+    const invitationRepo = createInvitationRepository(supabase, serviceClient);
+
+    const result = await getInvitationByToken(invitationRepo, pendingToken);
 
     if (!result || result.status !== "valid") {
       console.log("Auth callback: invite token invalid or expired, skipping acceptance");
@@ -78,6 +82,7 @@ export async function GET(request: Request) {
     }
 
     await acceptInvitation(
+      invitationRepo,
       invitation.id,
       user.id,
       invitation.team_id,

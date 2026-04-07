@@ -1,28 +1,19 @@
 import crypto from "crypto";
-import { createClient, createServiceRoleClient } from "@/lib/supabase/server";
+import type {
+  InvitationRepository,
+  InvitationRow,
+  InvitationWithTeamRow,
+} from "@/lib/repositories/invitation-repository";
+import type { TeamRepository } from "@/lib/repositories/team-repository";
 import { sendEmail } from "@/lib/services/email-service";
-import { getActiveTeamMembers } from "@/lib/services/team-service";
 import { buildInviteEmailHtml } from "@/lib/email-templates/invite-email";
 
 // ---------------------------------------------------------------------------
-// Types
+// Re-export types for backward compatibility
 // ---------------------------------------------------------------------------
 
-export interface TeamInvitation {
-  id: string;
-  team_id: string;
-  email: string;
-  role: "admin" | "sales";
-  invited_by: string;
-  token: string;
-  expires_at: string;
-  accepted_at: string | null;
-  created_at: string;
-}
-
-export interface InvitationWithTeam extends TeamInvitation {
-  team_name: string;
-}
+export type TeamInvitation = InvitationRow;
+export type InvitationWithTeam = InvitationWithTeamRow;
 
 export type InvitationStatus = "valid" | "expired" | "already_accepted" | "invalid";
 
@@ -46,6 +37,8 @@ function generateToken(): string {
 // ---------------------------------------------------------------------------
 
 export async function createInvitations(
+  invitationRepo: InvitationRepository,
+  teamRepo: TeamRepository,
   teamId: string,
   emails: string[],
   role: "admin" | "sales",
@@ -53,35 +46,29 @@ export async function createInvitations(
   inviterEmail: string,
   teamName: string
 ): Promise<InviteResult> {
-  const supabase = await createClient();
   const appUrl = process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000";
   const result: InviteResult = { sent: [], skipped: [] };
 
-  const members = await getActiveTeamMembers(teamId);
-
-  const serviceClient = createServiceRoleClient();
-  const memberUserIds = members.map((m) => m.user_id);
-  const { data: profiles } = await serviceClient
-    .from("profiles")
-    .select("id, email")
-    .in("id", memberUserIds);
+  // Get current members to check for duplicates
+  const members = await teamRepo.getActiveMembers(teamId);
+  const membersWithProfiles = await teamRepo.getMembersWithProfiles(teamId);
   const memberEmailSet = new Set(
-    (profiles ?? []).map((p) => p.email.toLowerCase())
+    membersWithProfiles.map((m) => m.email.toLowerCase())
   );
 
-  const { data: existingInvites } = await supabase
-    .from("team_invitations")
-    .select("email, expires_at, accepted_at")
-    .eq("team_id", teamId);
-
+  // Get existing invitations to check for pending duplicates
+  const existingInvites = await invitationRepo.getAllForTeam(teamId);
   const pendingInviteEmails = new Set(
-    (existingInvites ?? [])
+    existingInvites
       .filter(
         (inv) =>
           !inv.accepted_at && new Date(inv.expires_at) > new Date()
       )
       .map((inv) => inv.email.toLowerCase())
   );
+
+  // Suppress unused variable — members is used for the count check upstream
+  void members;
 
   const expiresAt = new Date();
   expiresAt.setDate(expiresAt.getDate() + INVITE_EXPIRY_DAYS);
@@ -106,9 +93,8 @@ export async function createInvitations(
 
     const token = generateToken();
 
-    const { error: insertError } = await supabase
-      .from("team_invitations")
-      .insert({
+    try {
+      await invitationRepo.create({
         team_id: teamId,
         email,
         role,
@@ -116,9 +102,7 @@ export async function createInvitations(
         token,
         expires_at: expiresAt.toISOString(),
       });
-
-    if (insertError) {
-      console.error(`[invitation-service] createInvitations — insert failed for ${email}:`, insertError.message);
+    } catch {
       result.skipped.push({ email, reason: "Failed to create invitation" });
       continue;
     }
@@ -139,7 +123,8 @@ export async function createInvitations(
       result.sent.push(email);
       pendingInviteEmails.add(email);
     } catch (emailErr) {
-      console.error(`[invitation-service] createInvitations — email send failed for ${email}:`,
+      console.error(
+        `[invitation-service] createInvitations — email send failed for ${email}:`,
         emailErr instanceof Error ? emailErr.message : emailErr
       );
       result.skipped.push({ email, reason: "Failed to send email" });
@@ -154,69 +139,43 @@ export async function createInvitations(
 }
 
 export async function getPendingInvitations(
+  repo: InvitationRepository,
   teamId: string
-): Promise<TeamInvitation[]> {
-  const supabase = await createClient();
-
-  const { data, error } = await supabase
-    .from("team_invitations")
-    .select("*")
-    .eq("team_id", teamId)
-    .is("accepted_at", null)
-    .order("created_at", { ascending: false });
-
-  if (error) {
-    console.error("[invitation-service] getPendingInvitations error:", error.message);
-    return [];
-  }
-
-  return data ?? [];
+): Promise<InvitationRow[]> {
+  return repo.getPending(teamId);
 }
 
 export async function revokeInvitation(
+  repo: InvitationRepository,
   teamId: string,
   invitationId: string
 ): Promise<void> {
-  const supabase = await createClient();
-
-  const { error } = await supabase
-    .from("team_invitations")
-    .delete()
-    .eq("id", invitationId)
-    .eq("team_id", teamId);
-
-  if (error) {
-    console.error("[invitation-service] revokeInvitation error:", error.message);
-    throw new Error("Failed to revoke invitation");
-  }
+  await repo.revoke(teamId, invitationId);
 
   console.log(`[invitation-service] revokeInvitation — revoked ${invitationId}`);
 }
 
 export async function resendInvitation(
+  repo: InvitationRepository,
   teamId: string,
   invitationId: string,
   inviterEmail: string,
   teamName: string
 ): Promise<void> {
-  const supabase = await createClient();
   const appUrl = process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000";
 
   const newToken = generateToken();
   const expiresAt = new Date();
   expiresAt.setDate(expiresAt.getDate() + INVITE_EXPIRY_DAYS);
 
-  const { data, error } = await supabase
-    .from("team_invitations")
-    .update({ token: newToken, expires_at: expiresAt.toISOString() })
-    .eq("id", invitationId)
-    .eq("team_id", teamId)
-    .is("accepted_at", null)
-    .select("email, role")
-    .single();
+  const data = await repo.refreshToken(
+    teamId,
+    invitationId,
+    newToken,
+    expiresAt.toISOString()
+  );
 
-  if (error || !data) {
-    console.error("[invitation-service] resendInvitation error:", error?.message);
+  if (!data) {
     throw new Error("Failed to resend invitation");
   }
 
@@ -237,40 +196,18 @@ export async function resendInvitation(
 }
 
 // ---------------------------------------------------------------------------
-// Token-based lookup & acceptance (service role — bypasses RLS)
+// Token-based lookup & acceptance
 // ---------------------------------------------------------------------------
 
 export async function getInvitationByToken(
+  repo: InvitationRepository,
   token: string
-): Promise<{ invitation: InvitationWithTeam; status: InvitationStatus } | null> {
-  const supabase = createServiceRoleClient();
+): Promise<{ invitation: InvitationWithTeamRow; status: InvitationStatus } | null> {
+  const invitation = await repo.getByToken(token);
 
-  const { data, error } = await supabase
-    .from("team_invitations")
-    .select("*, teams:team_id ( name )")
-    .eq("token", token)
-    .single();
-
-  if (error || !data) {
-    console.error("[invitation-service] getInvitationByToken — not found:", error?.message);
+  if (!invitation) {
     return null;
   }
-
-  const teamName =
-    (data.teams as unknown as { name: string } | null)?.name ?? "Unknown Team";
-
-  const invitation: InvitationWithTeam = {
-    id: data.id,
-    team_id: data.team_id,
-    email: data.email,
-    role: data.role,
-    invited_by: data.invited_by,
-    token: data.token,
-    expires_at: data.expires_at,
-    accepted_at: data.accepted_at,
-    created_at: data.created_at,
-    team_name: teamName,
-  };
 
   if (invitation.accepted_at) {
     return { invitation, status: "already_accepted" };
@@ -284,45 +221,22 @@ export async function getInvitationByToken(
 }
 
 export async function acceptInvitation(
+  repo: InvitationRepository,
   invitationId: string,
   userId: string,
   teamId: string,
   role: string
 ): Promise<void> {
-  const supabase = createServiceRoleClient();
+  const isExistingMember = await repo.isUserTeamMember(teamId, userId);
 
-  const { data: existing } = await supabase
-    .from("team_members")
-    .select("id")
-    .eq("team_id", teamId)
-    .eq("user_id", userId)
-    .is("removed_at", null)
-    .maybeSingle();
-
-  if (!existing) {
-    const { error: memberError } = await supabase
-      .from("team_members")
-      .insert({ team_id: teamId, user_id: userId, role });
-
-    if (memberError) {
-      console.error("[invitation-service] acceptInvitation — member insert error:", memberError.message);
-      throw new Error("Failed to add user to team");
-    }
-
+  if (!isExistingMember) {
+    await repo.addTeamMember(teamId, userId, role);
     console.log(`[invitation-service] acceptInvitation — added user ${userId} to team ${teamId} as ${role}`);
   } else {
     console.log(`[invitation-service] acceptInvitation — user ${userId} already a member of team ${teamId}, skipping insert`);
   }
 
-  const { error: updateError } = await supabase
-    .from("team_invitations")
-    .update({ accepted_at: new Date().toISOString() })
-    .eq("id", invitationId);
-
-  if (updateError) {
-    console.error("[invitation-service] acceptInvitation — failed to mark accepted:", updateError.message);
-    throw new Error("Failed to mark invitation as accepted");
-  }
+  await repo.markAccepted(invitationId);
 
   console.log(`[invitation-service] acceptInvitation — invitation ${invitationId} marked as accepted`);
 }

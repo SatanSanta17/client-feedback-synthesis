@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
-import { createClient } from "@/lib/supabase/server";
+import { createClient, createServiceRoleClient } from "@/lib/supabase/server";
 import { createTeam, getTeamsWithRolesForUser } from "@/lib/services/team-service";
+import { createTeamRepository } from "@/lib/repositories/supabase/supabase-team-repository";
 
 // --- GET /api/teams ---
 
@@ -18,8 +19,11 @@ export async function GET() {
     );
   }
 
+  const serviceClient = createServiceRoleClient();
+  const teamRepo = createTeamRepository(supabase, serviceClient);
+
   try {
-    const teams = await getTeamsWithRolesForUser(user.id);
+    const teams = await getTeamsWithRolesForUser(teamRepo, user.id);
     return NextResponse.json({ teams });
   } catch (err) {
     console.error(
@@ -94,8 +98,11 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ message }, { status: 400 });
   }
 
+  const serviceClient = createServiceRoleClient();
+  const teamRepo = createTeamRepository(supabase, serviceClient);
+
   try {
-    const team = await createTeam(parsed.data.name, user.id);
+    const team = await createTeam(teamRepo, parsed.data.name, user.id);
     console.log(`[api/teams] POST — created team: ${team.id}`);
     return NextResponse.json({ team: { id: team.id, name: team.name } }, { status: 201 });
   } catch (err) {

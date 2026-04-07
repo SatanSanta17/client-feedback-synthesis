@@ -1,11 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
-import { createClient } from "@/lib/supabase/server";
+import { createClient, createServiceRoleClient } from "@/lib/supabase/server";
 import {
   getTeamById,
   getTeamMember,
   transferOwnership,
 } from "@/lib/services/team-service";
+import { createTeamRepository } from "@/lib/repositories/supabase/supabase-team-repository";
 
 interface RouteContext {
   params: Promise<{ teamId: string }>;
@@ -36,7 +37,10 @@ export async function POST(request: NextRequest, context: RouteContext) {
     );
   }
 
-  const team = await getTeamById(teamId);
+  const serviceClient = createServiceRoleClient();
+  const teamRepo = createTeamRepository(supabase, serviceClient);
+
+  const team = await getTeamById(teamRepo, teamId);
   if (!team) {
     return NextResponse.json(
       { message: "Team not found" },
@@ -74,7 +78,7 @@ export async function POST(request: NextRequest, context: RouteContext) {
     );
   }
 
-  const newOwnerMember = await getTeamMember(teamId, parsed.data.newOwnerId);
+  const newOwnerMember = await getTeamMember(teamRepo, teamId, parsed.data.newOwnerId);
   if (!newOwnerMember) {
     return NextResponse.json(
       { message: "The target user is not an active member of this team" },
@@ -83,7 +87,7 @@ export async function POST(request: NextRequest, context: RouteContext) {
   }
 
   try {
-    await transferOwnership(teamId, parsed.data.newOwnerId);
+    await transferOwnership(teamRepo, teamId, parsed.data.newOwnerId);
     console.log(
       `[api/teams/[teamId]/transfer] POST — transferred to: ${parsed.data.newOwnerId}`
     );

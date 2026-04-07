@@ -1,7 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createClient } from "@/lib/supabase/server";
+import { createClient, createServiceRoleClient } from "@/lib/supabase/server";
 import { getTeamMember, getTeamById } from "@/lib/services/team-service";
 import { resendInvitation } from "@/lib/services/invitation-service";
+import { createTeamRepository } from "@/lib/repositories/supabase/supabase-team-repository";
+import { createInvitationRepository } from "@/lib/repositories/supabase/supabase-invitation-repository";
 
 export async function POST(
   _request: NextRequest,
@@ -26,7 +28,10 @@ export async function POST(
     );
   }
 
-  const member = await getTeamMember(teamId, user.id);
+  const serviceClient = createServiceRoleClient();
+  const teamRepo = createTeamRepository(supabase, serviceClient);
+
+  const member = await getTeamMember(teamRepo, teamId, user.id);
   if (!member || member.role !== "admin") {
     return NextResponse.json(
       { message: "Only team admins can resend invitations" },
@@ -34,7 +39,7 @@ export async function POST(
     );
   }
 
-  const team = await getTeamById(teamId);
+  const team = await getTeamById(teamRepo, teamId);
   if (!team) {
     return NextResponse.json(
       { message: "Team not found" },
@@ -42,8 +47,11 @@ export async function POST(
     );
   }
 
+  const invitationRepo = createInvitationRepository(supabase, serviceClient);
+
   try {
     await resendInvitation(
+      invitationRepo,
       teamId,
       invitationId,
       user.email ?? "Unknown",

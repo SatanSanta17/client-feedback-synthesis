@@ -1,11 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
-import { createClient } from "@/lib/supabase/server";
+import { createClient, createServiceRoleClient } from "@/lib/supabase/server";
 import {
   getTeamById,
   getTeamMember,
   changeMemberRole,
 } from "@/lib/services/team-service";
+import { createTeamRepository } from "@/lib/repositories/supabase/supabase-team-repository";
 
 interface RouteContext {
   params: Promise<{ teamId: string; userId: string }>;
@@ -40,7 +41,10 @@ export async function PATCH(request: NextRequest, context: RouteContext) {
     );
   }
 
-  const team = await getTeamById(teamId);
+  const serviceClient = createServiceRoleClient();
+  const teamRepo = createTeamRepository(supabase, serviceClient);
+
+  const team = await getTeamById(teamRepo, teamId);
   if (!team) {
     return NextResponse.json(
       { message: "Team not found" },
@@ -62,7 +66,7 @@ export async function PATCH(request: NextRequest, context: RouteContext) {
     );
   }
 
-  const targetMember = await getTeamMember(teamId, targetUserId);
+  const targetMember = await getTeamMember(teamRepo, teamId, targetUserId);
   if (!targetMember) {
     return NextResponse.json(
       { message: "Member not found" },
@@ -91,7 +95,7 @@ export async function PATCH(request: NextRequest, context: RouteContext) {
   }
 
   try {
-    await changeMemberRole(teamId, targetUserId, parsed.data.role);
+    await changeMemberRole(teamRepo, teamId, targetUserId, parsed.data.role);
     console.log(
       `[api/teams/[teamId]/members/[userId]/role] PATCH — changed to: ${parsed.data.role}`
     );
