@@ -20,7 +20,7 @@ Synthesiser is a web application for teams to capture structured client session 
 
 ## Current State
 
-**Status:** PRD-002 through PRD-010 implemented. PRD-012 Parts 1–5 (Design Tokens and Typography + DRY Extraction + SRP Component Decomposition + API Route/Service Cleanup + Dependency Inversion) implemented. PRD-013 Parts 1–2 (File Upload Infrastructure + Persistence & Signal Extraction Integration) implemented. PRD-015 Part 1 (Public Landing Page) implemented. The app is a fully functional team-capable client feedback capture and synthesis platform with a public landing page. Google OAuth login (open to any Google account), working capture form with AI signal extraction and file attachment upload with server-side persistence, past sessions table with filters/inline editing/soft delete, master signal page with AI synthesis and PDF download, prompt editor with version history, and team access with role-based permissions.
+**Status:** PRD-002 through PRD-010 implemented. PRD-012 Parts 1–5 (Design Tokens and Typography + DRY Extraction + SRP Component Decomposition + API Route/Service Cleanup + Dependency Inversion) implemented. PRD-013 Parts 1–2 (File Upload Infrastructure + Persistence & Signal Extraction Integration) implemented. PRD-014 Part 1 (Session Traceability & Staleness Data Model) implemented. PRD-015 Part 1 (Public Landing Page) implemented. The app is a fully functional team-capable client feedback capture and synthesis platform with a public landing page. Google OAuth login (open to any Google account), working capture form with AI signal extraction and file attachment upload with server-side persistence, past sessions table with filters/inline editing/soft delete, master signal page with AI synthesis and PDF download, prompt editor with version history, and team access with role-based permissions.
 
 **Core features live:**
 - Public landing page at `/` with hero, feature cards, how-it-works flow, and CTA (authenticated users auto-redirect to `/capture`)
@@ -234,7 +234,7 @@ synthesiser/
 │   │   └── mock/
 │   │       └── mock-session-repository.ts         # In-memory mock for SessionRepository (testing)
 │   ├── services/
-│   │   ├── ai-service.ts        # AI service — extractSignals(), synthesiseMasterSignal(), provider-agnostic via Vercel AI SDK
+│   │   ├── ai-service.ts        # AI service — extractSignals() → ExtractionResult, synthesiseMasterSignal(), provider-agnostic via Vercel AI SDK
 │   │   ├── attachment-service.ts # Attachment CRUD — accepts AttachmentRepository
 │   │   ├── client-service.ts    # Client search and creation — accepts ClientRepository
 │   │   ├── email-service.ts     # Provider-agnostic email sending — sendEmail(), resolveEmailProvider(), Resend adapter
@@ -308,13 +308,16 @@ Stores captured client feedback sessions. Scoped to a user or a team.
 | `session_date` | DATE | NOT NULL |
 | `raw_notes` | TEXT | NOT NULL, supports markdown |
 | `structured_notes` | TEXT | Nullable. Markdown-formatted signal extraction output. |
+| `prompt_version_id` | UUID (FK → prompt_versions) | Nullable. Links to the prompt version that produced the structured notes. ON DELETE SET NULL. |
+| `extraction_stale` | BOOLEAN | NOT NULL, default `false`. True when raw input or structured notes changed since last extraction. |
+| `updated_by` | UUID (FK → auth.users) | Nullable. Set to the authenticated user's ID on every session update (PUT). ON DELETE SET NULL. |
 | `created_by` | UUID | Default `auth.uid()` — Supabase Auth user ID |
 | `team_id` | UUID (FK → teams) | Nullable. NULL = personal workspace. |
 | `created_at` | TIMESTAMPTZ | Default `now()` |
 | `updated_at` | TIMESTAMPTZ | Auto-updated via trigger |
 | `deleted_at` | TIMESTAMPTZ | Soft delete |
 
-**Indexes:** `sessions_client_id_idx` (filtered), `sessions_session_date_idx` (desc, filtered).
+**Indexes:** `sessions_client_id_idx` (filtered), `sessions_session_date_idx` (desc, filtered), `sessions_prompt_version_id_idx` — on `prompt_version_id` where `prompt_version_id IS NOT NULL AND deleted_at IS NULL`.
 **RLS:** Personal: users SELECT/UPDATE own sessions. Team: members SELECT all team sessions; admins UPDATE/DELETE any team session; sales UPDATE/DELETE only own team sessions. INSERT allowed for authenticated users.
 
 ### `session_attachments`

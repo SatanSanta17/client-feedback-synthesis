@@ -70,14 +70,14 @@ As a user browsing past sessions, I want to see whether a session's structured n
 - **P2.R2** Clicking the button opens a dialog showing the full text of the currently active `signal_extraction` prompt. The dialog is read-only — no editing capability.
 - **P2.R3** The dialog includes a footer link "Edit in Settings" that navigates to `/settings` (the prompt editor tab). This keeps the editing friction intentionally high — users must leave the capture flow to change the prompt.
 - **P2.R4** The prompt content is fetched when the dialog opens (not pre-loaded on page mount). If the fetch fails, the dialog shows a user-friendly error message.
-- **P2.R5** The prompt text is displayed in a monospace font with preserved whitespace, consistent with the prompt editor in Settings.
+- **P2.R5** The prompt text is rendered as markdown, consistent with the prompt editor's view mode in Settings.
 
 ### Acceptance Criteria
 
 - [ ] A "View Prompt" button appears next to the "Extract Signals" button.
 - [ ] Clicking it opens a read-only dialog with the active extraction prompt.
 - [ ] The dialog includes an "Edit in Settings" link to `/settings`.
-- [ ] The prompt is displayed in monospace with preserved formatting.
+- [ ] The prompt is rendered as markdown, consistent with the Settings prompt editor view mode.
 - [ ] If the prompt fetch fails, a clear error message is shown instead.
 
 ---

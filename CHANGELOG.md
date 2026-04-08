@@ -6,6 +6,20 @@ All notable changes to this project are documented here, grouped by PRD and part
 
 ## [Unreleased]
 
+### PRD-014 Part 1: Session Traceability & Staleness Data Model — 2026-04-08
+- Added `prompt_version_id` (UUID, nullable FK → prompt_versions), `extraction_stale` (boolean, default false), and `updated_by` (UUID, nullable FK → auth.users) columns to the `sessions` table
+- Added partial index `sessions_prompt_version_id_idx` on `prompt_version_id` for future prompt version filtering (P4.R7)
+- Extended `SessionRow`, `SessionInsert`, `SessionUpdate` interfaces and all repository adapters (Supabase + mock) with the three new fields
+- Added `getActiveVersion()` method to `PromptRepository` interface and Supabase adapter — returns full `PromptVersionRow` (not just content) for traceability
+- Added `markStale()` method to `SessionRepository` interface and adapters — lightweight staleness update for attachment add/remove flows
+- Changed `extractSignals()` return type from `string` to `ExtractionResult` (`{ structuredNotes, promptVersionId }`) — API response now includes the prompt version ID used (P1.R6)
+- Added `getActivePromptVersion()` to prompt-service — wraps the new repo method for the AI service layer
+- Implemented staleness state machine in `updateSession()`: fresh extraction resets stale (P1.R5/R9), clearing structured notes clears both (P1.R8), input changes or manual edits mark stale (P1.R4)
+- Added `isExtraction`, `inputChanged`, `promptVersionId` fields to PUT `/api/sessions/[id]` schema and `promptVersionId` to POST `/api/sessions`
+- Attachment upload and delete routes now call `markStale()` to flag extraction staleness on attachment changes (P1.R4)
+- Sessions list API (`GET /api/sessions`) includes all three new fields in the response (P1.R13)
+- **End-of-part audit:** Removed unused `SessionAccessRow` import from session-service.ts; verified all P1.R1–R13 requirements traced to implementation; updated ARCHITECTURE.md data model and current state
+
 ### PRD-015 Part 1: Public Landing Page — 2026-04-07
 - Added public landing page at `/` with hero section (gradient headline, pill badge, dual CTAs), 4-card feature grid, 3-step "How It Works" flow, and bottom CTA
 - Features defined as a data array for easy extension as new capabilities ship

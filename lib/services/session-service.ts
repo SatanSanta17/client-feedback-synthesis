@@ -2,7 +2,6 @@ import {
   SessionNotFoundRepoError,
   type SessionRepository,
   type SessionRow,
-  type SessionAccessRow,
 } from "@/lib/repositories/session-repository";
 import type { ClientRepository } from "@/lib/repositories/client-repository";
 import type { TeamRepository } from "@/lib/repositories/team-repository";

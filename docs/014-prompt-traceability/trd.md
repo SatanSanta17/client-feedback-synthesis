@@ -1,6 +1,6 @@
 # TRD-014: Prompt Traceability & Extraction Staleness
 
-> **Status:** Draft (Part 1)
+> **Status:** Draft (Parts 1–2)
 >
 > Mirrors **PRD-014**. Each part maps to the corresponding PRD part.
 
@@ -625,3 +625,333 @@ This table documents the complete set of transitions for `extraction_stale` and 
 | `updated_by` set on every PUT | Passed as `userId` parameter to `updateSession()` (Increment 1.2) |
 | Existing sessions have NULL/false/NULL and function normally | Migration adds columns with defaults, no backfill (Increment 1.1) |
 | Sessions list API includes all three new fields | `SessionRow` and `SessionWithClient` updated (Increment 1.1, auto-serialised in GET handler) |
+
+#### Increment 1.4: End-of-Part Audit
+
+**What:** Run the full end-of-part audit checklist — type check, PRD compliance verification, code quality conventions, documentation updates.
+
+**Checks performed:**
+
+1. **Type check** — `npx tsc --noEmit` passes cleanly
+2. **PRD compliance** — All P1.R1–P1.R13 traced to implementation with no gaps
+3. **SRP** — Each layer (repo → service → route) maintains single responsibility; staleness logic centralised in session-service
+4. **DRY** — No duplication; `markStale()` avoids repeating full update payload in attachment routes
+5. **Dead code** — Removed unused `SessionAccessRow` import from `session-service.ts`
+6. **Naming / conventions** — All files, interfaces, and functions follow project conventions
+7. **Logging** — All modified functions log entry, exit, and errors
+
+**Documentation updated:**
+
+- `ARCHITECTURE.md` — Added 3 new columns + index to sessions table schema; updated current state to include PRD-014 Part 1; updated ai-service description with `ExtractionResult` return type
+- `CHANGELOG.md` — Added Part 1 entry with all changes delivered
+
+---
+
+## Part 2: View Prompt on Capture Page
+
+> Implements **P2.R1–P2.R5** from PRD-014.
+
+### Overview
+
+Add a "View Prompt" button next to the "Extract Signals" button on the capture form. Clicking it opens a read-only dialog showing the currently active `signal_extraction` prompt rendered as markdown (consistent with how structured notes are rendered via `MarkdownPanel`). The dialog includes a link to navigate to Settings for editing. The prompt is fetched on-demand when the dialog opens.
+
+No new API endpoints are needed — the existing `GET /api/prompts?key=signal_extraction` already returns `{ active, history }` where `active` contains the full `PromptVersionRow` with `content`. The dialog only needs `active.content`.
+
+### Forward Compatibility Notes
+
+- **Part 3 (Past Sessions Prompt Version):** Will reuse the same `ViewPromptDialog` component created here but with a different title ("Extraction Prompt Used" vs "Active Extraction Prompt") and without the "Edit in Settings" link. The dialog is designed for reuse by accepting `title`, `content`, and an optional footer action via props.
+- **Part 4 (Staleness Indicators):** No dependency on Part 2's components.
+
+### Files Changed
+
+| File | Action | Purpose |
+|------|--------|---------|
+| `app/capture/_components/view-prompt-dialog.tsx` | **Create** | Reusable read-only prompt viewing dialog |
+| `app/capture/_components/session-capture-form.tsx` | **Modify** | Add "View Prompt" button, state management, and dialog integration |
+
+### Implementation
+
+#### Increment 2.1: ViewPromptDialog Component + Capture Form Integration
+
+**What:** Create the `ViewPromptDialog` component and wire it into the capture form.
+
+**Files:**
+
+1. **Create `app/capture/_components/view-prompt-dialog.tsx`**
+
+   A read-only dialog that displays prompt content rendered as markdown. Designed for reuse in Part 3 (past sessions) with different titles and optional footer actions.
+
+   ```typescript
+   "use client"
+
+   import { useState, useEffect } from "react"
+   import { Eye, ExternalLink, Loader2, AlertCircle } from "lucide-react"
+   import ReactMarkdown from "react-markdown"
+   import remarkGfm from "remark-gfm"
+   import Link from "next/link"
+
+   import { Button } from "@/components/ui/button"
+   import {
+     Dialog,
+     DialogContent,
+     DialogDescription,
+     DialogFooter,
+     DialogHeader,
+     DialogTitle,
+   } from "@/components/ui/dialog"
+
+   interface ViewPromptDialogProps {
+     /** Controls dialog visibility. */
+     open: boolean
+     onOpenChange: (open: boolean) => void
+     /** Dialog title. Default: "Active Extraction Prompt". */
+     title?: string
+     /** Optional subtitle / description. */
+     description?: string
+     /**
+      * If provided, the dialog renders this content directly (no fetch).
+      * Used by Part 3 to pass a specific prompt version's content.
+      */
+     content?: string | null
+     /** If true, shows the "Edit in Settings" link in the footer (P2.R3). */
+     showEditLink?: boolean
+     className?: string
+   }
+
+   type FetchState = "idle" | "loading" | "success" | "error"
+
+   export function ViewPromptDialog({
+     open,
+     onOpenChange,
+     title = "Active Extraction Prompt",
+     description,
+     content: externalContent,
+     showEditLink = false,
+     className,
+   }: ViewPromptDialogProps) {
+     const [fetchState, setFetchState] = useState<FetchState>("idle")
+     const [promptContent, setPromptContent] = useState<string | null>(null)
+
+     // Fetch prompt when dialog opens and no external content is provided (P2.R4)
+     useEffect(() => {
+       if (!open) {
+         // Reset on close
+         setFetchState("idle")
+         setPromptContent(null)
+         return
+       }
+
+       if (externalContent !== undefined) {
+         // External content provided — skip fetch
+         setPromptContent(externalContent)
+         setFetchState(externalContent ? "success" : "error")
+         return
+       }
+
+       // Fetch the active prompt
+       let cancelled = false
+       setFetchState("loading")
+
+       fetch("/api/prompts?key=signal_extraction")
+         .then((res) => {
+           if (!res.ok) throw new Error("Failed to fetch prompt")
+           return res.json()
+         })
+         .then((data) => {
+           if (cancelled) return
+           const content = data.active?.content ?? null
+           setPromptContent(content)
+           setFetchState(content ? "success" : "error")
+         })
+         .catch(() => {
+           if (cancelled) return
+           setFetchState("error")
+         })
+
+       return () => { cancelled = true }
+     }, [open, externalContent])
+
+     return (
+       <Dialog open={open} onOpenChange={onOpenChange}>
+         <DialogContent className="max-w-2xl max-h-[80vh] flex flex-col">
+           <DialogHeader>
+             <DialogTitle className="flex items-center gap-2">
+               <Eye className="size-4 text-muted-foreground" />
+               {title}
+             </DialogTitle>
+             {description && (
+               <DialogDescription>{description}</DialogDescription>
+             )}
+           </DialogHeader>
+
+           <div className="flex-1 min-h-0 overflow-y-auto">
+             {fetchState === "loading" && (
+               <div className="flex items-center justify-center py-12">
+                 <Loader2 className="size-5 animate-spin text-muted-foreground" />
+                 <span className="ml-2 text-sm text-muted-foreground">
+                   Loading prompt...
+                 </span>
+               </div>
+             )}
+
+             {fetchState === "error" && (
+               <div className="flex items-center gap-2 rounded-lg border border-destructive/30 bg-destructive/5 px-4 py-3 text-sm text-destructive">
+                 <AlertCircle className="size-4 shrink-0" />
+                 <span>
+                   Could not load the extraction prompt. Please try again or
+                   check Settings.
+                 </span>
+               </div>
+             )}
+
+             {fetchState === "success" && promptContent && (
+               <div className="rounded-lg border border-border bg-card p-4">
+                 <div className="prose prose-sm max-w-none overflow-y-auto prose-headings:text-foreground prose-p:text-foreground prose-li:text-foreground prose-strong:text-foreground">
+                   <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                     {promptContent}
+                   </ReactMarkdown>
+                 </div>
+               </div>
+             )}
+           </div>
+
+           <DialogFooter className="flex items-center justify-between sm:justify-between">
+             {showEditLink ? (
+               <Link
+                 href="/settings"
+                 className="inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors"
+               >
+                 <ExternalLink className="size-3.5" />
+                 Edit in Settings
+               </Link>
+             ) : (
+               <div /> // Spacer to keep Close button right-aligned
+             )}
+             <Button variant="outline" onClick={() => onOpenChange(false)}>
+               Close
+             </Button>
+           </DialogFooter>
+         </DialogContent>
+       </Dialog>
+     )
+   }
+   ```
+
+   **Design decisions:**
+
+   - **Reusable for Part 3:** Accepts optional `content` prop. When provided, skips the fetch and renders directly. Part 3 will pass the specific prompt version's content fetched on-demand from a new endpoint.
+   - **Markdown rendering:** Uses `ReactMarkdown` + `remarkGfm` with the same prose classes as `MarkdownPanel` (P2.R5). This ensures the prompt looks the same as structured notes when viewed.
+   - **Fetch on open (P2.R4):** The `useEffect` triggers only when `open` changes to `true`. Cleans up on close. Handles race conditions via `cancelled` flag.
+   - **Error state:** Shows a user-friendly message if the fetch fails, not raw API errors.
+   - **No editing:** The dialog is strictly read-only. The "Edit in Settings" link is the only path to change the prompt (P2.R3).
+
+2. **Modify `app/capture/_components/session-capture-form.tsx`**
+
+   Add a "View Prompt" button and the dialog state:
+
+   **Import the new component:**
+   ```typescript
+   import { Eye } from "lucide-react"
+   import { ViewPromptDialog } from "./view-prompt-dialog"
+   ```
+
+   **Add state inside `SessionCaptureForm`:**
+   ```typescript
+   const [showPromptDialog, setShowPromptDialog] = useState(false)
+   ```
+
+   **Add the button in the action buttons area (P2.R1):**
+
+   Insert the "View Prompt" button after the "Extract Signals" button but before the "Save Session" button. It uses `variant="ghost"` and `size="lg"` to be visually subordinate:
+
+   ```tsx
+   {/* View Prompt button — secondary/ghost, visually subordinate (P2.R1) */}
+   <Button
+     type="button"
+     variant="ghost"
+     size="lg"
+     onClick={() => setShowPromptDialog(true)}
+     className="text-muted-foreground"
+   >
+     <Eye className="mr-2 size-4" />
+     View Prompt
+   </Button>
+   ```
+
+   **Add the dialog at the end of the component return, alongside the existing `ReextractConfirmDialog`:**
+
+   ```tsx
+   <ViewPromptDialog
+     open={showPromptDialog}
+     onOpenChange={setShowPromptDialog}
+     showEditLink
+   />
+   ```
+
+   The full action buttons section becomes:
+
+   ```tsx
+   <div className="flex items-center gap-3">
+     {/* Extract Signals button */}
+     <Button
+       type="button"
+       variant="ai"
+       size="lg"
+       disabled={!hasInput || isOverLimit || extractionState === "extracting"}
+       onClick={handleExtractSignals}
+     >
+       {/* ...existing extract button content... */}
+     </Button>
+
+     {/* View Prompt button (P2.R1) */}
+     <Button
+       type="button"
+       variant="ghost"
+       size="lg"
+       onClick={() => setShowPromptDialog(true)}
+       className="text-muted-foreground"
+     >
+       <Eye className="mr-2 size-4" />
+       View Prompt
+     </Button>
+
+     {/* Submit button */}
+     <Button
+       type="submit"
+       disabled={!isValid || !hasInput || isOverLimit || isSubmitting}
+       size="lg"
+     >
+       {isSubmitting && <Loader2 className="mr-2 size-4 animate-spin" />}
+       {isSubmitting ? "Saving..." : "Save Session"}
+     </Button>
+   </div>
+   ```
+
+### Acceptance Criteria Traceability
+
+| Criterion | Implementation |
+|-----------|---------------|
+| A "View Prompt" button appears next to the "Extract Signals" button | Ghost button with `Eye` icon in capture form action bar (Increment 2.1) |
+| Clicking it opens a read-only dialog with the active extraction prompt | `ViewPromptDialog` fetches via `GET /api/prompts?key=signal_extraction` on open (Increment 2.1) |
+| The dialog includes an "Edit in Settings" link to `/settings` | `showEditLink` prop renders a `next/link` to `/settings` in the dialog footer (Increment 2.1) |
+| The prompt is rendered as markdown, consistent with Settings prompt editor view mode | `ReactMarkdown` + `remarkGfm` with same `prose` classes as `MarkdownPanel` (Increment 2.1) |
+| If the prompt fetch fails, a clear error message is shown instead | Error state renders user-friendly message with `AlertCircle` icon (Increment 2.1) |
+
+#### Increment 2.2: End-of-Part Audit
+
+**What:** Run the full end-of-part audit checklist — type check, PRD compliance verification (P2.R1–P2.R5), code quality conventions (SRP, DRY, dead code, naming, logging, design token adherence), documentation updates.
+
+**Checks to perform:**
+
+1. **Type check** — `npx tsc --noEmit` passes cleanly
+2. **PRD compliance** — All P2.R1–P2.R5 traced to implementation with no gaps
+3. **SRP** — `ViewPromptDialog` handles only display; fetch logic is self-contained; capture form only adds state + button
+4. **DRY** — Markdown rendering prose classes consistent with `MarkdownPanel`; no duplicated fetch logic
+5. **Dead code** — No unused imports or variables in new/modified files
+6. **Design tokens** — All colours, spacing, and typography use Tailwind tokens or CSS custom properties
+7. **Naming / conventions** — File naming (kebab-case), component naming (PascalCase), prop interfaces follow project conventions
+
+**Documentation to update:**
+
+- `ARCHITECTURE.md` — Add `view-prompt-dialog.tsx` to file map under `capture/_components/`
+- `CHANGELOG.md` — Add Part 2 entry with changes delivered
