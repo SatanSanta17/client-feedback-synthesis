@@ -37,4 +37,7 @@ export interface PromptRepository {
 
   /** Fetch the full active prompt version row for a given key. Returns null if none found. */
   getActiveVersion(promptKey: PromptKey): Promise<PromptVersionRow | null>;
+
+  /** Fetch a single prompt version by ID. Returns null if not found. */
+  findById(id: string): Promise<PromptVersionRow | null>;
 }

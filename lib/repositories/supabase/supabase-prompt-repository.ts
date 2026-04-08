@@ -129,5 +129,23 @@ export function createPromptRepository(
 
       return data ?? null;
     },
+
+    async findById(id: string): Promise<PromptVersionRow | null> {
+      console.log("[supabase-prompt-repo] findById — id:", id);
+
+      const { data, error } = await supabase
+        .from("prompt_versions")
+        .select("*")
+        .eq("id", id)
+        .maybeSingle();
+
+      if (error) {
+        console.error("[supabase-prompt-repo] findById error:", error.message);
+        return null;
+      }
+
+      console.log(`[supabase-prompt-repo] findById — ${data ? "found" : "not found"}`);
+      return data ?? null;
+    },
   };
 }

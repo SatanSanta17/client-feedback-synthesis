@@ -58,6 +58,24 @@ export async function getPromptHistory(
 }
 
 /**
+ * Fetches a single prompt version by ID.
+ * Returns null if not found.
+ */
+export async function getPromptVersionById(
+  repo: PromptRepository,
+  id: string
+): Promise<PromptVersionRow | null> {
+  console.log(`[prompt-service] getPromptVersionById — id: ${id}`);
+
+  const version = await repo.findById(id);
+
+  console.log(
+    `[prompt-service] getPromptVersionById — ${version ? "found" : "not found"} for ${id}`
+  );
+  return version;
+}
+
+/**
  * Saves a new prompt version and makes it active.
  * Atomically deactivates the previous active version within the same scope.
  */

@@ -1,6 +1,6 @@
 # TRD-014: Prompt Traceability & Extraction Staleness
 
-> **Status:** Draft (Parts 1–2)
+> **Status:** Draft (Parts 1–3)
 >
 > Mirrors **PRD-014**. Each part maps to the corresponding PRD part.
 
@@ -955,3 +955,378 @@ No new API endpoints are needed — the existing `GET /api/prompts?key=signal_ex
 
 - `ARCHITECTURE.md` — Add `view-prompt-dialog.tsx` to file map under `capture/_components/`
 - `CHANGELOG.md` — Add Part 2 entry with changes delivered
+
+---
+
+## Part 3: Show Prompt Version in Past Sessions
+
+> Implements **P3.R1–P3.R6** from PRD-014.
+
+### Overview
+
+Add a prompt version indicator to the expanded session row in the past sessions table. When a session has a non-null `prompt_version_id`, a small clickable badge (e.g., "Prompt v3") appears near the structured notes section. Clicking it opens the `ViewPromptDialog` (created in Part 2) with the exact prompt text used for that extraction, fetched on demand from a new API endpoint.
+
+This part requires:
+
+1. A new API endpoint (`GET /api/prompts/[id]`) to fetch a single prompt version by UUID, including its computed version number.
+2. A new repository method (`findById`) on `PromptRepository` to fetch a prompt version by ID.
+3. A new service function (`getPromptVersionById`) wrapping the repo method.
+4. Threading `prompt_version_id` through the frontend component tree — from the sessions list response to `SessionRow` to `ExpandedSessionRow`.
+5. A small `PromptVersionBadge` component that renders the clickable indicator, fetches prompt content on click, and opens the reused `ViewPromptDialog`.
+
+### Forward Compatibility Notes
+
+- **Part 4 (Staleness Indicators):** The prompt version badge and staleness indicator coexist in the expanded row — both near the structured notes header. Part 4 adds the staleness badge; this part adds the version badge. They are independent and can appear simultaneously per P4.R2.
+
+### Database Changes
+
+None. All data was added in Part 1.
+
+### New API Endpoint
+
+#### `GET /api/prompts/[id]`
+
+Fetches a single prompt version by UUID. Returns the full `PromptVersionRow` plus a computed `versionNumber` (1-based, ordered by `created_at` ascending within the same `prompt_key` and scope).
+
+**Why compute `versionNumber` server-side?** The version number is derived from the prompt's position in the history for its `prompt_key`. Computing this client-side would require fetching the full history every time — wasteful. The server can resolve it in a single query (count of versions with `created_at <= this version's created_at` for the same key and scope).
+
+**Request:** `GET /api/prompts/{uuid}`
+
+**Response (200):**
+```json
+{
+  "version": { "id": "...", "prompt_key": "signal_extraction", "content": "...", "author_email": "...", "is_active": false, "created_at": "..." },
+  "versionNumber": 3
+}
+```
+
+**Error responses:**
+- 400 — Invalid UUID format
+- 401 — Unauthenticated
+- 404 — Prompt version not found
+
+### Files Changed
+
+| File | Action | Purpose |
+|------|--------|---------|
+| `lib/repositories/prompt-repository.ts` | **Modify** | Add `findById(id)` method to interface |
+| `lib/repositories/supabase/supabase-prompt-repository.ts` | **Modify** | Implement `findById()` — select by ID, no team scoping (prompt versions are accessible across scopes for traceability) |
+| `lib/services/prompt-service.ts` | **Modify** | Add `getPromptVersionById()` wrapping repo method |
+| `app/api/prompts/[id]/route.ts` | **Create** | GET handler — auth, validate UUID, fetch version, compute version number, return response |
+| `app/capture/_components/expanded-session-row.tsx` | **Modify** | Add `prompt_version_id` to `SessionRow` interface; pass it to new `PromptVersionBadge` |
+| `app/capture/_components/prompt-version-badge.tsx` | **Create** | Clickable badge — fetches prompt version on click, opens `ViewPromptDialog` with content |
+| `app/capture/_components/past-sessions-table.tsx` | **Modify** | No code changes needed — `SessionRow` type is imported from `expanded-session-row.tsx` and the API already returns `prompt_version_id` (Part 1) |
+
+### Implementation
+
+#### Increment 3.1: Repository + Service + API Route
+
+**What:** Add `findById()` to the prompt repository, wrap it in a service function, and create the `GET /api/prompts/[id]` route handler.
+
+**Files:**
+
+1. **Modify `lib/repositories/prompt-repository.ts`**
+
+   Add a new method to the `PromptRepository` interface:
+
+   ```typescript
+   /** Fetch a single prompt version by ID. Returns null if not found. */
+   findById(id: string): Promise<PromptVersionRow | null>;
+   ```
+
+2. **Modify `lib/repositories/supabase/supabase-prompt-repository.ts`**
+
+   Implement `findById()`:
+
+   ```typescript
+   async findById(id: string): Promise<PromptVersionRow | null> {
+     console.log("[supabase-prompt-repo] findById — id:", id);
+
+     const { data, error } = await supabase
+       .from("prompt_versions")
+       .select("*")
+       .eq("id", id)
+       .maybeSingle();
+
+     if (error) {
+       console.error("[supabase-prompt-repo] findById error:", error.message);
+       return null;
+     }
+
+     return data ?? null;
+   }
+   ```
+
+   **Why no `scopeByTeam`?** Prompt versions are accessed for traceability across scopes. A session in one team workspace might reference a prompt version created in another context. The `findById` query should not restrict by team — the prompt version ID itself is the access key (only sessions the user has access to will have the ID in the first place).
+
+3. **Modify `lib/services/prompt-service.ts`**
+
+   Add a service function:
+
+   ```typescript
+   /**
+    * Fetches a single prompt version by ID.
+    * Returns null if not found.
+    */
+   export async function getPromptVersionById(
+     repo: PromptRepository,
+     id: string
+   ): Promise<PromptVersionRow | null> {
+     console.log(`[prompt-service] getPromptVersionById — id: ${id}`);
+
+     const version = await repo.findById(id);
+
+     console.log(
+       `[prompt-service] getPromptVersionById — ${version ? "found" : "not found"} for ${id}`
+     );
+     return version;
+   }
+   ```
+
+4. **Create `app/api/prompts/[id]/route.ts`**
+
+   New GET handler:
+
+   ```typescript
+   import { NextRequest, NextResponse } from "next/server";
+   import { z } from "zod";
+   import { createClient, getActiveTeamId } from "@/lib/supabase/server";
+   import { getPromptVersionById, getPromptHistory } from "@/lib/services/prompt-service";
+   import { createPromptRepository } from "@/lib/repositories/supabase/supabase-prompt-repository";
+
+   const idSchema = z.string().uuid("Invalid prompt version ID");
+
+   export async function GET(
+     _request: NextRequest,
+     { params }: { params: Promise<{ id: string }> }
+   ) {
+     const { id } = await params;
+
+     console.log("[api/prompts/[id]] GET — id:", id);
+
+     // Validate UUID format
+     const parsed = idSchema.safeParse(id);
+     if (!parsed.success) {
+       return NextResponse.json(
+         { message: "Invalid prompt version ID" },
+         { status: 400 }
+       );
+     }
+
+     // Auth check
+     const supabase = await createClient();
+     const {
+       data: { user },
+     } = await supabase.auth.getUser();
+
+     if (!user) {
+       return NextResponse.json(
+         { message: "Authentication required" },
+         { status: 401 }
+       );
+     }
+
+     const teamId = await getActiveTeamId();
+     const promptRepo = createPromptRepository(supabase, teamId);
+
+     try {
+       const version = await getPromptVersionById(promptRepo, id);
+
+       if (!version) {
+         return NextResponse.json(
+           { message: "Prompt version not found" },
+           { status: 404 }
+         );
+       }
+
+       // Compute version number: count of versions with created_at <= this
+       // version's created_at for the same prompt_key and scope.
+       const history = await getPromptHistory(promptRepo, version.prompt_key);
+       const sorted = [...history].sort(
+         (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
+       );
+       const versionNumber = sorted.findIndex((v) => v.id === version.id) + 1;
+
+       console.log(
+         `[api/prompts/[id]] GET — found version ${version.id}, number ${versionNumber}`
+       );
+
+       return NextResponse.json({ version, versionNumber });
+     } catch (err) {
+       console.error(
+         "[api/prompts/[id]] GET — error:",
+         err instanceof Error ? err.message : err
+       );
+       return NextResponse.json(
+         { message: "Failed to fetch prompt version" },
+         { status: 500 }
+       );
+     }
+   }
+   ```
+
+   **Version number computation:** Fetches the full history for the prompt key, sorts ascending by `created_at`, and finds the index. This is simple and correct — prompt histories are small (typically <20 versions). An alternative would be a COUNT query, but that would require a new repo method for marginal gain.
+
+#### Increment 3.2: Frontend — PromptVersionBadge + ExpandedSessionRow Integration
+
+**What:** Create the `PromptVersionBadge` component, add `prompt_version_id` to the frontend `SessionRow` interface, and wire the badge into the expanded session row.
+
+**Files:**
+
+1. **Modify `app/capture/_components/expanded-session-row.tsx`**
+
+   Add `prompt_version_id` to the `SessionRow` interface:
+
+   ```typescript
+   export interface SessionRow {
+     id: string
+     client_id: string
+     client_name: string
+     session_date: string
+     raw_notes: string
+     structured_notes: string | null
+     created_by: string
+     created_at: string
+     created_by_email?: string
+     attachment_count: number
+     prompt_version_id: string | null   // ← new
+   }
+   ```
+
+   In the JSX, add the `PromptVersionBadge` next to the "Extracted Signals" label:
+
+   ```tsx
+   import { PromptVersionBadge } from "./prompt-version-badge"
+
+   // ... inside the Extracted Signals section header:
+   <div className="flex items-center justify-between">
+     <div className="flex items-center gap-2">
+       <Label className="text-xs text-muted-foreground">Extracted Signals</Label>
+       {session.prompt_version_id && (
+         <PromptVersionBadge promptVersionId={session.prompt_version_id} />
+       )}
+     </div>
+     {canEdit && (
+       <Button ...>
+         {/* existing extract button */}
+       </Button>
+     )}
+   </div>
+   ```
+
+   The badge only renders when `prompt_version_id` is non-null (P3.R4).
+
+2. **Create `app/capture/_components/prompt-version-badge.tsx`**
+
+   A small clickable badge that fetches the prompt version on click and opens the `ViewPromptDialog`:
+
+   ```typescript
+   "use client"
+
+   import { useState, useCallback } from "react"
+   import { Loader2 } from "lucide-react"
+   import { toast } from "sonner"
+
+   import { Badge } from "@/components/ui/badge"
+   import { ViewPromptDialog } from "./view-prompt-dialog"
+
+   interface PromptVersionBadgeProps {
+     promptVersionId: string
+     className?: string
+   }
+
+   type FetchState = "idle" | "loading" | "success" | "error"
+
+   export function PromptVersionBadge({
+     promptVersionId,
+   }: PromptVersionBadgeProps) {
+     const [showDialog, setShowDialog] = useState(false)
+     const [fetchState, setFetchState] = useState<FetchState>("idle")
+     const [promptContent, setPromptContent] = useState<string | null>(null)
+     const [dialogTitle, setDialogTitle] = useState("Extraction Prompt Used")
+
+     const handleClick = useCallback(async () => {
+       if (fetchState === "loading") return
+
+       setFetchState("loading")
+
+       try {
+         const res = await fetch(`/api/prompts/${promptVersionId}`)
+         if (!res.ok) throw new Error("Failed to fetch prompt version")
+
+         const data = await res.json()
+         setPromptContent(data.version.content)
+         setDialogTitle(
+           data.versionNumber
+             ? `Extraction Prompt — Version ${data.versionNumber}`
+             : "Extraction Prompt Used"
+         )
+         setFetchState("success")
+         setShowDialog(true)
+       } catch {
+         setFetchState("error")
+         toast.error("Could not load prompt version")
+       }
+     }, [promptVersionId, fetchState])
+
+     return (
+       <>
+         <Badge
+           variant="outline"
+           className="cursor-pointer text-[10px] px-1.5 py-0 text-muted-foreground hover:text-foreground transition-colors"
+           onClick={handleClick}
+         >
+           {fetchState === "loading" ? (
+             <Loader2 className="size-3 animate-spin" />
+           ) : (
+             "View prompt used"
+           )}
+         </Badge>
+
+         <ViewPromptDialog
+           open={showDialog}
+           onOpenChange={setShowDialog}
+           title={dialogTitle}
+           content={promptContent}
+         />
+       </>
+     )
+   }
+   ```
+
+   **Design decisions:**
+
+   - **Fetch on click, not on open (P3.R6).** The badge fetches the prompt version when clicked, before opening the dialog. Once fetched, the content is passed directly via the `content` prop — the dialog doesn't re-fetch. The fetch result is cached in component state so re-opening doesn't re-fetch.
+   - **Title includes version number (P3.R5).** The dialog title shows "Extraction Prompt — Version 3" to distinguish from the "Active Extraction Prompt" title used in Part 2.
+   - **No "Edit in Settings" link.** `showEditLink` defaults to `false` — historical prompt versions are read-only with no path to edit.
+   - **Badge text is "View prompt used"** rather than "Prompt v3" — the version number requires the API call to compute, so we don't show it in the badge itself. The version number appears in the dialog title after the fetch completes.
+
+### Acceptance Criteria Traceability
+
+| Criterion | Implementation |
+|-----------|---------------|
+| Sessions with a linked prompt version show a version indicator in the expanded row | `PromptVersionBadge` rendered conditionally when `session.prompt_version_id` is non-null (Increment 3.2) |
+| Clicking the indicator opens a read-only dialog with the exact prompt text used for that extraction | Badge `handleClick` fetches from `GET /api/prompts/[id]`, passes content to `ViewPromptDialog` (Increment 3.2) |
+| Sessions without a linked prompt version show no indicator | Conditional render: `{session.prompt_version_id && <PromptVersionBadge ... />}` (Increment 3.2) |
+| The dialog clearly labels this as a historical prompt version, not the current active prompt | Dialog title: "Extraction Prompt — Version {n}" (P3.R5, Increment 3.2) |
+| Prompt content is fetched on demand, not included in the session list response | New `GET /api/prompts/[id]` endpoint, called only on badge click (P3.R6, Increments 3.1 + 3.2) |
+
+#### Increment 3.3: End-of-Part Audit
+
+**What:** Run the full end-of-part audit checklist — type check, PRD compliance verification (P3.R1–P3.R6), code quality conventions (SRP, DRY, dead code, naming, logging, design token adherence), documentation updates.
+
+**Checks to perform:**
+
+1. **Type check** — `npx tsc --noEmit` passes cleanly
+2. **PRD compliance** — All P3.R1–P3.R6 traced to implementation with no gaps
+3. **SRP** — `PromptVersionBadge` handles fetch + dialog state; `ViewPromptDialog` handles display only; API route validates + fetches + computes version number
+4. **DRY** — `ViewPromptDialog` reused from Part 2 with no duplication; version number computation in one place (API route)
+5. **Dead code** — No unused imports or variables in new/modified files
+6. **Design tokens** — Badge uses semantic Tailwind classes, no hardcoded colours
+7. **Naming / conventions** — All files, interfaces, and functions follow project conventions
+8. **Logging** — New repo method, service function, and API route log entry, exit, and errors
+
+**Documentation to update:**
+
+- `ARCHITECTURE.md` — Add `prompt-version-badge.tsx` to file map under `capture/_components/`; add `prompts/[id]/route.ts` to file map under `api/`; update current state
+- `CHANGELOG.md` — Add Part 3 entry with changes delivered
