@@ -20,7 +20,7 @@ Synthesiser is a web application for teams to capture structured client session 
 
 ## Current State
 
-**Status:** PRD-002 through PRD-010 implemented. PRD-012 Parts 1–5 (Design Tokens and Typography + DRY Extraction + SRP Component Decomposition + API Route/Service Cleanup + Dependency Inversion) implemented. PRD-013 Parts 1–2 (File Upload Infrastructure + Persistence & Signal Extraction Integration) implemented. PRD-014 Parts 1–3 (Session Traceability & Staleness Data Model + View Prompt on Capture Page + Show Prompt Version in Past Sessions) implemented. PRD-015 Part 1 (Public Landing Page) implemented. The app is a fully functional team-capable client feedback capture and synthesis platform with a public landing page. Google OAuth login (open to any Google account), working capture form with AI signal extraction and file attachment upload with server-side persistence, past sessions table with filters/inline editing/soft delete, master signal page with AI synthesis and PDF download, prompt editor with version history, and team access with role-based permissions.
+**Status:** PRD-002 through PRD-010 implemented. PRD-012 Parts 1–5 (Design Tokens and Typography + DRY Extraction + SRP Component Decomposition + API Route/Service Cleanup + Dependency Inversion) implemented. PRD-013 Parts 1–2 (File Upload Infrastructure + Persistence & Signal Extraction Integration) implemented. PRD-014 Parts 1–4 (Session Traceability & Staleness Data Model + View Prompt on Capture Page + Show Prompt Version in Past Sessions + Staleness Indicators & Re-extraction Warnings) implemented. PRD-015 Part 1 (Public Landing Page) implemented. The app is a fully functional team-capable client feedback capture and synthesis platform with a public landing page. Google OAuth login (open to any Google account), working capture form with AI signal extraction and file attachment upload with server-side persistence, past sessions table with filters/inline editing/soft delete, master signal page with AI synthesis and PDF download, prompt editor with version history, and team access with role-based permissions.
 
 **Core features live:**
 - Public landing page at `/` with hero, feature cards, how-it-works flow, and CTA (authenticated users auto-redirect to `/capture`)
@@ -79,6 +79,8 @@ synthesiser/
 │   │   │       └── route.ts     # GET — fetch a single prompt version by UUID with computed version number
 │   │   ├── sessions/
 │   │   │   ├── route.ts         # GET/POST — session list and create — team-scoped
+│   │   │   ├── prompt-versions/
+│   │   │   │   └── route.ts     # GET — distinct prompt versions across sessions with computed version numbers
 │   │   │   └── [id]/
 │   │   │       ├── route.ts     # PUT/DELETE — update/soft-delete session (checkSessionAccess via session-service)
 │   │   │       └── attachments/
@@ -127,8 +129,9 @@ synthesiser/
 │   │       ├── markdown-panel.tsx         # Reusable markdown view/edit panel with rendered preview and raw edit toggle
 │   │       ├── prompt-version-badge.tsx   # Clickable badge in expanded row — fetches prompt version on click, opens ViewPromptDialog
 │   │       ├── past-sessions-table.tsx    # Past sessions table with expand/collapse, inline edit, delete, "Captured by" column
+│   │       ├── prompt-version-filter.tsx  # Prompt version filter dropdown — fetches distinct versions, "Default prompt" for null
 │   │       ├── session-capture-form.tsx   # Coordinator — react-hook-form, submit, extract; composes attachment/notes subcomponents
-│   │       ├── session-filters.tsx        # Filter bar — client combobox + date range with auto-sync
+│   │       ├── session-filters.tsx        # Filter bar — client combobox + date range + prompt version filter with auto-sync
 │   │       ├── session-table-row.tsx      # Single table row — formatDate, truncateNotes, formatEmail helpers
 │   │       ├── structured-notes-panel.tsx # Post-extraction markdown display for capture form
 │   │       ├── unsaved-changes-dialog.tsx # Save/Discard/Cancel prompt for dirty expanded rows
@@ -171,7 +174,7 @@ synthesiser/
 │   │   ├── auth-form-shell.tsx          # Shared centered auth card layout (title, subtitle, children)
 │   │   └── email-confirmation-panel.tsx # Shared "Check your email" success panel (children, linkText, linkHref)
 │   ├── capture/
-│   │   └── reextract-confirm-dialog.tsx # Shared re-extract confirmation dialog (show, onConfirm, onCancel)
+│   │   └── reextract-confirm-dialog.tsx # Shared re-extract confirmation dialog (show, hasManualEdits, onConfirm, onCancel)
 │   ├── providers/
 │   │   └── auth-provider.tsx    # AuthProvider context — user, isAuthenticated, isLoading, canCreateTeam, activeTeamId, setActiveTeam, signOut
 │   ├── settings/
@@ -205,7 +208,7 @@ synthesiser/
 │   ├── cookies/
 │   │   └── active-team.ts       # Client-side active team cookie helpers (getActiveTeamId, setActiveTeamCookie, clearActiveTeamCookie)
 │   ├── hooks/
-│   │   └── use-signal-extraction.ts # Shared extraction state machine hook (ExtractionState, promptVersionId, getInput callback, re-extract confirm flow)
+│   │   └── use-signal-extraction.ts # Shared extraction state machine hook (ExtractionState, promptVersionId, getInput callback, re-extract confirm flow, forceConfirmOnReextract for server-side manual edit flag)
 │   ├── types/
 │   │   └── signal-session.ts    # SignalSession interface — shared between ai-service and master-signal-service
 │   ├── utils.ts                 # cn() utility (clsx + tailwind-merge) + PROSE_CLASSES constant
@@ -314,6 +317,7 @@ Stores captured client feedback sessions. Scoped to a user or a team.
 | `structured_notes` | TEXT | Nullable. Markdown-formatted signal extraction output. |
 | `prompt_version_id` | UUID (FK → prompt_versions) | Nullable. Links to the prompt version that produced the structured notes. ON DELETE SET NULL. |
 | `extraction_stale` | BOOLEAN | NOT NULL, default `false`. True when raw input or structured notes changed since last extraction. |
+| `structured_notes_edited` | BOOLEAN | NOT NULL, default `false`. True when structured notes are manually edited (outside extraction). Reset on fresh extraction or when structured notes are cleared. |
 | `updated_by` | UUID (FK → auth.users) | Nullable. Set to the authenticated user's ID on every session update (PUT). ON DELETE SET NULL. |
 | `created_by` | UUID | Default `auth.uid()` — Supabase Auth user ID |
 | `team_id` | UUID (FK → teams) | Nullable. NULL = personal workspace. |

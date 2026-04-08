@@ -11,6 +11,7 @@
 - the confirmation dialog has a re-extract button which is purple
 - dont close row on clicking save 
 - a lot of states need to be handled on client side first and then hit server for example when the session is stale and i hit re-extract the staleness indicator should disappear without even saving it if i save then it goes permanantly if not then it doesnt go permanantly basically trying to make it optimistic update something like that i dont know if that makes sense we need to discuss more on this
+- check how much tokens can be passed in different models
 
 
 but it doesnt end here i am trying to build a platform that handles end to end product development life cycle which starts from client calls--> identifying requirements--> advise features--> design architecture--> develop a prototype--> get approval--> and deploy 

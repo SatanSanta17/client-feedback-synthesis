@@ -6,6 +6,23 @@ All notable changes to this project are documented here, grouped by PRD and part
 
 ## [Unreleased]
 
+### PRD-014 Part 4: Staleness Indicators & Re-extraction Warnings — 2026-04-08
+- Added `structured_notes_edited` column (boolean, default false) to `sessions` table — distinguishes manual-edit staleness from input-change staleness
+- Extended `SessionRow`, `SessionUpdate`, and `Session` interfaces (repository + service) with `structured_notes_edited`; updated Supabase and mock adapters
+- Enhanced staleness state machine in `updateSession()`: fresh extraction resets both flags; manual structured notes edits set `structured_notes_edited = true`; input-only changes preserve existing `structured_notes_edited` value
+- Added staleness warning badge ("Extraction may be outdated") in expanded session row — amber `--status-warning` token, visually distinct from prompt version badge
+- Added subtle `AlertTriangle` warning icon in collapsed table row next to Sparkles icon when `extraction_stale = true`
+- Enhanced `ReextractConfirmDialog` with `hasManualEdits` prop — context-aware warning text distinguishing manual edit loss from standard re-extraction
+- Added `forceConfirmOnReextract` option to `useSignalExtraction` hook — bridges server-side `structured_notes_edited` flag into client-side re-extract confirmation flow
+- Created `GET /api/sessions/prompt-versions` endpoint — returns distinct prompt version IDs with computed version numbers and `hasNull` flag for pre-migration sessions
+- Added `getDistinctPromptVersionIds()` to `SessionRepository` interface, Supabase adapter, and mock adapter
+- Added `promptVersionId` and `promptVersionNull` filter params to `SessionListFilters`, Supabase list query, `SessionFilters` service type, and `GET /api/sessions` Zod schema
+- Created `PromptVersionFilter` component — dropdown populated from prompt-versions endpoint with "All versions", "Prompt vN", and "Default prompt" options
+- Wired `PromptVersionFilter` into `SessionFilters` component and `PastSessionsTable` API call
+- Added "Last edited by" field to `ExpandedSessionMetadata` — resolves `updated_by` email in team context alongside `created_by` emails in a single batch query
+- Added `updated_by_email` to `SessionWithClient` service interface and frontend `SessionRow` interface
+- **End-of-part audit:** All P4.R1–P4.R8 requirements verified; no SRP/DRY/dead code/design token violations found; updated ARCHITECTURE.md (added `structured_notes_edited` to data model, `prompt-versions/route.ts` and `prompt-version-filter.tsx` to file map, updated current state and component descriptions)
+
 ### PRD-014 Part 3: Show Prompt Version in Past Sessions — 2026-04-08
 - Created `GET /api/prompts/[id]` endpoint — fetches a single prompt version by UUID with computed version number (1-based, ordered by `created_at` ascending); Zod UUID validation, auth check, 400/401/404/500 responses with logging
 - Added `findById()` method to `PromptRepository` interface and Supabase adapter — fetches a prompt version without team scoping (cross-scope traceability for historical versions)

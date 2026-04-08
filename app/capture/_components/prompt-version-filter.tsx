@@ -62,7 +62,7 @@ export function PromptVersionFilter({
         onChange(val === "" ? undefined : val)
       }}
       disabled={isLoading}
-      className={`h-9 rounded-md border border-input bg-background px-3 text-sm text-foreground shadow-sm transition-colors focus:outline-none focus:ring-1 focus:ring-ring ${className ?? ""}`}
+      className={`h-8 rounded-lg border border-input bg-transparent px-2.5 text-sm text-foreground transition-colors outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 ${className ?? ""}`}
     >
       <option value="">All versions</option>
       {options.map((opt) => (
