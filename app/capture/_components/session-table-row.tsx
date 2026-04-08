@@ -1,6 +1,6 @@
 "use client"
 
-import { Sparkles, Paperclip } from "lucide-react"
+import { Sparkles, Paperclip, AlertTriangle } from "lucide-react"
 
 import { ExpandedSessionRow, type SessionRow } from "./expanded-session-row"
 
@@ -80,7 +80,12 @@ export function SessionTableRow({
               </span>
             )}
             {session.structured_notes && (
-              <Sparkles className="size-3.5 shrink-0 text-primary/60" />
+              <>
+                <Sparkles className="size-3.5 shrink-0 text-primary/60" />
+                {session.extraction_stale && (
+                  <AlertTriangle className="size-3 shrink-0 text-[var(--status-warning)]" />
+                )}
+              </>
             )}
           </span>
         </td>

@@ -5,6 +5,7 @@ import { Loader2, Sparkles, RefreshCw } from "lucide-react"
 import { toast } from "sonner"
 
 import { MAX_COMBINED_CHARS } from "@/lib/constants"
+import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Label } from "@/components/ui/label"
 import { type ClientSelection } from "./client-combobox"
@@ -30,8 +31,12 @@ export interface SessionRow {
   created_by: string
   created_at: string
   created_by_email?: string
+  updated_by_email?: string
   attachment_count: number
   prompt_version_id: string | null
+  extraction_stale: boolean
+  structured_notes_edited: boolean
+  updated_by: string | null
 }
 
 export interface ExpandedSessionRowProps {
@@ -294,6 +299,14 @@ export function ExpandedSessionRow({
               <Label className="text-xs text-muted-foreground">Extracted Signals</Label>
               {session.prompt_version_id && (
                 <PromptVersionBadge promptVersionId={session.prompt_version_id} />
+              )}
+              {session.extraction_stale && session.structured_notes && (
+                <Badge
+                  variant="outline"
+                  className="text-[10px] px-1.5 py-0 border-[var(--status-warning)] text-[var(--status-warning)]"
+                >
+                  Extraction may be outdated
+                </Badge>
               )}
             </div>
             {canEdit && (
