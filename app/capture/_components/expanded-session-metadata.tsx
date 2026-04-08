@@ -14,8 +14,8 @@ interface ExpandedSessionMetadataProps {
   sessionDate: string
   onSessionDateChange: (date: string) => void
   session: Pick<
-    { client_name: string; session_date: string; created_by_email?: string },
-    "client_name" | "session_date" | "created_by_email"
+    { client_name: string; session_date: string; created_by_email?: string; updated_by_email?: string },
+    "client_name" | "session_date" | "created_by_email" | "updated_by_email"
   >
 }
 
@@ -42,6 +42,12 @@ export function ExpandedSessionMetadata({
           <div>
             <span className="text-xs text-muted-foreground">Captured by</span>
             <p className="font-medium">{session.created_by_email}</p>
+          </div>
+        )}
+        {session.updated_by_email && (
+          <div>
+            <span className="text-xs text-muted-foreground">Last edited by</span>
+            <p className="font-medium">{session.updated_by_email}</p>
           </div>
         )}
       </div>

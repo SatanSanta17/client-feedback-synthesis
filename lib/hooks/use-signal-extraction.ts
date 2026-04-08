@@ -10,6 +10,8 @@ interface UseSignalExtractionOptions {
   getInput: () => string
   /** Pre-populate with existing structured notes (e.g. when editing a saved session). */
   initialStructuredNotes?: string | null
+  /** When true, always show the re-extract confirmation if structured notes exist (e.g. server-side manual edit flag). */
+  forceConfirmOnReextract?: boolean
 }
 
 interface UseSignalExtractionReturn {
@@ -31,6 +33,7 @@ interface UseSignalExtractionReturn {
 export function useSignalExtraction({
   getInput,
   initialStructuredNotes = null,
+  forceConfirmOnReextract = false,
 }: UseSignalExtractionOptions): UseSignalExtractionReturn {
   const [structuredNotes, setStructuredNotes] = useState<string | null>(
     initialStructuredNotes
@@ -85,12 +88,12 @@ export function useSignalExtraction({
   }, [getInput, structuredNotes])
 
   const handleExtractSignals = useCallback(async () => {
-    if (extractionState === "done" && isStructuredDirty) {
+    if (extractionState === "done" && (isStructuredDirty || forceConfirmOnReextract)) {
       setShowReextractConfirm(true)
       return
     }
     await performExtraction()
-  }, [extractionState, isStructuredDirty, performExtraction])
+  }, [extractionState, isStructuredDirty, forceConfirmOnReextract, performExtraction])
 
   const handleConfirmReextract = useCallback(async () => {
     setShowReextractConfirm(false)

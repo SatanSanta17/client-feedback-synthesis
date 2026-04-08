@@ -112,6 +112,7 @@ export function ExpandedSessionRow({
   } = useSignalExtraction({
     getInput: getExtractionInput,
     initialStructuredNotes: session.structured_notes,
+    forceConfirmOnReextract: session.structured_notes_edited,
   })
 
   // Derived state
@@ -371,6 +372,7 @@ export function ExpandedSessionRow({
 
       <ReextractConfirmDialog
         show={showReextractConfirm}
+        hasManualEdits={session.structured_notes_edited}
         onConfirm={handleConfirmReextract}
         onCancel={dismissReextractConfirm}
       />
