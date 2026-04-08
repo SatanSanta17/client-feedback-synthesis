@@ -119,7 +119,6 @@ export function ClientFilterCombobox({
             variant="outline"
             role="combobox"
             aria-expanded={open}
-            size="sm"
             className="w-48 justify-between font-normal"
           >
             {value ? (
