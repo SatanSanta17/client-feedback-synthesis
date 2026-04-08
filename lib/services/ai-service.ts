@@ -13,7 +13,7 @@ import {
   buildMasterSignalUserMessage,
 } from "@/lib/prompts/master-signal-synthesis";
 import type { PromptRepository } from "@/lib/repositories/prompt-repository";
-import { getActivePrompt } from "@/lib/services/prompt-service";
+import { getActivePrompt, getActivePromptVersion } from "@/lib/services/prompt-service";
 import type { SignalSession } from "@/lib/types/signal-session";
 
 const MAX_RETRIES = 3;
@@ -67,25 +67,39 @@ function resolveModel(): { model: LanguageModel; label: string } {
 // ---------------------------------------------------------------------------
 
 /**
+ * Result returned by extractSignals(), including the prompt version ID
+ * so the caller can record which prompt produced the extraction (P1.R6).
+ */
+export interface ExtractionResult {
+  structuredNotes: string;
+  promptVersionId: string | null;
+}
+
+/**
  * Extract signals from raw session notes via the configured AI model.
- * Returns a markdown-formatted signal extraction report.
+ * Returns structured notes and the prompt version ID used for traceability.
  * Retries transient failures (429, 5xx, network) with exponential backoff.
  */
 export async function extractSignals(
   promptRepo: PromptRepository,
   rawNotes: string
-): Promise<string> {
-  const dbPrompt = await getActivePrompt(promptRepo, "signal_extraction");
-  const systemPrompt = dbPrompt ?? SIGNAL_EXTRACTION_SYSTEM_PROMPT;
+): Promise<ExtractionResult> {
+  const activeVersion = await getActivePromptVersion(promptRepo, "signal_extraction");
+  const systemPrompt = activeVersion?.content ?? SIGNAL_EXTRACTION_SYSTEM_PROMPT;
 
   const userMessage = buildSignalExtractionUserMessage(rawNotes);
 
-  return callModel({
+  const structuredNotes = await callModel({
     systemPrompt,
     userMessage,
     maxTokens: EXTRACT_SIGNALS_MAX_TOKENS,
     operationName: "extractSignals",
   });
+
+  return {
+    structuredNotes,
+    promptVersionId: activeVersion?.id ?? null,
+  };
 }
 
 /**

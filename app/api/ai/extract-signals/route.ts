@@ -64,14 +64,18 @@ export async function POST(request: NextRequest) {
   const promptRepo = createPromptRepository(supabase, teamId);
 
   try {
-    const structuredNotes = await extractSignals(promptRepo, parsed.data.rawNotes);
+    const result = await extractSignals(promptRepo, parsed.data.rawNotes);
 
     console.log(
       "[api/ai/extract-signals] POST — extraction complete,",
-      structuredNotes.length,
-      "chars"
+      result.structuredNotes.length,
+      "chars, promptVersionId:",
+      result.promptVersionId
     );
-    return NextResponse.json({ structuredNotes });
+    return NextResponse.json({
+      structuredNotes: result.structuredNotes,
+      promptVersionId: result.promptVersionId,
+    });
   } catch (err) {
     return mapAIErrorToResponse(err, "api/ai/extract-signals", {
       request:

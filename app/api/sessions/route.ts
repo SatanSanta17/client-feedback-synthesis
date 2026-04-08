@@ -79,6 +79,7 @@ const createSessionSchema = z
       .optional()
       .default(null),
     hasAttachments: z.boolean().optional().default(false),
+    promptVersionId: z.string().uuid().nullable().optional().default(null),
   })
   .refine(
     (data) => {
@@ -135,6 +136,7 @@ export async function POST(request: NextRequest) {
       sessionDate: parsed.data.sessionDate,
       rawNotes: parsed.data.rawNotes,
       structuredNotes: parsed.data.structuredNotes,
+      promptVersionId: parsed.data.promptVersionId,
     });
 
     console.log("[api/sessions] POST — created session:", session.id);

@@ -44,6 +44,16 @@ export async function DELETE(
   try {
     await deleteAttachment(attachmentRepo, attachmentId);
 
+    // Mark session as stale after attachment removed (P1.R4)
+    try {
+      await sessionRepo.markStale(sessionId, user.id);
+    } catch (staleErr) {
+      console.error(
+        "[api/sessions/[id]/attachments/[attachmentId]] DELETE — failed to mark stale:",
+        staleErr instanceof Error ? staleErr.message : staleErr
+      );
+    }
+
     console.log(
       "[api/sessions/[id]/attachments/[attachmentId]] DELETE — deleted:",
       attachmentId

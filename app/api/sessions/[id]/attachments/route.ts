@@ -166,6 +166,16 @@ export async function POST(
       teamId,
     });
 
+    // Mark session as stale after attachment added (P1.R4)
+    try {
+      await sessionRepo.markStale(sessionId, userId);
+    } catch (staleErr) {
+      console.error(
+        "[api/sessions/[id]/attachments] POST — failed to mark stale:",
+        staleErr instanceof Error ? staleErr.message : staleErr
+      );
+    }
+
     console.log(
       "[api/sessions/[id]/attachments] POST — created:",
       attachment.id

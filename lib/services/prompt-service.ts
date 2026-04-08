@@ -23,6 +23,24 @@ export async function getActivePrompt(
 }
 
 /**
+ * Fetches the full active prompt version row for a given key.
+ * Returns null if none found (caller falls back to hardcoded default).
+ */
+export async function getActivePromptVersion(
+  repo: PromptRepository,
+  promptKey: PromptKey
+): Promise<PromptVersionRow | null> {
+  console.log(`[prompt-service] getActivePromptVersion — key: ${promptKey}`);
+
+  const version = await repo.getActiveVersion(promptKey);
+
+  console.log(
+    `[prompt-service] getActivePromptVersion — ${version ? `found: ${version.id}` : "not found"} for ${promptKey}`
+  );
+  return version;
+}
+
+/**
  * Fetches the version history for a given prompt key, newest first.
  */
 export async function getPromptHistory(

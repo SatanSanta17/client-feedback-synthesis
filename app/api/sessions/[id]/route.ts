@@ -31,6 +31,9 @@ const updateSessionSchema = z
       .nullable()
       .optional(),
     hasAttachments: z.boolean().optional().default(false),
+    promptVersionId: z.string().uuid().nullable().optional(),
+    isExtraction: z.boolean().optional().default(false),
+    inputChanged: z.boolean().optional().default(false),
   })
   .refine(
     (data) => {
@@ -104,7 +107,10 @@ export async function PUT(
       sessionDate: parsed.data.sessionDate,
       rawNotes: parsed.data.rawNotes,
       structuredNotes: parsed.data.structuredNotes,
-    });
+      promptVersionId: parsed.data.promptVersionId,
+      isExtraction: parsed.data.isExtraction,
+      inputChanged: parsed.data.inputChanged,
+    }, user.id);
 
     console.log("[api/sessions/[id]] PUT — updated:", session.id);
     return NextResponse.json({ session });

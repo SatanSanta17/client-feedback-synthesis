@@ -66,6 +66,7 @@ export interface CreateSessionInput {
   sessionDate: string;
   rawNotes: string;
   structuredNotes?: string | null;
+  promptVersionId?: string | null;
 }
 
 export interface Session {
@@ -76,6 +77,9 @@ export interface Session {
   structured_notes: string | null;
   created_by: string;
   created_at: string;
+  prompt_version_id: string | null;
+  extraction_stale: boolean;
+  updated_by: string | null;
 }
 
 export interface SessionWithClient extends Session {
@@ -144,6 +148,9 @@ export async function getSessions(
     client_name: row.client_name,
     created_by_email: emailByUserId?.get(row.created_by) ?? undefined,
     attachment_count: attachmentCountMap.get(row.id) ?? 0,
+    prompt_version_id: row.prompt_version_id,
+    extraction_stale: row.extraction_stale,
+    updated_by: row.updated_by,
   }));
 
   console.log(
@@ -167,7 +174,7 @@ export async function createSession(
   clientRepo: ClientRepository,
   input: CreateSessionInput
 ): Promise<Session> {
-  const { clientId, clientName, sessionDate, rawNotes, structuredNotes } = input;
+  const { clientId, clientName, sessionDate, rawNotes, structuredNotes, promptVersionId } = input;
 
   console.log(
     "[session-service] createSession — clientId:",
@@ -190,6 +197,7 @@ export async function createSession(
     session_date: sessionDate,
     raw_notes: rawNotes,
     structured_notes: structuredNotes ?? null,
+    prompt_version_id: promptVersionId ?? null,
   });
 
   console.log("[session-service] createSession success:", row.id);
@@ -202,11 +210,15 @@ export interface UpdateSessionInput {
   sessionDate: string;
   rawNotes: string;
   structuredNotes?: string | null;
+  promptVersionId?: string | null;
+  isExtraction?: boolean;
+  inputChanged?: boolean;
 }
 
 /**
  * Update an existing session.
  * Supports changing the client (including to a new client).
+ * Computes extraction staleness based on the nature of the update (P1.R4–P1.R9).
  * Throws SessionNotFoundError if the session doesn't exist or is deleted.
  * Re-throws ClientDuplicateError so the API route can return 409.
  */
@@ -214,11 +226,16 @@ export async function updateSession(
   sessionRepo: SessionRepository,
   clientRepo: ClientRepository,
   id: string,
-  input: UpdateSessionInput
+  input: UpdateSessionInput,
+  userId: string
 ): Promise<Session> {
-  const { clientId, clientName, sessionDate, rawNotes, structuredNotes } = input;
+  const {
+    clientId, clientName, sessionDate, rawNotes,
+    structuredNotes, promptVersionId, isExtraction, inputChanged,
+  } = input;
 
-  console.log("[session-service] updateSession — id:", id, "clientId:", clientId);
+  console.log("[session-service] updateSession — id:", id, "clientId:", clientId,
+    "isExtraction:", isExtraction, "inputChanged:", inputChanged);
 
   // Resolve the client ID
   let resolvedClientId = clientId;
@@ -229,12 +246,35 @@ export async function updateSession(
     console.log("[session-service] updateSession created new client:", resolvedClientId);
   }
 
+  // --- Compute staleness (P1.R4, P1.R5, P1.R8, P1.R9) ---
+  let extractionStale: boolean | undefined;
+  let resolvedPromptVersionId: string | null | undefined;
+
+  if (isExtraction) {
+    // P1.R5 / P1.R9: Fresh extraction resets staleness
+    extractionStale = false;
+    resolvedPromptVersionId = promptVersionId ?? null;
+  } else if (structuredNotes === null) {
+    // P1.R8: Clearing structured notes resets everything
+    extractionStale = false;
+    resolvedPromptVersionId = null;
+  } else if (inputChanged) {
+    // P1.R4: Raw notes or attachments changed — mark stale
+    extractionStale = true;
+  } else if (structuredNotes !== undefined) {
+    // P1.R4: Structured notes manually edited (changed but not via extraction)
+    extractionStale = true;
+  }
+
   try {
     const row = await sessionRepo.update(id, {
       client_id: resolvedClientId,
       session_date: sessionDate,
       raw_notes: rawNotes,
       structured_notes: structuredNotes,
+      prompt_version_id: resolvedPromptVersionId,
+      extraction_stale: extractionStale,
+      updated_by: userId,
     });
 
     console.log("[session-service] updateSession success:", row.id);
@@ -301,6 +341,9 @@ function mapRowToSession(row: SessionRow): Session {
     structured_notes: row.structured_notes,
     created_by: row.created_by,
     created_at: row.created_at,
+    prompt_version_id: row.prompt_version_id,
+    extraction_stale: row.extraction_stale,
+    updated_by: row.updated_by,
   };
 }
 
