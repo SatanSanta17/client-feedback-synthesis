@@ -5,7 +5,7 @@ import { useForm, Controller } from "react-hook-form"
 import { zodResolver } from "@hookform/resolvers/zod"
 import { z } from "zod"
 import { toast } from "sonner"
-import { Loader2, Sparkles, RefreshCw } from "lucide-react"
+import { Loader2, Sparkles, RefreshCw, Eye } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
 import { Label } from "@/components/ui/label"
@@ -23,6 +23,7 @@ import { useSignalExtraction } from "@/lib/hooks/use-signal-extraction"
 import { ReextractConfirmDialog } from "@/components/capture/reextract-confirm-dialog"
 import { CaptureAttachmentSection } from "./capture-attachment-section"
 import { StructuredNotesPanel } from "./structured-notes-panel"
+import { ViewPromptDialog } from "./view-prompt-dialog"
 
 function getToday(): string {
   return new Date().toISOString().split("T")[0]
@@ -74,6 +75,9 @@ export function SessionCaptureForm({ onSessionSaved }: SessionCaptureFormProps) 
 
   // File attachments — managed outside react-hook-form
   const [attachments, setAttachments] = useState<ParsedAttachment[]>([])
+
+  // View Prompt dialog state (P2.R1)
+  const [showPromptDialog, setShowPromptDialog] = useState(false)
 
   // Watch rawNotes to enable/disable the extract button
   const rawNotes = watch("rawNotes")
@@ -256,6 +260,17 @@ export function SessionCaptureForm({ onSessionSaved }: SessionCaptureFormProps) 
             )}
           </Button>
 
+          {/* View Prompt button — ai-outline, visually subordinate (P2.R1) */}
+          <Button
+            type="button"
+            variant="ai-outline"
+            size="lg"
+            onClick={() => setShowPromptDialog(true)}
+          >
+            <Eye className="mr-2 size-4" />
+            View Prompt
+          </Button>
+
           {/* Submit button */}
           <Button
             type="submit"
@@ -280,6 +295,12 @@ export function SessionCaptureForm({ onSessionSaved }: SessionCaptureFormProps) 
         show={showReextractConfirm}
         onConfirm={handleConfirmReextract}
         onCancel={dismissReextractConfirm}
+      />
+
+      <ViewPromptDialog
+        open={showPromptDialog}
+        onOpenChange={setShowPromptDialog}
+        showEditLink
       />
     </div>
   )

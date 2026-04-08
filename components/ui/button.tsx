@@ -20,6 +20,7 @@ const buttonVariants = cva(
           "bg-destructive/10 text-destructive hover:bg-destructive/20 focus-visible:border-destructive/40 focus-visible:ring-destructive/20 dark:bg-destructive/20 dark:hover:bg-destructive/30 dark:focus-visible:ring-destructive/40",
         link: "text-primary underline-offset-4 hover:underline",
         ai: "bg-[var(--ai-action)] text-[var(--ai-action-foreground)] hover:bg-[var(--ai-action-hover)] focus-visible:ring-[var(--ai-action)]/40",
+        "ai-outline": "border-[var(--ai-action)] text-[var(--ai-action)] hover:bg-[var(--ai-action)]/10 focus-visible:ring-[var(--ai-action)]/40",
       },
       size: {
         default:
