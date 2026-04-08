@@ -18,6 +18,7 @@ import { ReextractConfirmDialog } from "@/components/capture/reextract-confirm-d
 import { ExpandedSessionMetadata } from "./expanded-session-metadata"
 import { ExpandedSessionNotes } from "./expanded-session-notes"
 import { ExpandedSessionActions } from "./expanded-session-actions"
+import { PromptVersionBadge } from "./prompt-version-badge"
 
 export interface SessionRow {
   id: string
@@ -30,6 +31,7 @@ export interface SessionRow {
   created_at: string
   created_by_email?: string
   attachment_count: number
+  prompt_version_id: string | null
 }
 
 export interface ExpandedSessionRowProps {
@@ -96,6 +98,7 @@ export function ExpandedSessionRow({
   const {
     extractionState,
     structuredNotes,
+    promptVersionId,
     showReextractConfirm,
     setStructuredNotes,
     handleExtractSignals,
@@ -160,6 +163,12 @@ export function ExpandedSessionRow({
 
     setIsSaving(true)
     try {
+      const didExtract = promptVersionId !== null
+      const inputChanged =
+        rawNotes !== session.raw_notes ||
+        pendingAttachments.length > 0 ||
+        deletedAttachmentIds.size > 0
+
       const response = await fetch(`/api/sessions/${session.id}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
@@ -170,6 +179,9 @@ export function ExpandedSessionRow({
           rawNotes,
           structuredNotes,
           hasAttachments: savedAttachments.length + pendingAttachments.length > 0,
+          promptVersionId: promptVersionId,
+          isExtraction: didExtract,
+          inputChanged,
         }),
       })
 
@@ -204,7 +216,7 @@ export function ExpandedSessionRow({
     } finally {
       setIsSaving(false)
     }
-  }, [session.id, client, sessionDate, rawNotes, structuredNotes, isFormValid, onSave, savedAttachments, pendingAttachments])
+  }, [session.id, session.raw_notes, client, sessionDate, rawNotes, structuredNotes, promptVersionId, isFormValid, onSave, savedAttachments, pendingAttachments, deletedAttachmentIds])
 
   useEffect(() => {
     registerSave(handleSave)
@@ -278,7 +290,12 @@ export function ExpandedSessionRow({
         {/* Extracted signals panel — kept inline (minimal logic) */}
         <div className="flex flex-col gap-1.5">
           <div className="flex items-center justify-between">
-            <Label className="text-xs text-muted-foreground">Extracted Signals</Label>
+            <div className="flex items-center gap-2">
+              <Label className="text-xs text-muted-foreground">Extracted Signals</Label>
+              {session.prompt_version_id && (
+                <PromptVersionBadge promptVersionId={session.prompt_version_id} />
+              )}
+            </div>
             {canEdit && (
               <Button
                 type="button"

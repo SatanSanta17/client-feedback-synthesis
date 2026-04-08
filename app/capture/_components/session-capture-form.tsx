@@ -62,7 +62,7 @@ export function SessionCaptureForm({ onSessionSaved }: SessionCaptureFormProps) 
     reset,
     getValues,
     watch,
-    formState: { isSubmitting, isValid },
+    formState: { isSubmitting, errors },
   } = useForm<CaptureFormValues>({
     resolver: zodResolver(captureFormSchema),
     defaultValues: {
@@ -70,7 +70,7 @@ export function SessionCaptureForm({ onSessionSaved }: SessionCaptureFormProps) 
       sessionDate: getToday(),
       rawNotes: "",
     },
-    mode: "onChange",
+    mode: "onSubmit",
   })
 
   // File attachments — managed outside react-hook-form
@@ -78,6 +78,9 @@ export function SessionCaptureForm({ onSessionSaved }: SessionCaptureFormProps) 
 
   // View Prompt dialog state (P2.R1)
   const [showPromptDialog, setShowPromptDialog] = useState(false)
+
+  // Inline error for missing input (notes or attachments)
+  const [inputError, setInputError] = useState<string | null>(null)
 
   // Watch rawNotes to enable/disable the extract button
   const rawNotes = watch("rawNotes")
@@ -100,6 +103,7 @@ export function SessionCaptureForm({ onSessionSaved }: SessionCaptureFormProps) 
   const {
     extractionState,
     structuredNotes,
+    promptVersionId,
     showReextractConfirm,
     setStructuredNotes,
     handleExtractSignals,
@@ -110,6 +114,7 @@ export function SessionCaptureForm({ onSessionSaved }: SessionCaptureFormProps) 
 
   const handleAddAttachment = (attachment: ParsedAttachment) => {
     setAttachments((prev) => [...prev, attachment])
+    setInputError(null)
   }
 
   const handleRemoveAttachment = (index: number) => {
@@ -118,9 +123,14 @@ export function SessionCaptureForm({ onSessionSaved }: SessionCaptureFormProps) 
 
   const onSubmit = async (data: CaptureFormValues) => {
     if (!hasInput) {
-      toast.error("Provide notes or attach files before saving.")
+      setInputError("Provide notes or attach files before saving.")
       return
     }
+    if (isOverLimit) {
+      toast.error(`Combined input exceeds ${MAX_COMBINED_CHARS.toLocaleString()} characters.`)
+      return
+    }
+    setInputError(null)
 
     const client = data.client as ClientSelection
 
@@ -135,6 +145,7 @@ export function SessionCaptureForm({ onSessionSaved }: SessionCaptureFormProps) 
           rawNotes: data.rawNotes,
           structuredNotes: structuredNotes,
           hasAttachments: attachments.length > 0,
+          promptVersionId: promptVersionId,
         }),
       })
 
@@ -194,6 +205,9 @@ export function SessionCaptureForm({ onSessionSaved }: SessionCaptureFormProps) 
               />
             )}
           />
+          {errors.client && (
+            <p className="text-sm text-destructive">{errors.client.message}</p>
+          )}
         </div>
 
         {/* Session Date field */}
@@ -209,6 +223,9 @@ export function SessionCaptureForm({ onSessionSaved }: SessionCaptureFormProps) 
               />
             )}
           />
+          {errors.sessionDate && (
+            <p className="text-sm text-destructive">{errors.sessionDate.message}</p>
+          )}
         </div>
 
         {/* Notes field */}
@@ -221,6 +238,12 @@ export function SessionCaptureForm({ onSessionSaved }: SessionCaptureFormProps) 
             className="resize-y"
             {...register("rawNotes")}
           />
+          {errors.rawNotes && (
+            <p className="text-sm text-destructive">{errors.rawNotes.message}</p>
+          )}
+          {inputError && (
+            <p className="text-sm text-destructive">{inputError}</p>
+          )}
         </div>
 
         <CaptureAttachmentSection
@@ -274,7 +297,7 @@ export function SessionCaptureForm({ onSessionSaved }: SessionCaptureFormProps) 
           {/* Submit button */}
           <Button
             type="submit"
-            disabled={!isValid || !hasInput || isOverLimit || isSubmitting}
+            disabled={isSubmitting}
             size="lg"
           >
             {isSubmitting && <Loader2 className="mr-2 size-4 animate-spin" />}

@@ -3,6 +3,7 @@
 - cookies are retained on logout
 - project based notes, for service based company who caters to multiple clients we segregate the notes as per the clients but is this taken care by team scoped data
 - bring your own key
+- sidebar instead of header
 
 but it doesnt end here i am trying to build a platform that handles end to end product development life cycle which starts from client calls--> identifying requirements--> advise features--> design architecture--> develop a prototype--> get approval--> and deploy 
 and this cycle continues for modifications and maintainance 

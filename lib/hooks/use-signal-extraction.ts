@@ -16,6 +16,8 @@ interface UseSignalExtractionReturn {
   extractionState: ExtractionState
   structuredNotes: string | null
   lastExtractedNotes: string | null
+  /** The prompt version ID returned by the most recent extraction. */
+  promptVersionId: string | null
   showReextractConfirm: boolean
   isStructuredDirty: boolean
   setStructuredNotes: (notes: string | null) => void
@@ -39,6 +41,7 @@ export function useSignalExtraction({
   const [extractionState, setExtractionState] = useState<ExtractionState>(
     initialStructuredNotes ? "done" : "idle"
   )
+  const [promptVersionId, setPromptVersionId] = useState<string | null>(null)
   const [showReextractConfirm, setShowReextractConfirm] = useState(false)
 
   const isStructuredDirty = structuredNotes !== lastExtractedNotes
@@ -63,9 +66,10 @@ export function useSignalExtraction({
         return
       }
 
-      const { structuredNotes: extracted } = await response.json()
-      setStructuredNotes(extracted)
-      setLastExtractedNotes(extracted)
+      const data = await response.json()
+      setStructuredNotes(data.structuredNotes)
+      setLastExtractedNotes(data.structuredNotes)
+      setPromptVersionId(data.promptVersionId ?? null)
       setExtractionState("done")
       toast.success("Signals extracted")
     } catch (err) {
@@ -100,6 +104,7 @@ export function useSignalExtraction({
   const resetExtraction = useCallback(() => {
     setStructuredNotes(null)
     setLastExtractedNotes(null)
+    setPromptVersionId(null)
     setExtractionState("idle")
     setShowReextractConfirm(false)
   }, [])
@@ -108,6 +113,7 @@ export function useSignalExtraction({
     extractionState,
     structuredNotes,
     lastExtractedNotes,
+    promptVersionId,
     showReextractConfirm,
     isStructuredDirty,
     setStructuredNotes,
