@@ -20,7 +20,7 @@ Synthesiser is a web application for teams to capture structured client session 
 
 ## Current State
 
-**Status:** PRD-002 through PRD-010 implemented. PRD-012 Parts 1–5 (Design Tokens and Typography + DRY Extraction + SRP Component Decomposition + API Route/Service Cleanup + Dependency Inversion) implemented. PRD-013 Parts 1–2 (File Upload Infrastructure + Persistence & Signal Extraction Integration) implemented. PRD-014 Parts 1–2 (Session Traceability & Staleness Data Model + View Prompt on Capture Page) implemented. PRD-015 Part 1 (Public Landing Page) implemented. The app is a fully functional team-capable client feedback capture and synthesis platform with a public landing page. Google OAuth login (open to any Google account), working capture form with AI signal extraction and file attachment upload with server-side persistence, past sessions table with filters/inline editing/soft delete, master signal page with AI synthesis and PDF download, prompt editor with version history, and team access with role-based permissions.
+**Status:** PRD-002 through PRD-010 implemented. PRD-012 Parts 1–5 (Design Tokens and Typography + DRY Extraction + SRP Component Decomposition + API Route/Service Cleanup + Dependency Inversion) implemented. PRD-013 Parts 1–2 (File Upload Infrastructure + Persistence & Signal Extraction Integration) implemented. PRD-014 Parts 1–3 (Session Traceability & Staleness Data Model + View Prompt on Capture Page + Show Prompt Version in Past Sessions) implemented. PRD-015 Part 1 (Public Landing Page) implemented. The app is a fully functional team-capable client feedback capture and synthesis platform with a public landing page. Google OAuth login (open to any Google account), working capture form with AI signal extraction and file attachment upload with server-side persistence, past sessions table with filters/inline editing/soft delete, master signal page with AI synthesis and PDF download, prompt editor with version history, and team access with role-based permissions.
 
 **Core features live:**
 - Public landing page at `/` with hero, feature cards, how-it-works flow, and CTA (authenticated users auto-redirect to `/capture`)
@@ -74,7 +74,9 @@ synthesiser/
 │   │   ├── master-signal/
 │   │   │   └── route.ts         # GET — fetch current master signal + staleness count — team-scoped
 │   │   ├── prompts/
-│   │   │   └── route.ts         # GET/POST — prompt CRUD (team admin check) — workspace-scoped
+│   │   │   ├── route.ts         # GET/POST — prompt CRUD (team admin check) — workspace-scoped
+│   │   │   └── [id]/
+│   │   │       └── route.ts     # GET — fetch a single prompt version by UUID with computed version number
 │   │   ├── sessions/
 │   │   │   ├── route.ts         # GET/POST — session list and create — team-scoped
 │   │   │   └── [id]/
@@ -123,6 +125,7 @@ synthesiser/
 │   │       ├── expanded-session-row.tsx   # Coordinator — state, hooks, handlers; composes metadata/notes/actions subcomponents
 │   │       ├── file-upload-zone.tsx      # Drag-and-drop file upload zone with client-side validation and server parse
 │   │       ├── markdown-panel.tsx         # Reusable markdown view/edit panel with rendered preview and raw edit toggle
+│   │       ├── prompt-version-badge.tsx   # Clickable badge in expanded row — fetches prompt version on click, opens ViewPromptDialog
 │   │       ├── past-sessions-table.tsx    # Past sessions table with expand/collapse, inline edit, delete, "Captured by" column
 │   │       ├── session-capture-form.tsx   # Coordinator — react-hook-form, submit, extract; composes attachment/notes subcomponents
 │   │       ├── session-filters.tsx        # Filter bar — client combobox + date range with auto-sync
@@ -202,7 +205,7 @@ synthesiser/
 │   ├── cookies/
 │   │   └── active-team.ts       # Client-side active team cookie helpers (getActiveTeamId, setActiveTeamCookie, clearActiveTeamCookie)
 │   ├── hooks/
-│   │   └── use-signal-extraction.ts # Shared extraction state machine hook (ExtractionState, getInput callback, re-extract confirm flow)
+│   │   └── use-signal-extraction.ts # Shared extraction state machine hook (ExtractionState, promptVersionId, getInput callback, re-extract confirm flow)
 │   ├── types/
 │   │   └── signal-session.ts    # SignalSession interface — shared between ai-service and master-signal-service
 │   ├── utils.ts                 # cn() utility (clsx + tailwind-merge) + PROSE_CLASSES constant

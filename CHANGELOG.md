@@ -6,6 +6,16 @@ All notable changes to this project are documented here, grouped by PRD and part
 
 ## [Unreleased]
 
+### PRD-014 Part 3: Show Prompt Version in Past Sessions — 2026-04-08
+- Created `GET /api/prompts/[id]` endpoint — fetches a single prompt version by UUID with computed version number (1-based, ordered by `created_at` ascending); Zod UUID validation, auth check, 400/401/404/500 responses with logging
+- Added `findById()` method to `PromptRepository` interface and Supabase adapter — fetches a prompt version without team scoping (cross-scope traceability for historical versions)
+- Added `getPromptVersionById()` wrapper in prompt-service
+- Created `PromptVersionBadge` component — clickable badge in expanded session row that fetches prompt content on click, caches the result, and opens `ViewPromptDialog` with "Extraction Prompt — Version {n}" title
+- Added `prompt_version_id` to frontend `SessionRow` interface; conditional badge render when non-null
+- **Bug fix:** `useSignalExtraction` hook now captures and exposes `promptVersionId` from the extraction API response; `session-capture-form` (POST) and `expanded-session-row` (PUT) now pass `promptVersionId` to session save — previously the value was discarded and never stored
+- Expanded session row PUT now also sends `isExtraction` and `inputChanged` flags to support the backend staleness state machine
+- **End-of-part audit:** Removed unused `className` prop from `PromptVersionBadgeProps`; verified P3.R1–P3.R6 compliance; updated ARCHITECTURE.md file map (added `prompts/[id]/route.ts`, `prompt-version-badge.tsx`), hook description, and current state
+
 ### PRD-014 Part 2: View Prompt on Capture Page — 2026-04-08
 - Created `ViewPromptDialog` component — reusable read-only dialog that fetches the active extraction prompt on open, renders it as markdown, includes "Edit in Settings" footer link, handles loading/error states; designed for Part 3 reuse via optional `content` prop
 - Added "View Prompt" button (`ai-outline` variant) to capture form between Extract Signals and Save Session buttons
