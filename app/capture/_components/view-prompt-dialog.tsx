@@ -1,11 +1,12 @@
 "use client"
 
 import { useState, useEffect } from "react"
-import { Eye, ExternalLink, Loader2, AlertCircle } from "lucide-react"
+import { ExternalLink, Loader2, AlertCircle } from "lucide-react"
 import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
 import Link from "next/link"
 
+import { PROSE_CLASSES } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
 import {
   Dialog,
@@ -119,12 +120,10 @@ export function ViewPromptDialog({
           )}
 
           {fetchState === "success" && promptContent && (
-            // <div className="rounded-lg border border-border bg-card p-4">
-              <div className="prose prose-sm max-w-none overflow-y-auto prose-headings:text-foreground prose-p:text-foreground prose-li:text-foreground prose-strong:text-foreground">
-                <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                  {promptContent}
-                </ReactMarkdown>
-              {/* </div> */}
+            <div className={PROSE_CLASSES}>
+              <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                {promptContent}
+              </ReactMarkdown>
             </div>
           )}
         </div>

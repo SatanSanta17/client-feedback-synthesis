@@ -5,7 +5,7 @@ import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
 import { Eye, Pencil } from "lucide-react"
 
-import { cn } from "@/lib/utils"
+import { cn, PROSE_CLASSES } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
 import { Textarea } from "@/components/ui/textarea"
 
@@ -55,7 +55,7 @@ export function MarkdownPanel({ content, onChange, readOnly, className }: Markdo
             className="min-h-[300px] resize-y font-mono text-sm"
           />
         ) : (
-          <div className="prose prose-sm max-w-none overflow-y-auto prose-headings:text-foreground prose-p:text-foreground prose-li:text-foreground prose-strong:text-foreground">
+          <div className={PROSE_CLASSES}>
             <ReactMarkdown remarkPlugins={[remarkGfm]}>
               {content}
             </ReactMarkdown>

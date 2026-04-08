@@ -6,6 +6,13 @@ All notable changes to this project are documented here, grouped by PRD and part
 
 ## [Unreleased]
 
+### PRD-014 Part 2: View Prompt on Capture Page — 2026-04-08
+- Created `ViewPromptDialog` component — reusable read-only dialog that fetches the active extraction prompt on open, renders it as markdown, includes "Edit in Settings" footer link, handles loading/error states; designed for Part 3 reuse via optional `content` prop
+- Added "View Prompt" button (`ai-outline` variant) to capture form between Extract Signals and Save Session buttons
+- Added `ai-outline` button variant to `button.tsx` — gold border/text with subtle gold hover background
+- Extracted `PROSE_CLASSES` constant to `lib/utils.ts` — shared Tailwind prose classes now used by `ViewPromptDialog`, `MarkdownPanel`, and `MasterSignalContent` (DRY fix, 3 files consolidated)
+- **End-of-part audit:** Removed unused `Eye` import and commented-out wrapper div from `view-prompt-dialog.tsx`; extracted shared prose classes; updated ARCHITECTURE.md file map, utils description, and current state
+
 ### PRD-014 Part 1: Session Traceability & Staleness Data Model — 2026-04-08
 - Added `prompt_version_id` (UUID, nullable FK → prompt_versions), `extraction_stale` (boolean, default false), and `updated_by` (UUID, nullable FK → auth.users) columns to the `sessions` table
 - Added partial index `sessions_prompt_version_id_idx` on `prompt_version_id` for future prompt version filtering (P4.R7)

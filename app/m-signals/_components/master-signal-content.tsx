@@ -3,6 +3,7 @@
 import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
 
+import { PROSE_CLASSES } from "@/lib/utils"
 import type { MasterSignal } from "./use-master-signal"
 
 interface MasterSignalContentProps {
@@ -33,7 +34,7 @@ export function MasterSignalContent({ masterSignal }: MasterSignalContentProps) 
 
       {/* Rendered markdown */}
       <div className="rounded-lg border border-border bg-card p-6">
-        <div className="prose prose-sm max-w-none overflow-y-auto prose-headings:text-foreground prose-p:text-foreground prose-li:text-foreground prose-strong:text-foreground">
+        <div className={PROSE_CLASSES}>
           <ReactMarkdown remarkPlugins={[remarkGfm]}>
             {masterSignal.content}
           </ReactMarkdown>

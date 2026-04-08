@@ -20,7 +20,7 @@ Synthesiser is a web application for teams to capture structured client session 
 
 ## Current State
 
-**Status:** PRD-002 through PRD-010 implemented. PRD-012 Parts 1–5 (Design Tokens and Typography + DRY Extraction + SRP Component Decomposition + API Route/Service Cleanup + Dependency Inversion) implemented. PRD-013 Parts 1–2 (File Upload Infrastructure + Persistence & Signal Extraction Integration) implemented. PRD-014 Part 1 (Session Traceability & Staleness Data Model) implemented. PRD-015 Part 1 (Public Landing Page) implemented. The app is a fully functional team-capable client feedback capture and synthesis platform with a public landing page. Google OAuth login (open to any Google account), working capture form with AI signal extraction and file attachment upload with server-side persistence, past sessions table with filters/inline editing/soft delete, master signal page with AI synthesis and PDF download, prompt editor with version history, and team access with role-based permissions.
+**Status:** PRD-002 through PRD-010 implemented. PRD-012 Parts 1–5 (Design Tokens and Typography + DRY Extraction + SRP Component Decomposition + API Route/Service Cleanup + Dependency Inversion) implemented. PRD-013 Parts 1–2 (File Upload Infrastructure + Persistence & Signal Extraction Integration) implemented. PRD-014 Parts 1–2 (Session Traceability & Staleness Data Model + View Prompt on Capture Page) implemented. PRD-015 Part 1 (Public Landing Page) implemented. The app is a fully functional team-capable client feedback capture and synthesis platform with a public landing page. Google OAuth login (open to any Google account), working capture form with AI signal extraction and file attachment upload with server-side persistence, past sessions table with filters/inline editing/soft delete, master signal page with AI synthesis and PDF download, prompt editor with version history, and team access with role-based permissions.
 
 **Core features live:**
 - Public landing page at `/` with hero, feature cards, how-it-works flow, and CTA (authenticated users auto-redirect to `/capture`)
@@ -128,7 +128,8 @@ synthesiser/
 │   │       ├── session-filters.tsx        # Filter bar — client combobox + date range with auto-sync
 │   │       ├── session-table-row.tsx      # Single table row — formatDate, truncateNotes, formatEmail helpers
 │   │       ├── structured-notes-panel.tsx # Post-extraction markdown display for capture form
-│   │       └── unsaved-changes-dialog.tsx # Save/Discard/Cancel prompt for dirty expanded rows
+│   │       ├── unsaved-changes-dialog.tsx # Save/Discard/Cancel prompt for dirty expanded rows
+│   │       └── view-prompt-dialog.tsx    # Reusable read-only dialog for viewing prompt content (markdown rendered, fetch-on-open)
 │   ├── invite/
 │   │   └── [token]/
 │   │       ├── page.tsx                   # Invite acceptance page — server component
@@ -204,7 +205,7 @@ synthesiser/
 │   │   └── use-signal-extraction.ts # Shared extraction state machine hook (ExtractionState, getInput callback, re-extract confirm flow)
 │   ├── types/
 │   │   └── signal-session.ts    # SignalSession interface — shared between ai-service and master-signal-service
-│   ├── utils.ts                 # cn() utility (clsx + tailwind-merge)
+│   ├── utils.ts                 # cn() utility (clsx + tailwind-merge) + PROSE_CLASSES constant
 │   ├── email-templates/
 │   │   └── invite-email.ts      # HTML email template for team invitations
 │   ├── prompts/
