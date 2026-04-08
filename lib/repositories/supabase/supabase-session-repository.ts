@@ -32,7 +32,7 @@ export function createSessionRepository(
 
       let query = supabase
         .from("sessions")
-        .select("id, client_id, session_date, raw_notes, structured_notes, created_by, created_at, prompt_version_id, extraction_stale, updated_by, clients(name)", { count: "exact" })
+        .select("id, client_id, session_date, raw_notes, structured_notes, created_by, created_at, prompt_version_id, extraction_stale, structured_notes_edited, updated_by, clients(name)", { count: "exact" })
         .is("deleted_at", null)
         .order("session_date", { ascending: false })
         .order("created_at", { ascending: false })
@@ -70,6 +70,7 @@ export function createSessionRepository(
           client_name: clientData?.name ?? "Unknown",
           prompt_version_id: row.prompt_version_id ?? null,
           extraction_stale: row.extraction_stale ?? false,
+          structured_notes_edited: row.structured_notes_edited ?? false,
           updated_by: row.updated_by ?? null,
         };
       });
@@ -115,7 +116,7 @@ export function createSessionRepository(
       const { data, error } = await supabase
         .from("sessions")
         .insert(insertPayload)
-        .select("id, client_id, session_date, raw_notes, structured_notes, created_by, created_at, prompt_version_id, extraction_stale, updated_by")
+        .select("id, client_id, session_date, raw_notes, structured_notes, created_by, created_at, prompt_version_id, extraction_stale, structured_notes_edited, updated_by")
         .single();
 
       if (error) {
@@ -136,6 +137,7 @@ export function createSessionRepository(
         client_name: "", // Not available from insert; caller can enrich if needed
         prompt_version_id: data.prompt_version_id ?? null,
         extraction_stale: data.extraction_stale ?? false,
+        structured_notes_edited: data.structured_notes_edited ?? false,
         updated_by: data.updated_by ?? null,
       };
     },
@@ -163,6 +165,10 @@ export function createSessionRepository(
         updatePayload.extraction_stale = input.extraction_stale;
       }
 
+      if (input.structured_notes_edited !== undefined) {
+        updatePayload.structured_notes_edited = input.structured_notes_edited;
+      }
+
       if (input.updated_by !== undefined) {
         updatePayload.updated_by = input.updated_by;
       }
@@ -172,7 +178,7 @@ export function createSessionRepository(
         .update(updatePayload)
         .eq("id", id)
         .is("deleted_at", null)
-        .select("id, client_id, session_date, raw_notes, structured_notes, created_by, created_at, prompt_version_id, extraction_stale, updated_by")
+        .select("id, client_id, session_date, raw_notes, structured_notes, created_by, created_at, prompt_version_id, extraction_stale, structured_notes_edited, updated_by")
         .single();
 
       if (error) {
@@ -198,6 +204,7 @@ export function createSessionRepository(
         client_name: "", // Not available from update; caller can enrich if needed
         prompt_version_id: data.prompt_version_id ?? null,
         extraction_stale: data.extraction_stale ?? false,
+        structured_notes_edited: data.structured_notes_edited ?? false,
         updated_by: data.updated_by ?? null,
       };
     },

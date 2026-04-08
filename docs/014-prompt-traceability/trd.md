@@ -1,6 +1,6 @@
 # TRD-014: Prompt Traceability & Extraction Staleness
 
-> **Status:** Draft (Parts 1–3)
+> **Status:** Draft (Parts 1–4)
 >
 > Mirrors **PRD-014**. Each part maps to the corresponding PRD part.
 
@@ -1330,3 +1330,482 @@ Fetches a single prompt version by UUID. Returns the full `PromptVersionRow` plu
 
 - `ARCHITECTURE.md` — Add `prompt-version-badge.tsx` to file map under `capture/_components/`; add `prompts/[id]/route.ts` to file map under `api/`; update current state
 - `CHANGELOG.md` — Add Part 3 entry with changes delivered
+
+---
+
+## Part 4: Staleness Indicators & Re-extraction Warnings
+
+> Implements **P4.R1–P4.R8** from PRD-014.
+
+### Overview
+
+Add visual staleness indicators to both the collapsed and expanded session views, enhance the re-extract confirmation dialog to warn about manual edits, add a prompt version filter to the session filter bar, and display "Last edited by" in expanded rows. This requires a new database column (`structured_notes_edited`) to distinguish *why* a session is stale — input changes vs. manual structured notes edits — so the confirmation UX can adapt accordingly.
+
+### Forward Compatibility Notes
+
+- **Bulk re-extraction (future PRD):** The prompt version filter (P4.R7) provides the selection mechanism for future bulk re-extraction. The `structured_notes_edited` flag (P4.R5) will drive per-session confirmation in the bulk flow.
+- The `extraction_stale` and `structured_notes_edited` flags together give a complete picture of session health for any future dashboard or reporting features.
+
+### Database Changes
+
+#### Migration: `add_structured_notes_edited_column.sql`
+
+```sql
+-- P4.R5: Track whether structured notes were manually edited (distinct from input-change staleness)
+ALTER TABLE sessions
+  ADD COLUMN structured_notes_edited boolean NOT NULL DEFAULT false;
+
+-- Backfill: existing sessions retain false (no way to retroactively determine edits)
+COMMENT ON COLUMN sessions.structured_notes_edited IS
+  'True when structured notes were manually modified outside of extraction. Reset to false on fresh extraction or when structured notes are cleared.';
+```
+
+**Column semantics:**
+
+| Column | Meaning |
+|--------|---------|
+| `extraction_stale = false` | Structured notes are in sync with raw input and prompt — no action needed |
+| `extraction_stale = true`, `structured_notes_edited = false` | Input changed (raw notes or attachments) since last extraction — re-extraction recommended |
+| `extraction_stale = true`, `structured_notes_edited = true` | User manually edited structured notes since last extraction — re-extraction will overwrite manual edits |
+
+### Repository Changes
+
+#### `session-repository.ts` — Interface Updates
+
+```typescript
+// Add to SessionRow:
+structured_notes_edited: boolean;
+
+// Add to SessionUpdate:
+structured_notes_edited?: boolean;
+```
+
+Both `SessionInsert` and `SessionRow` need the new field. `SessionInsert` does not — on creation, `structured_notes_edited` is always `false` (handled by the database default).
+
+#### `supabase-session-repository.ts` — Adapter Updates
+
+1. **`list()` select string:** Add `structured_notes_edited` to the select clause.
+2. **`create()` return mapping:** Include `structured_notes_edited` from the returned row.
+3. **`update()` payload:** Include `structured_notes_edited` when provided in `SessionUpdate`.
+
+#### `mock-session-repository.ts` — Mock Adapter Updates
+
+Add `structured_notes_edited: false` to default row construction and handle it in `update()`.
+
+### Service Changes
+
+#### `session-service.ts`
+
+**`UpdateSessionInput`:** Add `structuredNotesEdited?: boolean` — the API route computes this, but the service just passes it through (the flag is set by the staleness state machine below).
+
+**`updateSession()` staleness state machine — enhanced:**
+
+The existing state machine in `updateSession()` already handles `extraction_stale`. The enhancement adds `structured_notes_edited` tracking:
+
+```typescript
+// --- Compute staleness (P1.R4, P1.R5, P1.R8, P1.R9, P4.R3, P4.R4, P4.R5) ---
+let extractionStale: boolean | undefined;
+let resolvedPromptVersionId: string | null | undefined;
+let structuredNotesEdited: boolean | undefined;
+
+if (isExtraction) {
+  // P1.R5 / P1.R9: Fresh extraction resets everything
+  extractionStale = false;
+  resolvedPromptVersionId = promptVersionId ?? null;
+  structuredNotesEdited = false;  // P4.R5: extraction resets manual-edit flag
+} else if (structuredNotes === null) {
+  // P1.R8: Clearing structured notes resets everything
+  extractionStale = false;
+  resolvedPromptVersionId = null;
+  structuredNotesEdited = false;  // P4.R5: no structured notes → nothing edited
+} else if (inputChanged) {
+  // P1.R4: Raw notes or attachments changed — mark stale
+  extractionStale = true;
+  // Don't touch structuredNotesEdited — preserve existing value
+} else if (structuredNotes !== undefined) {
+  // P1.R4 / P4.R5: Structured notes manually edited (changed but not via extraction)
+  extractionStale = true;
+  structuredNotesEdited = true;
+}
+```
+
+**Key distinction:** When `inputChanged` is true, we mark `extraction_stale = true` but do NOT set `structured_notes_edited = true` — the user changed the input, not the output. When `structuredNotes !== undefined` and it's not an extraction, the user manually edited the output — so both flags are set.
+
+**`Session` interface:** Add `structured_notes_edited: boolean`.
+
+**`SessionWithClient` interface:** Inherits from `Session`, so it gets the field automatically.
+
+**`getSessions()` mapping:** Add `structured_notes_edited: row.structured_notes_edited` to the row mapping.
+
+**`mapRowToSession()`:** Add `structured_notes_edited: row.structured_notes_edited`.
+
+### API Changes
+
+#### `GET /api/sessions` — Response Update
+
+The sessions list response already includes all `SessionRow` fields. Adding `structured_notes_edited` to the repository `SessionRow` means it flows through automatically — no API route changes needed.
+
+#### `PUT /api/sessions/[id]` — No Schema Changes
+
+The `structured_notes_edited` flag is computed by the service layer's staleness state machine, not sent by the client. No changes to the Zod schema.
+
+#### `GET /api/sessions` — New Filter Parameter: `promptVersionId`
+
+```typescript
+// Add to getSessionsParamsSchema:
+promptVersionId: z.string().uuid().optional(),
+// Special value for "no prompt version" filter:
+promptVersionNull: z.coerce.boolean().optional(),
+```
+
+The route passes these to the service, which passes them to the repository.
+
+#### `SessionListFilters` — New Fields
+
+```typescript
+// Add to SessionListFilters in session-repository.ts:
+promptVersionId?: string;
+promptVersionNull?: boolean;
+```
+
+#### `supabase-session-repository.ts` — Filter Implementation
+
+In `list()`, after the existing filters:
+
+```typescript
+if (promptVersionId) {
+  query = query.eq("prompt_version_id", promptVersionId);
+}
+if (promptVersionNull) {
+  query = query.is("prompt_version_id", null);
+}
+```
+
+### Frontend Changes
+
+#### Frontend `SessionRow` Interface Update (`expanded-session-row.tsx`)
+
+Add to the existing `SessionRow` interface:
+
+```typescript
+extraction_stale: boolean;
+structured_notes_edited: boolean;
+updated_by: string | null;
+updated_by_email?: string;
+```
+
+Note: `extraction_stale` already exists in the backend response (added in Part 1) but was never added to the frontend `SessionRow` interface. This part adds it along with the new fields. The `updated_by_email` field requires the service layer to resolve the email from `updated_by` — same pattern as `created_by_email`.
+
+#### `session-service.ts` — Resolve `updated_by` Emails
+
+In `getSessions()`, after resolving `created_by` emails, also resolve `updated_by` emails:
+
+```typescript
+// Resolve updated_by emails for the "Last edited by" display (P4.R8)
+let updatedByEmailMap: Map<string, string> | null = null;
+if (teamId && rows.length > 0) {
+  const uniqueUpdaterIds = [...new Set(
+    rows.map((r) => r.updated_by).filter((id): id is string => id !== null)
+  )];
+  if (uniqueUpdaterIds.length > 0) {
+    updatedByEmailMap = await sessionRepo.getCreatorEmails(uniqueUpdaterIds);
+  }
+}
+```
+
+Add `updated_by_email` to the `SessionWithClient` interface and the mapping:
+
+```typescript
+// In SessionWithClient:
+updated_by_email?: string;
+
+// In the rows.map():
+updated_by_email: updatedByEmailMap?.get(row.updated_by ?? "") ?? undefined,
+```
+
+### Component Changes
+
+This part is split across multiple UI locations. Each component change is described below.
+
+---
+
+#### 1. Staleness Badge in Expanded Row (P4.R1, P4.R2)
+
+**File:** `app/capture/_components/expanded-session-row.tsx`
+
+Add a staleness badge next to the "Extracted Signals" label, alongside the existing `PromptVersionBadge`. The staleness badge is visually distinct — warning colour (amber/yellow semantic token) — and only appears when `extraction_stale = true` and `structuredNotes` exist.
+
+```tsx
+{session.extraction_stale && session.structured_notes && (
+  <Badge
+    variant="outline"
+    className="text-[10px] px-1.5 py-0 border-[var(--status-warning)] text-[var(--status-warning)]"
+  >
+    Extraction may be outdated
+  </Badge>
+)}
+```
+
+**Design decision:** Uses `var(--status-warning)` token (amber). Visually distinct from the `PromptVersionBadge` (which uses default muted outline).
+
+---
+
+#### 2. Staleness Hint in Collapsed Table Row (P4.R6)
+
+**File:** `app/capture/_components/session-table-row.tsx`
+
+Add a small warning icon next to the `Sparkles` icon in the collapsed row when the session has structured notes and `extraction_stale = true`:
+
+```tsx
+import { Sparkles, Paperclip, AlertTriangle } from "lucide-react"
+
+// In the notes cell:
+{session.structured_notes && (
+  <>
+    <Sparkles className="size-3.5 shrink-0 text-primary/60" />
+    {session.extraction_stale && (
+      <AlertTriangle className="size-3 shrink-0 text-[var(--status-warning)]" />
+    )}
+  </>
+)}
+```
+
+The `AlertTriangle` icon is smaller (size-3) than the Sparkles icon (size-3.5) to keep it subtle. Uses the same `--status-warning` token.
+
+Note: The `SessionRow` type from `expanded-session-row.tsx` is already imported by `session-table-row.tsx`, so adding `extraction_stale` to that interface makes it available here automatically.
+
+---
+
+#### 3. Enhanced Re-extract Confirmation Dialog (P4.R3, P4.R4)
+
+**File:** `components/capture/reextract-confirm-dialog.tsx`
+
+Add a `hasManualEdits` prop to distinguish the two confirmation modes:
+
+```typescript
+interface ReextractConfirmDialogProps {
+  show: boolean
+  hasManualEdits?: boolean  // NEW — when true, warn about losing manual edits
+  onConfirm: () => void
+  onCancel: () => void
+}
+```
+
+When `hasManualEdits` is `true`, show an enhanced warning:
+
+```tsx
+<p className="mt-2 text-sm text-muted-foreground">
+  {hasManualEdits
+    ? "You've manually edited the structured notes since the last extraction. Re-extracting will replace your edits. Continue?"
+    : "Re-extracting will replace your edited signals. Continue?"}
+</p>
+```
+
+**Consumers:**
+
+- **`useSignalExtraction` hook:** Already triggers the confirm dialog when `isStructuredDirty` is true. It doesn't need to know about `hasManualEdits` — the hook is about client-side edit detection.
+- **`expanded-session-row.tsx`:** Passes `hasManualEdits={session.structured_notes_edited}` to the `ReextractConfirmDialog`. This covers the case where the session was saved with manual edits in a *previous* session (server-side flag).
+- **`session-capture-form.tsx`:** Does not pass `hasManualEdits` (new sessions have no server-side manual edit history — the hook's `isStructuredDirty` covers client-side edits).
+
+**P4.R4 compliance:** When `extraction_stale = true` but `structured_notes_edited = false` (input-only changes), the standard re-extract confirmation shows without the manual-edit warning — the user is re-extracting precisely because the input changed.
+
+---
+
+#### 4. Prompt Version Filter (P4.R7)
+
+**File:** `app/capture/_components/prompt-version-filter.tsx` (NEW)
+
+A new filter component that displays a dropdown of distinct prompt versions used across the user's sessions. The component:
+
+1. Fetches distinct prompt version IDs from a new lightweight API endpoint: `GET /api/sessions/prompt-versions`
+2. Renders a select/combobox with options: "All versions" (default), "Prompt v1", "Prompt v2", ..., "No prompt version"
+3. Emits a filter value (prompt version UUID, `"null"` for no-version, or `undefined` for all)
+
+**New API endpoint:** `GET /api/sessions/prompt-versions`
+
+Returns distinct `prompt_version_id` values from the sessions table with their computed version numbers.
+
+```typescript
+// app/api/sessions/prompt-versions/route.ts
+export async function GET() {
+  // Auth + team scope
+  // Query: SELECT DISTINCT prompt_version_id FROM sessions WHERE deleted_at IS NULL AND team_id = ?
+  // For each non-null ID, fetch the prompt_version row to get prompt_key + created_at
+  // Compute version numbers using the same logic as GET /api/prompts/[id]
+  // Return: [{ id: "uuid", versionNumber: 3, promptKey: "signal_extraction" }, ...]
+  // Include a null entry for sessions without prompt_version_id
+}
+```
+
+**New repository method:** `getDistinctPromptVersionIds()` on `SessionRepository`:
+
+```typescript
+/** Get distinct prompt_version_id values from non-deleted sessions. */
+getDistinctPromptVersionIds(): Promise<(string | null)[]>;
+```
+
+**File:** `app/capture/_components/session-filters.tsx` (MODIFY)
+
+Add the `PromptVersionFilter` component to the filter bar:
+
+```typescript
+// Add to SessionFiltersState:
+promptVersionId?: string
+promptVersionNull?: boolean
+```
+
+Wire the filter into the existing `onFiltersChange` callback, which flows to `PastSessionsTable` → `fetchSessions()` → API query params.
+
+**File:** `app/capture/_components/past-sessions-table.tsx` (MODIFY)
+
+Pass the new filter params (`promptVersionId`, `promptVersionNull`) through to the API call.
+
+---
+
+#### 5. "Last Edited By" in Expanded Row (P4.R8)
+
+**File:** `app/capture/_components/expanded-session-metadata.tsx` (MODIFY)
+
+In team context, show "Last edited by" next to "Captured by" when `updated_by_email` is present:
+
+```tsx
+// In the read-only view:
+{session.updated_by_email && (
+  <div>
+    <span className="text-xs text-muted-foreground">Last edited by</span>
+    <p className="font-medium">{session.updated_by_email}</p>
+  </div>
+)}
+```
+
+The `session` prop's Pick type needs to be extended to include `updated_by_email`.
+
+In personal workspace context (no team), this field is not shown — no change needed since `updated_by_email` will be `undefined` when not in team context (the service only resolves emails in team context).
+
+### Files Changed
+
+| File | Action | Description |
+|------|--------|-------------|
+| `lib/repositories/session-repository.ts` | **Modify** | Add `structured_notes_edited` to `SessionRow` and `SessionUpdate`; add `promptVersionId`/`promptVersionNull` to `SessionListFilters`; add `getDistinctPromptVersionIds()` method |
+| `lib/repositories/supabase/supabase-session-repository.ts` | **Modify** | Add `structured_notes_edited` to select/update; implement `promptVersionId`/`promptVersionNull` filters in `list()`; implement `getDistinctPromptVersionIds()` |
+| `lib/repositories/mock/mock-session-repository.ts` | **Modify** | Add `structured_notes_edited` to defaults; implement `getDistinctPromptVersionIds()` |
+| `lib/services/session-service.ts` | **Modify** | Add `structured_notes_edited` to state machine, `Session`, `SessionWithClient`; resolve `updated_by` emails; pass new filters |
+| `app/api/sessions/route.ts` | **Modify** | Add `promptVersionId`/`promptVersionNull` to GET schema |
+| `app/api/sessions/prompt-versions/route.ts` | **Create** | New GET endpoint returning distinct prompt versions with computed version numbers |
+| `app/capture/_components/expanded-session-row.tsx` | **Modify** | Add `extraction_stale`, `structured_notes_edited`, `updated_by_email` to `SessionRow`; add staleness badge; pass `hasManualEdits` to re-extract dialog |
+| `app/capture/_components/session-table-row.tsx` | **Modify** | Add `AlertTriangle` staleness hint next to Sparkles icon |
+| `app/capture/_components/expanded-session-metadata.tsx` | **Modify** | Add "Last edited by" display in team context; extend session prop type |
+| `components/capture/reextract-confirm-dialog.tsx` | **Modify** | Add `hasManualEdits` prop for enhanced warning text |
+| `app/capture/_components/prompt-version-filter.tsx` | **Create** | New filter component — fetches and displays prompt version options |
+| `app/capture/_components/session-filters.tsx` | **Modify** | Add prompt version filter; extend `SessionFiltersState` |
+| `app/capture/_components/past-sessions-table.tsx` | **Modify** | Pass prompt version filter params to API call |
+
+### Increments
+
+#### Increment 4.1: Database + Repository + Service Layer
+
+**What:** Add `structured_notes_edited` column, update repository interfaces/adapters, enhance the service staleness state machine, resolve `updated_by` emails, and add `SessionWithClient.updated_by_email`.
+
+**Files:**
+- `lib/repositories/session-repository.ts`
+- `lib/repositories/supabase/supabase-session-repository.ts`
+- `lib/repositories/mock/mock-session-repository.ts`
+- `lib/services/session-service.ts`
+
+**Verification:**
+- `npx tsc --noEmit` passes
+- Manual test: edit structured notes on a session → save → verify `structured_notes_edited = true` in DB
+- Manual test: re-extract on same session → save → verify `structured_notes_edited = false` in DB
+- Manual test: change raw notes on session with existing extraction → verify `extraction_stale = true`, `structured_notes_edited = false`
+
+---
+
+#### Increment 4.2: Staleness Indicators — Collapsed Row + Expanded Row
+
+**What:** Add the `AlertTriangle` staleness hint in collapsed table rows, add the "Extraction may be outdated" badge in expanded rows, and extend the frontend `SessionRow` interface with the new fields.
+
+**Files:**
+- `app/capture/_components/expanded-session-row.tsx`
+- `app/capture/_components/session-table-row.tsx`
+
+**Verification:**
+- Sessions with `extraction_stale = true` + structured notes show warning icon in collapsed row and warning badge in expanded row
+- Sessions with `extraction_stale = false` show no warning indicators
+- Sessions without structured notes show no warning indicators (regardless of stale flag)
+- Both indicators use `--status-warning` token
+
+---
+
+#### Increment 4.3: Enhanced Re-extract Confirmation + "Last Edited By"
+
+**What:** Add `hasManualEdits` prop to `ReextractConfirmDialog`, wire it into `expanded-session-row`, add "Last edited by" to `ExpandedSessionMetadata`, and extend the metadata session prop type.
+
+**Files:**
+- `components/capture/reextract-confirm-dialog.tsx`
+- `app/capture/_components/expanded-session-row.tsx`
+- `app/capture/_components/expanded-session-metadata.tsx`
+
+**Verification:**
+- Re-extract on a session with `structured_notes_edited = true` shows the enhanced "manual edits will be lost" warning
+- Re-extract on a session with `structured_notes_edited = false` shows the standard warning
+- "Last edited by" appears in team context when `updated_by_email` is present
+- "Last edited by" does not appear in personal workspace context
+
+---
+
+#### Increment 4.4: Prompt Version Filter
+
+**What:** Create the `GET /api/sessions/prompt-versions` endpoint, the `PromptVersionFilter` component, add prompt version filter params to `SessionFiltersState`/`SessionListFilters`/API schemas, and wire everything through `past-sessions-table` → API.
+
+**Files:**
+- `lib/repositories/session-repository.ts` (add `getDistinctPromptVersionIds()`)
+- `lib/repositories/supabase/supabase-session-repository.ts` (implement)
+- `lib/repositories/mock/mock-session-repository.ts` (implement)
+- `app/api/sessions/prompt-versions/route.ts` (new)
+- `app/api/sessions/route.ts` (add filter params)
+- `lib/services/session-service.ts` (pass filter params)
+- `app/capture/_components/prompt-version-filter.tsx` (new)
+- `app/capture/_components/session-filters.tsx` (add filter)
+- `app/capture/_components/past-sessions-table.tsx` (pass params)
+
+**Verification:**
+- Filter dropdown shows all distinct prompt versions used + "No prompt version" option
+- Selecting a version filters the table to matching sessions only
+- Selecting "No prompt version" shows pre-migration sessions
+- Selecting "All versions" (default) shows all sessions
+- Filter integrates with existing client and date filters
+
+---
+
+#### Increment 4.5: End-of-Part Audit
+
+**What:** Run the full end-of-part audit checklist — type check, PRD compliance verification (P4.R1–P4.R8), code quality conventions (SRP, DRY, dead code, naming, logging, design token adherence), documentation updates.
+
+**Checks to perform:**
+
+1. **Type check** — `npx tsc --noEmit` passes cleanly
+2. **PRD compliance** — All P4.R1–P4.R8 traced to implementation with no gaps
+3. **SRP** — Each new/modified file maintains single responsibility
+4. **DRY** — No duplicated patterns across staleness indicators or filter logic
+5. **Dead code** — No unused imports or variables in new/modified files
+6. **Design tokens** — All warning colours use `--status-warning`, no hardcoded values
+7. **Naming / conventions** — All files, interfaces, and functions follow project conventions
+8. **Logging** — New API endpoint and service changes log entry, exit, and errors
+
+**Documentation to update:**
+
+- `ARCHITECTURE.md` — Add `prompt-version-filter.tsx` to file map; add `sessions/prompt-versions/route.ts` to API file map; add `structured_notes_edited` to sessions table description; update current state to include Part 4
+- `CHANGELOG.md` — Add Part 4 entry with changes delivered
+
+### Acceptance Criteria Traceability
+
+| Criterion | Implementation |
+|-----------|---------------|
+| Sessions with `extraction_stale = true` and existing structured notes show a staleness indicator in the expanded row | Warning badge "Extraction may be outdated" rendered conditionally (Increment 4.2) |
+| Sessions with `extraction_stale = true` show a subtle warning hint in the collapsed table row | `AlertTriangle` icon next to `Sparkles` icon (Increment 4.2) |
+| Re-extracting a session with `structured_notes_edited = true` triggers an enhanced confirmation dialog | `ReextractConfirmDialog` `hasManualEdits` prop drives warning text (Increment 4.3) |
+| Re-extracting a session with only input changes proceeds with the standard confirmation | `hasManualEdits` defaults to `false`, standard message shown (Increment 4.3) |
+| The `structured_notes_edited` flag is set correctly | Service staleness state machine: `true` on manual edit, `false` on extraction or clear (Increment 4.1) |
+| The prompt version filter appears in the filter bar and correctly filters sessions | `PromptVersionFilter` in `SessionFilters`, wired to API (Increment 4.4) |
+| The "No prompt version" filter option works for pre-migration sessions | `promptVersionNull=true` query param → `.is("prompt_version_id", null)` (Increment 4.4) |
+| "Last edited by" is displayed in the expanded row for team workspace sessions | `ExpandedSessionMetadata` shows `updated_by_email` in team context (Increment 4.3) |

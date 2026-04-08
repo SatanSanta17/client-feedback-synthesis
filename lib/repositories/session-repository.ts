@@ -22,6 +22,7 @@ export interface SessionRow {
   client_name: string;
   prompt_version_id: string | null;
   extraction_stale: boolean;
+  structured_notes_edited: boolean;
   updated_by: string | null;
 }
 
@@ -40,6 +41,7 @@ export interface SessionUpdate {
   structured_notes?: string | null;
   prompt_version_id?: string | null;
   extraction_stale?: boolean;
+  structured_notes_edited?: boolean;
   updated_by?: string | null;
 }
 

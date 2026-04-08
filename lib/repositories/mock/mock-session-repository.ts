@@ -29,6 +29,7 @@ interface InternalSession {
   deleted_at: string | null;
   prompt_version_id: string | null;
   extraction_stale: boolean;
+  structured_notes_edited: boolean;
   updated_by: string | null;
 }
 
@@ -87,6 +88,7 @@ export function createMockSessionRepository(
       client_name: s.client_name,
       prompt_version_id: s.prompt_version_id,
       extraction_stale: s.extraction_stale,
+      structured_notes_edited: s.structured_notes_edited,
       updated_by: s.updated_by,
     };
   }
@@ -147,6 +149,7 @@ export function createMockSessionRepository(
         deleted_at: null,
         prompt_version_id: input.prompt_version_id ?? null,
         extraction_stale: false,
+        structured_notes_edited: false,
         updated_by: null,
       };
       sessions.set(id, internal);
@@ -170,6 +173,9 @@ export function createMockSessionRepository(
       }
       if (input.extraction_stale !== undefined) {
         s.extraction_stale = input.extraction_stale;
+      }
+      if (input.structured_notes_edited !== undefined) {
+        s.structured_notes_edited = input.structured_notes_edited;
       }
       if (input.updated_by !== undefined) {
         s.updated_by = input.updated_by;

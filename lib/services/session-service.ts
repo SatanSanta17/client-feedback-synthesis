@@ -78,12 +78,14 @@ export interface Session {
   created_at: string;
   prompt_version_id: string | null;
   extraction_stale: boolean;
+  structured_notes_edited: boolean;
   updated_by: string | null;
 }
 
 export interface SessionWithClient extends Session {
   client_name: string;
   created_by_email?: string;
+  updated_by_email?: string;
   attachment_count: number;
 }
 
@@ -122,10 +124,14 @@ export async function getSessions(
     limit,
   });
 
-  // In team context, resolve creator emails for attribution
+  // In team context, resolve creator and updater emails for attribution
   let emailByUserId: Map<string, string> | null = null;
   if (teamId && rows.length > 0) {
-    const uniqueUserIds = [...new Set(rows.map((r) => r.created_by))];
+    const creatorIds = rows.map((r) => r.created_by);
+    const updaterIds = rows
+      .map((r) => r.updated_by)
+      .filter((id): id is string => id !== null);
+    const uniqueUserIds = [...new Set([...creatorIds, ...updaterIds])];
     emailByUserId = await sessionRepo.getCreatorEmails(uniqueUserIds);
   }
 
@@ -146,9 +152,11 @@ export async function getSessions(
     created_at: row.created_at,
     client_name: row.client_name,
     created_by_email: emailByUserId?.get(row.created_by) ?? undefined,
+    updated_by_email: row.updated_by ? (emailByUserId?.get(row.updated_by) ?? undefined) : undefined,
     attachment_count: attachmentCountMap.get(row.id) ?? 0,
     prompt_version_id: row.prompt_version_id,
     extraction_stale: row.extraction_stale,
+    structured_notes_edited: row.structured_notes_edited,
     updated_by: row.updated_by,
   }));
 
@@ -245,24 +253,29 @@ export async function updateSession(
     console.log("[session-service] updateSession created new client:", resolvedClientId);
   }
 
-  // --- Compute staleness (P1.R4, P1.R5, P1.R8, P1.R9) ---
+  // --- Compute staleness (P1.R4, P1.R5, P1.R8, P1.R9, P4.R3, P4.R4, P4.R5) ---
   let extractionStale: boolean | undefined;
   let resolvedPromptVersionId: string | null | undefined;
+  let structuredNotesEdited: boolean | undefined;
 
   if (isExtraction) {
-    // P1.R5 / P1.R9: Fresh extraction resets staleness
+    // P1.R5 / P1.R9: Fresh extraction resets everything
     extractionStale = false;
     resolvedPromptVersionId = promptVersionId ?? null;
+    structuredNotesEdited = false; // P4.R5: extraction resets manual-edit flag
   } else if (structuredNotes === null) {
     // P1.R8: Clearing structured notes resets everything
     extractionStale = false;
     resolvedPromptVersionId = null;
+    structuredNotesEdited = false; // P4.R5: no structured notes → nothing edited
   } else if (inputChanged) {
     // P1.R4: Raw notes or attachments changed — mark stale
     extractionStale = true;
+    // Don't touch structuredNotesEdited — preserve existing value
   } else if (structuredNotes !== undefined) {
-    // P1.R4: Structured notes manually edited (changed but not via extraction)
+    // P1.R4 / P4.R5: Structured notes manually edited (changed but not via extraction)
     extractionStale = true;
+    structuredNotesEdited = true;
   }
 
   try {
@@ -273,6 +286,7 @@ export async function updateSession(
       structured_notes: structuredNotes,
       prompt_version_id: resolvedPromptVersionId,
       extraction_stale: extractionStale,
+      structured_notes_edited: structuredNotesEdited,
       updated_by: userId,
     });
 
@@ -342,6 +356,7 @@ function mapRowToSession(row: SessionRow): Session {
     created_at: row.created_at,
     prompt_version_id: row.prompt_version_id,
     extraction_stale: row.extraction_stale,
+    structured_notes_edited: row.structured_notes_edited,
     updated_by: row.updated_by,
   };
 }
