@@ -27,6 +27,9 @@ interface InternalSession {
   client_name: string;
   team_id: string | null;
   deleted_at: string | null;
+  prompt_version_id: string | null;
+  extraction_stale: boolean;
+  updated_by: string | null;
 }
 
 /** Configuration for seeding a mock repository with known data. */
@@ -82,6 +85,9 @@ export function createMockSessionRepository(
       created_by: s.created_by,
       created_at: s.created_at,
       client_name: s.client_name,
+      prompt_version_id: s.prompt_version_id,
+      extraction_stale: s.extraction_stale,
+      updated_by: s.updated_by,
     };
   }
 
@@ -139,6 +145,9 @@ export function createMockSessionRepository(
         client_name: `Client ${input.client_id}`,
         team_id: null,
         deleted_at: null,
+        prompt_version_id: input.prompt_version_id ?? null,
+        extraction_stale: false,
+        updated_by: null,
       };
       sessions.set(id, internal);
       return toSessionRow(internal);
@@ -155,6 +164,15 @@ export function createMockSessionRepository(
       s.raw_notes = input.raw_notes;
       if (input.structured_notes !== undefined) {
         s.structured_notes = input.structured_notes;
+      }
+      if (input.prompt_version_id !== undefined) {
+        s.prompt_version_id = input.prompt_version_id;
+      }
+      if (input.extraction_stale !== undefined) {
+        s.extraction_stale = input.extraction_stale;
+      }
+      if (input.updated_by !== undefined) {
+        s.updated_by = input.updated_by;
       }
 
       return toSessionRow(s);
@@ -192,6 +210,14 @@ export function createMockSessionRepository(
         result.set(uid, creatorEmails.get(uid) ?? "unknown@test.local");
       }
       return result;
+    },
+
+    async markStale(sessionId: string, updatedBy: string): Promise<void> {
+      const s = sessions.get(sessionId);
+      if (s && s.deleted_at === null) {
+        s.extraction_stale = true;
+        s.updated_by = updatedBy;
+      }
     },
   };
 }

@@ -105,5 +105,29 @@ export function createPromptRepository(
       console.log("[supabase-prompt-repo] create success:", data.id);
       return data;
     },
+
+    async getActiveVersion(promptKey: PromptKey): Promise<PromptVersionRow | null> {
+      console.log("[supabase-prompt-repo] getActiveVersion — key:", promptKey, "teamId:", teamId);
+
+      let query = supabase
+        .from("prompt_versions")
+        .select("*")
+        .eq("prompt_key", promptKey)
+        .eq("is_active", true);
+
+      query = scopeByTeam(query, teamId);
+
+      const { data, error } = await query.maybeSingle();
+
+      if (error) {
+        console.error(
+          `[supabase-prompt-repo] getActiveVersion error for ${promptKey}:`,
+          error.message
+        );
+        return null;
+      }
+
+      return data ?? null;
+    },
   };
 }

@@ -20,6 +20,9 @@ export interface SessionRow {
   created_by: string;
   created_at: string;
   client_name: string;
+  prompt_version_id: string | null;
+  extraction_stale: boolean;
+  updated_by: string | null;
 }
 
 export interface SessionInsert {
@@ -27,6 +30,7 @@ export interface SessionInsert {
   session_date: string;
   raw_notes: string;
   structured_notes: string | null;
+  prompt_version_id?: string | null;
 }
 
 export interface SessionUpdate {
@@ -34,6 +38,9 @@ export interface SessionUpdate {
   session_date: string;
   raw_notes: string;
   structured_notes?: string | null;
+  prompt_version_id?: string | null;
+  extraction_stale?: boolean;
+  updated_by?: string | null;
 }
 
 export interface SessionDeleteResult {
@@ -80,4 +87,7 @@ export interface SessionRepository {
 
   /** Batch-fetch creator emails for a list of user IDs. */
   getCreatorEmails(userIds: string[]): Promise<Map<string, string>>;
+
+  /** Mark a session as stale without requiring the full session payload. */
+  markStale(sessionId: string, updatedBy: string): Promise<void>;
 }

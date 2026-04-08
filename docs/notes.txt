@@ -1,3 +1,13 @@
 - Instead of one huge master signal lets make a chat interface and the master signal is the content from where the LLM answer we store the master signals in a vector db and use LLM support to interact with the master signals
 - Dashboard for maximum value addition to clients
 - cookies are retained on logout
+- project based notes, for service based company who caters to multiple clients we segregate the notes as per the clients but is this taken care by team scoped data
+- bring your own key
+
+but it doesnt end here i am trying to build a platform that handles end to end product development life cycle which starts from client calls--> identifying requirements--> advise features--> design architecture--> develop a prototype--> get approval--> and deploy 
+and this cycle continues for modifications and maintainance 
+minimal human in the loop interaction 
+
+Beyond insight extraction, the platform is evolving into an end-to-end product development lifecycle solution. It aims to seamlessly transition from client interactions to requirement identification, feature recommendations, architectural design, and rapid prototyping.
+
+The system is designed to support iterative workflows—facilitating approvals, deployment, and continuous enhancements—while maintaining alignment with evolving client needs. With minimal human intervention, the goal is to create a streamlined, intelligent pipeline that accelerates development while preserving accuracy and consistency.

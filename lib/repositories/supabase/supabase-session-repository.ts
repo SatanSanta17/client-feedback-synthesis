@@ -32,7 +32,7 @@ export function createSessionRepository(
 
       let query = supabase
         .from("sessions")
-        .select("id, client_id, session_date, raw_notes, structured_notes, created_by, created_at, clients(name)", { count: "exact" })
+        .select("id, client_id, session_date, raw_notes, structured_notes, created_by, created_at, prompt_version_id, extraction_stale, updated_by, clients(name)", { count: "exact" })
         .is("deleted_at", null)
         .order("session_date", { ascending: false })
         .order("created_at", { ascending: false })
@@ -68,6 +68,9 @@ export function createSessionRepository(
           created_by: row.created_by,
           created_at: row.created_at,
           client_name: clientData?.name ?? "Unknown",
+          prompt_version_id: row.prompt_version_id ?? null,
+          extraction_stale: row.extraction_stale ?? false,
+          updated_by: row.updated_by ?? null,
         };
       });
 
@@ -97,16 +100,22 @@ export function createSessionRepository(
     async create(input: SessionInsert): Promise<SessionRow> {
       console.log("[supabase-session-repo] create — client_id:", input.client_id);
 
+      const insertPayload: Record<string, unknown> = {
+        client_id: input.client_id,
+        session_date: input.session_date,
+        raw_notes: input.raw_notes,
+        structured_notes: input.structured_notes,
+        team_id: teamId,
+      };
+
+      if (input.prompt_version_id !== undefined) {
+        insertPayload.prompt_version_id = input.prompt_version_id;
+      }
+
       const { data, error } = await supabase
         .from("sessions")
-        .insert({
-          client_id: input.client_id,
-          session_date: input.session_date,
-          raw_notes: input.raw_notes,
-          structured_notes: input.structured_notes,
-          team_id: teamId,
-        })
-        .select("id, client_id, session_date, raw_notes, structured_notes, created_by, created_at")
+        .insert(insertPayload)
+        .select("id, client_id, session_date, raw_notes, structured_notes, created_by, created_at, prompt_version_id, extraction_stale, updated_by")
         .single();
 
       if (error) {
@@ -125,6 +134,9 @@ export function createSessionRepository(
         created_by: data.created_by,
         created_at: data.created_at,
         client_name: "", // Not available from insert; caller can enrich if needed
+        prompt_version_id: data.prompt_version_id ?? null,
+        extraction_stale: data.extraction_stale ?? false,
+        updated_by: data.updated_by ?? null,
       };
     },
 
@@ -143,12 +155,24 @@ export function createSessionRepository(
         updatePayload.structured_notes = input.structured_notes;
       }
 
+      if (input.prompt_version_id !== undefined) {
+        updatePayload.prompt_version_id = input.prompt_version_id;
+      }
+
+      if (input.extraction_stale !== undefined) {
+        updatePayload.extraction_stale = input.extraction_stale;
+      }
+
+      if (input.updated_by !== undefined) {
+        updatePayload.updated_by = input.updated_by;
+      }
+
       const { data, error } = await supabase
         .from("sessions")
         .update(updatePayload)
         .eq("id", id)
         .is("deleted_at", null)
-        .select("id, client_id, session_date, raw_notes, structured_notes, created_by, created_at")
+        .select("id, client_id, session_date, raw_notes, structured_notes, created_by, created_at, prompt_version_id, extraction_stale, updated_by")
         .single();
 
       if (error) {
@@ -172,6 +196,9 @@ export function createSessionRepository(
         created_by: data.created_by,
         created_at: data.created_at,
         client_name: "", // Not available from update; caller can enrich if needed
+        prompt_version_id: data.prompt_version_id ?? null,
+        extraction_stale: data.extraction_stale ?? false,
+        updated_by: data.updated_by ?? null,
       };
     },
 
@@ -250,6 +277,23 @@ export function createSessionRepository(
 
       console.log("[supabase-session-repo] getCreatorEmails — done");
       return emailMap;
+    },
+
+    async markStale(sessionId: string, updatedBy: string): Promise<void> {
+      console.log("[supabase-session-repo] markStale — id:", sessionId);
+
+      const { error } = await supabase
+        .from("sessions")
+        .update({ extraction_stale: true, updated_by: updatedBy })
+        .eq("id", sessionId)
+        .is("deleted_at", null);
+
+      if (error) {
+        console.error("[supabase-session-repo] markStale error:", error);
+        throw new Error("Failed to mark session as stale");
+      }
+
+      console.log("[supabase-session-repo] markStale success:", sessionId);
     },
   };
 }

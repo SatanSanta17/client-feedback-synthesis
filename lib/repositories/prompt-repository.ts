@@ -34,4 +34,7 @@ export interface PromptRepository {
     authorId: string;
     authorEmail: string;
   }): Promise<PromptVersionRow>;
+
+  /** Fetch the full active prompt version row for a given key. Returns null if none found. */
+  getActiveVersion(promptKey: PromptKey): Promise<PromptVersionRow | null>;
 }
