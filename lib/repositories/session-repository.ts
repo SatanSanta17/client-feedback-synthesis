@@ -6,6 +6,8 @@ export interface SessionListFilters {
   clientId?: string;
   dateFrom?: string;
   dateTo?: string;
+  promptVersionId?: string;
+  promptVersionNull?: boolean;
   offset: number;
   limit: number;
 }
@@ -92,4 +94,7 @@ export interface SessionRepository {
 
   /** Mark a session as stale without requiring the full session payload. */
   markStale(sessionId: string, updatedBy: string): Promise<void>;
+
+  /** Get distinct prompt_version_id values from non-deleted sessions. */
+  getDistinctPromptVersionIds(): Promise<(string | null)[]>;
 }

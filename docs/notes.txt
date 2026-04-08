@@ -4,6 +4,14 @@
 - project based notes, for service based company who caters to multiple clients we segregate the notes as per the clients but is this taken care by team scoped data
 - bring your own key
 - sidebar instead of header
+- restrict max height of input section of capture and output of insights 
+- increase width of extract form and the table 
+- show the loader after the dialog has opened not on button click
+- dont make the allert version look like golden and like the AI magic theme
+- the confirmation dialog has a re-extract button which is purple
+- dont close row on clicking save 
+- a lot of states need to be handled on client side first and then hit server for example when the session is stale and i hit re-extract the staleness indicator should disappear without even saving it if i save then it goes permanantly if not then it doesnt go permanantly basically trying to make it optimistic update something like that i dont know if that makes sense we need to discuss more on this
+
 
 but it doesnt end here i am trying to build a platform that handles end to end product development life cycle which starts from client calls--> identifying requirements--> advise features--> design architecture--> develop a prototype--> get approval--> and deploy 
 and this cycle continues for modifications and maintainance 

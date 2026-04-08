@@ -225,5 +225,13 @@ export function createMockSessionRepository(
         s.updated_by = updatedBy;
       }
     },
+
+    async getDistinctPromptVersionIds(): Promise<(string | null)[]> {
+      const seen = new Set<string | null>();
+      for (const s of activeRows()) {
+        seen.add(s.prompt_version_id);
+      }
+      return [...seen];
+    },
   };
 }

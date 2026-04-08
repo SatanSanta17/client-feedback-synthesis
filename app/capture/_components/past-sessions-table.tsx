@@ -80,6 +80,13 @@ export function PastSessionsTable({
         if (filters.dateTo) {
           params.set("dateTo", filters.dateTo)
         }
+        if (filters.promptVersionId) {
+          if (filters.promptVersionId === "null") {
+            params.set("promptVersionNull", "true")
+          } else {
+            params.set("promptVersionId", filters.promptVersionId)
+          }
+        }
 
         const response = await fetch(`/api/sessions?${params.toString()}`)
         if (!response.ok) {

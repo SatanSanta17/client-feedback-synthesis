@@ -26,7 +26,7 @@ export function createSessionRepository(
 ): SessionRepository {
   return {
     async list(filters: SessionListFilters): Promise<{ rows: SessionRow[]; total: number }> {
-      const { clientId, dateFrom, dateTo, offset, limit } = filters;
+      const { clientId, dateFrom, dateTo, promptVersionId, promptVersionNull, offset, limit } = filters;
 
       console.log("[supabase-session-repo] list — filters:", JSON.stringify(filters), "teamId:", teamId);
 
@@ -48,6 +48,12 @@ export function createSessionRepository(
       }
       if (dateTo) {
         query = query.lte("session_date", dateTo);
+      }
+      if (promptVersionId) {
+        query = query.eq("prompt_version_id", promptVersionId);
+      }
+      if (promptVersionNull) {
+        query = query.is("prompt_version_id", null);
       }
 
       const { data, error, count } = await query;
@@ -301,6 +307,35 @@ export function createSessionRepository(
       }
 
       console.log("[supabase-session-repo] markStale success:", sessionId);
+    },
+
+    async getDistinctPromptVersionIds(): Promise<(string | null)[]> {
+      console.log("[supabase-session-repo] getDistinctPromptVersionIds");
+
+      // Fetch all prompt_version_id values from non-deleted sessions in scope
+      let query = supabase
+        .from("sessions")
+        .select("prompt_version_id")
+        .is("deleted_at", null);
+
+      query = scopeByTeam(query, teamId);
+
+      const { data, error } = await query;
+
+      if (error) {
+        console.error("[supabase-session-repo] getDistinctPromptVersionIds error:", error);
+        throw new Error("Failed to fetch distinct prompt version IDs");
+      }
+
+      // Deduplicate in JS (Supabase doesn't support SELECT DISTINCT via PostgREST)
+      const seen = new Set<string | null>();
+      for (const row of data ?? []) {
+        seen.add(row.prompt_version_id ?? null);
+      }
+
+      const ids = [...seen];
+      console.log("[supabase-session-repo] getDistinctPromptVersionIds —", ids.length, "distinct values");
+      return ids;
     },
   };
 }

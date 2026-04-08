@@ -9,12 +9,17 @@ import {
   type ClientFilterValue,
 } from "./client-filter-combobox"
 import { DatePicker } from "./date-picker"
+import {
+  PromptVersionFilter,
+  type PromptVersionFilterValue,
+} from "./prompt-version-filter"
 
 export interface SessionFiltersState {
   clientId?: string
   clientName?: string
   dateFrom: string
   dateTo: string
+  promptVersionId?: PromptVersionFilterValue
 }
 
 export interface SessionFiltersProps {
@@ -53,6 +58,10 @@ export function SessionFilters({
       updated.dateFrom = date
     }
     onFiltersChange(updated)
+  }
+
+  const handlePromptVersionChange = (value: PromptVersionFilterValue) => {
+    onFiltersChange({ ...filters, promptVersionId: value })
   }
 
   return (
@@ -108,6 +117,15 @@ export function SessionFilters({
             </Button>
           )}
         </div>
+      </div>
+
+      {/* Prompt version filter */}
+      <div className="flex flex-col gap-1">
+        <Label className="text-xs text-muted-foreground">Prompt version</Label>
+        <PromptVersionFilter
+          value={filters.promptVersionId}
+          onChange={handlePromptVersionChange}
+        />
       </div>
     </div>
   )

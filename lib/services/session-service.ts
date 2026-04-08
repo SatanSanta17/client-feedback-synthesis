@@ -93,6 +93,8 @@ export interface SessionFilters {
   clientId?: string;
   dateFrom?: string;
   dateTo?: string;
+  promptVersionId?: string;
+  promptVersionNull?: boolean;
   offset: number;
   limit: number;
 }
@@ -107,7 +109,7 @@ export async function getSessions(
   filters: SessionFilters,
   teamId: string | null
 ): Promise<{ sessions: SessionWithClient[]; total: number }> {
-  const { clientId, dateFrom, dateTo, offset, limit } = filters;
+  const { clientId, dateFrom, dateTo, promptVersionId, promptVersionNull, offset, limit } = filters;
 
   console.log(
     "[session-service] getSessions — filters:",
@@ -120,6 +122,8 @@ export async function getSessions(
     clientId,
     dateFrom,
     dateTo,
+    promptVersionId,
+    promptVersionNull,
     offset,
     limit,
   });

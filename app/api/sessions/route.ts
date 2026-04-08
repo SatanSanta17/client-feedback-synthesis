@@ -16,6 +16,8 @@ const getSessionsParamsSchema = z.object({
   clientId: z.string().uuid().optional(),
   dateFrom: z.string().optional(),
   dateTo: z.string().optional(),
+  promptVersionId: z.string().uuid().optional(),
+  promptVersionNull: z.coerce.boolean().optional(),
   offset: z.coerce.number().int().min(0).default(0),
   limit: z.coerce.number().int().min(1).max(100).default(20),
 });
@@ -44,6 +46,8 @@ export async function GET(request: NextRequest) {
       clientId: parsed.data.clientId,
       dateFrom: parsed.data.dateFrom,
       dateTo: parsed.data.dateTo,
+      promptVersionId: parsed.data.promptVersionId,
+      promptVersionNull: parsed.data.promptVersionNull,
       offset: parsed.data.offset,
       limit: parsed.data.limit,
     }, teamId);
