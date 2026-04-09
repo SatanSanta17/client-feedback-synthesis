@@ -20,6 +20,8 @@ interface UseSignalExtractionReturn {
   lastExtractedNotes: string | null
   /** The prompt version ID returned by the most recent extraction. */
   promptVersionId: string | null
+  /** The structured JSON returned by the most recent extraction (opaque passthrough for persistence). */
+  structuredJson: Record<string, unknown> | null
   showReextractConfirm: boolean
   isStructuredDirty: boolean
   setStructuredNotes: (notes: string | null) => void
@@ -45,6 +47,7 @@ export function useSignalExtraction({
     initialStructuredNotes ? "done" : "idle"
   )
   const [promptVersionId, setPromptVersionId] = useState<string | null>(null)
+  const [structuredJson, setStructuredJson] = useState<Record<string, unknown> | null>(null)
   const [showReextractConfirm, setShowReextractConfirm] = useState(false)
 
   const isStructuredDirty = structuredNotes !== lastExtractedNotes
@@ -73,6 +76,7 @@ export function useSignalExtraction({
       setStructuredNotes(data.structuredNotes)
       setLastExtractedNotes(data.structuredNotes)
       setPromptVersionId(data.promptVersionId ?? null)
+      setStructuredJson(data.structuredJson ?? null)
       setExtractionState("done")
       toast.success("Signals extracted")
     } catch (err) {
@@ -108,6 +112,7 @@ export function useSignalExtraction({
     setStructuredNotes(null)
     setLastExtractedNotes(null)
     setPromptVersionId(null)
+    setStructuredJson(null)
     setExtractionState("idle")
     setShowReextractConfirm(false)
   }, [])
@@ -117,6 +122,7 @@ export function useSignalExtraction({
     structuredNotes,
     lastExtractedNotes,
     promptVersionId,
+    structuredJson,
     showReextractConfirm,
     isStructuredDirty,
     setStructuredNotes,

@@ -104,6 +104,7 @@ export function ExpandedSessionRow({
     extractionState,
     structuredNotes,
     promptVersionId,
+    structuredJson,
     showReextractConfirm,
     setStructuredNotes,
     handleExtractSignals,
@@ -184,6 +185,9 @@ export function ExpandedSessionRow({
           sessionDate,
           rawNotes,
           structuredNotes,
+          // Only send structuredJson when this save is an extraction result.
+          // Manual edits to markdown don't sync back to JSON (Part 3 scope).
+          ...(didExtract ? { structuredJson } : {}),
           hasAttachments: savedAttachments.length + pendingAttachments.length > 0,
           promptVersionId: promptVersionId,
           isExtraction: didExtract,
@@ -222,7 +226,7 @@ export function ExpandedSessionRow({
     } finally {
       setIsSaving(false)
     }
-  }, [session.id, session.raw_notes, client, sessionDate, rawNotes, structuredNotes, promptVersionId, isFormValid, onSave, savedAttachments, pendingAttachments, deletedAttachmentIds])
+  }, [session.id, session.raw_notes, client, sessionDate, rawNotes, structuredNotes, structuredJson, promptVersionId, isFormValid, onSave, savedAttachments, pendingAttachments, deletedAttachmentIds])
 
   useEffect(() => {
     registerSave(handleSave)

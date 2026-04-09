@@ -30,6 +30,7 @@ const updateSessionSchema = z
       .max(100000, "Structured notes must be 100,000 characters or fewer")
       .nullable()
       .optional(),
+    structuredJson: z.record(z.string(), z.unknown()).nullable().optional(),
     hasAttachments: z.boolean().optional().default(false),
     promptVersionId: z.string().uuid().nullable().optional(),
     isExtraction: z.boolean().optional().default(false),
@@ -107,6 +108,7 @@ export async function PUT(
       sessionDate: parsed.data.sessionDate,
       rawNotes: parsed.data.rawNotes,
       structuredNotes: parsed.data.structuredNotes,
+      structuredJson: parsed.data.structuredJson,
       promptVersionId: parsed.data.promptVersionId,
       isExtraction: parsed.data.isExtraction,
       inputChanged: parsed.data.inputChanged,

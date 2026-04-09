@@ -74,6 +74,7 @@ export async function POST(request: NextRequest) {
     );
     return NextResponse.json({
       structuredNotes: result.structuredNotes,
+      structuredJson: result.structuredJson,
       promptVersionId: result.promptVersionId,
     });
   } catch (err) {
