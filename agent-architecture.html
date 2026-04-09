@@ -1,0 +1,277 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Synthesiser — Agent Architecture</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif; background: #0a0a0f; color: #e2e8f0; min-height: 100vh; padding: 40px; }
+
+  h1 { text-align: center; font-size: 28px; font-weight: 700; color: #f8fafc; margin-bottom: 4px; letter-spacing: -0.5px; }
+  .subtitle { text-align: center; font-size: 14px; color: #64748b; margin-bottom: 48px; }
+
+  .architecture { max-width: 1100px; margin: 0 auto; position: relative; }
+
+  /* ── Top row: 3 context sources ── */
+  .context-sources { display: flex; justify-content: center; gap: 24px; margin-bottom: 16px; }
+  .context-box {
+    flex: 1; max-width: 280px; padding: 20px; border-radius: 12px;
+    border: 1px solid #1e293b; background: #0f172a; text-align: center;
+  }
+  .context-box .icon { font-size: 24px; margin-bottom: 8px; }
+  .context-box h3 { font-size: 14px; font-weight: 600; color: #94a3b8; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px; }
+  .context-box p { font-size: 13px; color: #64748b; line-height: 1.5; }
+
+  /* ── Arrows down ── */
+  .arrows-down { display: flex; justify-content: center; gap: 24px; margin-bottom: 16px; }
+  .arrows-down .arrow-col { flex: 1; max-width: 280px; text-align: center; }
+  .arrow-col svg { display: block; margin: 0 auto; }
+
+  /* ── Agent core ── */
+  .agent-core-wrapper { position: relative; margin-bottom: 16px; }
+  .agent-core {
+    max-width: 720px; margin: 0 auto; padding: 32px;
+    border-radius: 16px; border: 2px solid #6366f1;
+    background: linear-gradient(135deg, #0f172a 0%, #1a1040 100%);
+    position: relative; overflow: visible;
+  }
+  .agent-core::before {
+    content: ''; position: absolute; inset: -2px; border-radius: 16px;
+    background: linear-gradient(135deg, #6366f1, #8b5cf6, #6366f1);
+    z-index: -1; opacity: 0.3; filter: blur(12px);
+  }
+  .agent-label {
+    position: absolute; top: -13px; left: 50%; transform: translateX(-50%);
+    background: #6366f1; color: #fff; font-size: 11px; font-weight: 700;
+    letter-spacing: 1.5px; text-transform: uppercase; padding: 4px 16px;
+    border-radius: 20px;
+  }
+  .agent-title { text-align: center; font-size: 20px; font-weight: 700; color: #f8fafc; margin-top: 8px; margin-bottom: 20px; }
+
+  .loop-diagram { display: flex; align-items: center; justify-content: center; gap: 12px; flex-wrap: wrap; }
+  .loop-step {
+    padding: 12px 18px; border-radius: 10px; background: #1e1b4b;
+    border: 1px solid #3730a3; font-size: 13px; font-weight: 500; color: #c7d2fe;
+    text-align: center; min-width: 120px;
+  }
+  .loop-step .step-num { font-size: 10px; color: #818cf8; font-weight: 700; display: block; margin-bottom: 4px; }
+  .loop-arrow { color: #6366f1; font-size: 20px; font-weight: 700; }
+  .loop-back {
+    display: block; text-align: center; margin-top: 12px;
+    font-size: 12px; color: #818cf8; font-style: italic;
+  }
+
+  /* ── Tools sidebar ── */
+  .tools-section { display: flex; justify-content: center; gap: 24px; margin-top: 16px; margin-bottom: 16px; }
+  .tool-group {
+    padding: 16px 20px; border-radius: 10px; background: #0f172a;
+    border: 1px solid #1e293b; text-align: center; flex: 1; max-width: 220px;
+  }
+  .tool-group h4 { font-size: 12px; color: #94a3b8; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 8px; }
+  .tool-tag {
+    display: inline-block; padding: 3px 10px; margin: 3px; border-radius: 6px;
+    font-size: 11px; font-weight: 500; background: #1e293b; color: #94a3b8;
+  }
+
+  /* ── Arrow down to output ── */
+  .arrow-center { text-align: center; margin-bottom: 16px; }
+
+  /* ── Output section ── */
+  .output-section { display: flex; justify-content: center; gap: 24px; margin-bottom: 16px; }
+  .output-box {
+    flex: 1; max-width: 320px; padding: 20px; border-radius: 12px;
+    border: 1px solid #14532d; background: #052e16; text-align: center;
+  }
+  .output-box .icon { font-size: 24px; margin-bottom: 8px; }
+  .output-box h3 { font-size: 14px; font-weight: 600; color: #4ade80; margin-bottom: 6px; }
+  .output-box p { font-size: 13px; color: #6ee7b7; line-height: 1.5; }
+
+  /* ── Future pipeline ── */
+  .future-pipeline { max-width: 900px; margin: 40px auto 0; }
+  .future-label { text-align: center; font-size: 12px; color: #64748b; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 16px; }
+  .pipeline-steps { display: flex; align-items: center; justify-content: center; gap: 0; }
+  .pipe-step {
+    padding: 12px 20px; border-radius: 10px; font-size: 13px; font-weight: 600;
+    text-align: center; position: relative;
+  }
+  .pipe-step.done { background: #1e1b4b; border: 1px solid #4f46e5; color: #a5b4fc; }
+  .pipe-step.current { background: #6366f1; border: 1px solid #818cf8; color: #fff; box-shadow: 0 0 20px rgba(99,102,241,0.3); }
+  .pipe-step.future { background: #1e293b; border: 1px dashed #334155; color: #475569; }
+  .pipe-arrow { color: #334155; font-size: 18px; padding: 0 6px; }
+  .pipe-arrow.active { color: #6366f1; }
+
+  /* ── What vs Where ── */
+  .comparison {
+    max-width: 800px; margin: 40px auto 0;
+    display: flex; gap: 24px; justify-content: center;
+  }
+  .compare-col {
+    flex: 1; max-width: 380px; padding: 20px; border-radius: 12px;
+  }
+  .compare-col.now { background: #0f172a; border: 1px solid #1e293b; }
+  .compare-col.agent { background: #1e1b4b; border: 1px solid #3730a3; }
+  .compare-col h3 { font-size: 14px; font-weight: 600; margin-bottom: 12px; }
+  .compare-col.now h3 { color: #94a3b8; }
+  .compare-col.agent h3 { color: #a5b4fc; }
+  .compare-col ul { list-style: none; padding: 0; }
+  .compare-col li { font-size: 13px; color: #94a3b8; padding: 4px 0; padding-left: 18px; position: relative; line-height: 1.5; }
+  .compare-col li::before { content: '→'; position: absolute; left: 0; color: #475569; }
+  .compare-col.agent li::before { color: #818cf8; }
+</style>
+</head>
+<body>
+
+<h1>Synthesiser — Agent Architecture</h1>
+<p class="subtitle">From single LLM call to autonomous insight-to-spec agent</p>
+
+<div class="architecture">
+
+  <!-- Context Sources -->
+  <div class="context-sources">
+    <div class="context-box">
+      <div class="icon">📋</div>
+      <h3>Structured Insights</h3>
+      <p>Clustered feedback, themes, signals, pain points extracted from client sessions</p>
+    </div>
+    <div class="context-box">
+      <div class="icon">🏗️</div>
+      <h3>Codebase Context</h3>
+      <p>ARCHITECTURE.md, file tree, existing features, routes, DB schema</p>
+    </div>
+    <div class="context-box">
+      <div class="icon">📐</div>
+      <h3>Product Constraints</h3>
+      <p>PRD template, naming conventions, team standards, backlog state</p>
+    </div>
+  </div>
+
+  <!-- Arrows -->
+  <div class="arrows-down">
+    <div class="arrow-col"><svg width="24" height="32"><line x1="12" y1="0" x2="12" y2="24" stroke="#334155" stroke-width="2"/><polygon points="6,24 12,32 18,24" fill="#334155"/></svg></div>
+    <div class="arrow-col"><svg width="24" height="32"><line x1="12" y1="0" x2="12" y2="24" stroke="#334155" stroke-width="2"/><polygon points="6,24 12,32 18,24" fill="#334155"/></svg></div>
+    <div class="arrow-col"><svg width="24" height="32"><line x1="12" y1="0" x2="12" y2="24" stroke="#334155" stroke-width="2"/><polygon points="6,24 12,32 18,24" fill="#334155"/></svg></div>
+  </div>
+
+  <!-- Agent Core -->
+  <div class="agent-core-wrapper">
+    <div class="agent-core">
+      <div class="agent-label">Reasoning Agent</div>
+      <div class="agent-title">Insight → Spec Agent Loop</div>
+      <div class="loop-diagram">
+        <div class="loop-step"><span class="step-num">STEP 1</span>Retrieve<br>Related Insights</div>
+        <div class="loop-arrow">→</div>
+        <div class="loop-step"><span class="step-num">STEP 2</span>Analyse<br>Codebase State</div>
+        <div class="loop-arrow">→</div>
+        <div class="loop-step"><span class="step-num">STEP 3</span>Reason &<br>Plan</div>
+        <div class="loop-arrow">→</div>
+        <div class="loop-step"><span class="step-num">STEP 4</span>Draft Spec<br>(Structured)</div>
+        <div class="loop-arrow">→</div>
+        <div class="loop-step"><span class="step-num">STEP 5</span>Self-Evaluate<br>& Validate</div>
+      </div>
+      <span class="loop-back">↩ Loop back to Step 3 if validation fails — retry with corrections</span>
+    </div>
+  </div>
+
+  <!-- Tools -->
+  <div class="tools-section">
+    <div class="tool-group">
+      <h4>Read Tools</h4>
+      <span class="tool-tag">read_file</span>
+      <span class="tool-tag">search_codebase</span>
+      <span class="tool-tag">read_architecture</span>
+    </div>
+    <div class="tool-group">
+      <h4>Query Tools</h4>
+      <span class="tool-tag">search_insights</span>
+      <span class="tool-tag">get_themes</span>
+      <span class="tool-tag">check_backlog</span>
+    </div>
+    <div class="tool-group">
+      <h4>Write Tools</h4>
+      <span class="tool-tag">draft_prd</span>
+      <span class="tool-tag">update_changelog</span>
+      <span class="tool-tag">create_ticket</span>
+    </div>
+    <div class="tool-group">
+      <h4>Validate Tools</h4>
+      <span class="tool-tag">check_schema</span>
+      <span class="tool-tag">lint_prd</span>
+      <span class="tool-tag">diff_existing</span>
+    </div>
+  </div>
+
+  <!-- Arrow to output -->
+  <div class="arrow-center">
+    <svg width="24" height="32"><line x1="12" y1="0" x2="12" y2="24" stroke="#16a34a" stroke-width="2"/><polygon points="6,24 12,32 18,24" fill="#16a34a"/></svg>
+  </div>
+
+  <!-- Output -->
+  <div class="output-section">
+    <div class="output-box">
+      <div class="icon">📄</div>
+      <h3>Draft PRD</h3>
+      <p>Problem statement, requirements (P1.R1…), acceptance criteria — grounded in real user quotes</p>
+    </div>
+    <div class="output-box">
+      <div class="icon">🔍</div>
+      <h3>Impact Analysis</h3>
+      <p>Affected files, routes, and components in the existing codebase</p>
+    </div>
+    <div class="output-box">
+      <div class="icon">⚡</div>
+      <h3>Priority Signal</h3>
+      <p>Frequency, severity, and revenue-impact score derived from insight cluster</p>
+    </div>
+  </div>
+
+  <!-- Full Pipeline Vision -->
+  <div class="future-pipeline">
+    <div class="future-label">Full Product Development Pipeline</div>
+    <div class="pipeline-steps">
+      <div class="pipe-step done">Capture<br><small>Raw Notes</small></div>
+      <span class="pipe-arrow active">→</span>
+      <div class="pipe-step done">Structure<br><small>AI Extract</small></div>
+      <span class="pipe-arrow active">→</span>
+      <div class="pipe-step done">Insights<br><small>Themes</small></div>
+      <span class="pipe-arrow active">→</span>
+      <div class="pipe-step current">Spec Agent<br><small>PRD Draft</small></div>
+      <span class="pipe-arrow">→</span>
+      <div class="pipe-step future">TRD Agent<br><small>Tech Design</small></div>
+      <span class="pipe-arrow">→</span>
+      <div class="pipe-step future">Code Agent<br><small>Implement</small></div>
+      <span class="pipe-arrow">→</span>
+      <div class="pipe-step future">Validate<br><small>Test & Ship</small></div>
+    </div>
+  </div>
+
+  <!-- Comparison -->
+  <div class="comparison">
+    <div class="compare-col now">
+      <h3>What You Have Now</h3>
+      <ul>
+        <li>Single LLM call (prompt in → markdown out)</li>
+        <li>No tool access — can't read codebase</li>
+        <li>No self-evaluation loop</li>
+        <li>Freeform markdown output</li>
+        <li>No awareness of existing features</li>
+        <li>Stateless — each call is independent</li>
+      </ul>
+    </div>
+    <div class="compare-col agent">
+      <h3>What the Agent Adds</h3>
+      <ul>
+        <li>Multi-step reasoning with tool calls</li>
+        <li>Reads architecture, files, and schema</li>
+        <li>Self-validates against PRD template</li>
+        <li>Structured JSON output (Zod schema)</li>
+        <li>Knows what already exists before proposing</li>
+        <li>Maintains context across the loop</li>
+      </ul>
+    </div>
+  </div>
+
+</div>
+
+</body>
+</html>
