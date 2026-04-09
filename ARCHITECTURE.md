@@ -133,7 +133,7 @@ synthesiser/
 │   │       ├── session-capture-form.tsx   # Coordinator — react-hook-form, submit, extract; composes attachment/notes subcomponents
 │   │       ├── session-filters.tsx        # Filter bar — client combobox + date range + prompt version filter with auto-sync
 │   │       ├── session-table-row.tsx      # Single table row — formatDate, truncateNotes, formatEmail helpers
-│   │       ├── structured-notes-panel.tsx # Post-extraction markdown display for capture form
+│   │       ├── structured-notes-panel.tsx # Post-extraction display — branches: StructuredSignalView (JSON) or MarkdownPanel (fallback), with edit toggle
 │   │       ├── unsaved-changes-dialog.tsx # Save/Discard/Cancel prompt for dirty expanded rows
 │   │       └── view-prompt-dialog.tsx    # Reusable read-only dialog for viewing prompt content (markdown rendered, fetch-on-open)
 │   ├── invite/
@@ -174,7 +174,8 @@ synthesiser/
 │   │   ├── auth-form-shell.tsx          # Shared centered auth card layout (title, subtitle, children)
 │   │   └── email-confirmation-panel.tsx # Shared "Check your email" success panel (children, linkText, linkHref)
 │   ├── capture/
-│   │   └── reextract-confirm-dialog.tsx # Shared re-extract confirmation dialog (show, hasManualEdits, onConfirm, onCancel)
+│   │   ├── reextract-confirm-dialog.tsx # Shared re-extract confirmation dialog (show, hasManualEdits, onConfirm, onCancel)
+│   │   └── structured-signal-view.tsx   # Renders ExtractedSignals JSON as typed UI — sections, severity/priority/sentiment badges, quotes (PRD-018 P2)
 │   ├── providers/
 │   │   └── auth-provider.tsx    # AuthProvider context — user, isAuthenticated, isLoading, canCreateTeam, activeTeamId, setActiveTeam, signOut
 │   ├── settings/

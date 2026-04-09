@@ -333,7 +333,7 @@ const URGENCY_STYLES: Record<
     "bg-[var(--status-warning-light)] text-[var(--status-warning-text)] border border-[var(--status-warning-border)]",
   high: "bg-[var(--status-error-light)] text-[var(--status-error)] border border-[var(--status-error-border)]",
   critical:
-    "bg-[var(--status-error)] text-white border border-[var(--status-error)]",
+    "bg-[var(--status-error)] text-primary-foreground border border-[var(--status-error)]",
 };
 
 const URGENCY_LABELS: Record<

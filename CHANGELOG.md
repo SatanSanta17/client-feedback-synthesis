@@ -6,6 +6,13 @@ All notable changes to this project are documented here, grouped by PRD and part
 
 ## [Unreleased]
 
+### PRD-018 Part 2: Switch UI to Render from JSON — 2026-04-10
+- Created `components/capture/structured-signal-view.tsx` — renders `ExtractedSignals` JSON as typed UI with discrete sections (summary, sentiment, urgency, decision timeline, client profile, pain points, requirements, aspirations, competitive mentions, blockers, platforms & channels, custom categories); severity/priority/sentiment/urgency badges using design tokens; client quote formatting; empty-state handling
+- Updated `structured-notes-panel.tsx` — branches between `StructuredSignalView` (when `structuredJson` is present) and `MarkdownPanel` fallback (pre-Part 1 sessions); edit toggle switches from JSON view to markdown editor for manual edits; added `showHeading` and `className` props
+- Wired `structuredJson` into `session-capture-form.tsx` — passes hook state to `StructuredNotesPanel`
+- Wired `StructuredNotesPanel` into `expanded-session-row.tsx` — replaced inline `MarkdownPanel` with panel; resolves JSON from hook state (fresh extraction) or session prop (DB); added `structured_json` to frontend `SessionRow` interface
+- **End-of-part audit:** Fixed `text-white` hardcode → `text-primary-foreground` in urgency critical badge; added `className` prop to `StructuredNotesPanel`; fixed import order in `structured-notes-panel.tsx`; updated ARCHITECTURE.md (added `structured-signal-view.tsx` to file map, updated `structured-notes-panel.tsx` description)
+
 ### PRD-018 Part 1: Structured Output Migration — Core Schema & Extraction — 2026-04-10
 - Created `lib/schemas/extraction-schema.ts` — Zod schema for structured signal extraction output with `EXTRACTION_SCHEMA_VERSION`, `.describe()` annotations for LLM guidance, and exported types (`ExtractedSignals`, `SignalChunk`, `RequirementChunk`, `CompetitiveMention`, `ToolAndPlatform`, `CustomCategory`)
 - Created `lib/utils/render-extracted-signals-to-markdown.ts` — converts `ExtractedSignals` JSON to markdown matching the original extraction prompt output format for backward compatibility

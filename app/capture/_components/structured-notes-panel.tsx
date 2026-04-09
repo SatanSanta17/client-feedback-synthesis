@@ -3,10 +3,11 @@
 import { useState } from "react"
 import { Eye, Pencil } from "lucide-react"
 
+import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
 import { StructuredSignalView } from "@/components/capture/structured-signal-view"
-import type { ExtractedSignals } from "@/lib/schemas/extraction-schema"
 import { MarkdownPanel } from "./markdown-panel"
+import type { ExtractedSignals } from "@/lib/schemas/extraction-schema"
 
 interface StructuredNotesPanelProps {
   structuredNotes: string | null
@@ -16,6 +17,7 @@ interface StructuredNotesPanelProps {
   /** Whether to show the "Extracted Signals" heading. Default true. Set false when
    *  the parent already renders its own heading (e.g. expanded session row). */
   showHeading?: boolean
+  className?: string
 }
 
 /**
@@ -35,6 +37,7 @@ export function StructuredNotesPanel({
   onChange,
   readOnly,
   showHeading = true,
+  className,
 }: StructuredNotesPanelProps) {
   const [isEditing, setIsEditing] = useState(false)
 
@@ -67,7 +70,7 @@ export function StructuredNotesPanel({
   ) : null
 
   return (
-    <div className={showHeading ? "mt-6" : ""}>
+    <div className={cn(showHeading ? "mt-6" : "", className)}>
       {showHeading ? (
         <div className="mb-3 flex items-center justify-between">
           <h3 className="text-sm font-medium text-foreground">
