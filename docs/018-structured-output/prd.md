@@ -72,60 +72,25 @@ The schema is explicitly versioned from day one so that future schema evolutions
 
 ---
 
-## Part 2: Backfill Existing Sessions
+## Part 2: Switch UI to Render from JSON
 
-**Scope:** Migrate existing sessions that only have markdown `structured_notes` into the new `structured_json` format. Handle edge cases: sessions with custom-prompt extractions, manually edited structured notes, and sessions with no extraction at all.
-
-### Requirements
-
-- **P2.R1** Build a backfill service function (`backfillStructuredJson`) that takes a session's existing `structured_notes` markdown and converts it to the `extractionSchema` JSON format via an LLM call. This is a dedicated "markdown-to-JSON" transformation — not a re-extraction from raw notes — so the user's original extraction result is preserved.
-
-- **P2.R2** The backfill function uses the same `generateObject()` + `extractionSchema` pattern as Part 1, but the input is the existing markdown (not raw notes). The system prompt instructs the LLM to parse the markdown structure and map sections to schema fields.
-
-- **P2.R3** Sessions where `structured_notes` is `NULL` (never extracted) are skipped by the backfill. They will receive `structured_json` only when the user extracts for the first time.
-
-- **P2.R4** Sessions where `structured_notes_edited = true` (manually edited after extraction) are backfilled from the edited markdown, not from the original extraction. The backfill preserves the user's manual edits.
-
-- **P2.R5** The backfill records `schemaVersion: 1` and sets `prompt_version_id` to `null` on backfilled sessions (since the original prompt version is already recorded — the backfill is a format conversion, not a new extraction).
-
-- **P2.R6** Build a backfill API route (`/api/admin/backfill-structured-json`) that processes sessions in batches (configurable batch size, default 10) with rate limiting to avoid hitting LLM API quotas. The route returns progress: total sessions, processed, skipped, failed.
-
-- **P2.R7** Sessions that fail backfill (LLM error, malformed markdown) are logged with the error and skipped — they do not block the batch. A failed session can be retried individually or will receive `structured_json` on next manual re-extraction.
-
-- **P2.R8** The backfill is idempotent — running it multiple times does not duplicate or overwrite existing `structured_json` unless explicitly forced via a `force` parameter.
-
-### Acceptance Criteria
-
-- [ ] Backfill service converts existing markdown to valid `extractionSchema` JSON
-- [ ] Sessions with `structured_notes = NULL` are skipped
-- [ ] Sessions with `structured_notes_edited = true` are backfilled from edited content
-- [ ] `schemaVersion: 1` is recorded on all backfilled sessions
-- [ ] Batch processing with configurable batch size and rate limiting
-- [ ] Failed sessions are logged and skipped without blocking the batch
-- [ ] Backfill is idempotent — re-running does not overwrite existing `structured_json`
-- [ ] Progress reporting: total, processed, skipped, failed counts
-
----
-
-## Part 3: Switch UI to Render from JSON
-
-**Scope:** Update the frontend to render extraction results from `structured_json` instead of raw markdown. The markdown column becomes a fallback for sessions that haven't been backfilled yet. The extraction API response is updated to include the JSON.
+**Scope:** Update the frontend to render extraction results from `structured_json` instead of raw markdown. The markdown column becomes a fallback for pre-Part 1 sessions that were never re-extracted. The extraction API response is updated to include the JSON.
 
 ### Requirements
 
-- **P3.R1** Update the extraction API response (`/api/ai/extract-signals`) to include `structuredJson` in the response body alongside `structuredNotes`. The `structuredNotes` field remains for backward compatibility.
+- **P2.R1** Update the extraction API response (`/api/ai/extract-signals`) to include `structuredJson` in the response body alongside `structuredNotes`. The `structuredNotes` field remains for backward compatibility.
 
-- **P3.R2** Update the session detail API to return `structured_json` alongside `structured_notes`.
+- **P2.R2** Update the session detail API to return `structured_json` alongside `structured_notes`.
 
-- **P3.R3** Build a renderer component (`StructuredSignalView`) that takes the typed `ExtractedSignals` object and renders it as formatted UI — not by converting back to markdown, but by rendering each section (pain points, requirements, etc.) as discrete UI elements with appropriate styling, severity badges, and quote formatting.
+- **P2.R3** Build a renderer component (`StructuredSignalView`) that takes the typed `ExtractedSignals` object and renders it as formatted UI — not by converting back to markdown, but by rendering each section (pain points, requirements, etc.) as discrete UI elements with appropriate styling, severity badges, and quote formatting.
 
-- **P3.R4** The renderer gracefully handles missing data: empty arrays render as "No signals identified" (matching current markdown behavior), null fields are omitted from display.
+- **P2.R4** The renderer gracefully handles missing data: empty arrays render as "No signals identified" (matching current markdown behavior), null fields are omitted from display.
 
-- **P3.R5** For sessions that have `structured_json = NULL` (not yet backfilled and not re-extracted), fall back to rendering the existing `structured_notes` markdown as-is. The UI must handle both paths seamlessly.
+- **P2.R5** For sessions that have `structured_json = NULL` (pre-Part 1 sessions that were never re-extracted), fall back to rendering the existing `structured_notes` markdown as-is. The UI must handle both paths seamlessly.
 
-- **P3.R6** The session capture form's "structured notes" preview panel switches to using `StructuredSignalView` for new extractions. Existing edit functionality (manual edits to structured notes) is preserved — edits update both the JSON and the markdown representation.
+- **P2.R6** The session capture form's "structured notes" preview panel switches to using `StructuredSignalView` for new extractions. Existing edit functionality (manual edits to structured notes) is preserved — edits update both the JSON and the markdown representation.
 
-- **P3.R7** The `custom` field entries are rendered dynamically: each entry's `categoryName` becomes a section heading, and its `signals` array is rendered identically to the fixed categories.
+- **P2.R7** The `custom` field entries are rendered dynamically: each entry's `categoryName` becomes a section heading, and its `signals` array is rendered identically to the fixed categories.
 
 ### Acceptance Criteria
 
@@ -142,8 +107,8 @@ The schema is explicitly versioned from day one so that future schema evolutions
 
 ## Backlog (deferred from this PRD)
 
-- Remove `structured_notes` markdown column entirely once all sessions are backfilled and the UI is fully migrated (breaking change — requires migration period)
+- **Backfill existing sessions** — Post-launch, if needed: build a script/API route to migrate pre-Part 1 sessions that have `structured_notes` but no `structured_json`. Re-extract from `raw_notes` via `generateObject()`, process in batches with rate limiting, skip sessions with no extraction, make idempotent. Not needed pre-launch since no production data exists.
+- Remove `structured_notes` markdown column entirely once all sessions have `structured_json` and the UI is fully migrated (breaking change — requires migration period)
 - Schema evolution tooling: automated migration functions that upgrade `schemaVersion: N` to `schemaVersion: N+1` when the schema changes
-- Admin UI for monitoring backfill progress and retrying failed sessions
 - Prompt editor update: replace free-form text box with guided "focus areas" and "custom categories" UI that generates prompt additions without letting users override the output format
 - Validate that `generateObject()` token usage stays within acceptable bounds compared to `generateText()` — monitor cost delta

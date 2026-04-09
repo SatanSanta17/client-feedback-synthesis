@@ -2,7 +2,7 @@
 
 > **PRD:** [PRD-018 — Structured Output Migration](./prd.md)
 > **Status:** Draft
-> **Part:** 1 of 3
+> **Part:** 1–2 of 2
 
 ---
 
@@ -12,11 +12,9 @@
 
 ### Forward Compatibility Notes
 
-Part 2 (backfill) will reuse `extractionSchema` and the `renderExtractedSignalsToMarkdown()` utility introduced here, calling `generateObject()` with the same schema but feeding existing markdown as input instead of raw notes.
+Part 2 (UI switch) will consume the `structured_json` column and the `ExtractedSignals` type exported from the schema file. The `StructuredSignalView` renderer will import `ExtractedSignals` directly — so the type must be exported as a named export from day one.
 
-Part 3 (UI switch) will consume the `structured_json` column and the `ExtractedSignals` type exported from the schema file. The `StructuredSignalView` renderer will import `ExtractedSignals` directly — so the type must be exported as a named export from day one.
-
-The `SessionRow`, `SessionInsert`, `SessionUpdate`, `Session`, and `SessionWithClient` interfaces all gain `structured_json` in this part so that Part 3 can consume them without further interface changes.
+The `SessionRow`, `SessionInsert`, `SessionUpdate`, `Session`, and `SessionWithClient` interfaces all gain `structured_json` in this part so that Part 2 can consume them without further interface changes.
 
 ---
 
@@ -671,8 +669,420 @@ No UI changes.
 2. DRY check — `callModelObject()` shares retry logic pattern with `callModel()` (evaluate extracting shared retry logic into a helper; do so if the duplication is > 20 lines)
 3. Design token adherence — N/A (no UI changes)
 4. Logging — verify `ai-service.ts` logs entry, exit, and errors for `callModelObject()`
-5. Dead code — `signal-extraction.ts` old prompt is still imported by `ai-service.ts` for `synthesiseMasterSignal()` fallback? No — it was only used by `extractSignals()`. If no other consumer exists, mark the old prompt exports as deprecated with a comment (do not delete yet — Part 2 backfill may reference it as a fallback).
+5. Dead code — `signal-extraction.ts` old prompt is still imported by the prompt editor (`use-prompt-editor.ts`). Retained for that consumer. No action needed.
 6. Convention compliance — named exports, kebab-case files, import order
 7. Update `ARCHITECTURE.md` — add `structured_json` to sessions table, add new files to file map, update `ai-service.ts` description
 8. Update `CHANGELOG.md`
 9. Run `npx tsc --noEmit`
+
+---
+---
+
+## Part 2: Switch UI to Render from JSON
+
+**Scope:** Replace the markdown-based rendering of extracted signals with a typed React component (`StructuredSignalView`) that renders directly from `structured_json`. Sessions without `structured_json` (pre-Part 1) fall back to the existing markdown renderer. Manual editing of structured notes continues to work via the existing `MarkdownPanel`. The extraction API response already includes `structuredJson` (added in Part 1, Option C).
+
+### Forward Compatibility Notes
+
+The `StructuredSignalView` component built here is a pure presentational component that accepts `ExtractedSignals` as a prop. Future PRDs (dashboard widgets, RAG chat context panel) can import and reuse it wherever structured signal data needs to be displayed.
+
+Manual edits to structured notes currently operate on the markdown representation only — `structured_json` is not updated when the user edits markdown. This is acceptable pre-launch. A future PRD could add bidirectional sync (parse edited markdown back to JSON) or replace the markdown editor with a structured form editor.
+
+---
+
+### No Database Changes
+
+Part 2 has no schema migrations. All required columns (`structured_json`) were added in Part 1.
+
+---
+
+### New Files
+
+#### 1. `components/capture/structured-signal-view.tsx`
+
+**Purpose:** Renders an `ExtractedSignals` object as formatted UI with discrete sections, severity badges, quote formatting, and empty-state handling. This is the primary replacement for rendering extraction output via `ReactMarkdown`.
+
+**Location:** `components/capture/` — shared component level because it will be reused by future PRDs (dashboard, chat context). Not co-located with a specific route.
+
+**Export:** `StructuredSignalView` (named export)
+
+**Props interface:**
+
+```typescript
+export interface StructuredSignalViewProps {
+  signals: ExtractedSignals;
+  className?: string;
+}
+```
+
+**Rendering rules (P2.R3, P2.R4, P2.R7):**
+
+The component renders sections in the same order as the markdown renderer to maintain visual consistency:
+
+1. **Session Summary** — `signals.summary` as a paragraph.
+2. **Sentiment** — `signals.sentiment` as a styled badge (colour-coded: positive = green, negative = red, mixed = amber, neutral = grey). Uses design tokens from `globals.css`.
+3. **Urgency** — `signals.urgency` as a styled badge (low = grey, medium = amber, high = orange, critical = red).
+4. **Decision Timeline** — `signals.decisionTimeline` as text. If `null`, render "Not mentioned" in muted text.
+5. **Client Profile** — Three fields (`industry`, `geography`, `budgetRange`) as a compact key-value list. Null fields render as "Not mentioned" in muted text.
+6. **Pain Points** — `SignalChunkList` sub-component (see below).
+7. **Requirements** — `RequirementChunkList` sub-component with priority badges.
+8. **Aspirations** — `SignalChunkList`.
+9. **Competitive Mentions** — `CompetitiveMentionList` sub-component.
+10. **Blockers / Dependencies** — `SignalChunkList`.
+11. **Platforms & Channels** — `ToolAndPlatformList` sub-component.
+12. **Custom Categories** — For each entry in `signals.custom`, render `categoryName` as a section heading and `signals` via `SignalChunkList`.
+
+**Empty state (P2.R4):** Each array section checks `array.length === 0`. If empty, render "No signals identified." in muted text — matching the existing markdown behavior.
+
+**Sub-components (co-located in the same file as private components):**
+
+```typescript
+// --- SignalChunkList ---
+// Renders an array of SignalChunk as a bulleted list.
+// Each item: text + severity badge (right-aligned) + client quote (italic, below).
+
+function SignalChunkList({ chunks }: { chunks: SignalChunk[] }) {
+  if (chunks.length === 0) {
+    return <p className="text-sm text-muted-foreground">No signals identified.</p>;
+  }
+  return (
+    <ul className="space-y-2">
+      {chunks.map((chunk, i) => (
+        <li key={i} className="text-sm">
+          <div className="flex items-start justify-between gap-2">
+            <span>{chunk.text}</span>
+            <SeverityBadge severity={chunk.severity} />
+          </div>
+          {chunk.clientQuote && (
+            <p className="mt-0.5 text-xs italic text-muted-foreground">
+              &ldquo;{chunk.clientQuote}&rdquo;
+            </p>
+          )}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+// --- RequirementChunkList ---
+// Like SignalChunkList but with a priority badge before the text.
+
+function RequirementChunkList({ chunks }: { chunks: RequirementChunk[] }) {
+  if (chunks.length === 0) {
+    return <p className="text-sm text-muted-foreground">No signals identified.</p>;
+  }
+  return (
+    <ul className="space-y-2">
+      {chunks.map((chunk, i) => (
+        <li key={i} className="text-sm">
+          <div className="flex items-start gap-2">
+            <PriorityBadge priority={chunk.priority} />
+            <div className="flex-1">
+              <div className="flex items-start justify-between gap-2">
+                <span>{chunk.text}</span>
+                <SeverityBadge severity={chunk.severity} />
+              </div>
+              {chunk.clientQuote && (
+                <p className="mt-0.5 text-xs italic text-muted-foreground">
+                  &ldquo;{chunk.clientQuote}&rdquo;
+                </p>
+              )}
+            </div>
+          </div>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+// --- CompetitiveMentionList ---
+// Renders competitor name (bold), sentiment badge, and context.
+
+function CompetitiveMentionList({ mentions }: { mentions: CompetitiveMention[] }) {
+  if (mentions.length === 0) {
+    return <p className="text-sm text-muted-foreground">No signals identified.</p>;
+  }
+  return (
+    <ul className="space-y-2">
+      {mentions.map((m, i) => (
+        <li key={i} className="text-sm">
+          <div className="flex items-start gap-2">
+            <span className="font-medium">{m.competitor}</span>
+            <SentimentBadge sentiment={m.sentiment} />
+          </div>
+          <p className="mt-0.5 text-muted-foreground">{m.context}</p>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+// --- ToolAndPlatformList ---
+// Renders name (bold), type badge, and context.
+
+function ToolAndPlatformList({ tools }: { tools: ToolAndPlatform[] }) {
+  if (tools.length === 0) {
+    return <p className="text-sm text-muted-foreground">No signals identified.</p>;
+  }
+  return (
+    <ul className="space-y-2">
+      {tools.map((t, i) => (
+        <li key={i} className="text-sm">
+          <div className="flex items-start gap-2">
+            <span className="font-medium">{t.name}</span>
+            <span className="inline-flex items-center rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground">
+              {t.type}
+            </span>
+          </div>
+          <p className="mt-0.5 text-muted-foreground">{t.context}</p>
+        </li>
+      ))}
+    </ul>
+  );
+}
+```
+
+**Badge sub-components (co-located):**
+
+```typescript
+// --- SeverityBadge ---
+// Renders low/medium/high as a small coloured badge.
+// Colours: low = grey (muted), medium = amber (--status-warning), high = red (--status-error)
+
+function SeverityBadge({ severity }: { severity: "low" | "medium" | "high" }) { ... }
+
+// --- PriorityBadge ---
+// Renders must/should/nice as a small coloured badge.
+// Colours: must = red, should = amber, nice = grey
+
+function PriorityBadge({ priority }: { priority: "must" | "should" | "nice" }) { ... }
+
+// --- SentimentBadge ---
+// Renders positive/neutral/negative as a small coloured badge.
+// Same colour scheme as SeverityBadge sentiment mapping.
+
+function SentimentBadge({ sentiment }: { sentiment: "positive" | "neutral" | "negative" }) { ... }
+```
+
+**Design tokens:** All badge colours use CSS custom properties from `globals.css` (e.g., `--status-warning`, `--status-error`, `--status-success`). No hardcoded hex values. If any needed tokens are missing, they are added in the same increment.
+
+**Server vs Client component:** This component is a **Client Component** (`'use client'`) because it receives props from parent client components (the capture form and expanded row are already client components). No hooks or browser APIs needed — but the parent boundary is already client-side.
+
+---
+
+### Modified Files
+
+#### 2. `app/capture/_components/structured-notes-panel.tsx`
+
+**Changes (P2.R5, P2.R6):**
+
+This component currently wraps `MarkdownPanel` unconditionally. It becomes the **branching point** between the new JSON renderer and the existing markdown fallback.
+
+**Updated logic:**
+
+```typescript
+"use client"
+
+import { MarkdownPanel } from "./markdown-panel"
+import { StructuredSignalView } from "@/components/capture/structured-signal-view"
+import type { ExtractedSignals } from "@/lib/schemas/extraction-schema"
+
+interface StructuredNotesPanelProps {
+  structuredNotes: string | null;
+  structuredJson: Record<string, unknown> | null;
+  onChange: (notes: string | null) => void;
+  readOnly?: boolean;
+}
+
+export function StructuredNotesPanel({
+  structuredNotes,
+  structuredJson,
+  onChange,
+  readOnly,
+}: StructuredNotesPanelProps) {
+  if (!structuredNotes && !structuredJson) return null;
+
+  // Determine display mode:
+  // - If structuredJson is available → render via StructuredSignalView (primary)
+  // - Otherwise fall back to MarkdownPanel (pre-Part 1 sessions)
+  const hasJson = structuredJson !== null;
+
+  return (
+    <div className="mt-6">
+      <h3 className="mb-3 text-sm font-medium text-foreground">
+        Extracted Signals
+      </h3>
+
+      {hasJson ? (
+        <StructuredSignalView signals={structuredJson as ExtractedSignals} />
+      ) : (
+        <MarkdownPanel
+          content={structuredNotes!}
+          onChange={readOnly ? undefined : (v) => onChange(v)}
+          readOnly={readOnly}
+        />
+      )}
+    </div>
+  );
+}
+```
+
+**Cast justification:** `structuredJson as ExtractedSignals` is safe here because the JSON was validated by Zod's `extractionSchema` at extraction time (in `callModelObject`). The repository layer stores it as `Record<string, unknown>` for layer separation, but the data is guaranteed to conform. A future hardening step could add runtime re-validation here.
+
+**Manual editing (P2.R6):** When `structuredJson` is present, the `StructuredSignalView` is read-only — there is no structured form editor. The user can still switch to markdown editing via a toggle (see increment detail below). When editing, the markdown representation is what gets modified, and `structured_json` remains unchanged in the DB. This is acceptable pre-launch; a structured form editor is a future PRD concern.
+
+**Edit toggle approach:** When the user has `structured_json` and wants to edit, they need a way to switch from the JSON view to the markdown editor. Two options:
+
+- **Option A:** Add an Edit button to `StructuredNotesPanel` that swaps `StructuredSignalView` for `MarkdownPanel` in edit mode. The user edits markdown, saves, and `structured_notes` is updated. `structured_json` is left stale (acceptable pre-launch — `structured_notes_edited` flag already tracks this).
+
+- **Option B:** Remove manual editing entirely when `structured_json` is present — force re-extraction for changes. Too restrictive.
+
+**Decision — Option A.** The panel shows `StructuredSignalView` by default. A Pencil icon toggles to `MarkdownPanel` (edit mode). Saving from edit mode updates `structured_notes` and sets `structured_notes_edited = true`. The `structured_json` column is not modified (server logic from Part 1 already handles this — `structured_json` is only sent on `isExtraction: true` saves).
+
+---
+
+#### 3. `app/capture/_components/session-capture-form.tsx`
+
+**Changes:**
+
+1. Pass `structuredJson` from the extraction hook to `StructuredNotesPanel`:
+   ```typescript
+   <StructuredNotesPanel
+     structuredNotes={structuredNotes}
+     structuredJson={structuredJson}
+     onChange={setStructuredNotes}
+   />
+   ```
+
+Minimal change — the form already has `structuredJson` from the hook (Part 1). It just needs to forward it to the panel.
+
+---
+
+#### 4. `app/capture/_components/expanded-session-row.tsx`
+
+**Changes (P2.R5, P2.R6):**
+
+The expanded row currently renders extracted signals via `MarkdownPanel` directly (not through `StructuredNotesPanel`). Two changes needed:
+
+1. **Source `structured_json` from the session prop.** The `SessionRow` interface already includes `structured_json` (from Part 1). The expanded row receives the session as a prop, so `session.structured_json` is available.
+
+2. **Replace the inline `MarkdownPanel` with `StructuredNotesPanel`:**
+
+   Current pattern (approximate):
+   ```tsx
+   {extractionState === "done" && structuredNotes && (
+     <MarkdownPanel
+       content={structuredNotes}
+       onChange={canEdit ? setStructuredNotes : undefined}
+       readOnly={!canEdit}
+     />
+   )}
+   ```
+
+   Updated pattern:
+   ```tsx
+   {(extractionState === "done" || session.structured_notes) && (
+     <StructuredNotesPanel
+       structuredNotes={structuredNotes ?? session.structured_notes}
+       structuredJson={structuredJson ?? session.structured_json}
+       onChange={canEdit ? setStructuredNotes : undefined}
+       readOnly={!canEdit}
+     />
+   )}
+   ```
+
+   **Key detail:** When loading an existing session (no fresh extraction), the panel reads from `session.structured_json` and `session.structured_notes`. When the user re-extracts, the hook state (`structuredJson`, `structuredNotes`) takes precedence.
+
+3. **Resolve the `structuredJson` state for existing sessions vs fresh extractions:**
+
+   The `useSignalExtraction` hook's `structuredJson` starts as `null` and is only populated after a fresh extraction. For displaying an existing session's JSON, the component must read from `session.structured_json`. The display logic uses a resolved value:
+
+   ```typescript
+   const resolvedStructuredJson = structuredJson ?? (session.structured_json as Record<string, unknown> | null);
+   ```
+
+---
+
+#### 5. `lib/hooks/use-signal-extraction.ts`
+
+**No changes required.** The hook already exposes `structuredJson` in its return value (Part 1). Part 2 consumers just need to read it.
+
+---
+
+#### 6. `globals.css` (if needed)
+
+**Potential changes:** If any badge colour tokens are missing (e.g., `--status-success` for positive sentiment), add them. Verify existing tokens cover: success (green), warning (amber), error (red), neutral (grey). This is checked in Increment 1 before building the component.
+
+---
+
+### Implementation Increments
+
+#### Increment 2.1: `StructuredSignalView` Component
+
+**Files created:**
+- `components/capture/structured-signal-view.tsx`
+
+**Files potentially modified:**
+- `globals.css` — add any missing badge colour tokens
+
+**What this delivers:**
+- The full `StructuredSignalView` component with all sub-components (SignalChunkList, RequirementChunkList, CompetitiveMentionList, ToolAndPlatformList) and badge components (SeverityBadge, PriorityBadge, SentimentBadge)
+- All sections rendered: summary, sentiment, urgency, decision timeline, client profile, pain points, requirements, aspirations, competitive mentions, blockers, platforms & channels, custom categories
+- Empty-state handling for all array sections
+- Null-field handling for nullable fields
+
+**Verification:**
+- TypeScript compiles (`npx tsc --noEmit`)
+- Component can be imported without errors (no circular dependencies)
+- Badge tokens exist in `globals.css`
+
+#### Increment 2.2: Wire `StructuredNotesPanel` to Branch Between JSON and Markdown
+
+**Files modified:**
+- `app/capture/_components/structured-notes-panel.tsx` — add `structuredJson` prop, branch rendering logic, edit toggle (Pencil icon to switch from JSON view to markdown editor)
+
+**What this delivers:**
+- When `structuredJson` is present → renders `StructuredSignalView`
+- When `structuredJson` is null → falls back to `MarkdownPanel` (existing behavior)
+- Edit toggle: Pencil icon switches from JSON view to markdown editor; Eye icon switches back to JSON view
+- `readOnly` prop controls whether the edit toggle is shown
+
+**Verification:**
+- TypeScript compiles
+- Panel renders `StructuredSignalView` when JSON prop is provided
+- Panel renders `MarkdownPanel` when JSON prop is null
+- Edit toggle works: clicking Pencil shows markdown editor, clicking Eye shows JSON view
+
+#### Increment 2.3: Wire Capture Form + Expanded Row
+
+**Files modified:**
+- `app/capture/_components/session-capture-form.tsx` — pass `structuredJson` to `StructuredNotesPanel`
+- `app/capture/_components/expanded-session-row.tsx` — replace inline `MarkdownPanel` with `StructuredNotesPanel`, resolve `structuredJson` from session prop vs hook state
+
+**What this delivers:**
+- New sessions: extraction → JSON view rendered via `StructuredSignalView`
+- Existing sessions: `structured_json` from DB → JSON view rendered
+- Pre-Part 1 sessions (`structured_json = null`): markdown fallback
+- Manual edit flow: toggle to markdown, edit, save → `structured_notes` updated, `structured_json` unchanged
+- Re-extract flow: fresh extraction → new JSON rendered, save → both columns updated
+
+**Verification:**
+- TypeScript compiles
+- End-to-end: create new session → extract → verify JSON view renders with severity badges, quotes, sections
+- End-to-end: open existing session with `structured_json` → verify JSON view renders
+- End-to-end: open pre-Part 1 session (no `structured_json`) → verify markdown fallback renders
+- Manual edit: toggle to markdown → edit → save → verify `structured_notes` updated in DB, `structured_json` unchanged
+- Re-extract: click re-extract → verify new JSON replaces old → save → verify both columns updated
+- Visual regression: compare JSON view sections with markdown output for the same session — content should be equivalent
+
+#### Increment 2.4: End-of-Part Audit
+
+**Actions:**
+1. SRP check — `StructuredSignalView` renders, sub-components handle individual section types, panel handles branching
+2. DRY check — badge components reuse a common pattern; verify no duplication across SignalChunkList/RequirementChunkList (they differ by priority badge, so separate components are justified)
+3. Design token adherence — all colours use CSS custom properties, no hardcoded values
+4. Dead code — check if `MarkdownPanel` is still imported where needed (it's retained for fallback and raw notes display)
+5. Convention compliance — named exports, kebab-case files, import order, `className` prop on public components
+6. Update `ARCHITECTURE.md` — add `structured-signal-view.tsx` to file map, update `structured-notes-panel.tsx` description
+7. Update `CHANGELOG.md`
+8. Run `npx tsc --noEmit`
