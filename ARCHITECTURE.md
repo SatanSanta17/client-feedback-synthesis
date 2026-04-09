@@ -216,7 +216,10 @@ synthesiser/
 │   │   └── invite-email.ts      # HTML email template for team invitations
 │   ├── prompts/
 │   │   ├── master-signal-synthesis.ts # System prompts (cold start + incremental) and user message builder
-│   │   └── signal-extraction.ts # System prompt and user message template for signal extraction
+│   │   ├── signal-extraction.ts # System prompt and user message template for signal extraction (used by prompt editor)
+│   │   └── structured-extraction.ts # System prompt and user message builder for generateObject() extraction (PRD-018)
+│   ├── schemas/
+│   │   └── extraction-schema.ts   # Zod schema for structured extraction output — signalChunkSchema, extractionSchema, type exports
 │   ├── repositories/
 │   │   ├── index.ts                    # Re-exports all repository interfaces and SessionNotFoundRepoError
 │   │   ├── attachment-repository.ts    # AttachmentRepository interface
@@ -241,7 +244,7 @@ synthesiser/
 │   │   └── mock/
 │   │       └── mock-session-repository.ts         # In-memory mock for SessionRepository (testing)
 │   ├── services/
-│   │   ├── ai-service.ts        # AI service — extractSignals() → ExtractionResult, synthesiseMasterSignal(), provider-agnostic via Vercel AI SDK
+│   │   ├── ai-service.ts        # AI service — extractSignals() → ExtractionResult (generateObject), synthesiseMasterSignal() (generateText), provider-agnostic via Vercel AI SDK
 │   │   ├── attachment-service.ts # Attachment CRUD — accepts AttachmentRepository
 │   │   ├── client-service.ts    # Client search and creation — accepts ClientRepository
 │   │   ├── email-service.ts     # Provider-agnostic email sending — sendEmail(), resolveEmailProvider(), Resend adapter
@@ -258,6 +261,7 @@ synthesiser/
 │   │   ├── format-relative-time.ts # Relative time formatting ("just now", "5m ago", "3d ago")
 │   │   ├── map-access-error.ts    # mapAccessError() — maps session access denial reasons to HTTP responses
 │   │   ├── map-ai-error.ts       # mapAIErrorToResponse() — shared AI error-to-HTTP mapper (5 error types + unexpected)
+│   │   ├── render-extracted-signals-to-markdown.ts # Converts ExtractedSignals JSON to markdown (backward compat for structured_notes)
 │   │   └── upload-attachments.ts  # Uploads pending attachments to a session (shared by capture form + expanded row)
 │   └── supabase/
 │       ├── server.ts            # Server-side Supabase clients (anon + service role) + getActiveTeamId()
@@ -314,7 +318,8 @@ Stores captured client feedback sessions. Scoped to a user or a team.
 | `client_id` | UUID (FK → clients) | NOT NULL |
 | `session_date` | DATE | NOT NULL |
 | `raw_notes` | TEXT | NOT NULL, supports markdown |
-| `structured_notes` | TEXT | Nullable. Markdown-formatted signal extraction output. |
+| `structured_notes` | TEXT | Nullable. Markdown-formatted signal extraction output (derived from structured_json for backward compat). |
+| `structured_json` | JSONB | Nullable. Schema-validated JSON extraction output (PRD-018). Primary structured data, markdown is derived from this. |
 | `prompt_version_id` | UUID (FK → prompt_versions) | Nullable. Links to the prompt version that produced the structured notes. ON DELETE SET NULL. |
 | `extraction_stale` | BOOLEAN | NOT NULL, default `false`. True when raw input or structured notes changed since last extraction. |
 | `structured_notes_edited` | BOOLEAN | NOT NULL, default `false`. True when structured notes are manually edited (outside extraction). Reset on fresh extraction or when structured notes are cleared. |
@@ -566,7 +571,7 @@ See `.env.example` for the full template.
 
 1. **Standalone app.** Separate deployment, separate auth, separate database. No shared components.
 2. **Supabase for auth and database.** Provides Google OAuth, PostgreSQL, RLS, and auto-generated types out of the box. Reduces infrastructure overhead.
-3. **Server-side AI calls only, provider-agnostic.** API keys never touch the browser. All AI operations go through Next.js API routes. The AI service uses the Vercel AI SDK (`generateText()`) and supports multiple providers (Anthropic, OpenAI, Google) via `AI_PROVIDER` and `AI_MODEL` env vars.
+3. **Server-side AI calls only, provider-agnostic.** API keys never touch the browser. All AI operations go through Next.js API routes. The AI service uses the Vercel AI SDK (`generateText()` for master signal synthesis, `generateObject()` for structured signal extraction) and supports multiple providers (Anthropic, OpenAI, Google) via `AI_PROVIDER` and `AI_MODEL` env vars.
 4. **Manual theme tagging (not AI-driven).** Users explicitly link sessions to themes. Automatic theme extraction is deferred to backlog.
 5. **Clients as a first-class entity.** Separate `clients` table (not derived from unique session values) to support future enrichment and enterprise features.
 6. **Architecture follows code, not the other way around.** This document is updated after implementation, never speculatively. If it's in this file, it exists in the codebase.

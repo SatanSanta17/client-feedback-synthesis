@@ -6,6 +6,21 @@ All notable changes to this project are documented here, grouped by PRD and part
 
 ## [Unreleased]
 
+### PRD-018 Part 1: Structured Output Migration — Core Schema & Extraction — 2026-04-10
+- Created `lib/schemas/extraction-schema.ts` — Zod schema for structured signal extraction output with `EXTRACTION_SCHEMA_VERSION`, `.describe()` annotations for LLM guidance, and exported types (`ExtractedSignals`, `SignalChunk`, `RequirementChunk`, `CompetitiveMention`, `ToolAndPlatform`, `CustomCategory`)
+- Created `lib/utils/render-extracted-signals-to-markdown.ts` — converts `ExtractedSignals` JSON to markdown matching the original extraction prompt output format for backward compatibility
+- Created `lib/prompts/structured-extraction.ts` — system prompt and user message builder for `generateObject()` extraction; custom user prompts appended as guidance in the user message, not the system prompt
+- Migrated `extractSignals()` in `ai-service.ts` from `generateText()` to `generateObject()` with `extractionSchema`; derives markdown via `renderExtractedSignalsToMarkdown()` for the `structured_notes` column
+- Extracted `withRetry<T>()` generic helper in `ai-service.ts` — shared retry logic with error classification used by both `callModel()` and `callModelObject()`
+- Added `structured_json` (JSONB, nullable) column to `sessions` table; updated `SessionRow`, `SessionInsert`, `SessionUpdate` in repository interface, Supabase adapter, and mock adapter
+- Extended `Session`, `CreateSessionInput`, `UpdateSessionInput` in session-service with `structured_json` passthrough; `updateSession()` handles extraction vs manual-edit vs input-change scenarios for JSON column
+- Updated `POST /api/ai/extract-signals` response to include `structuredJson`
+- Updated `POST /api/sessions` and `PUT /api/sessions/[id]` to accept and pass through `structuredJson` (Zod `z.record(z.string(), z.unknown())`)
+- Extended `useSignalExtraction` hook to store and expose `structuredJson` from extraction API response
+- Updated `SessionCaptureForm` and `ExpandedSessionRow` to pass `structuredJson` through to session save (PUT only sends JSON when `isExtraction: true`)
+- Used array-of-objects for `custom` field instead of `z.record()` to avoid OpenAI structured output `propertyNames` restriction
+- **End-of-part audit:** SRP/DRY acceptable (renderer helpers and callModel/callModelObject diverge enough to justify separation); no dead code; import order fix in ai-service.ts; updated ARCHITECTURE.md (added `structured_json` to data model, new files to file map, updated ai-service and Key Design Decisions descriptions)
+
 ### PRD-014 Part 4: Staleness Indicators & Re-extraction Warnings — 2026-04-08
 - Added `structured_notes_edited` column (boolean, default false) to `sessions` table — distinguishes manual-edit staleness from input-change staleness
 - Extended `SessionRow`, `SessionUpdate`, and `Session` interfaces (repository + service) with `structured_notes_edited`; updated Supabase and mock adapters

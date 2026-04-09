@@ -1,8 +1,7 @@
-import { generateText, generateObject, APICallError } from "ai";
+import { generateText, generateObject, APICallError, type LanguageModel } from "ai";
 import { anthropic } from "@ai-sdk/anthropic";
 import { openai } from "@ai-sdk/openai";
 import { google } from "@ai-sdk/google";
-import type { LanguageModel } from "ai";
 import {
   STRUCTURED_EXTRACTION_SYSTEM_PROMPT,
   buildStructuredExtractionUserMessage,
