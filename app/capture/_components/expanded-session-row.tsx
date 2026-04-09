@@ -9,7 +9,7 @@ import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Label } from "@/components/ui/label"
 import { type ClientSelection } from "./client-combobox"
-import { MarkdownPanel } from "./markdown-panel"
+import { StructuredNotesPanel } from "./structured-notes-panel"
 import { type ParsedAttachment } from "./file-upload-zone"
 import { composeAIInput } from "@/lib/utils/compose-ai-input"
 import { uploadAttachmentsToSession } from "@/lib/utils/upload-attachments"
@@ -34,6 +34,7 @@ export interface SessionRow {
   updated_by_email?: string
   attachment_count: number
   prompt_version_id: string | null
+  structured_json: Record<string, unknown> | null
   extraction_stale: boolean
   structured_notes_edited: boolean
   updated_by: string | null
@@ -115,6 +116,9 @@ export function ExpandedSessionRow({
     initialStructuredNotes: session.structured_notes,
     forceConfirmOnReextract: session.structured_notes_edited,
   })
+
+  // Resolve structuredJson: hook state (fresh extraction) takes precedence over session prop (DB)
+  const resolvedStructuredJson = structuredJson ?? session.structured_json
 
   // Derived state
   const isDirty =
@@ -297,7 +301,7 @@ export function ExpandedSessionRow({
           onRemovePendingAttachment={handleRemovePendingAttachment}
         />
 
-        {/* Extracted signals panel — kept inline (minimal logic) */}
+        {/* Extracted signals panel */}
         <div className="flex flex-col gap-1.5">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2">
@@ -342,16 +346,18 @@ export function ExpandedSessionRow({
             )}
           </div>
 
-          {extractionState === "done" && structuredNotes ? (
-            <MarkdownPanel
-              content={structuredNotes}
-              onChange={canEdit ? setStructuredNotes : undefined}
-              readOnly={!canEdit}
-            />
-          ) : extractionState === "extracting" ? (
+          {extractionState === "extracting" ? (
             <div className="flex items-center justify-center rounded-lg border border-border bg-card py-12">
               <Loader2 className="size-5 animate-spin text-muted-foreground" />
             </div>
+          ) : (structuredNotes || session.structured_notes || resolvedStructuredJson) ? (
+            <StructuredNotesPanel
+              structuredNotes={structuredNotes ?? session.structured_notes}
+              structuredJson={resolvedStructuredJson}
+              onChange={canEdit ? setStructuredNotes : () => {}}
+              readOnly={!canEdit}
+              showHeading={false}
+            />
           ) : (
             <div className="flex flex-col items-center justify-center rounded-lg border border-dashed border-border py-12 text-sm text-muted-foreground">
               No signals extracted yet.

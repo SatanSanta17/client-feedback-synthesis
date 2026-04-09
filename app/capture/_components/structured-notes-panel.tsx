@@ -13,6 +13,9 @@ interface StructuredNotesPanelProps {
   structuredJson?: Record<string, unknown> | null
   onChange: (notes: string | null) => void
   readOnly?: boolean
+  /** Whether to show the "Extracted Signals" heading. Default true. Set false when
+   *  the parent already renders its own heading (e.g. expanded session row). */
+  showHeading?: boolean
 }
 
 /**
@@ -31,44 +34,50 @@ export function StructuredNotesPanel({
   structuredJson,
   onChange,
   readOnly,
+  showHeading = true,
 }: StructuredNotesPanelProps) {
   const [isEditing, setIsEditing] = useState(false)
 
   // Nothing to show if neither representation exists
   if (!structuredNotes && !structuredJson) return null
 
-  const hasJson = structuredJson !== null
+  const hasJson = structuredJson !== null && structuredJson !== undefined
+
+  // Edit toggle button — reused in both heading and standalone positions
+  const editToggle = hasJson && !readOnly ? (
+    <Button
+      type="button"
+      variant="ghost"
+      size="sm"
+      onClick={() => setIsEditing((prev) => !prev)}
+      className="gap-1.5 text-xs text-muted-foreground"
+    >
+      {isEditing ? (
+        <>
+          <Eye className="size-3.5" />
+          Structured View
+        </>
+      ) : (
+        <>
+          <Pencil className="size-3.5" />
+          Edit Markdown
+        </>
+      )}
+    </Button>
+  ) : null
 
   return (
-    <div className="mt-6">
-      <div className="mb-3 flex items-center justify-between">
-        <h3 className="text-sm font-medium text-foreground">
-          Extracted Signals
-        </h3>
-
-        {/* Edit toggle — only shown when JSON view is active and editing is allowed */}
-        {hasJson && !readOnly && (
-          <Button
-            type="button"
-            variant="ghost"
-            size="sm"
-            onClick={() => setIsEditing((prev) => !prev)}
-            className="gap-1.5 text-xs text-muted-foreground"
-          >
-            {isEditing ? (
-              <>
-                <Eye className="size-3.5" />
-                Structured View
-              </>
-            ) : (
-              <>
-                <Pencil className="size-3.5" />
-                Edit Markdown
-              </>
-            )}
-          </Button>
-        )}
-      </div>
+    <div className={showHeading ? "mt-6" : ""}>
+      {showHeading ? (
+        <div className="mb-3 flex items-center justify-between">
+          <h3 className="text-sm font-medium text-foreground">
+            Extracted Signals
+          </h3>
+          {editToggle}
+        </div>
+      ) : editToggle ? (
+        <div className="mb-2 flex justify-end">{editToggle}</div>
+      ) : null}
 
       {hasJson && !isEditing ? (
         /* Primary path: render from JSON */

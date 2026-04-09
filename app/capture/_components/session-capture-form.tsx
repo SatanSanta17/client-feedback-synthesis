@@ -312,6 +312,7 @@ export function SessionCaptureForm({ onSessionSaved }: SessionCaptureFormProps) 
       {extractionState === "done" && (
         <StructuredNotesPanel
           structuredNotes={structuredNotes}
+          structuredJson={structuredJson}
           onChange={setStructuredNotes}
         />
       )}
