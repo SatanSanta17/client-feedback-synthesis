@@ -1,12 +1,17 @@
-import { generateText, APICallError } from "ai";
+import { generateText, generateObject, APICallError } from "ai";
 import { anthropic } from "@ai-sdk/anthropic";
 import { openai } from "@ai-sdk/openai";
 import { google } from "@ai-sdk/google";
 import type { LanguageModel } from "ai";
 import {
-  SIGNAL_EXTRACTION_SYSTEM_PROMPT,
-  buildSignalExtractionUserMessage,
-} from "@/lib/prompts/signal-extraction";
+  STRUCTURED_EXTRACTION_SYSTEM_PROMPT,
+  buildStructuredExtractionUserMessage,
+} from "@/lib/prompts/structured-extraction";
+import {
+  extractionSchema,
+  type ExtractedSignals,
+} from "@/lib/schemas/extraction-schema";
+import { renderExtractedSignalsToMarkdown } from "@/lib/utils/render-extracted-signals-to-markdown";
 import {
   MASTER_SIGNAL_COLD_START_SYSTEM_PROMPT,
   MASTER_SIGNAL_INCREMENTAL_SYSTEM_PROMPT,
@@ -69,35 +74,46 @@ function resolveModel(): { model: LanguageModel; label: string } {
 /**
  * Result returned by extractSignals(), including the prompt version ID
  * so the caller can record which prompt produced the extraction (P1.R6).
+ * PRD-018 P1.R5: extended with structuredJson (typed schema output).
  */
 export interface ExtractionResult {
   structuredNotes: string;
+  structuredJson: ExtractedSignals;
   promptVersionId: string | null;
 }
 
 /**
  * Extract signals from raw session notes via the configured AI model.
- * Returns structured notes and the prompt version ID used for traceability.
+ * Uses generateObject() with extractionSchema to produce validated JSON.
+ * The user's custom prompt (if active) is appended as extraction guidance —
+ * it does not override the system prompt or output format (P1.R3).
+ * Returns structured JSON, markdown (derived from JSON), and prompt version ID.
  * Retries transient failures (429, 5xx, network) with exponential backoff.
  */
 export async function extractSignals(
   promptRepo: PromptRepository,
   rawNotes: string
 ): Promise<ExtractionResult> {
+  // Fetch the user's custom prompt (if any) — used as guidance, not system prompt
   const activeVersion = await getActivePromptVersion(promptRepo, "signal_extraction");
-  const systemPrompt = activeVersion?.content ?? SIGNAL_EXTRACTION_SYSTEM_PROMPT;
+  const customGuidance = activeVersion?.content ?? null;
 
-  const userMessage = buildSignalExtractionUserMessage(rawNotes);
+  const userMessage = buildStructuredExtractionUserMessage(rawNotes, customGuidance);
 
-  const structuredNotes = await callModel({
-    systemPrompt,
+  const structuredJson = await callModelObject({
+    systemPrompt: STRUCTURED_EXTRACTION_SYSTEM_PROMPT,
     userMessage,
+    schema: extractionSchema,
     maxTokens: EXTRACT_SIGNALS_MAX_TOKENS,
     operationName: "extractSignals",
   });
 
+  // Derive markdown from JSON for backward compatibility (P1.R4)
+  const structuredNotes = renderExtractedSignalsToMarkdown(structuredJson);
+
   return {
     structuredNotes,
+    structuredJson,
     promptVersionId: activeVersion?.id ?? null,
   };
 }
@@ -157,51 +173,28 @@ export async function synthesiseMasterSignal(
 }
 
 // ---------------------------------------------------------------------------
-// Provider-agnostic model call with retry logic
+// Shared retry logic with error classification
 // ---------------------------------------------------------------------------
 
-interface CallModelOptions {
-  systemPrompt: string;
-  userMessage: string;
-  maxTokens: number;
-  operationName: string;
-}
-
 /**
- * Calls the configured AI model via the Vercel AI SDK with retry logic
- * for transient failures. Returns the text content from the response.
- * Throws typed errors that the API route can map to HTTP status codes.
+ * Executes an async operation with retry logic for transient AI failures.
+ * Classifies errors into non-retryable (config, quota, client) and retryable
+ * (rate limit, server, network) categories. Used by both callModel and
+ * callModelObject to avoid duplicating the retry/error logic.
  */
-async function callModel(options: CallModelOptions): Promise<string> {
-  const { systemPrompt, userMessage, maxTokens, operationName } = options;
-  const { model, label } = resolveModel();
-
+async function withRetry<T>(
+  operationName: string,
+  fn: (attempt: number) => Promise<T>
+): Promise<T> {
   let lastError: Error | null = null;
 
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
     try {
-      console.log(
-        `[ai-service] ${operationName} — attempt ${attempt + 1}/${MAX_RETRIES + 1}, model: ${label}`
-      );
-
-      const { text } = await generateText({
-        model,
-        system: systemPrompt,
-        prompt: userMessage,
-        maxOutputTokens: maxTokens,
-      });
-
-      if (!text.trim()) {
-        throw new AIEmptyResponseError("Model returned an empty response");
-      }
-
-      console.log(
-        `[ai-service] ${operationName} — success, ${text.length} chars`
-      );
-      return text;
+      return await fn(attempt);
     } catch (err) {
       lastError = err instanceof Error ? err : new Error(String(err));
 
+      // Non-retryable errors — throw immediately
       if (err instanceof AIEmptyResponseError || err instanceof AIConfigError) {
         throw err;
       }
@@ -258,6 +251,86 @@ async function callModel(options: CallModelOptions): Promise<string> {
   throw new AIServiceError(
     `${operationName} failed: ${lastError?.message ?? "unknown error"}`
   );
+}
+
+// ---------------------------------------------------------------------------
+// Provider-agnostic model calls (text and object)
+// ---------------------------------------------------------------------------
+
+interface CallModelOptions {
+  systemPrompt: string;
+  userMessage: string;
+  maxTokens: number;
+  operationName: string;
+}
+
+/**
+ * Calls the configured AI model via generateText() with retry logic.
+ * Returns the text content from the response.
+ */
+async function callModel(options: CallModelOptions): Promise<string> {
+  const { systemPrompt, userMessage, maxTokens, operationName } = options;
+  const { model, label } = resolveModel();
+
+  return withRetry(operationName, async (attempt) => {
+    console.log(
+      `[ai-service] ${operationName} — attempt ${attempt + 1}/${MAX_RETRIES + 1}, model: ${label}`
+    );
+
+    const { text } = await generateText({
+      model,
+      system: systemPrompt,
+      prompt: userMessage,
+      maxOutputTokens: maxTokens,
+    });
+
+    if (!text.trim()) {
+      throw new AIEmptyResponseError("Model returned an empty response");
+    }
+
+    console.log(
+      `[ai-service] ${operationName} — success, ${text.length} chars`
+    );
+    return text;
+  });
+}
+
+interface CallModelObjectOptions {
+  systemPrompt: string;
+  userMessage: string;
+  schema: typeof extractionSchema;
+  maxTokens: number;
+  operationName: string;
+}
+
+/**
+ * Calls the configured AI model via generateObject() with retry logic.
+ * Returns the validated object conforming to the extraction schema.
+ */
+async function callModelObject(
+  options: CallModelObjectOptions
+): Promise<ExtractedSignals> {
+  const { systemPrompt, userMessage, schema, maxTokens, operationName } = options;
+  const { model, label } = resolveModel();
+
+  return withRetry(operationName, async (attempt) => {
+    console.log(
+      `[ai-service] ${operationName} — attempt ${attempt + 1}/${MAX_RETRIES + 1}, model: ${label}, mode: generateObject`
+    );
+
+    const { object } = await generateObject({
+      model,
+      system: systemPrompt,
+      prompt: userMessage,
+      schema,
+      maxOutputTokens: maxTokens,
+    });
+
+    console.log(
+      `[ai-service] ${operationName} — success (generateObject)`
+    );
+    return object;
+  });
 }
 
 // ---------------------------------------------------------------------------

@@ -37,7 +37,7 @@ The schema is explicitly versioned from day one so that future schema evolutions
   - `competitiveMentions` — array of objects: `competitor` (string), `context` (string), `sentiment` (enum: `positive`, `neutral`, `negative`).
   - `blockers` — array of signal chunks.
   - `toolsAndPlatforms` — array of objects: `name` (string), `context` (string), `type` (enum: `tool`, `platform`, `competitor`).
-  - `custom` — `Record<string, SignalChunk[]>`, the escape hatch for user-defined categories from custom prompts.
+  - `custom` — array of objects: `categoryName` (string), `signals` (array of signal chunks). The escape hatch for user-defined categories from custom prompts.
 
 - **P1.R2** Define a reusable `signalChunkSchema` used across signal categories. Each chunk contains:
   - `text` — string, the distilled signal statement.
@@ -125,7 +125,7 @@ The schema is explicitly versioned from day one so that future schema evolutions
 
 - **P3.R6** The session capture form's "structured notes" preview panel switches to using `StructuredSignalView` for new extractions. Existing edit functionality (manual edits to structured notes) is preserved — edits update both the JSON and the markdown representation.
 
-- **P3.R7** The `custom` field entries are rendered dynamically: each key becomes a section heading, each signal chunk in the array is rendered identically to the fixed categories.
+- **P3.R7** The `custom` field entries are rendered dynamically: each entry's `categoryName` becomes a section heading, and its `signals` array is rendered identically to the fixed categories.
 
 ### Acceptance Criteria
 

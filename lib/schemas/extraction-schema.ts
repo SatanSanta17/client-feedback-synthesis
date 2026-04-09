@@ -101,9 +101,18 @@ export const extractionSchema = z.object({
     .array(toolAndPlatformSchema)
     .describe("Tools, platforms, and channels — empty array if none"),
   custom: z
-    .record(z.string(), z.array(signalChunkSchema))
+    .array(
+      z.object({
+        categoryName: z
+          .string()
+          .describe("Name of the user-defined category"),
+        signals: z
+          .array(signalChunkSchema)
+          .describe("Signal chunks for this category"),
+      })
+    )
     .describe(
-      "Custom categories from user prompt guidance. Keys are category names, values are signal chunk arrays. Empty object if no custom categories."
+      "Custom categories from user prompt guidance. Each entry has a category name and its signal chunks. Empty array if no custom categories."
     ),
 });
 
@@ -116,3 +125,4 @@ export type RequirementChunk = z.infer<typeof requirementChunkSchema>;
 export type CompetitiveMention = z.infer<typeof competitiveMentionSchema>;
 export type ToolAndPlatform = z.infer<typeof toolAndPlatformSchema>;
 export type ExtractedSignals = z.infer<typeof extractionSchema>;
+export type CustomCategory = ExtractedSignals["custom"][number];

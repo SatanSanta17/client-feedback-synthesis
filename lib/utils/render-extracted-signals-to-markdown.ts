@@ -128,11 +128,10 @@ export function renderExtractedSignalsToMarkdown(
 
   // --- Custom categories ---
 
-  const customKeys = Object.keys(signals.custom);
-  if (customKeys.length > 0) {
-    for (const key of customKeys) {
-      lines.push(`## ${key}\n`);
-      lines.push(renderSignalChunks(signals.custom[key]));
+  if (signals.custom.length > 0) {
+    for (const category of signals.custom) {
+      lines.push(`## ${category.categoryName}\n`);
+      lines.push(renderSignalChunks(category.signals));
     }
   }
 

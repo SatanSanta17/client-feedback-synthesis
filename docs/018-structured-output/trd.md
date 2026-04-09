@@ -147,9 +147,14 @@ export const extractionSchema = z.object({
     .array(toolAndPlatformSchema)
     .describe("Tools, platforms, and channels — empty array if none"),
   custom: z
-    .record(z.string(), z.array(signalChunkSchema))
+    .array(
+      z.object({
+        categoryName: z.string().describe("Name of the user-defined category"),
+        signals: z.array(signalChunkSchema).describe("Signal chunks for this category"),
+      })
+    )
     .describe(
-      "Custom categories from user prompt guidance. Keys are category names, values are signal chunk arrays. Empty object if no custom categories."
+      "Custom categories from user prompt guidance. Each entry has a category name and its signal chunks. Empty array if no custom categories."
     ),
 });
 
@@ -159,12 +164,13 @@ export type SignalChunk = z.infer<typeof signalChunkSchema>;
 export type CompetitiveMention = z.infer<typeof competitiveMentionSchema>;
 export type ToolAndPlatform = z.infer<typeof toolAndPlatformSchema>;
 export type ExtractedSignals = z.infer<typeof extractionSchema>;
+export type CustomCategory = ExtractedSignals["custom"][number];
 ```
 
 **Design decisions:**
 - `requirementChunkSchema` extends `signalChunkSchema` via `.extend()` — DRY, and Liskov-compatible (every requirement chunk is a valid signal chunk if you strip priority).
 - `.describe()` on every field — these descriptions are passed to `generateObject()` and become part of the schema the LLM sees, improving extraction accuracy.
-- `custom` uses `z.record(z.string(), z.array(signalChunkSchema))` — open-ended keys let user prompts define arbitrary categories without schema changes.
+- `custom` uses an array of `{ categoryName, signals }` objects instead of `z.record()` — `z.record()` emits a `propertyNames` constraint in JSON Schema that OpenAI's structured output API rejects. The array-of-objects approach is universally compatible across all providers (OpenAI, Anthropic, Google) and keeps all property names statically known at schema definition time.
 
 ---
 
@@ -182,7 +188,7 @@ export type ExtractedSignals = z.infer<typeof extractionSchema>;
 - Requirements include priority: `- [{priority}] {text}`.
 - Empty arrays render as `No signals identified.` under the heading.
 - Null `clientProfile` fields render as `Not mentioned`.
-- Custom categories: each key becomes a `## {Key}` heading, values render identically to `painPoints`.
+- Custom categories: each entry's `categoryName` becomes a `## {categoryName}` heading, its `signals` array renders identically to `painPoints`.
 - Section order matches the current markdown prompt output: Summary → Sentiment → Urgency → Decision Timeline → Client Profile → Pain Points → Requirements → Aspirations → Competitive Mentions → Blockers → Platforms & Channels (toolsAndPlatforms) → Custom categories.
 
 **No external dependencies.** Pure string concatenation — no markdown library needed.
@@ -219,9 +225,10 @@ with prospective or existing customers.
    sentences verbatim unless the exact wording is important.
 7. If the same signal is relevant to multiple categories, place it in the most
    specific category. Do not duplicate signals across categories.
-8. The "custom" field is for signals that do not fit fixed categories. Use the
-   guidance below (if provided) to determine custom category names. If no custom
-   guidance is given, use an empty object {}.
+8. The "custom" field is for signals that do not fit fixed categories. Each entry
+   has a "categoryName" and a "signals" array. Use the guidance below (if provided)
+   to determine custom category names. If no custom guidance is given, return an
+   empty array [].
 
 ## Schema Version
 
