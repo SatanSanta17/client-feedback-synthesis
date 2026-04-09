@@ -32,7 +32,7 @@ export function createSessionRepository(
 
       let query = supabase
         .from("sessions")
-        .select("id, client_id, session_date, raw_notes, structured_notes, created_by, created_at, prompt_version_id, extraction_stale, structured_notes_edited, updated_by, clients(name)", { count: "exact" })
+        .select("id, client_id, session_date, raw_notes, structured_notes, structured_json, created_by, created_at, prompt_version_id, extraction_stale, structured_notes_edited, updated_by, clients(name)", { count: "exact" })
         .is("deleted_at", null)
         .order("session_date", { ascending: false })
         .order("created_at", { ascending: false })
@@ -71,6 +71,7 @@ export function createSessionRepository(
           session_date: row.session_date,
           raw_notes: row.raw_notes,
           structured_notes: row.structured_notes ?? null,
+          structured_json: (row.structured_json as Record<string, unknown>) ?? null,
           created_by: row.created_by,
           created_at: row.created_at,
           client_name: clientData?.name ?? "Unknown",
@@ -115,6 +116,10 @@ export function createSessionRepository(
         team_id: teamId,
       };
 
+      if (input.structured_json !== undefined) {
+        insertPayload.structured_json = input.structured_json;
+      }
+
       if (input.prompt_version_id !== undefined) {
         insertPayload.prompt_version_id = input.prompt_version_id;
       }
@@ -122,7 +127,7 @@ export function createSessionRepository(
       const { data, error } = await supabase
         .from("sessions")
         .insert(insertPayload)
-        .select("id, client_id, session_date, raw_notes, structured_notes, created_by, created_at, prompt_version_id, extraction_stale, structured_notes_edited, updated_by")
+        .select("id, client_id, session_date, raw_notes, structured_notes, structured_json, created_by, created_at, prompt_version_id, extraction_stale, structured_notes_edited, updated_by")
         .single();
 
       if (error) {
@@ -138,6 +143,7 @@ export function createSessionRepository(
         session_date: data.session_date,
         raw_notes: data.raw_notes,
         structured_notes: data.structured_notes ?? null,
+        structured_json: (data.structured_json as Record<string, unknown>) ?? null,
         created_by: data.created_by,
         created_at: data.created_at,
         client_name: "", // Not available from insert; caller can enrich if needed
@@ -163,6 +169,10 @@ export function createSessionRepository(
         updatePayload.structured_notes = input.structured_notes;
       }
 
+      if (input.structured_json !== undefined) {
+        updatePayload.structured_json = input.structured_json;
+      }
+
       if (input.prompt_version_id !== undefined) {
         updatePayload.prompt_version_id = input.prompt_version_id;
       }
@@ -184,7 +194,7 @@ export function createSessionRepository(
         .update(updatePayload)
         .eq("id", id)
         .is("deleted_at", null)
-        .select("id, client_id, session_date, raw_notes, structured_notes, created_by, created_at, prompt_version_id, extraction_stale, structured_notes_edited, updated_by")
+        .select("id, client_id, session_date, raw_notes, structured_notes, structured_json, created_by, created_at, prompt_version_id, extraction_stale, structured_notes_edited, updated_by")
         .single();
 
       if (error) {
@@ -205,6 +215,7 @@ export function createSessionRepository(
         session_date: data.session_date,
         raw_notes: data.raw_notes,
         structured_notes: data.structured_notes ?? null,
+        structured_json: (data.structured_json as Record<string, unknown>) ?? null,
         created_by: data.created_by,
         created_at: data.created_at,
         client_name: "", // Not available from update; caller can enrich if needed

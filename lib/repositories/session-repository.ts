@@ -19,6 +19,7 @@ export interface SessionRow {
   session_date: string;
   raw_notes: string;
   structured_notes: string | null;
+  structured_json: Record<string, unknown> | null;
   created_by: string;
   created_at: string;
   client_name: string;
@@ -33,6 +34,7 @@ export interface SessionInsert {
   session_date: string;
   raw_notes: string;
   structured_notes: string | null;
+  structured_json?: Record<string, unknown> | null;
   prompt_version_id?: string | null;
 }
 
@@ -41,6 +43,7 @@ export interface SessionUpdate {
   session_date: string;
   raw_notes: string;
   structured_notes?: string | null;
+  structured_json?: Record<string, unknown> | null;
   prompt_version_id?: string | null;
   extraction_stale?: boolean;
   structured_notes_edited?: boolean;

@@ -22,6 +22,7 @@ interface InternalSession {
   session_date: string;
   raw_notes: string;
   structured_notes: string | null;
+  structured_json: Record<string, unknown> | null;
   created_by: string;
   created_at: string;
   client_name: string;
@@ -83,6 +84,7 @@ export function createMockSessionRepository(
       session_date: s.session_date,
       raw_notes: s.raw_notes,
       structured_notes: s.structured_notes,
+      structured_json: s.structured_json,
       created_by: s.created_by,
       created_at: s.created_at,
       client_name: s.client_name,
@@ -142,6 +144,7 @@ export function createMockSessionRepository(
         session_date: input.session_date,
         raw_notes: input.raw_notes,
         structured_notes: input.structured_notes,
+        structured_json: input.structured_json ?? null,
         created_by: "mock-user",
         created_at: now,
         client_name: `Client ${input.client_id}`,
@@ -167,6 +170,9 @@ export function createMockSessionRepository(
       s.raw_notes = input.raw_notes;
       if (input.structured_notes !== undefined) {
         s.structured_notes = input.structured_notes;
+      }
+      if (input.structured_json !== undefined) {
+        s.structured_json = input.structured_json;
       }
       if (input.prompt_version_id !== undefined) {
         s.prompt_version_id = input.prompt_version_id;

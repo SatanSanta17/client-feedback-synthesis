@@ -65,6 +65,7 @@ export interface CreateSessionInput {
   sessionDate: string;
   rawNotes: string;
   structuredNotes?: string | null;
+  structuredJson?: Record<string, unknown> | null;
   promptVersionId?: string | null;
 }
 
@@ -74,6 +75,7 @@ export interface Session {
   session_date: string;
   raw_notes: string;
   structured_notes: string | null;
+  structured_json: Record<string, unknown> | null;
   created_by: string;
   created_at: string;
   prompt_version_id: string | null;
@@ -152,6 +154,7 @@ export async function getSessions(
     session_date: row.session_date,
     raw_notes: row.raw_notes,
     structured_notes: row.structured_notes ?? null,
+    structured_json: row.structured_json ?? null,
     created_by: row.created_by,
     created_at: row.created_at,
     client_name: row.client_name,
@@ -185,7 +188,7 @@ export async function createSession(
   clientRepo: ClientRepository,
   input: CreateSessionInput
 ): Promise<Session> {
-  const { clientId, clientName, sessionDate, rawNotes, structuredNotes, promptVersionId } = input;
+  const { clientId, clientName, sessionDate, rawNotes, structuredNotes, structuredJson, promptVersionId } = input;
 
   console.log(
     "[session-service] createSession — clientId:",
@@ -208,6 +211,7 @@ export async function createSession(
     session_date: sessionDate,
     raw_notes: rawNotes,
     structured_notes: structuredNotes ?? null,
+    structured_json: structuredJson ?? null,
     prompt_version_id: promptVersionId ?? null,
   });
 
@@ -221,6 +225,7 @@ export interface UpdateSessionInput {
   sessionDate: string;
   rawNotes: string;
   structuredNotes?: string | null;
+  structuredJson?: Record<string, unknown> | null;
   promptVersionId?: string | null;
   isExtraction?: boolean;
   inputChanged?: boolean;
@@ -242,7 +247,7 @@ export async function updateSession(
 ): Promise<Session> {
   const {
     clientId, clientName, sessionDate, rawNotes,
-    structuredNotes, promptVersionId, isExtraction, inputChanged,
+    structuredNotes, structuredJson, promptVersionId, isExtraction, inputChanged,
   } = input;
 
   console.log("[session-service] updateSession — id:", id, "clientId:", clientId,
@@ -261,25 +266,29 @@ export async function updateSession(
   let extractionStale: boolean | undefined;
   let resolvedPromptVersionId: string | null | undefined;
   let structuredNotesEdited: boolean | undefined;
+  let resolvedStructuredJson: Record<string, unknown> | null | undefined;
 
   if (isExtraction) {
     // P1.R5 / P1.R9: Fresh extraction resets everything
     extractionStale = false;
     resolvedPromptVersionId = promptVersionId ?? null;
     structuredNotesEdited = false; // P4.R5: extraction resets manual-edit flag
+    resolvedStructuredJson = structuredJson ?? null;
   } else if (structuredNotes === null) {
     // P1.R8: Clearing structured notes resets everything
     extractionStale = false;
     resolvedPromptVersionId = null;
     structuredNotesEdited = false; // P4.R5: no structured notes → nothing edited
+    resolvedStructuredJson = null;
   } else if (inputChanged) {
     // P1.R4: Raw notes or attachments changed — mark stale
     extractionStale = true;
-    // Don't touch structuredNotesEdited — preserve existing value
+    // Don't touch structuredNotesEdited or structuredJson — preserve existing values
   } else if (structuredNotes !== undefined) {
     // P1.R4 / P4.R5: Structured notes manually edited (changed but not via extraction)
     extractionStale = true;
     structuredNotesEdited = true;
+    // Don't touch structuredJson — manual markdown edits don't sync back to JSON (Part 3)
   }
 
   try {
@@ -288,6 +297,7 @@ export async function updateSession(
       session_date: sessionDate,
       raw_notes: rawNotes,
       structured_notes: structuredNotes,
+      structured_json: resolvedStructuredJson,
       prompt_version_id: resolvedPromptVersionId,
       extraction_stale: extractionStale,
       structured_notes_edited: structuredNotesEdited,
@@ -356,6 +366,7 @@ function mapRowToSession(row: SessionRow): Session {
     session_date: row.session_date,
     raw_notes: row.raw_notes,
     structured_notes: row.structured_notes,
+    structured_json: row.structured_json,
     created_by: row.created_by,
     created_at: row.created_at,
     prompt_version_id: row.prompt_version_id,
