@@ -6,6 +6,18 @@ All notable changes to this project are documented here, grouped by PRD and part
 
 ## [Unreleased]
 
+### PRD-019 Part 3: Embedding Pipeline — 2026-04-10
+- Installed `openai` npm package for embedding API calls
+- Created `lib/services/embedding-service.ts` — provider-agnostic `embedTexts()` with OpenAI adapter, batching (20 per API call, 200ms inter-batch delay), `withEmbeddingRetry()` with exponential backoff and Retry-After handling on 429, dimension validation on first call, four error classes (`EmbeddingServiceError`, `EmbeddingConfigError`, `EmbeddingRequestError`, `EmbeddingRateLimitError`)
+- Created `lib/repositories/embedding-repository.ts` — `EmbeddingRepository` interface with `upsertChunks()`, `deleteBySessionId()`, `similaritySearch()` + `EmbeddingRow`, `SearchOptions`, `SimilarityResult` types
+- Created `lib/repositories/supabase/supabase-embedding-repository.ts` — Supabase adapter using service-role client; similarity search via `match_session_embeddings` RPC function
+- Created `docs/019-vector-search/002-match-session-embeddings-rpc.sql` — RPC function with team scoping, metadata filtering (chunk type, client name, date range), soft-delete exclusion via sessions join, configurable similarity threshold
+- Created `lib/services/embedding-orchestrator.ts` — `generateSessionEmbeddings()` coordinating chunking → embedding → persistence; handles structured JSON vs raw notes fallback; deletes old embeddings on re-extraction; entire body wrapped in try/catch for fire-and-forget usage
+- Wired fire-and-forget embedding into `POST /api/sessions` (embed on create) and `PUT /api/sessions/[id]` (re-embed on every update with `isReExtraction: true`)
+- Updated `.env.example` with `EMBEDDING_PROVIDER`, `EMBEDDING_MODEL`, `EMBEDDING_DIMENSIONS`
+- Updated `lib/repositories/index.ts` and `lib/repositories/supabase/index.ts` with embedding repository re-exports
+- **End-of-part audit:** Fixed dead `EmbeddingRateLimitError` class — wired into retry exhaustion on 429; fixed import ordering in both session route files; updated ARCHITECTURE.md (new files in file map, embedding env vars in env table, updated Current State)
+
 ### PRD-019 Part 2: Chunking Logic — 2026-04-10
 - Created `lib/types/embedding-chunk.ts` — `ChunkType` union (10 chunk types), `EmbeddingChunk` interface, `SessionMeta` interface
 - Created `lib/services/chunking-service.ts` — pure `chunkStructuredSignals()` producing typed chunks from all `ExtractedSignals` sections (summary, client profile, pain points, requirements, aspirations, competitive mentions, blockers, tools & platforms, custom categories) with snake_case metadata and null-value omission; pure `chunkRawNotes()` splitting raw notes by paragraph for raw-only sessions

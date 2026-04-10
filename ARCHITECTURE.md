@@ -20,7 +20,7 @@ Synthesiser is a web application for teams to capture structured client session 
 
 ## Current State
 
-**Status:** PRD-002 through PRD-010 implemented. PRD-012 Parts 1–5 (Design Tokens and Typography + DRY Extraction + SRP Component Decomposition + API Route/Service Cleanup + Dependency Inversion) implemented. PRD-013 Parts 1–2 (File Upload Infrastructure + Persistence & Signal Extraction Integration) implemented. PRD-014 Parts 1–4 (Session Traceability & Staleness Data Model + View Prompt on Capture Page + Show Prompt Version in Past Sessions + Staleness Indicators & Re-extraction Warnings) implemented. PRD-015 Part 1 (Public Landing Page) implemented. The app is a fully functional team-capable client feedback capture and synthesis platform with a public landing page. Google OAuth login (open to any Google account), working capture form with AI signal extraction and file attachment upload with server-side persistence, past sessions table with filters/inline editing/soft delete, master signal page with AI synthesis and PDF download, prompt editor with version history, and team access with role-based permissions.
+**Status:** PRD-002 through PRD-010 implemented. PRD-012 Parts 1–5 (Design Tokens and Typography + DRY Extraction + SRP Component Decomposition + API Route/Service Cleanup + Dependency Inversion) implemented. PRD-013 Parts 1–2 (File Upload Infrastructure + Persistence & Signal Extraction Integration) implemented. PRD-014 Parts 1–4 (Session Traceability & Staleness Data Model + View Prompt on Capture Page + Show Prompt Version in Past Sessions + Staleness Indicators & Re-extraction Warnings) implemented. PRD-015 Part 1 (Public Landing Page) implemented. PRD-019 Parts 1–3 (pgvector Setup & Embeddings Table + Chunking Logic + Embedding Pipeline) implemented. The app is a fully functional team-capable client feedback capture and synthesis platform with a public landing page and vector search infrastructure. Google OAuth login (open to any Google account), working capture form with AI signal extraction and file attachment upload with server-side persistence, past sessions table with filters/inline editing/soft delete, master signal page with AI synthesis and PDF download, prompt editor with version history, team access with role-based permissions, and automatic embedding generation on session save/extraction for semantic search.
 
 **Core features live:**
 - Public landing page at `/` with hero, feature cards, how-it-works flow, and CTA (authenticated users auto-redirect to `/capture`)
@@ -226,6 +226,7 @@ synthesiser/
 │   │   ├── index.ts                    # Re-exports all repository interfaces and SessionNotFoundRepoError
 │   │   ├── attachment-repository.ts    # AttachmentRepository interface
 │   │   ├── client-repository.ts        # ClientRepository interface
+│   │   ├── embedding-repository.ts    # EmbeddingRepository interface + EmbeddingRow, SearchOptions, SimilarityResult types (PRD-019)
 │   │   ├── invitation-repository.ts    # InvitationRepository interface
 │   │   ├── master-signal-repository.ts # MasterSignalRepository interface
 │   │   ├── profile-repository.ts       # ProfileRepository interface
@@ -237,6 +238,7 @@ synthesiser/
 │   │   │   ├── scope-by-team.ts                  # Shared helper — scopeByTeam(query, teamId) for workspace scoping
 │   │   │   ├── supabase-attachment-repository.ts  # Supabase adapter for AttachmentRepository
 │   │   │   ├── supabase-client-repository.ts      # Supabase adapter for ClientRepository
+│   │   │   ├── supabase-embedding-repository.ts   # Supabase adapter for EmbeddingRepository — uses service-role client, similarity search via match_session_embeddings RPC (PRD-019)
 │   │   │   ├── supabase-invitation-repository.ts  # Supabase adapter for InvitationRepository
 │   │   │   ├── supabase-master-signal-repository.ts # Supabase adapter for MasterSignalRepository
 │   │   │   ├── supabase-profile-repository.ts     # Supabase adapter for ProfileRepository
@@ -248,6 +250,8 @@ synthesiser/
 │   ├── services/
 │   │   ├── ai-service.ts        # AI service — extractSignals() → ExtractionResult (generateObject), synthesiseMasterSignal() (generateText), provider-agnostic via Vercel AI SDK
 │   │   ├── chunking-service.ts  # Pure chunking functions — chunkStructuredSignals() and chunkRawNotes() — transforms extraction JSON into EmbeddingChunk arrays (PRD-019)
+│   │   ├── embedding-service.ts # Provider-agnostic embedding service — embedTexts() with batching, retry, dimension validation (PRD-019)
+│   │   ├── embedding-orchestrator.ts # Coordination layer — generateSessionEmbeddings() ties chunking → embedding → persistence, fire-and-forget (PRD-019)
 │   │   ├── attachment-service.ts # Attachment CRUD — accepts AttachmentRepository
 │   │   ├── client-service.ts    # Client search and creation — accepts ClientRepository
 │   │   ├── email-service.ts     # Provider-agnostic email sending — sendEmail(), resolveEmailProvider(), Resend adapter
@@ -568,6 +572,9 @@ Stores versioned AI system prompts per user or team workspace. Each save/reset/r
 | `RESEND_API_KEY` | Server only | Resend API key (required when `EMAIL_PROVIDER=resend`) |
 | `BREVO_API_KEY` | Server only | Brevo API key (required when `EMAIL_PROVIDER=brevo`) |
 | `EMAIL_FROM` | Server only | Sender email address for outbound emails |
+| `EMBEDDING_PROVIDER` | Server only | Embedding provider (`openai`) |
+| `EMBEDDING_MODEL` | Server only | Provider-specific embedding model identifier (e.g., `text-embedding-3-small`) |
+| `EMBEDDING_DIMENSIONS` | Server only | Vector dimension — must match `session_embeddings.embedding` column (e.g., `1536`) |
 
 See `.env.example` for the full template.
 

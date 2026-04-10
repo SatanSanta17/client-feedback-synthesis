@@ -224,6 +224,11 @@ async function withEmbeddingRetry<T>(
           `[embedding-service] ${operationName} — failed after ${attempt + 1} attempts:`,
           lastError.message
         );
+        if (statusCode === 429) {
+          throw new EmbeddingRateLimitError(
+            `${operationName} rate limited after ${attempt + 1} attempts: ${lastError.message}`
+          );
+        }
         throw new EmbeddingServiceError(
           `${operationName} failed after ${attempt + 1} attempts: ${lastError.message}`
         );

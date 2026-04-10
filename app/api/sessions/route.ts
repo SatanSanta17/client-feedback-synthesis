@@ -1,17 +1,17 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { MAX_COMBINED_CHARS } from "@/lib/constants";
+import { EXTRACTION_SCHEMA_VERSION } from "@/lib/schemas/extraction-schema";
+import { createClient, createServiceRoleClient, getActiveTeamId } from "@/lib/supabase/server";
+import { createSessionRepository } from "@/lib/repositories/supabase/supabase-session-repository";
+import { createClientRepository } from "@/lib/repositories/supabase/supabase-client-repository";
+import { createEmbeddingRepository } from "@/lib/repositories/supabase/supabase-embedding-repository";
 import {
   getSessions,
   createSession,
   ClientDuplicateError,
 } from "@/lib/services/session-service";
-import { createClient, createServiceRoleClient, getActiveTeamId } from "@/lib/supabase/server";
-import { createSessionRepository } from "@/lib/repositories/supabase/supabase-session-repository";
-import { createClientRepository } from "@/lib/repositories/supabase/supabase-client-repository";
-import { createEmbeddingRepository } from "@/lib/repositories/supabase/supabase-embedding-repository";
 import { generateSessionEmbeddings } from "@/lib/services/embedding-orchestrator";
-import { EXTRACTION_SCHEMA_VERSION } from "@/lib/schemas/extraction-schema";
 import type { ExtractedSignals } from "@/lib/schemas/extraction-schema";
 
 // --- GET /api/sessions?clientId=&dateFrom=&dateTo=&offset=&limit= ---
