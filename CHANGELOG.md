@@ -6,6 +6,14 @@ All notable changes to this project are documented here, grouped by PRD and part
 
 ## [Unreleased]
 
+### PRD-019 Part 1: pgvector Setup and Embeddings Table — 2026-04-10
+- Enabled `pgvector` extension on the Supabase instance (`CREATE EXTENSION IF NOT EXISTS vector`)
+- Created `session_embeddings` table with columns: `id`, `session_id` (FK → sessions, ON DELETE CASCADE), `team_id` (FK → teams, nullable), `chunk_text`, `chunk_type` (text), `metadata` (jsonb), `embedding` (vector(1536)), `schema_version`, `created_at`
+- Created HNSW index on `embedding` column (`vector_cosine_ops`) for cosine similarity search
+- Created composite indexes on `(session_id)` and `(team_id, chunk_type)` for cascade deletes and filtered searches
+- Enabled RLS with 8 policies (personal + team for SELECT/INSERT/UPDATE/DELETE) mirroring `sessions` table pattern via `is_team_member()`
+- Updated ARCHITECTURE.md — added `session_embeddings` to Data Model section, database tables list, and docs file map
+
 ### PRD-018 Part 2: Switch UI to Render from JSON — 2026-04-10
 - Created `components/capture/structured-signal-view.tsx` — renders `ExtractedSignals` JSON as typed UI with discrete sections (summary, sentiment, urgency, decision timeline, client profile, pain points, requirements, aspirations, competitive mentions, blockers, platforms & channels, custom categories); severity/priority/sentiment/urgency badges using design tokens; client quote formatting; empty-state handling
 - Updated `structured-notes-panel.tsx` — branches between `StructuredSignalView` (when `structuredJson` is present) and `MarkdownPanel` fallback (pre-Part 1 sessions); edit toggle switches from JSON view to markdown editor for manual edits; added `showHeading` and `className` props

@@ -34,7 +34,7 @@ Synthesiser is a web application for teams to capture structured client session 
 - Team management (members, roles, ownership transfer, rename, delete)
 - Data retention on member departure
 
-**Database tables:** `clients`, `sessions`, `session_attachments`, `master_signals`, `profiles`, `prompt_versions`, `teams`, `team_members`, `team_invitations` — all with RLS.
+**Database tables:** `clients`, `sessions`, `session_attachments`, `session_embeddings`, `master_signals`, `profiles`, `prompt_versions`, `teams`, `team_members`, `team_invitations` — all with RLS.
 
 ---
 
@@ -267,23 +267,7 @@ synthesiser/
 │   └── supabase/
 │       ├── server.ts            # Server-side Supabase clients (anon + service role) + getActiveTeamId()
 │       └── client.ts            # Browser-side Supabase client factory
-└── docs/                            # Each folder contains prd.md + trd.md (and optional SQL migrations)
-    ├── master-prd/              # Master PRD — full product scope
-    ├── 001-foundation/
-    ├── 002-capture-tab/
-    ├── 003-signal-extraction/
-    ├── 004-master-signals/
-    ├── 005-prompt-editor/
-    ├── 006-master-signal-cleanup/
-    ├── 007-prompt-editor-toggle/
-    ├── 008-open-access/
-    ├── 009-ai-provider-abstraction/
-    ├── 010-team-access/
-    ├── 011-email-auth/
-    ├── 012-code-quality/
-    ├── 013-file-upload/
-    ├── 014-prompt-traceability/
-    └── 015-landing-page/
+└── docs/                            # Each numbered folder contains prd.md + trd.md (and optional SQL migrations)
 ```
 
 > This map is updated after each increment ships. Only files that exist in the codebase are listed here.
@@ -356,6 +340,25 @@ Stores uploaded file metadata and parsed content for session attachments. Origin
 **Indexes:** `session_attachments_session_id_idx` — on `session_id` where `deleted_at IS NULL`.
 **RLS:** Personal: users SELECT/INSERT their own attachments. Team: members SELECT team attachments; INSERT allowed for authenticated users. Service role handles DELETE (soft-delete + storage cleanup).
 **Storage bucket:** `SYNTHESISER_FILE_UPLOAD` — private, max 10 MB per file. Files stored at `{ownerId}/{sessionId}/{uuid}.{ext}`. All operations via service role client.
+
+### `session_embeddings`
+
+Stores vector embeddings of chunked session extraction data for semantic similarity search. Each row represents one embeddable chunk (e.g., a single pain point, requirement, or summary) with its vector and metadata.
+
+| Column | Type | Notes |
+|--------|------|-------|
+| `id` | UUID (PK) | `gen_random_uuid()` |
+| `session_id` | UUID (FK → sessions) | NOT NULL. ON DELETE CASCADE — embeddings removed when session is deleted. |
+| `team_id` | UUID (FK → teams) | Nullable. NULL = personal workspace. Mirrors scoping pattern of `sessions`. |
+| `chunk_text` | TEXT | NOT NULL. Human-readable text of the embedded chunk. |
+| `chunk_type` | TEXT | NOT NULL. One of: `summary`, `client_profile`, `pain_point`, `requirement`, `aspiration`, `competitive_mention`, `blocker`, `tool_and_platform`, `custom`, `raw`. Stored as text (not enum) for extensibility. |
+| `metadata` | JSONB | NOT NULL, default `'{}'`. Type-specific fields: `client_name`, `session_date`, `severity`, `priority`, `competitor`, `category_name`, `client_quote`, etc. |
+| `embedding` | vector(1536) | NOT NULL. Embedding vector (dimension matches configured embedding model). |
+| `schema_version` | INTEGER | NOT NULL, default `1`. Matches extraction schema version for schema-aware retrieval. |
+| `created_at` | TIMESTAMPTZ | Default `now()` |
+
+**Indexes:** `session_embeddings_embedding_hnsw_idx` — HNSW index on `embedding` using `vector_cosine_ops` for cosine similarity search. `session_embeddings_session_id_idx` — on `session_id` for cascade deletes and re-extraction cleanup. `session_embeddings_team_chunk_type_idx` — on `(team_id, chunk_type)` for filtered similarity searches.
+**RLS:** Personal: users SELECT/INSERT/UPDATE/DELETE embeddings for their own sessions. Team: members SELECT/INSERT/UPDATE/DELETE team embeddings via `is_team_member()`.
 
 ### `master_signals`
 

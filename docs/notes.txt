@@ -14,6 +14,8 @@
 - check how much tokens can be passed in different models
 - footer when moving from landing page to app the footer state is not maintained if i am in dark mode in landing page and click on login then the footer shows the option to turn theme to dark which is already implemented
 
+- Embedding failure doesn't block extraction — covered (P3.R6) rettry logic for failed embeding ?
+
 but it doesnt end here i am trying to build a platform that handles end to end product development life cycle which starts from client calls--> identifying requirements--> advise features--> design architecture--> develop a prototype--> get approval--> and deploy 
 and this cycle continues for modifications and maintainance 
 minimal human in the loop interaction 
