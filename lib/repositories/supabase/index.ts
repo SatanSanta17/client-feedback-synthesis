@@ -10,3 +10,4 @@ export { createMasterSignalRepository } from "./supabase-master-signal-repositor
 export { createInvitationRepository } from "./supabase-invitation-repository";
 export { createPromptRepository } from "./supabase-prompt-repository";
 export { createAttachmentRepository } from "./supabase-attachment-repository";
+export { createEmbeddingRepository } from "./supabase-embedding-repository";

@@ -40,3 +40,9 @@ export type {
   AttachmentRow,
   AttachmentInsert,
 } from "./attachment-repository";
+export type {
+  EmbeddingRepository,
+  EmbeddingRow,
+  SearchOptions,
+  SimilarityResult,
+} from "./embedding-repository";
