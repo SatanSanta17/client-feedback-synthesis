@@ -20,37 +20,43 @@ The chat is user-private — each user's conversations are visible only to them,
 
 ## Part 1: Sidebar Navigation
 
-**Scope:** Replace the current header tab navigation with a collapsible sidebar. This is a layout refactor that touches the root layout and all existing pages. No new features — just a navigation redesign that scales better for the growing feature set (Capture, Chat, Settings, and future Dashboard).
+**Scope:** Replace the current header tab navigation with a hover-to-expand sidebar (Instagram-style). This is a layout refactor that touches the root layout, footer, and all existing pages. No new features — just a navigation redesign that scales better for the growing feature set (Capture, Chat, Settings, and future Dashboard). The footer is removed from authenticated pages and retained only on public routes (landing, login, invite) with theme toggle.
 
 ### Requirements
 
-- **P1.R1** Replace the top-level header tab navigation with a vertical sidebar. The sidebar is a persistent element in the root layout, visible on all authenticated pages.
+- **P1.R1** Replace the top-level header tab navigation with a vertical sidebar. The sidebar is a persistent element in the root layout, visible on all authenticated pages. The sidebar rests in icon-only (collapsed) mode by default and expands on mouse hover to reveal text labels — then collapses back on mouse leave (Instagram-style). There is no toggle button; the expanded state is transient, not persistent.
 
 - **P1.R2** Sidebar layout, top to bottom:
-  - **Top:** Synthesiser branding/logo.
-  - **Middle:** Navigation links — Capture, Chat, Settings. Each link has an icon and a text label. The active route is visually highlighted (indigo accent, matching the existing brand).
-  - **Bottom:** Workspace switcher (team/personal toggle, currently in the header). Below that, user profile display (name/avatar) and sign-out action.
+  - **Top:** Synthesiser branding/logo (icon variant at rest, full logo on hover). Below the logo, workspace switcher (team/personal toggle) — in collapsed state shows a team icon with a small chevron indicating it's a dropdown, bordered as it is today. On hover-expand shows the full team name + chevron.
+  - **Middle:** Navigation links — Capture, Chat, Settings. Each link has an icon (always visible) and a text label (visible only on hover-expand). The active route is visually highlighted (indigo accent, matching the existing brand).
+  - **Bottom:** A "More" menu item that opens an upward popover with additional options (currently: theme toggle; extensible for future options). Below that, user profile display (avatar only at rest, avatar + name on hover-expand). Clicking the user profile opens a dropdown menu that opens **upward**. Sign-out action is inside the user dropdown.
 
-- **P1.R3** The sidebar is collapsible on desktop: a toggle button collapses it to icon-only mode (icons visible, text labels hidden). The collapsed/expanded state persists across page navigations (stored in `localStorage` or a cookie). Default state is expanded.
+- **P1.R3** The sidebar expands as an **overlay** on hover — it does not push or shift the main content area. The main content area always has a fixed left margin equal to the icon-only sidebar width. The expanded sidebar overlays the content with a subtle shadow. No cookie or localStorage persistence is needed (no persistent expanded/collapsed toggle).
 
 - **P1.R4** On mobile viewports (below `md` breakpoint), the sidebar becomes a slide-out drawer triggered by a hamburger menu icon. The drawer overlays the content area and dismisses on outside click or navigation.
 
-- **P1.R5** The main content area adjusts its width based on sidebar state: full content width minus sidebar width when expanded, full content width minus icon-only width when collapsed, full width on mobile (sidebar is an overlay).
+- **P1.R5** The main content area has a fixed left margin equal to the icon-only sidebar width on desktop. Full width on mobile (sidebar is an overlay drawer).
 
 - **P1.R6** All existing pages (Capture, Settings, and any other authenticated routes) continue to function without changes to their content. Only the navigation shell around them changes.
 
 - **P1.R7** The M-Signals tab is removed from navigation. Master signal functionality moves into the Chat page (Part 4 of this PRD) as a sliding panel.
 
+- **P1.R8** The footer is removed from all authenticated pages. It is retained only on public routes (landing page, login, invite) with the developer contact links and the dark/light theme toggle.
+
 ### Acceptance Criteria
 
 - [ ] Header tab navigation is replaced with a vertical sidebar
-- [ ] Sidebar displays branding, nav links (Capture, Chat, Settings), workspace switcher, and user profile
+- [ ] Sidebar rests in icon-only mode and expands on mouse hover (Instagram-style overlay, no content shift)
+- [ ] Sidebar displays branding (icon/full on hover), workspace switcher (top, below logo), nav links (Capture, Chat, Settings), "More" menu, and user profile
+- [ ] Workspace switcher shows team icon + chevron when collapsed, full name + chevron when hovered
 - [ ] Active route is visually highlighted
-- [ ] Sidebar collapses to icon-only mode on desktop; state persists
+- [ ] "More" menu opens upward with theme toggle
+- [ ] User profile shows avatar only at rest; dropdown opens upward on click
 - [ ] Mobile viewport shows a hamburger menu that opens a drawer overlay
-- [ ] Main content area adjusts width based on sidebar state
+- [ ] Main content area has fixed icon-only-width left margin (no shift on hover)
 - [ ] All existing pages render correctly within the new layout
 - [ ] M-Signals tab is removed from navigation
+- [ ] Footer is removed from authenticated pages, retained on public routes with theme toggle
 
 ---
 

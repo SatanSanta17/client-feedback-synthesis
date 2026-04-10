@@ -1,6 +1,6 @@
 # TRD-019: Vector Search Infrastructure
 
-> **Status:** Draft (Parts 1–4)
+> **Status:** Implemented (Parts 1–4)
 > **PRD:** `docs/019-vector-search/prd.md` (approved)
 > **Mirrors:** PRD Parts 1–4. All parts are detailed below.
 

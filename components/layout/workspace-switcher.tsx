@@ -11,6 +11,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Badge } from "@/components/ui/badge";
 import { Check, ChevronDown, Plus, User, Users } from "lucide-react";
+import { cn } from "@/lib/utils";
 import { useAuth } from "@/components/providers/auth-provider";
 import { CreateTeamDialog } from "@/components/layout/create-team-dialog";
 
@@ -20,7 +21,19 @@ interface TeamEntry {
   role: string;
 }
 
-export function WorkspaceSwitcher() {
+interface WorkspaceSwitcherProps {
+  /** When true, show icon + chevron only (icon-only sidebar). */
+  collapsed?: boolean;
+  /** Called when the dropdown opens or closes. Used by the sidebar to prevent collapse. */
+  onOpenChange?: (open: boolean) => void;
+  className?: string;
+}
+
+export function WorkspaceSwitcher({
+  collapsed = false,
+  onOpenChange,
+  className,
+}: WorkspaceSwitcherProps = {}) {
   const [teams, setTeams] = useState<TeamEntry[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
@@ -46,25 +59,35 @@ export function WorkspaceSwitcher() {
 
   if (!loaded) {
     return (
-      <div className="h-8 w-28 animate-pulse rounded-md bg-[var(--surface-raised)]" />
+      <div className={cn(
+        "animate-pulse rounded-md bg-[var(--surface-raised)]",
+        collapsed ? "h-8 w-10" : "h-8 w-full",
+        className
+      )} />
     );
   }
 
   const activeTeam = teams.find((t) => t.id === activeTeamId);
   const displayName = activeTeam ? activeTeam.name : "Personal";
+  const WorkspaceIcon = activeTeam ? Users : User;
 
   return (
     <>
-      <DropdownMenu>
+      <DropdownMenu onOpenChange={onOpenChange}>
         <DropdownMenuTrigger asChild>
-          <button className="flex cursor-pointer items-center gap-1.5 rounded-md border border-[var(--border-default)] px-2.5 py-1.5 text-sm font-medium text-[var(--text-primary)] transition-colors hover:bg-[var(--surface-raised)]">
-            {activeTeam ? (
-              <Users className="size-3.5 text-[var(--text-secondary)]" />
-            ) : (
-              <User className="size-3.5 text-[var(--text-secondary)]" />
+          <button
+            title={collapsed ? displayName : undefined}
+            className={cn(
+              "flex w-full cursor-pointer items-center gap-1.5 rounded-md border border-[var(--border-default)] px-2.5 py-1.5 text-sm font-medium text-[var(--text-primary)] transition-colors hover:bg-[var(--surface-raised)]",
+              collapsed && "justify-center",
+              className
             )}
-            <span className="max-w-[140px] truncate">{displayName}</span>
-            <ChevronDown className="size-3.5 text-[var(--text-muted)]" />
+          >
+            <WorkspaceIcon className="size-3.5 shrink-0 text-[var(--text-secondary)]" />
+            {!collapsed && (
+              <span className="max-w-[140px] truncate">{displayName}</span>
+            )}
+            <ChevronDown className="size-3 shrink-0 text-[var(--text-muted)]" />
           </button>
         </DropdownMenuTrigger>
 
