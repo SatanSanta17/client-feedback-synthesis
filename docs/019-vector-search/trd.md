@@ -1,8 +1,8 @@
 # TRD-019: Vector Search Infrastructure
 
-> **Status:** Draft (Part 1)
+> **Status:** Draft (Parts 1–4)
 > **PRD:** `docs/019-vector-search/prd.md` (approved)
-> **Mirrors:** PRD Parts 1–4. Only Part 1 is detailed below. Subsequent parts will be added as each prior part completes.
+> **Mirrors:** PRD Parts 1–4. All parts are detailed below.
 
 ---
 
@@ -906,3 +906,410 @@ Contains the `match_session_embeddings` RPC function defined in the Embedding Re
 
 - Update `ARCHITECTURE.md` — add new files to file map, add `EMBEDDING_PROVIDER`/`EMBEDDING_MODEL`/`EMBEDDING_DIMENSIONS` to any env vars documentation, update the Current State section.
 - Update `CHANGELOG.md` — record Part 3 completion.
+
+---
+
+## Part 4: Retrieval Service
+
+> Implements **P4.R1–P4.R7** from PRD-019.
+
+### Overview
+
+Build a framework-agnostic retrieval service that takes a user's natural-language query, classifies it to determine retrieval depth, embeds the query on the fly (never persisted), searches `session_embeddings` via cosine similarity, deduplicates results, and returns ranked, metadata-rich `RetrievalResult[]`. This is the final piece of the vector search infrastructure — the public API that PRD-020 (RAG Chat) and PRD-021 (AI Insights Dashboard) will consume.
+
+### Technical Decisions
+
+1. **Query embeddings are ephemeral.** The user's query is embedded solely to compute cosine similarity against stored session embeddings. The query vector is never persisted. Storing query vectors would add write overhead and storage cost for no retrieval benefit — they're transient, user-specific, and don't contribute to the searchable corpus. If query analytics become valuable later (popular themes, unanswered queries), a separate lightweight table logging raw query text and result counts is the appropriate solution — not vector storage.
+
+2. **Lightweight LLM classification via the existing AI service.** Query classification (broad/specific/comparative) reuses `resolveModel()` from `ai-service.ts` and the Vercel AI SDK's `generateObject()` with a Zod schema. This avoids a second provider abstraction. The classification prompt is short (<200 tokens system + query), and the response is structured JSON — `generateObject()` guarantees schema conformance. The model used is the same as `AI_MODEL` (configurable via env). If a cheaper/faster model is preferred for classification alone, that's a future optimisation (new env var like `CLASSIFICATION_MODEL`) — not Part 4 scope.
+
+3. **Classification failure defaults to broad retrieval.** If the LLM call fails (timeout, rate limit, malformed response), the retrieval service falls back to `{ type: "broad" }` with 15 chunks. This ensures search always works even when the classification step fails. The failure is logged but does not surface to the caller.
+
+4. **Deduplication by exact text match, not embedding similarity.** Identical chunk text appearing in multiple sessions (rare but possible with shared notes or copy-pasted feedback) is deduplicated by keeping only the highest-scoring instance. This is a simple `Map<string, RetrievalResult>` keyed by `chunkText` — no fuzzy matching needed at this stage. Near-duplicate detection is a backlog item.
+
+5. **Retrieval service owns the chunk count mapping, not the caller.** The service maps classification types to chunk counts internally. Callers can override via `maxChunks` in `RetrievalOptions`, but the default behaviour is adaptive. This keeps the retrieval logic self-contained — the chat interface (PRD-020) just passes the query and gets appropriately-scoped results without needing to know about classification.
+
+6. **No caching of query embeddings or results.** Each call to `retrieveRelevantChunks()` embeds the query fresh and runs the similarity search. At the expected query volume (interactive chat, not batch processing), the latency cost of one embedding call + one RPC is acceptable (~200-400ms total). Caching introduces cache invalidation complexity (new sessions, re-extractions) that isn't justified at this scale.
+
+### Type Definitions
+
+#### `lib/types/retrieval-result.ts` (P4.R6)
+
+```typescript
+import type { ChunkType } from "@/lib/types/embedding-chunk";
+
+/**
+ * Classification of a user query to determine retrieval depth.
+ */
+export type QueryClassification = "broad" | "specific" | "comparative";
+
+/**
+ * Structured output from the query classification LLM call.
+ */
+export interface ClassificationResult {
+  type: QueryClassification;
+  entities?: string[];
+}
+
+/**
+ * Options for the retrieval service.
+ */
+export interface RetrievalOptions {
+  /** Required — scopes search to the user's current workspace. */
+  teamId: string | null;
+  /** Optional — override the adaptive chunk count. */
+  maxChunks?: number;
+  /** Optional — filter by specific chunk types. */
+  chunkTypes?: ChunkType[];
+  /** Optional — filter by client name (exact match). */
+  clientName?: string;
+  /** Optional — filter by date range (inclusive). */
+  dateFrom?: string;
+  /** Optional — filter by date range (inclusive). */
+  dateTo?: string;
+}
+
+/**
+ * A single retrieval result with similarity score and full metadata.
+ * Consumed by PRD-020 (RAG Chat) and PRD-021 (AI Insights Dashboard).
+ */
+export interface RetrievalResult {
+  chunkText: string;
+  similarityScore: number;
+  sessionId: string;
+  clientName: string;
+  sessionDate: string;
+  chunkType: ChunkType;
+  metadata: Record<string, unknown>;
+}
+```
+
+**Why `ChunkType` instead of `string` for `chunkType`:** The retrieval result is a public interface consumed by downstream features. Using the typed union ensures consumers get autocomplete and type safety when filtering or displaying results. The `SimilarityResult` from the repository uses `string` (it's the database-facing layer), and the retrieval service maps it to the typed `ChunkType` at the boundary.
+
+### Service Design
+
+#### `lib/services/retrieval-service.ts` (P4.R1, P4.R2, P4.R3, P4.R4, P4.R5, P4.R7)
+
+```typescript
+import type { RetrievalOptions, RetrievalResult, ClassificationResult } from "@/lib/types/retrieval-result";
+import type { EmbeddingRepository } from "@/lib/repositories/embedding-repository";
+
+/**
+ * Retrieves relevant embedding chunks for a natural-language query.
+ *
+ * Flow:
+ *   1. Classify the query (LLM call) → determines chunk count.
+ *   2. Embed the query (embedding service) → produces query vector.
+ *   3. Similarity search (embedding repository RPC) → ranked chunks.
+ *   4. Deduplicate by exact chunk text → highest score wins.
+ *   5. Map to RetrievalResult[] → return to caller.
+ *
+ * Framework-agnostic: no imports from next/server or HTTP concepts.
+ */
+export async function retrieveRelevantChunks(
+  query: string,
+  options: RetrievalOptions,
+  embeddingRepo: EmbeddingRepository
+): Promise<RetrievalResult[]>;
+```
+
+**Why `embeddingRepo` is a parameter, not internally constructed:** The retrieval service doesn't know how to create a Supabase client or which client type to use. The caller (an API route) creates the repository with the appropriate client and passes it in — matching the dependency injection pattern used by the orchestrator in Part 3.
+
+##### Step 1: Query Classification (P4.R3)
+
+```typescript
+import { generateObject } from "ai";
+import { z } from "zod";
+import { resolveModel } from "@/lib/services/ai-service";
+
+const classificationSchema = z.object({
+  type: z.enum(["broad", "specific", "comparative"]),
+  entities: z.array(z.string()).optional(),
+});
+
+async function classifyQuery(query: string): Promise<ClassificationResult>;
+```
+
+**Classification prompt:**
+
+```
+System:
+You are a query classifier for a client feedback search system.
+Classify the user's query into one of three categories:
+
+- "broad": General questions about patterns, trends, or aggregates across multiple clients or topics. Examples: "What are the main pain points?", "Summarise all feedback.", "What themes keep coming up?"
+- "specific": Questions about a particular client, topic, or narrow subject. Examples: "What did Acme Corp say about pricing?", "Any feedback about API performance?", "Show me blockers from last month."
+- "comparative": Questions comparing two or more clients, topics, or time periods. Examples: "How does Client A's feedback differ from Client B?", "Compare onboarding vs. pricing complaints.", "What changed between Q1 and Q2?"
+
+For comparative queries, also extract the entities being compared as a string array in the "entities" field.
+
+Respond with JSON only.
+
+User:
+{query}
+```
+
+**`classifyQuery()` implementation:**
+
+- Calls `generateObject()` with `resolveModel()`, the classification prompt, and `classificationSchema`.
+- Sets `maxTokens: 150` — the response is a tiny JSON object.
+- Wraps the entire call in a try/catch. On any failure (timeout, rate limit, parse error), logs the error and returns `{ type: "broad" }` as the fallback (P4.R3).
+- Logs: query (truncated to 100 chars for privacy), classification result, and latency.
+
+##### Step 2: Chunk Count Mapping
+
+```typescript
+const CHUNK_COUNT_MAP: Record<QueryClassification, number> = {
+  broad: 15,
+  specific: 6,
+  comparative: 10,
+};
+
+const DEFAULT_SIMILARITY_THRESHOLD = 0.3;
+```
+
+- If `options.maxChunks` is provided, it overrides the adaptive count entirely.
+- For `comparative` queries, the `entities` array from classification is not used to multiply the count in this implementation — the flat count of 10 serves comparative queries adequately since the RPC already returns the top-N most similar chunks which naturally span the compared entities. Entity-aware retrieval (fetching N per entity) is a backlog optimisation.
+
+##### Step 3: Embed the Query (P4.R2)
+
+```typescript
+import { embedTexts } from "@/lib/services/embedding-service";
+
+const [queryEmbedding] = await embedTexts([query]);
+```
+
+- Embeds the raw query string as a single text. The embedding service handles batching internally — for a single text, there's no batching overhead.
+- The returned `queryEmbedding` is a `number[]` — never persisted, used only for the similarity search call that follows.
+
+##### Step 4: Similarity Search (P4.R2)
+
+```typescript
+const rawResults = await embeddingRepo.similaritySearch(queryEmbedding, {
+  teamId: options.teamId,
+  maxResults: resolvedMaxChunks,
+  chunkTypes: options.chunkTypes,
+  clientName: options.clientName,
+  dateFrom: options.dateFrom,
+  dateTo: options.dateTo,
+  similarityThreshold: DEFAULT_SIMILARITY_THRESHOLD,
+});
+```
+
+- Passes all filters through to the repository, which delegates to the `match_session_embeddings` RPC (defined in Part 3).
+- The similarity threshold (default 0.3) is applied server-side in the RPC — chunks below this score are excluded before results leave the database (P4.R4).
+
+##### Step 5: Deduplication (P4.R5)
+
+```typescript
+function deduplicateResults(results: SimilarityResult[]): SimilarityResult[] {
+  const seen = new Map<string, SimilarityResult>();
+  for (const result of results) {
+    const existing = seen.get(result.chunkText);
+    if (!existing || result.similarityScore > existing.similarityScore) {
+      seen.set(result.chunkText, result);
+    }
+  }
+  return Array.from(seen.values()).sort(
+    (a, b) => b.similarityScore - a.similarityScore
+  );
+}
+```
+
+- Keyed by exact `chunkText` match — if the same text appears from multiple sessions, only the highest-scoring instance survives.
+- Re-sorts after deduplication to maintain descending similarity order.
+- This is a pure function, internal to the retrieval service (not exported).
+
+##### Step 6: Map to RetrievalResult[] (P4.R2, P4.R6)
+
+```typescript
+function toRetrievalResult(result: SimilarityResult): RetrievalResult {
+  return {
+    chunkText: result.chunkText,
+    similarityScore: result.similarityScore,
+    sessionId: result.sessionId,
+    clientName: (result.metadata.client_name as string) ?? "Unknown",
+    sessionDate: (result.metadata.session_date as string) ?? "",
+    chunkType: result.chunkType as ChunkType,
+    metadata: result.metadata,
+  };
+}
+```
+
+- `clientName` and `sessionDate` are extracted from the metadata object (where they were stored by the chunking service in Part 2) and promoted to top-level fields for consumer convenience.
+- `chunkType` is cast from `string` (repository layer) to `ChunkType` (typed union). This is safe because the chunking service only produces valid `ChunkType` values — the cast is a boundary translation, not an unsafe narrowing.
+
+##### Full `retrieveRelevantChunks()` flow
+
+```typescript
+export async function retrieveRelevantChunks(
+  query: string,
+  options: RetrievalOptions,
+  embeddingRepo: EmbeddingRepository
+): Promise<RetrievalResult[]> {
+  const logger = `[retrieval-service]`;
+
+  // 1. Classify
+  const classification = await classifyQuery(query);
+  const resolvedMaxChunks = options.maxChunks ?? CHUNK_COUNT_MAP[classification.type];
+  console.log(`${logger} Query classified as "${classification.type}", fetching ${resolvedMaxChunks} chunks`);
+
+  // 2. Embed the query
+  const [queryEmbedding] = await embedTexts([query]);
+
+  // 3. Similarity search
+  const rawResults = await embeddingRepo.similaritySearch(queryEmbedding, {
+    teamId: options.teamId,
+    maxResults: resolvedMaxChunks,
+    chunkTypes: options.chunkTypes,
+    clientName: options.clientName,
+    dateFrom: options.dateFrom,
+    dateTo: options.dateTo,
+    similarityThreshold: DEFAULT_SIMILARITY_THRESHOLD,
+  });
+  console.log(`${logger} Similarity search returned ${rawResults.length} results`);
+
+  // 4. Deduplicate
+  const deduped = deduplicateResults(rawResults);
+  if (deduped.length < rawResults.length) {
+    console.log(`${logger} Deduplicated ${rawResults.length} → ${deduped.length} results`);
+  }
+
+  // 5. Map to RetrievalResult[]
+  return deduped.map(toRetrievalResult);
+}
+```
+
+**Error handling:** Unlike the embedding orchestrator (which swallows all errors for fire-and-forget), the retrieval service **does** throw on embedding or search failures. The caller (an API route) needs to know retrieval failed so it can return an appropriate HTTP error or fallback message. Only the classification step swallows errors (with a fallback to broad). This is intentional: classification is a "nice to have" optimisation, but embedding and search are the core operation.
+
+### Prompt File
+
+#### `lib/prompts/classify-query.ts`
+
+Following the project convention of version-controlled prompts:
+
+```typescript
+export const CLASSIFY_QUERY_SYSTEM_PROMPT = `You are a query classifier for a client feedback search system.
+Classify the user's query into one of three categories:
+
+- "broad": General questions about patterns, trends, or aggregates across multiple clients or topics. Examples: "What are the main pain points?", "Summarise all feedback.", "What themes keep coming up?"
+- "specific": Questions about a particular client, topic, or narrow subject. Examples: "What did Acme Corp say about pricing?", "Any feedback about API performance?", "Show me blockers from last month."
+- "comparative": Questions comparing two or more clients, topics, or time periods. Examples: "How does Client A's feedback differ from Client B?", "Compare onboarding vs. pricing complaints.", "What changed between Q1 and Q2?"
+
+For comparative queries, also extract the entities being compared as a string array in the "entities" field.
+
+Respond with JSON only.`;
+
+export const CLASSIFY_QUERY_MAX_TOKENS = 150;
+```
+
+### Files Changed
+
+| File | Action | Purpose |
+|------|--------|---------|
+| `lib/types/retrieval-result.ts` | **Create** | `RetrievalResult`, `RetrievalOptions`, `QueryClassification`, `ClassificationResult` types |
+| `lib/services/retrieval-service.ts` | **Create** | `retrieveRelevantChunks()` — classification → embed → search → deduplicate → map |
+| `lib/prompts/classify-query.ts` | **Create** | Version-controlled classification prompt and max tokens constant |
+
+### Implementation
+
+#### Increment 4.1: Type Definitions
+
+**What:** Create the `RetrievalResult`, `RetrievalOptions`, `QueryClassification`, and `ClassificationResult` types.
+
+**Steps:**
+
+1. Create `lib/types/retrieval-result.ts` with all type definitions from the section above.
+2. Verify exports: `QueryClassification`, `ClassificationResult`, `RetrievalOptions`, `RetrievalResult`.
+
+**Verification:**
+
+- Run `npx tsc --noEmit` — no type errors from the new file.
+- Confirm `ChunkType` is imported from `@/lib/types/embedding-chunk` (not redefined).
+
+#### Increment 4.2: Classification Prompt
+
+**What:** Create the version-controlled classification prompt file.
+
+**Steps:**
+
+1. Create `lib/prompts/classify-query.ts` with the system prompt and max tokens constant.
+2. Verify exports: `CLASSIFY_QUERY_SYSTEM_PROMPT`, `CLASSIFY_QUERY_MAX_TOKENS`.
+
+**Verification:**
+
+- Run `npx tsc --noEmit` — no type errors.
+- Confirm no imports from `next/server` or any SDK — this is a pure data file.
+
+#### Increment 4.3: Retrieval Service
+
+**What:** Implement the full retrieval service with classification, embedding, search, deduplication, and mapping.
+
+**Steps:**
+
+1. Create `lib/services/retrieval-service.ts`.
+2. Import from: `ai` (generateObject), `zod` (z), `@/lib/services/ai-service` (resolveModel), `@/lib/services/embedding-service` (embedTexts), `@/lib/repositories/embedding-repository` (EmbeddingRepository, SimilarityResult), `@/lib/types/retrieval-result` (all types), `@/lib/types/embedding-chunk` (ChunkType), `@/lib/prompts/classify-query` (prompt + max tokens).
+3. Implement `classifyQuery()` — internal function, not exported. Uses `generateObject()` with the Zod schema. Wraps in try/catch, falls back to `{ type: "broad" }` on any failure.
+4. Implement `deduplicateResults()` — internal function, not exported. Keyed by exact `chunkText`, keeps highest score, re-sorts.
+5. Implement `toRetrievalResult()` — internal function, not exported. Maps `SimilarityResult` to `RetrievalResult` with `clientName`/`sessionDate` promoted from metadata.
+6. Implement `retrieveRelevantChunks()` — exported. Follows the 5-step flow: classify → embed → search → deduplicate → map.
+7. Add logging at each step: classification result, chunk count, search result count, deduplication count (if applicable).
+
+**Verification:**
+
+1. Run `npx tsc --noEmit` — no type errors.
+2. Verify framework-agnostic: grep the file for `next/server` — zero matches (P4.R7).
+3. Read the file and confirm:
+   - `classifyQuery()` swallows errors and returns `{ type: "broad" }` on failure.
+   - `retrieveRelevantChunks()` does NOT swallow errors from `embedTexts()` or `similaritySearch()` — these propagate to the caller.
+   - `DEFAULT_SIMILARITY_THRESHOLD` is `0.3`.
+   - `CHUNK_COUNT_MAP` has correct values: broad=15, specific=6, comparative=10.
+   - `options.maxChunks` overrides adaptive count when provided.
+   - Deduplication keeps the highest-scoring instance per unique `chunkText`.
+   - `toRetrievalResult()` correctly extracts `client_name` and `session_date` from metadata.
+
+#### Increment 4.4: End-of-Part Audit
+
+**What:** Run the full end-of-part audit checklist across all files created in Part 4. This increment produces fixes, not a report.
+
+**Checklist:**
+
+1. **SRP violations** — `retrieval-service.ts` orchestrates the retrieval flow. `retrieval-result.ts` defines types. `classify-query.ts` stores the prompt. Each file does one thing.
+2. **DRY violations** — Confirm `resolveModel()` is reused from `ai-service.ts`, not reimplemented. Confirm `embedTexts()` is reused from `embedding-service.ts`. Confirm `similaritySearch()` is called via the repository interface, not reimplemented.
+3. **Design token adherence** — N/A (no UI components in this part).
+4. **Logging** — Confirm `retrieveRelevantChunks()` logs: classification result, resolved chunk count, search result count, deduplication delta (if any). Confirm `classifyQuery()` logs: query (truncated), result, latency, and errors on failure.
+5. **Dead code** — No unused imports, no unreachable branches, no exported symbols that nothing yet consumes (downstream PRDs will consume `retrieveRelevantChunks()`, but it must be exported now).
+6. **Convention compliance** — File names are kebab-case, types are PascalCase, functions are camelCase, named exports only, import order follows the project convention (React/Next → third-party → internal utilities → internal services → internal types).
+7. **TypeScript strictness** — Run `npx tsc --noEmit`. Zero errors, zero `any` types.
+8. **Framework-agnostic verification** — Grep `retrieval-service.ts` for `next/server`, `NextRequest`, `NextResponse` — zero matches. Grep for `@supabase` — zero matches (it uses the repository interface, not the Supabase client directly).
+
+**Post-audit:**
+
+- Update `ARCHITECTURE.md` — add `lib/types/retrieval-result.ts`, `lib/services/retrieval-service.ts`, and `lib/prompts/classify-query.ts` to the file map. Update the Current State section to reflect PRD-019 Part 4 completion.
+- Update `CHANGELOG.md` — record Part 4 completion.
+
+---
+
+## End-of-PRD Audit
+
+> Run after Part 4 completes. This is the final audit for the entire PRD-019.
+
+**Checklist:**
+
+1. Run the full end-of-part audit checklist across ALL files touched by PRD-019 (Parts 1–4).
+2. Verify `ARCHITECTURE.md` file map is complete and accurate — every file, directory, route, and doc folder that exists in the codebase must be reflected:
+   - `lib/types/embedding-chunk.ts`
+   - `lib/types/retrieval-result.ts`
+   - `lib/services/chunking-service.ts`
+   - `lib/services/embedding-service.ts`
+   - `lib/services/embedding-orchestrator.ts`
+   - `lib/services/retrieval-service.ts`
+   - `lib/repositories/embedding-repository.ts`
+   - `lib/repositories/supabase/supabase-embedding-repository.ts`
+   - `lib/prompts/classify-query.ts`
+   - `docs/019-vector-search/` (PRD, TRD, migration files)
+3. Verify `CHANGELOG.md` has entries for all four completed parts.
+4. Run `npx tsc --noEmit` for a final type check across the entire codebase.
+5. Verify all environment variables (`EMBEDDING_PROVIDER`, `EMBEDDING_MODEL`, `EMBEDDING_DIMENSIONS`) are documented in both `.env.example` and `ARCHITECTURE.md`.
+6. Verify the `match_session_embeddings` RPC function exists and matches the TRD specification.
+7. This audit produces fixes and documentation updates, not a report.
