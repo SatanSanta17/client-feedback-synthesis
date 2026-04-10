@@ -6,6 +6,13 @@ All notable changes to this project are documented here, grouped by PRD and part
 
 ## [Unreleased]
 
+### PRD-019 Part 4: Retrieval Service — 2026-04-11
+- Created `lib/types/retrieval-result.ts` — `QueryClassification` union (broad/specific/comparative), `ClassificationResult`, `RetrievalOptions`, `RetrievalResult` interfaces
+- Created `lib/prompts/classify-query.ts` — version-controlled system prompt and max tokens constant for lightweight LLM query classification
+- Created `lib/services/retrieval-service.ts` — `retrieveRelevantChunks()` with 5-step flow: classify query (adaptive chunk count) → embed query (ephemeral, never persisted) → similarity search via repository RPC → deduplicate by exact text match → map to typed RetrievalResult[]; classification via `generateObject()` + Zod schema reusing `resolveModel()` from ai-service; classification failure falls back to broad (15 chunks); embedding/search errors propagate to caller
+- Exported `resolveModel()` from `lib/services/ai-service.ts` (previously internal) for reuse by the retrieval service
+- **End-of-part audit:** No fixes needed — SRP/DRY/logging/dead code/convention compliance/TypeScript strictness/framework-agnostic all clean
+
 ### PRD-019 Part 3: Embedding Pipeline — 2026-04-10
 - Installed `openai` npm package for embedding API calls
 - Created `lib/services/embedding-service.ts` — provider-agnostic `embedTexts()` with OpenAI adapter, batching (20 per API call, 200ms inter-batch delay), `withEmbeddingRetry()` with exponential backoff and Retry-After handling on 429, dimension validation on first call, four error classes (`EmbeddingServiceError`, `EmbeddingConfigError`, `EmbeddingRequestError`, `EmbeddingRateLimitError`)
