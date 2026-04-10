@@ -6,6 +6,11 @@ All notable changes to this project are documented here, grouped by PRD and part
 
 ## [Unreleased]
 
+### PRD-019 Part 2: Chunking Logic — 2026-04-10
+- Created `lib/types/embedding-chunk.ts` — `ChunkType` union (10 chunk types), `EmbeddingChunk` interface, `SessionMeta` interface
+- Created `lib/services/chunking-service.ts` — pure `chunkStructuredSignals()` producing typed chunks from all `ExtractedSignals` sections (summary, client profile, pain points, requirements, aspirations, competitive mentions, blockers, tools & platforms, custom categories) with snake_case metadata and null-value omission; pure `chunkRawNotes()` splitting raw notes by paragraph for raw-only sessions
+- **End-of-part audit:** No fixes needed — SRP/DRY/dead code/convention compliance/TypeScript strictness/purity all clean
+
 ### PRD-019 Part 1: pgvector Setup and Embeddings Table — 2026-04-10
 - Enabled `pgvector` extension on the Supabase instance (`CREATE EXTENSION IF NOT EXISTS vector`)
 - Created `session_embeddings` table with columns: `id`, `session_id` (FK → sessions, ON DELETE CASCADE), `team_id` (FK → teams, nullable), `chunk_text`, `chunk_type` (text), `metadata` (jsonb), `embedding` (vector(1536)), `schema_version`, `created_at`

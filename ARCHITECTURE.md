@@ -211,6 +211,7 @@ synthesiser/
 │   ├── hooks/
 │   │   └── use-signal-extraction.ts # Shared extraction state machine hook (ExtractionState, promptVersionId, getInput callback, re-extract confirm flow, forceConfirmOnReextract for server-side manual edit flag)
 │   ├── types/
+│   │   ├── embedding-chunk.ts   # ChunkType, EmbeddingChunk, SessionMeta — types for the vector search chunking/embedding pipeline (PRD-019)
 │   │   └── signal-session.ts    # SignalSession interface — shared between ai-service and master-signal-service
 │   ├── utils.ts                 # cn() utility (clsx + tailwind-merge) + PROSE_CLASSES constant
 │   ├── email-templates/
@@ -246,6 +247,7 @@ synthesiser/
 │   │       └── mock-session-repository.ts         # In-memory mock for SessionRepository (testing)
 │   ├── services/
 │   │   ├── ai-service.ts        # AI service — extractSignals() → ExtractionResult (generateObject), synthesiseMasterSignal() (generateText), provider-agnostic via Vercel AI SDK
+│   │   ├── chunking-service.ts  # Pure chunking functions — chunkStructuredSignals() and chunkRawNotes() — transforms extraction JSON into EmbeddingChunk arrays (PRD-019)
 │   │   ├── attachment-service.ts # Attachment CRUD — accepts AttachmentRepository
 │   │   ├── client-service.ts    # Client search and creation — accepts ClientRepository
 │   │   ├── email-service.ts     # Provider-agnostic email sending — sendEmail(), resolveEmailProvider(), Resend adapter
