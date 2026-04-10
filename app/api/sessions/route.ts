@@ -9,6 +9,10 @@ import {
 import { createClient, createServiceRoleClient, getActiveTeamId } from "@/lib/supabase/server";
 import { createSessionRepository } from "@/lib/repositories/supabase/supabase-session-repository";
 import { createClientRepository } from "@/lib/repositories/supabase/supabase-client-repository";
+import { createEmbeddingRepository } from "@/lib/repositories/supabase/supabase-embedding-repository";
+import { generateSessionEmbeddings } from "@/lib/services/embedding-orchestrator";
+import { EXTRACTION_SCHEMA_VERSION } from "@/lib/schemas/extraction-schema";
+import type { ExtractedSignals } from "@/lib/schemas/extraction-schema";
 
 // --- GET /api/sessions?clientId=&dateFrom=&dateTo=&offset=&limit= ---
 
@@ -146,6 +150,22 @@ export async function POST(request: NextRequest) {
     });
 
     console.log("[api/sessions] POST — created session:", session.id);
+
+    // Fire-and-forget embedding generation (P3.R6, P3.R9)
+    const embeddingRepo = createEmbeddingRepository(serviceClient, teamId);
+    generateSessionEmbeddings({
+      sessionMeta: {
+        sessionId: session.id,
+        clientName: parsed.data.clientName,
+        sessionDate: parsed.data.sessionDate,
+        teamId,
+        schemaVersion: EXTRACTION_SCHEMA_VERSION,
+      },
+      structuredJson: (parsed.data.structuredJson as ExtractedSignals | null) ?? null,
+      rawNotes: parsed.data.rawNotes,
+      embeddingRepo,
+    }).catch(() => {}); // swallowed — orchestrator already logs
+
     return NextResponse.json({ session }, { status: 201 });
   } catch (err) {
     if (err instanceof ClientDuplicateError) {

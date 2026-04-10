@@ -884,7 +884,7 @@ Contains the `match_session_embeddings` RPC function defined in the Embedding Re
 **Verification:**
 
 - `npx tsc --noEmit` — no type errors.
-- Read both route files and confirm the embedding call is after the `NextResponse.json()` return or is truly fire-and-forget (`.catch(() => {})`).
+- Read both route files and confirm the embedding call is not awaited — the promise floats with `.catch(() => {})` to prevent unhandled rejections, and the `return NextResponse.json()` follows immediately so the response is not blocked by embedding.
 - Confirm `.env.example` has the new variables.
 
 #### Increment 3.5: End-of-Part Audit

@@ -14,6 +14,10 @@ import { createSessionRepository } from "@/lib/repositories/supabase/supabase-se
 import { createClientRepository } from "@/lib/repositories/supabase/supabase-client-repository";
 import { createTeamRepository } from "@/lib/repositories/supabase/supabase-team-repository";
 import { createMasterSignalRepository } from "@/lib/repositories/supabase/supabase-master-signal-repository";
+import { createEmbeddingRepository } from "@/lib/repositories/supabase/supabase-embedding-repository";
+import { generateSessionEmbeddings } from "@/lib/services/embedding-orchestrator";
+import { EXTRACTION_SCHEMA_VERSION } from "@/lib/schemas/extraction-schema";
+import type { ExtractedSignals } from "@/lib/schemas/extraction-schema";
 
 // --- PUT /api/sessions/[id] ---
 
@@ -115,6 +119,26 @@ export async function PUT(
     }, user.id);
 
     console.log("[api/sessions/[id]] PUT — updated:", session.id);
+
+    // Fire-and-forget embedding generation (P3.R6, P3.R7)
+    // Always re-embed on PUT to keep embeddings in sync with latest content
+    const embeddingRepo = createEmbeddingRepository(serviceClient, teamId);
+    generateSessionEmbeddings({
+      sessionMeta: {
+        sessionId: id,
+        clientName: parsed.data.clientName,
+        sessionDate: parsed.data.sessionDate,
+        teamId,
+        schemaVersion: EXTRACTION_SCHEMA_VERSION,
+      },
+      structuredJson: parsed.data.isExtraction
+        ? ((parsed.data.structuredJson as ExtractedSignals | null) ?? null)
+        : null,
+      rawNotes: parsed.data.rawNotes,
+      embeddingRepo,
+      isReExtraction: true,
+    }).catch(() => {}); // swallowed — orchestrator already logs
+
     return NextResponse.json({ session });
   } catch (err) {
     if (err instanceof SessionNotFoundError) {
