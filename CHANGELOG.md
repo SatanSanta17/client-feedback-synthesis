@@ -6,6 +6,20 @@ All notable changes to this project are documented here, grouped by PRD and part
 
 ## [Unreleased]
 
+### PRD-020 Part 1: Sidebar Navigation — 2026-04-11
+- Replaced top-bar header (`app-header.tsx`, `tab-nav.tsx`) with an Instagram-style hover-to-expand sidebar (`app-sidebar.tsx`) — icon-only (64px) at rest, overlay (240px) on hover, no content shift
+- Created `authenticated-layout.tsx` — auth-aware layout wrapper that renders sidebar + margin for authenticated routes and footer-only for public routes
+- Created `components/ui/sheet.tsx` — slide-out drawer (left/right/top/bottom) built on Radix Dialog primitives, used for mobile sidebar
+- Updated `user-menu.tsx` — added `side`, `collapsed`, and `onOpenChange` props for sidebar integration; avatar wrapped in fixed-size div to prevent squishing
+- Updated `workspace-switcher.tsx` — added `collapsed` and `onOpenChange` props for sidebar integration
+- Added `--sidebar-width-expanded` and `--sidebar-width-collapsed` CSS custom properties to `globals.css`
+- Mobile: hamburger trigger (md:hidden) opens left-side Sheet drawer with full sidebar content
+- Portal-mounted dropdown collapse fix: ref-based counter (`openDropdownCount`) with 100ms grace period prevents sidebar from collapsing while dropdowns are open
+- Deleted `app-header.tsx` and `tab-nav.tsx` — replaced by sidebar navigation
+- Footer removed from authenticated layouts; theme toggle moved into sidebar "More" menu
+- Updated `layout.tsx` — replaced AppHeader with AuthenticatedLayout wrapper
+- **End-of-part audit:** TypeScript check clean (`npx tsc --noEmit`), no dead references, all 12 PRD acceptance criteria verified
+
 ### PRD-019 Part 4: Retrieval Service — 2026-04-11
 - Created `lib/types/retrieval-result.ts` — `QueryClassification` union (broad/specific/comparative), `ClassificationResult`, `RetrievalOptions`, `RetrievalResult` interfaces
 - Created `lib/prompts/classify-query.ts` — version-controlled system prompt and max tokens constant for lightweight LLM query classification

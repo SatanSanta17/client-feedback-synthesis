@@ -20,7 +20,7 @@ Synthesiser is a web application for teams to capture structured client session 
 
 ## Current State
 
-**Status:** PRD-002 through PRD-010 implemented. PRD-012 Parts 1–5 (Design Tokens and Typography + DRY Extraction + SRP Component Decomposition + API Route/Service Cleanup + Dependency Inversion) implemented. PRD-013 Parts 1–2 (File Upload Infrastructure + Persistence & Signal Extraction Integration) implemented. PRD-014 Parts 1–4 (Session Traceability & Staleness Data Model + View Prompt on Capture Page + Show Prompt Version in Past Sessions + Staleness Indicators & Re-extraction Warnings) implemented. PRD-015 Part 1 (Public Landing Page) implemented. PRD-019 Parts 1–4 (pgvector Setup & Embeddings Table + Chunking Logic + Embedding Pipeline + Retrieval Service) implemented. The app is a fully functional team-capable client feedback capture and synthesis platform with a public landing page and vector search infrastructure. Google OAuth login (open to any Google account), working capture form with AI signal extraction and file attachment upload with server-side persistence, past sessions table with filters/inline editing/soft delete, master signal page with AI synthesis and PDF download, prompt editor with version history, team access with role-based permissions, automatic embedding generation on session save/extraction, and semantic retrieval service with adaptive query classification for downstream RAG and insights features.
+**Status:** PRD-002 through PRD-010 implemented. PRD-012 Parts 1–5 (Design Tokens and Typography + DRY Extraction + SRP Component Decomposition + API Route/Service Cleanup + Dependency Inversion) implemented. PRD-013 Parts 1–2 (File Upload Infrastructure + Persistence & Signal Extraction Integration) implemented. PRD-014 Parts 1–4 (Session Traceability & Staleness Data Model + View Prompt on Capture Page + Show Prompt Version in Past Sessions + Staleness Indicators & Re-extraction Warnings) implemented. PRD-015 Part 1 (Public Landing Page) implemented. PRD-019 Parts 1–4 (pgvector Setup & Embeddings Table + Chunking Logic + Embedding Pipeline + Retrieval Service) implemented. PRD-020 Part 1 (Sidebar Navigation) implemented. The app is a fully functional team-capable client feedback capture and synthesis platform with a public landing page, vector search infrastructure, and Instagram-style hover-to-expand sidebar navigation. Google OAuth login (open to any Google account), working capture form with AI signal extraction and file attachment upload with server-side persistence, past sessions table with filters/inline editing/soft delete, master signal page with AI synthesis and PDF download, prompt editor with version history, team access with role-based permissions, automatic embedding generation on session save/extraction, and semantic retrieval service with adaptive query classification for downstream RAG and insights features.
 
 **Core features live:**
 - Public landing page at `/` with hero, feature cards, how-it-works flow, and CTA (authenticated users auto-redirect to `/capture`)
@@ -50,8 +50,8 @@ synthesiser/
 ├── middleware.ts                # Route protection + active_team_id cookie validation
 ├── next.config.ts               # Next.js config — image remote patterns (Google avatars)
 ├── app/
-│   ├── globals.css              # Global CSS tokens (brand colours, status colours, AI action colours, typography, surfaces)
-│   ├── layout.tsx               # Root layout — AuthProvider + AppHeader + AppFooter + Toaster
+│   ├── globals.css              # Global CSS tokens (brand colours, status colours, AI action colours, typography, surfaces, sidebar width tokens)
+│   ├── layout.tsx               # Root layout — AuthProvider + AuthenticatedLayout + Toaster
 │   ├── page.tsx                 # Landing page (public) — authenticated users redirect to /capture
 │   ├── _components/
 │   │   └── landing-page.tsx     # Client component — auth-aware landing page (hero, features, how-it-works, CTA)
@@ -182,12 +182,14 @@ synthesiser/
 │   │   ├── role-picker.tsx      # Controlled role picker (value, onValueChange) + exported Role type
 │   │   └── table-shell.tsx      # Shared bordered table wrapper (TableShell) + standardised header cell (TableHeadCell)
 │   ├── layout/
-│   │   ├── app-footer.tsx       # Footer — developer contact (name, email, GitHub, LinkedIn)
-│   │   ├── app-header.tsx       # Top bar — TabNav + WorkspaceSwitcher + UserMenu
+│   │   ├── app-footer.tsx       # Footer — public routes only (developer contact + theme toggle)
+│   │   ├── app-sidebar.tsx      # Instagram-style hover-to-expand sidebar — icon-only at rest, overlay on hover, mobile drawer via Sheet; contains nav links, workspace switcher, more menu, user menu
+│   │   ├── authenticated-layout.tsx # Auth-aware layout wrapper — sidebar + margin for authenticated routes, footer-only for public routes
 │   │   ├── create-team-dialog.tsx # Controlled team creation dialog (opened from workspace switcher)
-│   │   ├── tab-nav.tsx          # Route-based tab navigation with active indicator
-│   │   ├── user-menu.tsx        # Auth-aware user menu — avatar, email, sign-out dropdown
-│   │   └── workspace-switcher.tsx # Always-visible workspace dropdown — switch, create team, CTA
+│   │   ├── synthesiser-logo.tsx # SVG logo component — full (wordmark) and icon-only variants
+│   │   ├── theme-toggle.tsx     # Theme toggle button — Sun/Moon icon with label
+│   │   ├── user-menu.tsx        # Auth-aware user menu — avatar, email, sign-out dropdown; supports side/collapsed/onOpenChange props for sidebar integration
+│   │   └── workspace-switcher.tsx # Always-visible workspace dropdown — switch, create team, CTA; supports collapsed/onOpenChange props for sidebar integration
 │   └── ui/                      # shadcn/ui primitives (do not modify) + shared dialogs
 │       ├── badge.tsx
 │       ├── confirm-dialog.tsx    # Reusable confirmation dialog (config-driven: title, description, destructive variant, loading state)
@@ -199,6 +201,7 @@ synthesiser/
 │       ├── label.tsx
 │       ├── popover.tsx
 │       ├── select.tsx
+│       ├── sheet.tsx            # Slide-out drawer (left/right/top/bottom) built on Radix Dialog primitives
 │       ├── sonner.tsx
 │       ├── tabs.tsx
 │       └── textarea.tsx
@@ -209,7 +212,8 @@ synthesiser/
 │   ├── cookies/
 │   │   └── active-team.ts       # Client-side active team cookie helpers (getActiveTeamId, setActiveTeamCookie, clearActiveTeamCookie)
 │   ├── hooks/
-│   │   └── use-signal-extraction.ts # Shared extraction state machine hook (ExtractionState, promptVersionId, getInput callback, re-extract confirm flow, forceConfirmOnReextract for server-side manual edit flag)
+│   │   ├── use-signal-extraction.ts # Shared extraction state machine hook (ExtractionState, promptVersionId, getInput callback, re-extract confirm flow, forceConfirmOnReextract for server-side manual edit flag)
+│   │   └── use-theme.ts         # Theme hook — reads/writes theme cookie, returns { theme, setTheme }
 │   ├── types/
 │   │   ├── embedding-chunk.ts   # ChunkType, EmbeddingChunk, SessionMeta — types for the vector search chunking/embedding pipeline (PRD-019)
 │   │   ├── retrieval-result.ts  # QueryClassification, ClassificationResult, RetrievalOptions, RetrievalResult — types for the retrieval service (PRD-019)
