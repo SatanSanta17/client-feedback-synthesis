@@ -42,7 +42,7 @@ const PROVIDER_MAP: Record<SupportedProvider, (modelId: string) => LanguageModel
  * Reads AI_PROVIDER and AI_MODEL from environment variables and returns
  * the corresponding Vercel AI SDK model instance.
  */
-function resolveModel(): { model: LanguageModel; label: string } {
+export function resolveModel(): { model: LanguageModel; label: string } {
   const provider = process.env.AI_PROVIDER;
   const modelId = process.env.AI_MODEL;
 
