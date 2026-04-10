@@ -21,6 +21,9 @@ export const metadata: Metadata = {
   title: "Synthesiser",
   description:
     "Capture and synthesise client feedback with AI-powered signal extraction",
+  icons: {
+    icon: "/icon.svg",
+  },
 };
 
 export default async function RootLayout({
