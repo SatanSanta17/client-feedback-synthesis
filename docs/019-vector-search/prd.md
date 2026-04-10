@@ -144,7 +144,7 @@ This PRD builds four things: the vector storage layer (pgvector on Supabase), a 
 
 - **P3.R8** On session deletion: embeddings are cascade-deleted via the foreign key constraint (P1.R2). No additional application logic needed.
 
-- **P3.R9** For sessions with no `structured_json` but with `raw_notes` (raw-only sessions): if such a session is encountered during a flow that requires embeddings, chunk via `chunkRawNotes()` and embed. This is not auto-triggered on session save — it is triggered only when the retrieval service needs to include this session and finds no embeddings for it. This is a lazy embedding strategy for raw-only sessions.
+- **P3.R9** For sessions with no `structured_json` but with `raw_notes` (raw-only sessions): embed on save using `chunkRawNotes()` as the chunking strategy. This follows the same save-time embedding flow as extracted sessions — after the session is saved, chunk the raw notes and generate embeddings. This ensures every saved session is searchable regardless of whether extraction has been run. If the session is later extracted, the re-extraction flow (P3.R7) deletes the raw-note embeddings and replaces them with structured-JSON embeddings.
 
 - **P3.R10** Add the following environment variables to the application configuration:
   - `EMBEDDING_PROVIDER` — required, string (e.g., `openai`).
@@ -164,7 +164,7 @@ This PRD builds four things: the vector storage layer (pgvector on Supabase), a 
 - [ ] Embedding failure does not block extraction — session saves regardless
 - [ ] Re-extraction deletes old embeddings and generates new ones
 - [ ] Session deletion cascade-deletes embeddings
-- [ ] Raw-only sessions are lazily embedded when retrieval needs them
+- [ ] Raw-only sessions are embedded on save via `chunkRawNotes()`, and re-extraction replaces raw embeddings with structured ones
 - [ ] All new environment variables are documented
 
 ---

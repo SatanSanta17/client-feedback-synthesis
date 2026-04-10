@@ -430,3 +430,479 @@ Internal (not exported) helper that takes a `Record<string, unknown>` and return
 
 - Update `ARCHITECTURE.md` — add `lib/types/embedding-chunk.ts` and `lib/services/chunking-service.ts` to the file map.
 - Update `CHANGELOG.md` — record Part 2 completion.
+
+---
+
+## Part 3: Embedding Pipeline (Provider-Agnostic)
+
+> Implements **P3.R1–P3.R10** from PRD-019.
+
+### Overview
+
+Build a provider-agnostic embedding service that converts text chunks into vector embeddings, a repository layer for persisting and querying embeddings in `session_embeddings`, and wire embedding generation into the session save and extraction flows so every saved session is searchable. The embedding service mirrors the existing `ai-service.ts` provider abstraction pattern — env vars select the provider and model, a provider map resolves the SDK call, and retry logic handles transient failures.
+
+### Forward Compatibility Notes
+
+- **Part 4 (Retrieval Service):** Calls `embedTexts()` to embed the user's query, then calls `embeddingRepo.similaritySearch()` to find matching chunks. The `SearchOptions` and `SimilarityResult` types defined here are consumed directly by the retrieval service.
+
+### Technical Decisions
+
+1. **OpenAI SDK for embeddings, Vercel AI SDK for generation.** The Vercel AI SDK does not expose an embedding API. The OpenAI provider package (`@ai-sdk/openai`) is already installed but only covers chat/completion models. Embeddings use the `openai` npm package directly. The provider map is extensible — adding Cohere or Voyage means adding one case to the map.
+
+2. **Separate env vars from the AI service.** `EMBEDDING_PROVIDER` / `EMBEDDING_MODEL` / `EMBEDDING_DIMENSIONS` are independent of `AI_PROVIDER` / `AI_MODEL`. This allows using OpenAI for embeddings while using Anthropic for extraction/synthesis — a common production pattern since OpenAI's embedding models are cost-effective and widely used.
+
+3. **Dimension validation on first call.** The embedding service validates that `EMBEDDING_DIMENSIONS` matches the database column dimension on the first embedding call. A mismatch throws a clear `EmbeddingConfigError` with both values in the message, rather than letting Postgres produce a cryptic insertion error later.
+
+4. **Fire-and-forget embedding in API routes.** Embedding generation after session save/extraction is non-blocking. The API route awaits the session save, returns the response to the client, and triggers embedding in a fire-and-forget pattern. Embedding failures are logged but never surface to the user or block the response. This matches P3.R6: "Embedding failures do not block the extraction."
+
+5. **Service-role client for embedding writes.** The embedding repository uses the service-role Supabase client for inserts and deletes. This avoids RLS complexity during system-generated writes — RLS on `session_embeddings` protects reads (retrieval), while writes are trusted server-side operations that have already passed auth checks in the parent route.
+
+6. **Embed on save for all sessions (Option A).** Per the updated P3.R9, every saved session gets embeddings — `chunkStructuredSignals()` when `structured_json` exists, `chunkRawNotes()` when only `raw_notes` is available. Re-extraction (P3.R7) deletes old embeddings and replaces them with structured ones.
+
+### Embedding Service
+
+#### `lib/services/embedding-service.ts` (P3.R1, P3.R2, P3.R3, P3.R4)
+
+```typescript
+// ---------------------------------------------------------------------------
+// Provider resolution (mirrors ai-service.ts pattern)
+// ---------------------------------------------------------------------------
+
+type SupportedEmbeddingProvider = "openai";
+
+interface EmbeddingProviderAdapter {
+  embed(texts: string[], model: string, dimensions: number): Promise<number[][]>;
+}
+
+const PROVIDER_MAP: Record<SupportedEmbeddingProvider, () => EmbeddingProviderAdapter>;
+
+function resolveEmbeddingProvider(): {
+  adapter: EmbeddingProviderAdapter;
+  model: string;
+  dimensions: number;
+  label: string;
+};
+
+// ---------------------------------------------------------------------------
+// Public API
+// ---------------------------------------------------------------------------
+
+export async function embedTexts(texts: string[]): Promise<number[][]>;
+```
+
+**Provider resolution (`resolveEmbeddingProvider`):**
+
+- Reads `EMBEDDING_PROVIDER`, `EMBEDDING_MODEL`, `EMBEDDING_DIMENSIONS` from `process.env`.
+- If any are missing, throws `EmbeddingConfigError` with a descriptive message naming the missing variable.
+- Validates `EMBEDDING_DIMENSIONS` parses to a positive integer.
+- Looks up the provider in `PROVIDER_MAP`. If not found, throws `EmbeddingConfigError` listing supported providers.
+- Returns the adapter, model string, parsed dimensions, and a human-readable label (`"openai/text-embedding-3-small"`).
+
+**OpenAI adapter:**
+
+```typescript
+import OpenAI from "openai";
+
+const openaiAdapter: EmbeddingProviderAdapter = {
+  async embed(texts, model, dimensions) {
+    const client = new OpenAI(); // reads OPENAI_API_KEY from env
+    const response = await client.embeddings.create({
+      model,
+      input: texts,
+      dimensions,
+    });
+    // Return in input order (OpenAI guarantees order matches input)
+    return response.data.map((item) => item.embedding);
+  },
+};
+```
+
+**`embedTexts(texts)` (P3.R2):**
+
+- If `texts` is empty, returns `[]` immediately (no API call).
+- Resolves provider via `resolveEmbeddingProvider()`.
+- Processes texts in batches of `EMBEDDING_BATCH_SIZE` (configurable constant, default 20) to respect rate limits (P3.R4).
+- Each batch is wrapped in `withEmbeddingRetry()` (see below).
+- Between batches, waits `EMBEDDING_BATCH_DELAY_MS` (configurable constant, default 200ms).
+- Returns all embeddings as a flat `number[][]` in the same order as the input texts.
+
+**Retry logic (`withEmbeddingRetry`) (P3.R3):**
+
+Mirrors `withRetry` from `ai-service.ts` but is self-contained in `embedding-service.ts` (no shared import — the retry logic is internal to each service per SRP):
+
+- Max retries: 3.
+- Initial delay: 1000ms, exponential backoff (`delay * 2^attempt`).
+- On 429: respect `Retry-After` header if present in the error response, otherwise use exponential backoff (P3.R4).
+- On 5xx or network errors: retry with exponential backoff.
+- On other 4xx (except 429): throw immediately as `EmbeddingRequestError` (config or input bug).
+- After max retries exhausted: throw `EmbeddingServiceError`.
+
+**Dimension validation (P3.R1 + defensive check):**
+
+On the first call to `embedTexts()`, after receiving the first batch of embeddings from the provider, validate that the returned vector length matches `EMBEDDING_DIMENSIONS`. If mismatched, throw `EmbeddingConfigError` with the message: `"Embedding dimension mismatch: provider returned ${actual}-dimensional vectors but EMBEDDING_DIMENSIONS is set to ${expected}. The session_embeddings column is vector(${expected}). Update EMBEDDING_DIMENSIONS or the database column to match."`. This is a module-level flag (`dimensionValidated`) that flips to `true` after the first successful check — subsequent calls skip validation.
+
+**Error classes:**
+
+```typescript
+export class EmbeddingServiceError extends Error { name = "EmbeddingServiceError"; }
+export class EmbeddingConfigError extends EmbeddingServiceError { name = "EmbeddingConfigError"; }
+export class EmbeddingRequestError extends EmbeddingServiceError { name = "EmbeddingRequestError"; }
+export class EmbeddingRateLimitError extends EmbeddingServiceError { name = "EmbeddingRateLimitError"; }
+```
+
+### Embedding Repository
+
+#### Interface: `lib/repositories/embedding-repository.ts` (P3.R5)
+
+```typescript
+export interface EmbeddingRow {
+  id?: string;
+  session_id: string;
+  team_id: string | null;
+  chunk_text: string;
+  chunk_type: string;
+  metadata: Record<string, unknown>;
+  embedding: number[];
+  schema_version: number;
+}
+
+export interface SearchOptions {
+  teamId: string | null;
+  maxResults: number;
+  chunkTypes?: string[];
+  clientName?: string;
+  dateFrom?: string;
+  dateTo?: string;
+  similarityThreshold?: number;
+}
+
+export interface SimilarityResult {
+  id: string;
+  sessionId: string;
+  chunkText: string;
+  chunkType: string;
+  metadata: Record<string, unknown>;
+  similarityScore: number;
+}
+
+export interface EmbeddingRepository {
+  upsertChunks(chunks: EmbeddingRow[]): Promise<void>;
+  deleteBySessionId(sessionId: string): Promise<void>;
+  similaritySearch(
+    queryEmbedding: number[],
+    options: SearchOptions
+  ): Promise<SimilarityResult[]>;
+}
+```
+
+#### Implementation: `lib/repositories/supabase/supabase-embedding-repository.ts`
+
+```typescript
+export function createEmbeddingRepository(
+  serviceClient: SupabaseClient,
+  teamId: string | null
+): EmbeddingRepository;
+```
+
+**`upsertChunks(chunks)` (P3.R5):**
+
+- If `chunks` is empty, returns immediately.
+- Uses `serviceClient.from("session_embeddings").insert(chunks)` for bulk insert.
+- Embedding vectors are passed as arrays — Supabase's PostgREST client handles `vector` column serialisation.
+- Logs entry (chunk count, session_id from first chunk) and exit (success or error).
+
+**`deleteBySessionId(sessionId)` (P3.R5):**
+
+- Uses `serviceClient.from("session_embeddings").delete().eq("session_id", sessionId)`.
+- Logs entry (session_id) and exit (success or error).
+
+**`similaritySearch(queryEmbedding, options)` (P3.R5):**
+
+- Calls a Postgres RPC function `match_session_embeddings` that performs the cosine similarity search server-side. This is more efficient than fetching all embeddings and computing similarity in JavaScript.
+- The RPC function is created as part of this increment's migration:
+
+```sql
+CREATE OR REPLACE FUNCTION match_session_embeddings(
+  query_embedding vector(1536),
+  match_count INT,
+  similarity_threshold FLOAT DEFAULT 0.3,
+  filter_team_id UUID DEFAULT NULL,
+  filter_chunk_types TEXT[] DEFAULT NULL,
+  filter_client_name TEXT DEFAULT NULL,
+  filter_date_from DATE DEFAULT NULL,
+  filter_date_to DATE DEFAULT NULL
+)
+RETURNS TABLE (
+  id UUID,
+  session_id UUID,
+  chunk_text TEXT,
+  chunk_type TEXT,
+  metadata JSONB,
+  similarity FLOAT
+)
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+AS $$
+  SELECT
+    se.id,
+    se.session_id,
+    se.chunk_text,
+    se.chunk_type,
+    se.metadata,
+    1 - (se.embedding <=> query_embedding) AS similarity
+  FROM session_embeddings se
+  INNER JOIN sessions s ON s.id = se.session_id AND s.deleted_at IS NULL
+  WHERE
+    (filter_team_id IS NULL AND se.team_id IS NULL
+     OR se.team_id = filter_team_id)
+    AND (filter_chunk_types IS NULL
+     OR se.chunk_type = ANY(filter_chunk_types))
+    AND (filter_client_name IS NULL
+     OR se.metadata->>'client_name' = filter_client_name)
+    AND (filter_date_from IS NULL
+     OR (se.metadata->>'session_date')::date >= filter_date_from)
+    AND (filter_date_to IS NULL
+     OR (se.metadata->>'session_date')::date <= filter_date_to)
+    AND 1 - (se.embedding <=> query_embedding) >= similarity_threshold
+  ORDER BY similarity DESC
+  LIMIT match_count;
+$$;
+```
+
+- The adapter calls this function via `serviceClient.rpc("match_session_embeddings", { ... })` and maps the result rows to `SimilarityResult[]`.
+- Logs entry (options summary) and exit (result count).
+
+**Why `SECURITY DEFINER`:** The RPC function needs to read from `session_embeddings` and join to `sessions`. Using `SECURITY DEFINER` with the function owner (service role) bypasses RLS for this server-side search operation. The team scoping is enforced by the `filter_team_id` parameter, which the application layer always provides from the authenticated user's active workspace.
+
+**Why join to `sessions WHERE deleted_at IS NULL`:** Embeddings for soft-deleted sessions remain in the database (no application-level cleanup). The join ensures they are excluded from search results without requiring a separate cleanup job.
+
+### Wiring Into Session Flows
+
+#### Embedding orchestrator: `lib/services/embedding-orchestrator.ts` (P3.R6, P3.R7, P3.R9)
+
+A thin coordination layer that ties together the chunking service, embedding service, and embedding repository. This keeps the orchestration logic out of API routes (which should only validate and delegate) and out of the individual services (which should remain single-responsibility).
+
+```typescript
+import type { ExtractedSignals } from "@/lib/schemas/extraction-schema";
+import type { SessionMeta } from "@/lib/types/embedding-chunk";
+import type { EmbeddingRepository } from "@/lib/repositories/embedding-repository";
+
+/**
+ * Generates embeddings for a session and persists them.
+ * If the session has structured_json, chunks via chunkStructuredSignals().
+ * Otherwise, falls back to chunkRawNotes() for raw-only sessions.
+ *
+ * On re-extraction: caller should pass isReExtraction=true to delete
+ * existing embeddings before generating new ones (P3.R7).
+ *
+ * Embedding failures are logged but never thrown — this function
+ * swallows errors so it can be called fire-and-forget (P3.R6).
+ */
+export async function generateSessionEmbeddings(options: {
+  sessionMeta: SessionMeta;
+  structuredJson: ExtractedSignals | null;
+  rawNotes: string;
+  embeddingRepo: EmbeddingRepository;
+  isReExtraction?: boolean;
+}): Promise<void>;
+```
+
+**Flow:**
+
+1. If `isReExtraction`, call `embeddingRepo.deleteBySessionId(sessionMeta.sessionId)` (P3.R7).
+2. Chunk: if `structuredJson` is non-null, call `chunkStructuredSignals(structuredJson, sessionMeta)`. Else call `chunkRawNotes(rawNotes, sessionMeta)`.
+3. If chunks array is empty (raw notes with no paragraphs, or structured JSON with only empty arrays), log and return early.
+4. Call `embedTexts(chunks.map(c => c.chunkText))` to get vectors.
+5. Map chunks + vectors into `EmbeddingRow[]`.
+6. Call `embeddingRepo.upsertChunks(rows)`.
+7. Log success: session ID, chunk count, chunk types breakdown.
+
+**Error handling:** The entire function body is wrapped in a try/catch. On any error, log the error with full context (session ID, step that failed, error message) and return — never rethrow. This ensures embedding failures are invisible to the caller and never block the session save or extraction response.
+
+#### API route changes
+
+**`app/api/sessions/route.ts` (POST) — embed on create (P3.R6, P3.R9):**
+
+After `createSession()` succeeds and the response is returned, trigger embedding generation fire-and-forget:
+
+```typescript
+// After session save succeeds — fire-and-forget embedding
+const embeddingRepo = createEmbeddingRepository(serviceClient, teamId);
+generateSessionEmbeddings({
+  sessionMeta: {
+    sessionId: session.id,
+    clientName: parsed.data.clientName || session.clientName,
+    sessionDate: parsed.data.sessionDate,
+    teamId,
+    schemaVersion: EXTRACTION_SCHEMA_VERSION,
+  },
+  structuredJson: parsed.data.structuredJson as ExtractedSignals | null,
+  rawNotes: parsed.data.rawNotes,
+  embeddingRepo,
+}).catch(() => {}); // swallowed — orchestrator already logs
+```
+
+The `.catch(() => {})` is intentional — it prevents unhandled promise rejections while the orchestrator's internal try/catch handles logging. The `catch` on the promise is a safety net for any edge case where the orchestrator's own error handling fails.
+
+**`app/api/sessions/[id]/route.ts` (PUT) — embed on update/re-extraction (P3.R6, P3.R7):**
+
+After `updateSession()` succeeds:
+
+```typescript
+const embeddingRepo = createEmbeddingRepository(serviceClient, teamId);
+generateSessionEmbeddings({
+  sessionMeta: {
+    sessionId: id,
+    clientName: session.clientName,
+    sessionDate: parsed.data.sessionDate,
+    teamId,
+    schemaVersion: EXTRACTION_SCHEMA_VERSION,
+  },
+  structuredJson: parsed.data.isExtraction
+    ? (parsed.data.structuredJson as ExtractedSignals | null)
+    : null, // non-extraction updates don't re-embed structured data
+  rawNotes: parsed.data.rawNotes,
+  embeddingRepo,
+  isReExtraction: parsed.data.isExtraction,
+}).catch(() => {});
+```
+
+**Note on non-extraction updates:** When a user edits metadata (client name, date) or raw notes without re-extracting, the `isExtraction` flag is `false`. In this case we still re-generate embeddings because the raw notes or metadata may have changed. The orchestrator deletes old embeddings (via `isReExtraction: true` — we set this to `true` on any update, not just extractions) and generates fresh ones. This ensures embeddings always reflect the latest session content.
+
+**Correction to the above:** On further consideration, every PUT that changes content should re-embed. Set `isReExtraction: true` for all PUT calls to ensure stale embeddings are replaced.
+
+**`app/api/sessions/[id]/route.ts` (DELETE) — cascade handled by FK (P3.R8):**
+
+No changes needed. The `ON DELETE CASCADE` foreign key on `session_embeddings.session_id` handles cleanup when the session is hard-deleted. For soft deletes, the `match_session_embeddings` function's join to `sessions WHERE deleted_at IS NULL` excludes embeddings of soft-deleted sessions from search results.
+
+### Environment Variables (P3.R10)
+
+Add to `.env.example`:
+
+```
+# Embedding provider — which embedding service to use
+# Supported: openai
+EMBEDDING_PROVIDER=openai
+
+# Embedding model — provider-specific model identifier
+# Examples: text-embedding-3-small (openai), text-embedding-3-large (openai)
+EMBEDDING_MODEL=text-embedding-3-small
+
+# Embedding dimensions — must match the vector column in session_embeddings
+# text-embedding-3-small default: 1536
+EMBEDDING_DIMENSIONS=1536
+```
+
+`OPENAI_API_KEY` is already in `.env.example` (used by the AI service for OpenAI generation). It is shared by the embedding service when `EMBEDDING_PROVIDER=openai`.
+
+### Database Migration
+
+#### `002-match-session-embeddings-rpc.sql`
+
+Contains the `match_session_embeddings` RPC function defined in the Embedding Repository section above. This is a separate migration from Part 1's table creation.
+
+### Files Changed
+
+| File | Action | Purpose |
+|------|--------|---------|
+| `lib/services/embedding-service.ts` | **Create** | Provider-agnostic embedding service — `embedTexts()`, retry logic, dimension validation |
+| `lib/services/embedding-orchestrator.ts` | **Create** | Coordination layer — `generateSessionEmbeddings()` ties chunking → embedding → persistence |
+| `lib/repositories/embedding-repository.ts` | **Create** | `EmbeddingRepository` interface + types (`EmbeddingRow`, `SearchOptions`, `SimilarityResult`) |
+| `lib/repositories/supabase/supabase-embedding-repository.ts` | **Create** | Supabase adapter — `upsertChunks()`, `deleteBySessionId()`, `similaritySearch()` via RPC |
+| `lib/repositories/index.ts` | **Modify** | Re-export `EmbeddingRepository` and related types |
+| `lib/repositories/supabase/index.ts` | **Modify** | Re-export `createEmbeddingRepository` factory |
+| `app/api/sessions/route.ts` | **Modify** | Wire fire-and-forget embedding into POST (session create) |
+| `app/api/sessions/[id]/route.ts` | **Modify** | Wire fire-and-forget embedding into PUT (session update/re-extraction) |
+| `.env.example` | **Modify** | Add `EMBEDDING_PROVIDER`, `EMBEDDING_MODEL`, `EMBEDDING_DIMENSIONS` |
+| `docs/019-vector-search/002-match-session-embeddings-rpc.sql` | **Create** | Migration SQL for the `match_session_embeddings` RPC function |
+
+### Implementation
+
+#### Increment 3.1: Embedding Service
+
+**What:** Create the provider-agnostic embedding service with OpenAI adapter, retry logic, batching, and dimension validation.
+
+**Steps:**
+
+1. Install `openai` npm package: `npm install openai`.
+2. Create `lib/services/embedding-service.ts` with:
+   - `resolveEmbeddingProvider()` reading env vars.
+   - OpenAI adapter using `new OpenAI()`.
+   - `withEmbeddingRetry()` with exponential backoff and 429/Retry-After handling.
+   - `embedTexts()` with batching (default 20) and inter-batch delay (default 200ms).
+   - Dimension validation on first call.
+   - Error classes: `EmbeddingServiceError`, `EmbeddingConfigError`, `EmbeddingRequestError`, `EmbeddingRateLimitError`.
+
+**Verification:**
+
+- `npx tsc --noEmit` — no type errors.
+- Confirm no imports from `next/server` (service is framework-agnostic).
+
+#### Increment 3.2: Embedding Repository
+
+**What:** Create the repository interface and Supabase adapter, plus the RPC migration.
+
+**Steps:**
+
+1. Create `lib/repositories/embedding-repository.ts` with the interface and types.
+2. Create `lib/repositories/supabase/supabase-embedding-repository.ts` with the factory function and all three methods.
+3. Create `docs/019-vector-search/002-match-session-embeddings-rpc.sql` with the `match_session_embeddings` function.
+4. Update `lib/repositories/index.ts` — re-export `EmbeddingRepository`, `EmbeddingRow`, `SearchOptions`, `SimilarityResult`.
+5. Update `lib/repositories/supabase/index.ts` — re-export `createEmbeddingRepository`.
+6. Run the RPC migration against Supabase.
+
+**Verification:**
+
+- `npx tsc --noEmit` — no type errors.
+- Confirm the RPC function exists: `SELECT proname FROM pg_proc WHERE proname = 'match_session_embeddings';`.
+
+#### Increment 3.3: Embedding Orchestrator
+
+**What:** Create the coordination layer that ties chunking, embedding, and persistence together.
+
+**Steps:**
+
+1. Create `lib/services/embedding-orchestrator.ts` with `generateSessionEmbeddings()`.
+2. Confirm it imports from chunking-service, embedding-service, and embedding-repository only (no `next/server`, no Supabase client directly).
+
+**Verification:**
+
+- `npx tsc --noEmit` — no type errors.
+- Read the file and confirm the try/catch wraps the entire body and never rethrows.
+
+#### Increment 3.4: Wire Into API Routes + Env Vars
+
+**What:** Modify the session POST and PUT routes to trigger fire-and-forget embedding, and update `.env.example`.
+
+**Steps:**
+
+1. Modify `app/api/sessions/route.ts` — add imports for `createEmbeddingRepository`, `generateSessionEmbeddings`, `EXTRACTION_SCHEMA_VERSION`; add fire-and-forget call after session create.
+2. Modify `app/api/sessions/[id]/route.ts` — same imports; add fire-and-forget call after session update, with `isReExtraction: true` for all PUTs.
+3. Update `.env.example` — add the three embedding env vars.
+
+**Verification:**
+
+- `npx tsc --noEmit` — no type errors.
+- Read both route files and confirm the embedding call is after the `NextResponse.json()` return or is truly fire-and-forget (`.catch(() => {})`).
+- Confirm `.env.example` has the new variables.
+
+#### Increment 3.5: End-of-Part Audit
+
+**What:** Run the full end-of-part audit checklist across all files created and modified in Part 3.
+
+**Checklist:**
+
+1. **SRP violations** — `embedding-service.ts` handles provider resolution and API calls. `embedding-orchestrator.ts` handles coordination. `embedding-repository.ts` handles persistence. `supabase-embedding-repository.ts` handles Supabase-specific queries. No file does two jobs.
+2. **DRY violations** — Retry logic is self-contained per service (not shared with `ai-service.ts` — intentional per SRP since the error types differ). Confirm no duplicate code between embedding-service and ai-service beyond the structural retry pattern.
+3. **Design token adherence** — N/A (no UI components).
+4. **Logging** — Confirm every public function and repository method logs entry (with input context), exit (with outcome), and errors (with full message). Confirm `embedding-orchestrator.ts` logs at each step.
+5. **Dead code** — No unused imports or unreachable branches. Confirm all error classes are used.
+6. **Convention compliance** — kebab-case files, PascalCase types, camelCase functions, named exports, correct import order. Repository follows existing interface + supabase-adapter pattern.
+7. **TypeScript strictness** — `npx tsc --noEmit`. Zero errors, zero `any` types (except the one allowed in `scope-by-team.ts` which is pre-existing).
+8. **Environment variables** — Confirm `.env.example` documents all three new variables. Confirm `ARCHITECTURE.md` env vars section (if one exists) is updated.
+
+**Post-audit:**
+
+- Update `ARCHITECTURE.md` — add new files to file map, add `EMBEDDING_PROVIDER`/`EMBEDDING_MODEL`/`EMBEDDING_DIMENSIONS` to any env vars documentation, update the Current State section.
+- Update `CHANGELOG.md` — record Part 3 completion.
