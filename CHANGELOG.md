@@ -6,6 +6,32 @@ All notable changes to this project are documented here, grouped by PRD and part
 
 ## [Unreleased]
 
+### PRD-021 Part 3: Derived Theme Widgets — 2026-04-12
+
+**New dashboard widgets:**
+- Top Themes — horizontal BarChart (layout="vertical") ranked by signal count descending; custom tooltip shows per-chunk-type breakdown (e.g., "5 Pain points, 3 Requirements, 2 Blockers"); 15-theme default with "Show all N themes" toggle; clickable bars (drill-down stub for Part 4); spans 2 grid columns
+- Theme Trends — multi-line LineChart with X-axis time buckets, Y-axis signal count, each theme a separate coloured line; defaults to top 5 themes by total count; local theme multi-select (Popover + Command); local week/month granularity toggle; 8-colour cycling palette; spans 2 grid columns
+- Theme-Client Matrix — HTML heatmap grid (not Recharts); themes on rows, clients on columns; cell background opacity proportional to count; sticky row/column headers for scrollable overflow; custom positioned tooltip ("Theme X + Client Y: N signals"); clickable cells (drill-down stub for Part 4); spans 3 grid columns
+
+**Database query service extensions:**
+- 3 new actions: `top_themes` (aggregate by theme_id with chunk_type sub-counts), `theme_trends` (group by date_trunc + theme_id), `theme_client_matrix` (sparse cells grouped by theme_id + client_id)
+- `confidenceMin?: number` added to `QueryFilters` — filters signal_themes by confidence threshold (available as URL param `?confidenceMin=0.8`, UI slider deferred to Part 6)
+- `fetchActiveThemeMap()` shared helper — queries `themes` table for workspace-scoped id→name Map
+- `fetchSignalThemeRows()` shared helper — multi-table join (`signal_themes` → `session_embeddings!inner` → `sessions!inner`) with team scoping, date range, client IDs, and confidence threshold
+- `dateTrunc()` utility — week (Monday-aligned) and month truncation for TypeScript-side grouping
+
+**API route extensions:**
+- 3 new actions added to Zod enum in `/api/dashboard` route
+- `confidenceMin` param: `z.coerce.number().min(0).max(1).optional()`
+
+**Shared infrastructure:**
+- `BRAND_PRIMARY_HEX` and `BRAND_PRIMARY_RGB` constants extracted to `chart-colours.ts` (DRY)
+- `THEME_LINE_COLOURS` 8-colour palette added to `chart-colours.ts`
+- All 3 theme widgets use `useDashboardFetch` and `DashboardCard` (shared patterns from Part 2)
+- Dashboard grid now contains 8 widgets total (5 direct + 3 theme-derived)
+
+---
+
 ### PRD-021 Part 2: Dashboard Layout, Navigation, and Direct Widgets — 2026-04-12
 
 **New route and page:**

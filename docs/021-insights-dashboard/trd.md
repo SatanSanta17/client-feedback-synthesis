@@ -1,8 +1,8 @@
 # TRD-021: AI-Powered Insights Dashboard
 
-> **Status:** Draft (Parts 1–3 detailed)
+> **Status:** Parts 1–3 implemented. Parts 4–6 pending.
 > **PRD:** `docs/021-insights-dashboard/prd.md` (approved)
-> **Mirrors:** PRD Parts 1–6. Each part is written and reviewed one at a time. Parts 3–6 will be added after their preceding parts are implemented.
+> **Mirrors:** PRD Parts 1–6. Each part is written and reviewed one at a time. Parts 4–6 will be added after their preceding parts are implemented.
 
 ---
 

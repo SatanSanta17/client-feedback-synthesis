@@ -14,6 +14,7 @@ import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { DashboardCard } from "./dashboard-card";
 import { useDashboardFetch } from "./use-dashboard-fetch";
+import { BRAND_PRIMARY_HEX } from "./chart-colours";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -39,7 +40,6 @@ interface TopThemesData {
 // ---------------------------------------------------------------------------
 
 const DEFAULT_DISPLAY_LIMIT = 15;
-const BRAND_PRIMARY = "#6366f1"; // indigo-500
 
 /**
  * Human-readable labels for chunk_type keys.
@@ -148,7 +148,7 @@ export function TopThemesWidget({ className }: TopThemesWidgetProps) {
           <Tooltip content={<BreakdownTooltip />} />
           <Bar
             dataKey="count"
-            fill={BRAND_PRIMARY}
+            fill={BRAND_PRIMARY_HEX}
             radius={[0, 4, 4, 0]}
             onClick={(entry) => {
               // Drill-down wired in Part 4

@@ -5,6 +5,7 @@ import { useMemo, useState } from "react";
 import { cn } from "@/lib/utils";
 import { DashboardCard } from "./dashboard-card";
 import { useDashboardFetch } from "./use-dashboard-fetch";
+import { BRAND_PRIMARY_RGB } from "./chart-colours";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -35,13 +36,6 @@ interface MatrixData {
   clients: ClientMeta[];
   cells: Cell[];
 }
-
-// ---------------------------------------------------------------------------
-// Constants
-// ---------------------------------------------------------------------------
-
-/** Brand primary colour in RGB — used for heatmap opacity mapping. */
-const BRAND_RGB = "99, 102, 241"; // indigo-500
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -232,13 +226,13 @@ export function ThemeClientMatrixWidget({
                         style={{
                           backgroundColor:
                             count > 0
-                              ? `rgba(${BRAND_RGB}, ${opacity})`
+                              ? `rgba(${BRAND_PRIMARY_RGB}, ${opacity})`
                               : "transparent",
                           color:
                             count > 0
                               ? opacity > 0.5
                                 ? "#fff"
-                                : `rgb(${BRAND_RGB})`
+                                : `rgb(${BRAND_PRIMARY_RGB})`
                               : "var(--text-tertiary)",
                         }}
                       >
