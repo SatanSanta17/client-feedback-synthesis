@@ -22,6 +22,57 @@ export const URGENCY_COLOURS: Record<string, string> = {
   critical: "#ef4444", // red-500
 };
 
+// ---------------------------------------------------------------------------
+// Chunk type labels — human-readable display names for signal chunk types.
+// ---------------------------------------------------------------------------
+
+export const CHUNK_TYPE_LABELS: Record<string, string> = {
+  pain_point: "Pain Point",
+  requirement: "Requirement",
+  blocker: "Blocker",
+  aspiration: "Aspiration",
+  competitive_mention: "Competitive Mention",
+  tool_and_platform: "Tool & Platform",
+  client_profile: "Client Profile",
+  summary: "Summary",
+  praise: "Praise",
+  question: "Question",
+  action_item: "Action Item",
+  custom: "Custom",
+  raw: "Raw",
+};
+
+/**
+ * Returns a human-readable label for a chunk type key.
+ * Falls back to replacing underscores with spaces.
+ */
+export function formatChunkType(key: string): string {
+  return CHUNK_TYPE_LABELS[key] ?? key.replace(/_/g, " ");
+}
+
+/**
+ * Returns a pluralised human-readable label for a chunk type key.
+ * Used in tooltip breakdowns.
+ */
+export function formatChunkTypePlural(key: string): string {
+  const PLURAL_LABELS: Record<string, string> = {
+    pain_point: "Pain points",
+    requirement: "Requirements",
+    blocker: "Blockers",
+    aspiration: "Aspirations",
+    competitive_mention: "Competitive mentions",
+    tool_and_platform: "Tools & platforms",
+    client_profile: "Client profiles",
+    summary: "Summaries",
+    praise: "Praises",
+    question: "Questions",
+    action_item: "Action items",
+    custom: "Custom",
+    raw: "Raw",
+  };
+  return PLURAL_LABELS[key] ?? key.replace(/_/g, " ");
+}
+
 /**
  * 8-colour palette for multi-line theme charts. Colours cycle when
  * more than 8 themes are selected.

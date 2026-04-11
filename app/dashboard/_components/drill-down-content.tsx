@@ -5,6 +5,7 @@ import { AlertCircle, ChevronRight, Eye, RefreshCw } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import { useDashboardFetch } from "./use-dashboard-fetch";
+import { formatChunkType } from "./chart-colours";
 import type {
   DrillDownContext,
   DrillDownClientGroup,
@@ -26,21 +27,7 @@ interface DrillDownContentProps {
 // Constants
 // ---------------------------------------------------------------------------
 
-const CHUNK_TYPE_LABELS: Record<string, string> = {
-  pain_point: "Pain Point",
-  requirement: "Requirement",
-  praise: "Praise",
-  question: "Question",
-  competitive_mention: "Competitive",
-  action_item: "Action Item",
-  raw: "Raw",
-};
-
-function humanChunkType(key: string): string {
-  return CHUNK_TYPE_LABELS[key] ?? key.replace(/_/g, " ");
-}
-
-/** Max lines of chunk text before truncation. */
+/** Max characters of chunk text before truncation. */
 const TRUNCATE_LENGTH = 200;
 
 // ---------------------------------------------------------------------------
@@ -48,7 +35,6 @@ const TRUNCATE_LENGTH = 200;
 // ---------------------------------------------------------------------------
 
 interface SignalRowProps {
-  embeddingId: string;
   sessionId: string;
   sessionDate: string;
   chunkText: string;
@@ -77,7 +63,7 @@ function SignalRow({
       {/* Badges row */}
       <div className="mb-1.5 flex flex-wrap items-center gap-1.5">
         <span className="inline-flex rounded-full bg-[var(--brand-primary-light)] px-2 py-0.5 text-xs font-medium text-[var(--brand-primary)]">
-          {humanChunkType(chunkType)}
+          {formatChunkType(chunkType)}
         </span>
         {themeName && (
           <span className="inline-flex rounded-full bg-[var(--surface-raised)] px-2 py-0.5 text-xs font-medium text-[var(--text-secondary)]">
@@ -143,7 +129,6 @@ function ClientGroup({ group, onViewSession, defaultOpen }: ClientGroupProps) {
         {group.signals.map((signal) => (
           <SignalRow
             key={signal.embeddingId}
-            embeddingId={signal.embeddingId}
             sessionId={signal.sessionId}
             sessionDate={signal.sessionDate}
             chunkText={signal.chunkText}

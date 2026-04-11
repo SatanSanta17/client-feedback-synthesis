@@ -14,7 +14,7 @@ import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { DashboardCard } from "./dashboard-card";
 import { useDashboardFetch } from "./use-dashboard-fetch";
-import { BRAND_PRIMARY_HEX } from "./chart-colours";
+import { BRAND_PRIMARY_HEX, formatChunkTypePlural } from "./chart-colours";
 import type { DrillDownContext } from "./drill-down-types";
 
 // ---------------------------------------------------------------------------
@@ -43,26 +43,6 @@ interface TopThemesData {
 
 const DEFAULT_DISPLAY_LIMIT = 15;
 
-/**
- * Human-readable labels for chunk_type keys.
- */
-const CHUNK_TYPE_LABELS: Record<string, string> = {
-  pain_point: "Pain points",
-  requirement: "Requirements",
-  blocker: "Blockers",
-  aspiration: "Aspirations",
-  competitive_mention: "Competitive mentions",
-  tool_and_platform: "Tools & platforms",
-  client_profile: "Client profiles",
-  summary: "Summaries",
-  custom: "Custom",
-  raw: "Raw",
-};
-
-function formatChunkType(key: string): string {
-  return CHUNK_TYPE_LABELS[key] ?? key.replace(/_/g, " ");
-}
-
 // ---------------------------------------------------------------------------
 // Custom Tooltip
 // ---------------------------------------------------------------------------
@@ -89,7 +69,7 @@ function BreakdownTooltip({ active, payload }: BreakdownTooltipProps) {
       <p className="mb-1 text-gray-500">{entry.count} total signals</p>
       {sorted.map(([type, count]) => (
         <p key={type} className="text-gray-600">
-          {count} {formatChunkType(type)}
+          {count} {formatChunkTypePlural(type)}
         </p>
       ))}
     </div>

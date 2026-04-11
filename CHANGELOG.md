@@ -6,6 +6,36 @@ All notable changes to this project are documented here, grouped by PRD and part
 
 ## [Unreleased]
 
+### PRD-021 Part 4: Qualitative Drill-Down — 2026-04-12
+
+**New components:**
+- `drill-down-types.ts` — `DrillDownContext` discriminated union (7 variants: sentiment, urgency, client, competitor, theme, theme_bucket, theme_client), `DrillDownSignal`, `DrillDownClientGroup`, `DrillDownResult` interfaces
+- `drill-down-content.tsx` — Presentation-agnostic drill-down body; fetches data via `useDashboardFetch` with `drill_down` action; renders count header (with truncation indicator), filter label, client accordion (native `<details>/<summary>`, multiple open simultaneously), signal rows with chunk-type badge, theme badge, session date, text truncation toggle, "View Session" button; loading/error/empty states
+- `drill-down-panel.tsx` — Thin Sheet shell (side="right", 45vw desktop / full mobile) wrapping `DrillDownContent`; swappable to Dialog in one file change; owns `SessionPreviewDialog` state
+- `session-preview-dialog.tsx` — Dialog wrapping `StructuredSignalView`; fetches session via `session_detail` action; client name + date in header; loading skeleton, error retry, no-data states
+
+**Database query service extensions:**
+- `drill_down` action — Zod-validated discriminated union payload with 7 dispatch strategies: 3 direct (sentiment, urgency, client via `fetchDirectDrillDownRows`), 1 competitor (sessions + filtered embeddings), 3 theme (signal_themes join via `fetchThemeDrillDownRows` with optional bucket/client narrowing); results grouped by client via `groupByClient()`, capped at 100 signals
+- `session_detail` action — fetches single session by ID with team scoping, returns `structuredJson`, `clientName`, `sessionDate`
+- `drillDown?: string` and `sessionId?: string` added to `QueryFilters`
+
+**API route extensions:**
+- 2 new actions (`drill_down`, `session_detail`) added to Zod enum
+- `drillDown: z.string().optional()` and `sessionId: z.string().uuid().optional()` params
+
+**Widget wiring (7 widgets):**
+- All 7 clickable widgets now accept `onDrillDown?: (context: DrillDownContext) => void` prop
+- `dashboard-content.tsx` manages `drillDownContext` state, passes `handleDrillDown` callback to all widgets, renders `DrillDownPanel`
+- All `console.log` drill-down stubs replaced with actual `onDrillDown` calls
+- `client-health-widget.tsx` — `clientId` added to `ScatterPoint` for drill-down
+- `theme-trends-widget.tsx` — `activeDot.onClick` handler dispatches `theme_bucket` context
+- `SessionVolumeWidget` intentionally excluded (no meaningful click interaction)
+
+**Shared infrastructure (DRY):**
+- `CHUNK_TYPE_LABELS`, `formatChunkType()`, `formatChunkTypePlural()` extracted to `chart-colours.ts` — replaces local definitions in `drill-down-content.tsx` and `top-themes-widget.tsx`
+
+---
+
 ### PRD-021 Part 3: Derived Theme Widgets — 2026-04-12
 
 **New dashboard widgets:**
