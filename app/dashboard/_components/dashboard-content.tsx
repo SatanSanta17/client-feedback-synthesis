@@ -20,6 +20,7 @@ import { InsightCardsRow } from "./insight-cards-row";
 import { PreviousInsights } from "./previous-insights";
 import { FreshnessContext } from "./freshness-context";
 import { FreshnessIndicator } from "./freshness-indicator";
+import { exportDashboardAsImage } from "./export-dashboard";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -35,9 +36,9 @@ interface DashboardContentProps {
 
 function DashboardInner() {
   const router = useRouter();
-  // Widgets will consume searchParams to re-fetch on filter changes
+  // Widgets consume searchParams to re-fetch on filter changes;
+  // also used by applyWidgetFilter and activeFilters derivation.
   const searchParams = useSearchParams();
-  void searchParams;
 
   // Insights state
   const insights = useInsights();
@@ -106,10 +107,38 @@ function DashboardInner() {
     [handleFetchComplete]
   );
 
+  // ----------- Screenshot export -----------
+  const dashboardRef = useRef<HTMLDivElement>(null);
+  const [isExporting, setIsExporting] = useState(false);
+
+  // Derive active filters from URL params for the export header
+  const activeFilters = useMemo(() => {
+    const filters: Record<string, string> = {};
+    const keys = ["clients", "dateFrom", "dateTo", "severity", "urgency"];
+    for (const key of keys) {
+      const val = searchParams.get(key);
+      if (val) filters[key] = val;
+    }
+    return filters;
+  }, [searchParams]);
+
+  const handleExport = useCallback(async () => {
+    if (!dashboardRef.current) return;
+    setIsExporting(true);
+    try {
+      await exportDashboardAsImage(dashboardRef.current, activeFilters);
+    } catch {
+      // Error already logged inside exportDashboardAsImage
+    } finally {
+      setIsExporting(false);
+    }
+  }, [activeFilters]);
+
   return (
     <FreshnessContext.Provider value={freshnessValue}>
+      <div ref={dashboardRef} className="flex flex-col gap-6">
       {/* Global filter bar */}
-      <FilterBar />
+      <FilterBar onExport={handleExport} isExporting={isExporting} />
 
       {/* Data freshness */}
       <FreshnessIndicator lastFetchedAt={lastFetchedAt} className="-mt-4" />
@@ -145,6 +174,7 @@ function DashboardInner() {
         context={drillDownContext}
         onClose={handleDrillDownClose}
       />
+      </div>
     </FreshnessContext.Provider>
   );
 }

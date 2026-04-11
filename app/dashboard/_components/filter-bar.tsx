@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { Check, ChevronsUpDown, X } from "lucide-react";
+import { Camera, Check, ChevronsUpDown, Loader2, X } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -33,6 +33,8 @@ import {
 
 interface FilterBarProps {
   className?: string;
+  onExport?: () => void;
+  isExporting?: boolean;
 }
 
 interface ClientOption {
@@ -47,7 +49,7 @@ const URGENCY_OPTIONS = ["low", "medium", "high", "critical"] as const;
 // FilterBar
 // ---------------------------------------------------------------------------
 
-export function FilterBar({ className }: FilterBarProps) {
+export function FilterBar({ className, onExport, isExporting }: FilterBarProps) {
   const router = useRouter();
   const searchParams = useSearchParams();
 
@@ -256,6 +258,24 @@ export function FilterBar({ className }: FilterBarProps) {
         >
           <X className="mr-1 size-3.5" />
           Clear filters
+        </Button>
+      )}
+
+      {/* ---- Export as image ---- */}
+      {onExport && (
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={onExport}
+          disabled={isExporting}
+          className="ml-auto text-[var(--text-secondary)]"
+        >
+          {isExporting ? (
+            <Loader2 className="mr-1 size-3.5 animate-spin" />
+          ) : (
+            <Camera className="mr-1 size-3.5" />
+          )}
+          {isExporting ? "Exporting…" : "Export as Image"}
         </Button>
       )}
     </div>
