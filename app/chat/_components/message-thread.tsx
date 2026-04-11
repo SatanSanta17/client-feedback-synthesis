@@ -1,18 +1,20 @@
 "use client";
 
 // ---------------------------------------------------------------------------
-// MessageThread — Virtualized message list (PRD-020 Part 3, Increment 3.3)
+// MessageThread — Virtualized message list (PRD-020 Part 3, Increment 3.3/3.4)
 // ---------------------------------------------------------------------------
 // Uses react-virtuoso in reverse mode for chat-style bottom-anchored scrolling.
 // Supports infinite scroll upward to load older messages, and auto-scroll
 // when new messages arrive (disabled when user scrolls up).
+// Appends StreamingMessage as the last item during active streaming.
 // ---------------------------------------------------------------------------
 
-import { useRef, useCallback, useState } from "react";
+import { useRef, useCallback, useState, useMemo } from "react";
 import { Virtuoso, type VirtuosoHandle } from "react-virtuoso";
 
 import { MessageBubble } from "./message-bubble";
-import type { Message } from "@/lib/types/chat";
+import { StreamingMessage } from "./streaming-message";
+import type { Message, StreamState } from "@/lib/types/chat";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -30,7 +32,33 @@ interface MessageThreadProps {
   isLoadingMessages: boolean;
   hasMoreMessages: boolean;
   onFetchMoreMessages: () => Promise<void>;
+  /** Current streaming state. */
+  streamState: StreamState;
+  /** Content being accumulated during streaming. */
+  streamingContent: string;
+  /** Ephemeral status text during streaming. */
+  statusText: string | null;
+  /** Retry handler for failed/cancelled assistant messages. */
+  onRetry: () => void;
   className?: string;
+}
+
+// ---------------------------------------------------------------------------
+// Sentinel item for streaming
+// ---------------------------------------------------------------------------
+
+/** A sentinel "message" appended to the data array when streaming is active. */
+const STREAMING_SENTINEL_ID = "__streaming__";
+
+interface StreamingSentinel {
+  id: typeof STREAMING_SENTINEL_ID;
+  __streaming: true;
+}
+
+type ThreadItem = Message | StreamingSentinel;
+
+function isStreamingSentinel(item: ThreadItem): item is StreamingSentinel {
+  return "id" in item && item.id === STREAMING_SENTINEL_ID;
 }
 
 // ---------------------------------------------------------------------------
@@ -42,14 +70,30 @@ export function MessageThread({
   isLoadingMessages,
   hasMoreMessages,
   onFetchMoreMessages,
+  streamState,
+  streamingContent,
+  statusText,
+  onRetry,
   className,
 }: MessageThreadProps) {
   const virtuosoRef = useRef<VirtuosoHandle>(null);
   const [isAtBottom, setIsAtBottom] = useState(true);
   const [isFetchingMore, setIsFetchingMore] = useState(false);
 
+  // Build the data array: messages + optional streaming sentinel
+  const isStreaming = streamState === "streaming";
+  const items: ThreadItem[] = useMemo(() => {
+    if (isStreaming) {
+      return [
+        ...messages,
+        { id: STREAMING_SENTINEL_ID, __streaming: true } as StreamingSentinel,
+      ];
+    }
+    return messages;
+  }, [messages, isStreaming]);
+
   // firstItemIndex shifts as we prepend older messages
-  const firstItemIndex = FIRST_ITEM_INDEX_BASE - messages.length;
+  const firstItemIndex = FIRST_ITEM_INDEX_BASE - items.length;
 
   // Infinite scroll upward — triggered when reaching the top
   const handleStartReached = useCallback(async () => {
@@ -68,28 +112,40 @@ export function MessageThread({
     setIsAtBottom(atBottom);
   }, []);
 
-  // Render a single message item
+  // Render a single item
   const renderItem = useCallback(
-    (virtualIndex: number, message: Message) => {
-      // Convert virtual index to real array index (O(1) instead of indexOf)
-      const realIndex = virtualIndex - (FIRST_ITEM_INDEX_BASE - messages.length);
-      const isLatest = realIndex === messages.length - 1;
+    (virtualIndex: number, item: ThreadItem) => {
+      // Streaming sentinel — render the live streaming message
+      if (isStreamingSentinel(item)) {
+        return (
+          <StreamingMessage
+            content={streamingContent}
+            statusText={statusText}
+          />
+        );
+      }
+
+      // Regular message
+      const realIndex = virtualIndex - (FIRST_ITEM_INDEX_BASE - items.length);
+      // isLatest considers only real messages (not streaming sentinel)
+      const isLatestMessage = realIndex === messages.length - 1 && !isStreaming;
       const canRetry =
-        isLatest &&
-        message.role === "assistant" &&
-        (message.status === "failed" ||
-          message.status === "cancelled" ||
-          message.status === "streaming");
+        isLatestMessage &&
+        item.role === "assistant" &&
+        (item.status === "failed" ||
+          item.status === "cancelled" ||
+          item.status === "streaming");
 
       return (
         <MessageBubble
-          message={message}
-          isLatest={isLatest}
+          message={item}
+          isLatest={isLatestMessage}
           canRetry={canRetry}
+          onRetry={canRetry ? onRetry : undefined}
         />
       );
     },
-    [messages]
+    [items, messages.length, isStreaming, streamingContent, statusText, onRetry]
   );
 
   if (isLoadingMessages) {
@@ -107,7 +163,7 @@ export function MessageThread({
     );
   }
 
-  if (messages.length === 0) {
+  if (items.length === 0) {
     return null; // Empty state handled by ChatArea
   }
 
@@ -115,9 +171,9 @@ export function MessageThread({
     <Virtuoso
       ref={virtuosoRef}
       className={className}
-      data={messages}
+      data={items}
       firstItemIndex={firstItemIndex}
-      initialTopMostItemIndex={messages.length - 1}
+      initialTopMostItemIndex={items.length - 1}
       itemContent={renderItem}
       startReached={handleStartReached}
       atBottomStateChange={handleAtBottomStateChange}

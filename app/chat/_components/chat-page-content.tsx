@@ -36,9 +36,26 @@ export function ChatPageContent() {
   });
 
   // Handle new conversation creation from chat hook
-  const handleConversationCreated = useCallback((id: string) => {
-    setActiveConversationId(id);
-  }, []);
+  const { prependConversation } = conversationsHook;
+  const handleConversationCreated = useCallback(
+    (id: string) => {
+      setActiveConversationId(id);
+      // Add a placeholder conversation to the sidebar so it appears immediately.
+      // The title will be updated asynchronously by the fire-and-forget title
+      // generation via handleTitleGenerated / conversation list refetch.
+      prependConversation({
+        id,
+        title: "New conversation",
+        createdBy: user?.id ?? "",
+        teamId,
+        isPinned: false,
+        isArchived: false,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      });
+    },
+    [prependConversation, user?.id, teamId]
+  );
 
   // Handle async title generation
   const { updateConversation } = conversationsHook;

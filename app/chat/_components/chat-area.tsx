@@ -1,17 +1,18 @@
 "use client";
 
 // ---------------------------------------------------------------------------
-// ChatArea — Main chat area (PRD-020 Part 3, Increment 3.3)
+// ChatArea — Main chat area (PRD-020 Part 3, Increment 3.3/3.4)
 // ---------------------------------------------------------------------------
-// Composes: ChatHeader, MessageThread, and placeholder zones for
-// ChatInput (3.4), StarterQuestions (3.5), and ChatSearchBar (3.6).
-// Handles empty state and archived read-only state.
+// Composes: ChatHeader, MessageThread, ChatInput.
+// Handles empty state, archived read-only state, and streaming wiring.
+// Placeholder zones remain for StarterQuestions (3.5) and ChatSearchBar (3.6).
 // ---------------------------------------------------------------------------
 
 import { MessageSquare } from "lucide-react";
 
 import { ChatHeader } from "./chat-header";
 import { MessageThread } from "./message-thread";
+import { ChatInput } from "./chat-input";
 import type {
   Conversation,
   Message,
@@ -66,15 +67,19 @@ export function ChatArea(props: ChatAreaProps) {
     isLoadingMessages,
     hasMoreMessages,
     streamState,
+    streamingContent,
     statusText,
+    error,
     isSidebarCollapsed,
     onFetchMoreMessages,
+    onSendMessage,
+    onCancelStream,
+    onRetryLastMessage,
     onToggleSidebar,
     onOpenMobileSidebar,
   } = props;
-  // Props used by later increments: streamingContent, error,
-  // onSendMessage, onCancelStream, onRetryLastMessage, latestSources,
-  // latestFollowUps — destructured when their UI components are added.
+  // Props used by later increments: latestSources (3.5), latestFollowUps (3.5)
+  // — destructured when their UI components are added.
   const isArchived = activeConversation?.isArchived ?? false;
   const hasConversation = activeConversation !== null;
   const hasMessages = messages.length > 0 || streamState === "streaming";
@@ -111,25 +116,28 @@ export function ChatArea(props: ChatAreaProps) {
           isLoadingMessages={isLoadingMessages}
           hasMoreMessages={hasMoreMessages}
           onFetchMoreMessages={onFetchMoreMessages}
+          streamState={streamState}
+          streamingContent={streamingContent}
+          statusText={statusText}
+          onRetry={onRetryLastMessage}
           className="flex-1"
         />
       )}
 
-      {/* Input area — placeholder for Increment 3.4 (ChatInput) */}
-      {isArchived ? (
-        <div className="flex items-center justify-center gap-2 border-t border-border bg-muted/30 px-4 py-3 text-sm text-muted-foreground">
-          This conversation is archived.
-          {/* Unarchive button will be wired in Increment 3.7 */}
-        </div>
-      ) : (
-        <div className="border-t border-border px-4 py-3">
-          <div className="text-xs text-muted-foreground">
-            {streamState === "streaming"
-              ? statusText ?? "Generating…"
-              : "Input area — will be built in Increment 3.4"}
-          </div>
+      {/* Error banner */}
+      {error && streamState === "error" && (
+        <div className="border-t border-destructive/20 bg-destructive/5 px-4 py-2 text-center text-sm text-destructive">
+          {error}
         </div>
       )}
+
+      {/* Input area */}
+      <ChatInput
+        streamState={streamState}
+        isArchived={isArchived}
+        onSendMessage={onSendMessage}
+        onCancelStream={onCancelStream}
+      />
     </div>
   );
 }

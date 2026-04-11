@@ -1,10 +1,11 @@
 "use client";
 
 // ---------------------------------------------------------------------------
-// MessageBubble — Single message rendering (PRD-020 Part 3, Increment 3.3)
+// MessageBubble — Single message rendering (PRD-020 Part 3, Increment 3.3/3.4)
 // ---------------------------------------------------------------------------
 // User messages: right-aligned, coloured background.
 // Assistant messages: left-aligned, neutral background, markdown rendered.
+// Shows status indicator for failed/cancelled messages with optional retry.
 // ---------------------------------------------------------------------------
 
 import { memo } from "react";
@@ -12,6 +13,7 @@ import { memo } from "react";
 import { cn } from "@/lib/utils";
 import { MemoizedMarkdown } from "./memoized-markdown";
 import { MessageActions } from "./message-actions";
+import { MessageStatusIndicator } from "./message-status-indicator";
 import type { Message } from "@/lib/types/chat";
 
 // ---------------------------------------------------------------------------
@@ -24,6 +26,8 @@ interface MessageBubbleProps {
   isLatest: boolean;
   /** Whether this message can be retried (only latest failed assistant). */
   canRetry: boolean;
+  /** Retry handler — re-sends the preceding user message. */
+  onRetry?: () => void;
   className?: string;
 }
 
@@ -32,9 +36,14 @@ interface MessageBubbleProps {
 // ---------------------------------------------------------------------------
 
 export const MessageBubble = memo(function MessageBubble(props: MessageBubbleProps) {
-  const { message, className } = props;
-  // Props used by later increments: isLatest (3.4/3.5), canRetry (3.4)
+  const { message, isLatest, canRetry, onRetry, className } = props;
   const isUser = message.role === "user";
+  const showStatus =
+    !isUser &&
+    isLatest &&
+    (message.status === "failed" ||
+      message.status === "cancelled" ||
+      message.status === "streaming");
 
   return (
     <div
@@ -59,6 +68,15 @@ export const MessageBubble = memo(function MessageBubble(props: MessageBubblePro
           </p>
         ) : (
           <MemoizedMarkdown content={message.content} />
+        )}
+
+        {/* Status indicator for failed/cancelled messages */}
+        {showStatus && (
+          <MessageStatusIndicator
+            status={message.status}
+            canRetry={canRetry}
+            onRetry={onRetry}
+          />
         )}
 
         {/* Actions bar (hover-visible) */}
