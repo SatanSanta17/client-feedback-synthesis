@@ -12,6 +12,7 @@ import { CompetitiveMentionsWidget } from "./competitive-mentions-widget";
 import { ClientHealthWidget } from "./client-health-widget";
 import { TopThemesWidget } from "./top-themes-widget";
 import { ThemeTrendsWidget } from "./theme-trends-widget";
+import { ThemeClientMatrixWidget } from "./theme-client-matrix-widget";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -44,6 +45,7 @@ function DashboardInner() {
         <CompetitiveMentionsWidget />
         <TopThemesWidget />
         <ThemeTrendsWidget />
+        <ThemeClientMatrixWidget />
       </div>
     </>
   );
