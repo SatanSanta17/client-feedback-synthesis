@@ -9,7 +9,7 @@
 // Appends StreamingMessage as the last item during active streaming.
 // ---------------------------------------------------------------------------
 
-import { useRef, useCallback, useState, useMemo } from "react";
+import { useRef, useCallback, useState, useMemo, useEffect } from "react";
 import { Virtuoso, type VirtuosoHandle } from "react-virtuoso";
 
 import { MessageBubble } from "./message-bubble";
@@ -53,6 +53,10 @@ interface MessageThreadProps {
   latestFollowUps: string[];
   /** Called when a follow-up chip is clicked — sends it as a new message. */
   onSendFollowUp: (question: string) => void;
+  /** Active search query for highlighting. */
+  searchQuery?: string | null;
+  /** Message array index to scroll to (for search navigation). */
+  scrollToMessageIndex?: number | null;
   className?: string;
 }
 
@@ -89,6 +93,8 @@ export function MessageThread({
   onRetry,
   latestFollowUps,
   onSendFollowUp,
+  searchQuery,
+  scrollToMessageIndex,
   className,
 }: MessageThreadProps) {
   const virtuosoRef = useRef<VirtuosoHandle>(null);
@@ -109,6 +115,23 @@ export function MessageThread({
 
   // firstItemIndex shifts as we prepend older messages
   const firstItemIndex = FIRST_ITEM_INDEX_BASE - items.length;
+
+  // Scroll to a specific message index when search navigation changes
+  useEffect(() => {
+    if (
+      scrollToMessageIndex != null &&
+      scrollToMessageIndex >= 0 &&
+      virtuosoRef.current
+    ) {
+      // Convert real message index to virtual index
+      const virtualIndex = firstItemIndex + scrollToMessageIndex;
+      virtuosoRef.current.scrollToIndex({
+        index: virtualIndex,
+        align: "center",
+        behavior: "smooth",
+      });
+    }
+  }, [scrollToMessageIndex, firstItemIndex]);
 
   // Infinite scroll upward — triggered when reaching the top
   const handleStartReached = useCallback(async () => {
@@ -166,10 +189,11 @@ export function MessageThread({
           onRetry={canRetry ? onRetry : undefined}
           followUps={showFollowUps ? latestFollowUps : undefined}
           onSendFollowUp={showFollowUps ? onSendFollowUp : undefined}
+          searchQuery={searchQuery}
         />
       );
     },
-    [items, messages.length, isStreaming, streamingContent, statusText, onRetry, latestFollowUps, onSendFollowUp]
+    [items, messages.length, isStreaming, streamingContent, statusText, onRetry, latestFollowUps, onSendFollowUp, searchQuery]
   );
 
   if (isLoadingMessages) {

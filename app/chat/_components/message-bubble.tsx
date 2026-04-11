@@ -12,6 +12,7 @@ import { memo } from "react";
 
 import { cn } from "@/lib/utils";
 import { MemoizedMarkdown } from "./memoized-markdown";
+import { HighlightedText } from "./highlighted-text";
 import { MessageActions } from "./message-actions";
 import { MessageStatusIndicator } from "./message-status-indicator";
 import { CitationChips } from "./citation-chips";
@@ -34,6 +35,8 @@ interface MessageBubbleProps {
   followUps?: string[];
   /** Called when a follow-up chip is clicked. */
   onSendFollowUp?: (question: string) => void;
+  /** Active search query for text highlighting. */
+  searchQuery?: string | null;
   className?: string;
 }
 
@@ -49,6 +52,7 @@ export const MessageBubble = memo(function MessageBubble(props: MessageBubblePro
     onRetry,
     followUps,
     onSendFollowUp,
+    searchQuery,
     className,
   } = props;
   const isUser = message.role === "user";
@@ -88,10 +92,10 @@ export const MessageBubble = memo(function MessageBubble(props: MessageBubblePro
         {/* Message content */}
         {isUser ? (
           <p className="whitespace-pre-wrap text-sm leading-relaxed">
-            {message.content}
+            <HighlightedText text={message.content} searchQuery={searchQuery} />
           </p>
         ) : (
-          <MemoizedMarkdown content={message.content} />
+          <MemoizedMarkdown content={message.content} searchQuery={searchQuery} />
         )}
 
         {/* Citation chips — below assistant content when sources exist */}

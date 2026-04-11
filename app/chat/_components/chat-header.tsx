@@ -1,13 +1,13 @@
 "use client";
 
 // ---------------------------------------------------------------------------
-// ChatHeader — Chat area header (PRD-020 Part 3, Increment 3.3)
+// ChatHeader — Chat area header (PRD-020 Part 3, Increment 3.3/3.6)
 // ---------------------------------------------------------------------------
 // Shows conversation title, sidebar collapse toggle (desktop),
-// mobile sidebar trigger, and search toggle (wired in Increment 3.6).
+// mobile sidebar trigger, and search toggle button.
 // ---------------------------------------------------------------------------
 
-import { PanelLeft } from "lucide-react";
+import { PanelLeft, Search } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import type { Conversation } from "@/lib/types/chat";
@@ -19,8 +19,12 @@ import type { Conversation } from "@/lib/types/chat";
 interface ChatHeaderProps {
   conversation: Conversation | null;
   isSidebarCollapsed: boolean;
+  /** Whether there are messages to search through. */
+  hasMessages: boolean;
   onToggleSidebar: () => void;
   onOpenMobileSidebar: () => void;
+  /** Toggle in-conversation search bar. */
+  onToggleSearch: () => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -30,8 +34,10 @@ interface ChatHeaderProps {
 export function ChatHeader({
   conversation,
   isSidebarCollapsed,
+  hasMessages,
   onToggleSidebar,
   onOpenMobileSidebar,
+  onToggleSearch,
 }: ChatHeaderProps) {
   return (
     <div className="flex h-12 items-center gap-2 border-b border-border px-3">
@@ -63,6 +69,19 @@ export function ChatHeader({
       <h2 className="min-w-0 flex-1 truncate text-sm font-medium">
         {conversation?.title ?? "New conversation"}
       </h2>
+
+      {/* Search toggle */}
+      {hasMessages && (
+        <Button
+          variant="ghost"
+          size="icon-sm"
+          onClick={onToggleSearch}
+          title="Search in conversation (Ctrl+F)"
+          aria-label="Search in conversation"
+        >
+          <Search className="size-4" />
+        </Button>
+      )}
     </div>
   );
 }

@@ -1,17 +1,18 @@
 "use client";
 
 // ---------------------------------------------------------------------------
-// ChatArea — Main chat area (PRD-020 Part 3, Increment 3.3–3.5)
+// ChatArea — Main chat area (PRD-020 Part 3, Increment 3.3–3.6)
 // ---------------------------------------------------------------------------
-// Composes: ChatHeader, MessageThread, ChatInput, StarterQuestions.
+// Composes: ChatHeader, ChatSearchBar, MessageThread, ChatInput, StarterQuestions.
+// Manages in-conversation search state (query, match indices, navigation).
 // Handles empty state, archived read-only state, and streaming wiring.
-// Placeholder zone remains for ChatSearchBar (3.6).
 // ---------------------------------------------------------------------------
 
-import { useCallback } from "react";
+import { useState, useCallback, useMemo, useEffect } from "react";
 import { MessageSquare } from "lucide-react";
 
 import { ChatHeader } from "./chat-header";
+import { ChatSearchBar } from "./chat-search-bar";
 import { MessageThread } from "./message-thread";
 import { ChatInput } from "./chat-input";
 import { StarterQuestions } from "./starter-questions";
@@ -81,11 +82,96 @@ export function ChatArea(props: ChatAreaProps) {
     onToggleSidebar,
     onOpenMobileSidebar,
   } = props;
-  // Props used by later increments: latestSources (reserved for future use)
+  // Props reserved for future use: latestSources
   const isArchived = activeConversation?.isArchived ?? false;
   const hasConversation = activeConversation !== null;
   const hasMessages = messages.length > 0 || streamState === "streaming";
   const isStreaming = streamState === "streaming";
+
+  // -------------------------------------------------------------------------
+  // In-conversation search state
+  // -------------------------------------------------------------------------
+
+  const [isSearchOpen, setIsSearchOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [currentMatchIndex, setCurrentMatchIndex] = useState(0);
+
+  // Compute which message indices match the search query (case-insensitive)
+  const searchMatchIndices = useMemo(() => {
+    if (!searchQuery.trim()) return [];
+    const q = searchQuery.toLowerCase();
+    const indices: number[] = [];
+    for (let i = 0; i < messages.length; i++) {
+      if (messages[i].content.toLowerCase().includes(q)) {
+        indices.push(i);
+      }
+    }
+    return indices;
+  }, [messages, searchQuery]);
+
+  // Reset currentMatchIndex when matches change
+  useEffect(() => {
+    if (searchMatchIndices.length > 0) {
+      setCurrentMatchIndex(0);
+    }
+  }, [searchMatchIndices.length]);
+
+  // The message index to scroll to (null when no match)
+  const scrollToMessageIndex =
+    searchMatchIndices.length > 0
+      ? searchMatchIndices[currentMatchIndex] ?? null
+      : null;
+
+  // Search navigation
+  const handleSearchPrev = useCallback(() => {
+    setCurrentMatchIndex((prev) =>
+      searchMatchIndices.length === 0
+        ? 0
+        : (prev - 1 + searchMatchIndices.length) % searchMatchIndices.length
+    );
+  }, [searchMatchIndices.length]);
+
+  const handleSearchNext = useCallback(() => {
+    setCurrentMatchIndex((prev) =>
+      searchMatchIndices.length === 0
+        ? 0
+        : (prev + 1) % searchMatchIndices.length
+    );
+  }, [searchMatchIndices.length]);
+
+  const handleToggleSearch = useCallback(() => {
+    setIsSearchOpen((prev) => {
+      if (prev) {
+        // Closing: clear query
+        setSearchQuery("");
+        setCurrentMatchIndex(0);
+      }
+      return !prev;
+    });
+  }, []);
+
+  const handleCloseSearch = useCallback(() => {
+    setIsSearchOpen(false);
+    setSearchQuery("");
+    setCurrentMatchIndex(0);
+  }, []);
+
+  // Close search when conversation changes
+  useEffect(() => {
+    handleCloseSearch();
+  }, [activeConversation?.id, handleCloseSearch]);
+
+  // Keyboard shortcut: Ctrl/Cmd+F to open search
+  useEffect(() => {
+    function handleKeyDown(e: KeyboardEvent) {
+      if ((e.ctrlKey || e.metaKey) && e.key === "f" && hasMessages) {
+        e.preventDefault();
+        setIsSearchOpen(true);
+      }
+    }
+    document.addEventListener("keydown", handleKeyDown);
+    return () => document.removeEventListener("keydown", handleKeyDown);
+  }, [hasMessages]);
 
   // Follow-up chip click → send as a new message
   const handleSendFollowUp = useCallback(
@@ -95,15 +181,33 @@ export function ChatArea(props: ChatAreaProps) {
     [onSendMessage]
   );
 
+  // Active search query to pass down (only when search is open and has text)
+  const activeSearchQuery = isSearchOpen && searchQuery.trim() ? searchQuery : null;
+
   return (
     <div className="flex flex-1 flex-col overflow-hidden">
       {/* Header */}
       <ChatHeader
         conversation={activeConversation}
         isSidebarCollapsed={isSidebarCollapsed}
+        hasMessages={hasMessages}
         onToggleSidebar={onToggleSidebar}
         onOpenMobileSidebar={onOpenMobileSidebar}
+        onToggleSearch={handleToggleSearch}
       />
+
+      {/* Search bar (slides in below header) */}
+      {isSearchOpen && (
+        <ChatSearchBar
+          query={searchQuery}
+          onQueryChange={setSearchQuery}
+          matchCount={searchMatchIndices.length}
+          currentMatchIndex={currentMatchIndex}
+          onPrev={handleSearchPrev}
+          onNext={handleSearchNext}
+          onClose={handleCloseSearch}
+        />
+      )}
 
       {/* Main content area */}
       {!hasConversation && !hasMessages ? (
@@ -136,6 +240,8 @@ export function ChatArea(props: ChatAreaProps) {
           onRetry={onRetryLastMessage}
           latestFollowUps={latestFollowUps}
           onSendFollowUp={handleSendFollowUp}
+          searchQuery={activeSearchQuery}
+          scrollToMessageIndex={scrollToMessageIndex}
           className="flex-1"
         />
       )}

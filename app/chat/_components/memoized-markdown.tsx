@@ -6,13 +6,15 @@
 // Prevents re-rendering completed messages when new streaming deltas arrive.
 // Only the actively-streaming message re-renders; all completed messages above
 // it are memoized via content equality check.
+// Supports optional search highlighting via `searchQuery` prop.
 // ---------------------------------------------------------------------------
 
-import React from "react";
-import ReactMarkdown from "react-markdown";
+import React, { useMemo } from "react";
+import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 
 import { cn } from "@/lib/utils";
+import { highlightChildren } from "./highlighted-text";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -42,29 +44,76 @@ const REMARK_PLUGINS = [remarkGfm];
 
 interface MemoizedMarkdownProps {
   content: string;
+  /** Optional search query for highlighting matching text. */
+  searchQuery?: string | null;
   className?: string;
+}
+
+// ---------------------------------------------------------------------------
+// Search-aware markdown component overrides
+// ---------------------------------------------------------------------------
+
+/**
+ * Builds ReactMarkdown `components` overrides that highlight text nodes
+ * matching the search query. Wraps children of text-bearing elements.
+ */
+function buildHighlightComponents(searchQuery: string): Components {
+  const wrap = (children: React.ReactNode) =>
+    highlightChildren(children, searchQuery);
+
+  return {
+    p: ({ children, ...rest }) => <p {...rest}>{wrap(children)}</p>,
+    li: ({ children, ...rest }) => <li {...rest}>{wrap(children)}</li>,
+    td: ({ children, ...rest }) => <td {...rest}>{wrap(children)}</td>,
+    th: ({ children, ...rest }) => <th {...rest}>{wrap(children)}</th>,
+    strong: ({ children, ...rest }) => (
+      <strong {...rest}>{wrap(children)}</strong>
+    ),
+    em: ({ children, ...rest }) => <em {...rest}>{wrap(children)}</em>,
+    // Don't highlight inside code blocks — preserves readability
+  };
 }
 
 // ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
 
-function MarkdownRenderer({ content, className }: MemoizedMarkdownProps) {
+function MarkdownRenderer({
+  content,
+  searchQuery,
+  className,
+}: MemoizedMarkdownProps) {
+  const components = useMemo(
+    () =>
+      searchQuery && searchQuery.trim().length > 0
+        ? buildHighlightComponents(searchQuery)
+        : undefined,
+    [searchQuery]
+  );
+
   return (
     <div className={cn(PROSE_CLASSES, className)}>
-      <ReactMarkdown remarkPlugins={REMARK_PLUGINS}>{content}</ReactMarkdown>
+      <ReactMarkdown
+        remarkPlugins={REMARK_PLUGINS}
+        components={components}
+      >
+        {content}
+      </ReactMarkdown>
     </div>
   );
 }
 
 /**
- * Memoized markdown renderer. Only re-renders when the `content` string changes.
+ * Memoized markdown renderer. Only re-renders when props change.
  * Use for completed messages — streaming messages should use the unwrapped
  * renderer or accept the re-render cost.
  */
 export const MemoizedMarkdown = React.memo(
   MarkdownRenderer,
-  (prev, next) => prev.content === next.content && prev.className === next.className
+  (prev, next) =>
+    prev.content === next.content &&
+    prev.className === next.className &&
+    prev.searchQuery === next.searchQuery
 );
 
 MemoizedMarkdown.displayName = "MemoizedMarkdown";
