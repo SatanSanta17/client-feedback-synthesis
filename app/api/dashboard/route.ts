@@ -26,8 +26,9 @@ const dashboardParamsSchema = z.object({
     "top_themes",
     "theme_trends",
     "theme_client_matrix",
-    // Drill-down action (PRD-021 Part 4)
+    // Drill-down actions (PRD-021 Part 4)
     "drill_down",
+    "session_detail",
   ]),
   dateFrom: z.string().optional(),
   dateTo: z.string().optional(),
@@ -37,6 +38,7 @@ const dashboardParamsSchema = z.object({
   granularity: z.enum(["week", "month"]).optional(),
   confidenceMin: z.coerce.number().min(0).max(1).optional(),
   drillDown: z.string().optional(),
+  sessionId: z.string().uuid().optional(),
 });
 
 // ---------------------------------------------------------------------------
@@ -65,6 +67,7 @@ export async function GET(request: NextRequest) {
     granularity,
     confidenceMin,
     drillDown,
+    sessionId,
   } = parsed.data;
 
   console.log(`${LOG_PREFIX} GET — action: ${action}`);
@@ -87,6 +90,7 @@ export async function GET(request: NextRequest) {
     granularity: granularity as QueryFilters["granularity"],
     confidenceMin,
     drillDown,
+    sessionId,
   };
 
   try {

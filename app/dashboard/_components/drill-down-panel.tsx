@@ -1,5 +1,7 @@
 "use client";
 
+import { useState } from "react";
+
 import {
   Sheet,
   SheetContent,
@@ -8,6 +10,7 @@ import {
   SheetDescription,
 } from "@/components/ui/sheet";
 import { DrillDownContent } from "./drill-down-content";
+import { SessionPreviewDialog } from "./session-preview-dialog";
 import type { DrillDownContext } from "./drill-down-types";
 
 // ---------------------------------------------------------------------------
@@ -30,33 +33,42 @@ interface DrillDownPanelProps {
 // ---------------------------------------------------------------------------
 
 export function DrillDownPanel({ context, onClose }: DrillDownPanelProps) {
-  // Placeholder for session preview — will be wired in increment 4.3
-  const handleViewSession = (_sessionId: string) => {
-    // TODO (4.3): Open SessionPreviewDialog with _sessionId
+  const [previewSessionId, setPreviewSessionId] = useState<string | null>(null);
+
+  const handleViewSession = (sessionId: string) => {
+    setPreviewSessionId(sessionId);
   };
 
   return (
-    <Sheet open={context !== null} onOpenChange={(open) => { if (!open) onClose(); }}>
-      <SheetContent
-        side="right"
-        className="w-full sm:w-[45vw] sm:min-w-[400px] sm:max-w-[700px] overflow-y-auto"
-      >
-        <SheetHeader>
-          <SheetTitle>Signal Drill-Down</SheetTitle>
-          <SheetDescription>
-            Signals matching the selected data point
-          </SheetDescription>
-        </SheetHeader>
+    <>
+      <Sheet open={context !== null} onOpenChange={(open) => { if (!open) onClose(); }}>
+        <SheetContent
+          side="right"
+          className="w-full sm:w-[45vw] sm:min-w-[400px] sm:max-w-[700px] overflow-y-auto"
+        >
+          <SheetHeader>
+            <SheetTitle>Signal Drill-Down</SheetTitle>
+            <SheetDescription>
+              Signals matching the selected data point
+            </SheetDescription>
+          </SheetHeader>
 
-        {context && (
-          <div className="flex-1 overflow-y-auto px-4 pb-6">
-            <DrillDownContent
-              context={context}
-              onViewSession={handleViewSession}
-            />
-          </div>
-        )}
-      </SheetContent>
-    </Sheet>
+          {context && (
+            <div className="flex-1 overflow-y-auto px-4 pb-6">
+              <DrillDownContent
+                context={context}
+                onViewSession={handleViewSession}
+              />
+            </div>
+          )}
+        </SheetContent>
+      </Sheet>
+
+      {/* Session preview dialog — renders on top of the Sheet */}
+      <SessionPreviewDialog
+        sessionId={previewSessionId}
+        onClose={() => setPreviewSessionId(null)}
+      />
+    </>
   );
 }
