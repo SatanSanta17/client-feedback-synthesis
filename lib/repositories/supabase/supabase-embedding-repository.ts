@@ -27,9 +27,9 @@ export function createEmbeddingRepository(
   userId?: string
 ): EmbeddingRepository {
   return {
-    async upsertChunks(chunks: EmbeddingRow[]): Promise<void> {
+    async upsertChunks(chunks: EmbeddingRow[]): Promise<string[]> {
       if (chunks.length === 0) {
-        return;
+        return [];
       }
 
       const sessionId = chunks[0].session_id;
@@ -43,9 +43,10 @@ export function createEmbeddingRepository(
         embedding: `[${chunk.embedding.join(",")}]`,
       }));
 
-      const { error } = await serviceClient
+      const { data, error } = await serviceClient
         .from("session_embeddings")
-        .insert(rows);
+        .insert(rows)
+        .select("id");
 
       if (error) {
         console.error(
@@ -55,9 +56,13 @@ export function createEmbeddingRepository(
         throw new Error(`Failed to insert embeddings: ${error.message}`);
       }
 
+      const ids = (data ?? []).map((row: { id: string }) => row.id);
+
       console.log(
-        `[supabase-embedding-repo] upsertChunks — success, ${chunks.length} chunks inserted for session: ${sessionId}`
+        `[supabase-embedding-repo] upsertChunks — success, ${ids.length} chunks inserted for session: ${sessionId}`
       );
+
+      return ids;
     },
 
     async deleteBySessionId(sessionId: string): Promise<void> {

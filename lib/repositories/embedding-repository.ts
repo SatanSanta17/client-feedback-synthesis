@@ -33,8 +33,8 @@ export interface SimilarityResult {
 }
 
 export interface EmbeddingRepository {
-  /** Bulk insert embedding rows. */
-  upsertChunks(chunks: EmbeddingRow[]): Promise<void>;
+  /** Bulk insert embedding rows. Returns the IDs of inserted rows. */
+  upsertChunks(chunks: EmbeddingRow[]): Promise<string[]>;
 
   /** Delete all embeddings for a session (used before re-embedding). */
   deleteBySessionId(sessionId: string): Promise<void>;

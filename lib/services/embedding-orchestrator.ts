@@ -1,5 +1,5 @@
 import type { ExtractedSignals } from "@/lib/schemas/extraction-schema";
-import type { SessionMeta } from "@/lib/types/embedding-chunk";
+import type { EmbeddingChunk, SessionMeta } from "@/lib/types/embedding-chunk";
 import type {
   EmbeddingRepository,
   EmbeddingRow,
@@ -11,35 +11,48 @@ import {
 import { embedTexts } from "@/lib/services/embedding-service";
 
 /**
- * Generates embeddings for a session and persists them.
- *
- * If the session has structured_json, chunks via chunkStructuredSignals().
- * Otherwise, falls back to chunkRawNotes() for raw-only sessions.
- *
- * On re-extraction or re-save: caller should pass isReExtraction=true to
- * delete existing embeddings before generating new ones (P3.R7).
- *
- * Embedding failures are logged but never thrown — this function swallows
- * errors so it can be called fire-and-forget from API routes (P3.R6).
+ * Options for embedding generation, with optional pre-computed chunks.
  */
-export async function generateSessionEmbeddings(options: {
+export interface GenerateSessionEmbeddingsOptions {
   sessionMeta: SessionMeta;
   structuredJson: ExtractedSignals | null;
   rawNotes: string;
   embeddingRepo: EmbeddingRepository;
   isReExtraction?: boolean;
-}): Promise<void> {
+  /** Pre-computed chunks to skip internal chunking. Used when the caller
+   *  needs the same chunks for downstream processing (e.g., theme assignment). */
+  preComputedChunks?: EmbeddingChunk[];
+}
+
+/**
+ * Generates embeddings for a session and persists them.
+ *
+ * If the session has structured_json, chunks via chunkStructuredSignals().
+ * Otherwise, falls back to chunkRawNotes() for raw-only sessions.
+ * If preComputedChunks is provided, internal chunking is skipped.
+ *
+ * On re-extraction or re-save: caller should pass isReExtraction=true to
+ * delete existing embeddings before generating new ones (P3.R7).
+ *
+ * Returns the IDs of the inserted embedding rows on success, or an empty
+ * array on failure. The caller (session routes) chains theme assignment
+ * after this function using the returned IDs.
+ */
+export async function generateSessionEmbeddings(
+  options: GenerateSessionEmbeddingsOptions
+): Promise<string[]> {
   const {
     sessionMeta,
     structuredJson,
     rawNotes,
     embeddingRepo,
     isReExtraction = false,
+    preComputedChunks,
   } = options;
 
   try {
     console.log(
-      `[embedding-orchestrator] generateSessionEmbeddings — session: ${sessionMeta.sessionId}, hasStructuredJson: ${structuredJson !== null}, isReExtraction: ${isReExtraction}`
+      `[embedding-orchestrator] generateSessionEmbeddings — session: ${sessionMeta.sessionId}, hasStructuredJson: ${structuredJson !== null}, isReExtraction: ${isReExtraction}, preComputedChunks: ${preComputedChunks ? preComputedChunks.length : "none"}`
     );
 
     // Step 1: Delete existing embeddings if re-extracting / re-saving (P3.R7)
@@ -50,16 +63,17 @@ export async function generateSessionEmbeddings(options: {
       await embeddingRepo.deleteBySessionId(sessionMeta.sessionId);
     }
 
-    // Step 2: Chunk — structured JSON takes priority, fallback to raw notes
-    const chunks = structuredJson
-      ? chunkStructuredSignals(structuredJson, sessionMeta)
-      : chunkRawNotes(rawNotes, sessionMeta);
+    // Step 2: Chunk — use pre-computed if available, otherwise compute
+    const chunks = preComputedChunks
+      ?? (structuredJson
+        ? chunkStructuredSignals(structuredJson, sessionMeta)
+        : chunkRawNotes(rawNotes, sessionMeta));
 
     if (chunks.length === 0) {
       console.log(
         `[embedding-orchestrator] no chunks produced for session: ${sessionMeta.sessionId}, skipping embedding`
       );
-      return;
+      return [];
     }
 
     console.log(
@@ -81,17 +95,20 @@ export async function generateSessionEmbeddings(options: {
       schema_version: chunk.schemaVersion,
     }));
 
-    // Step 5: Persist
-    await embeddingRepo.upsertChunks(rows);
+    // Step 5: Persist and capture IDs
+    const embeddingIds = await embeddingRepo.upsertChunks(rows);
 
     console.log(
-      `[embedding-orchestrator] generateSessionEmbeddings — success for session: ${sessionMeta.sessionId}, ${rows.length} embeddings stored`
+      `[embedding-orchestrator] generateSessionEmbeddings — success for session: ${sessionMeta.sessionId}, ${embeddingIds.length} embeddings stored`
     );
+
+    return embeddingIds;
   } catch (err) {
     // Swallow all errors — embedding failure must never block session save (P3.R6)
     console.error(
       `[embedding-orchestrator] generateSessionEmbeddings — failed for session: ${sessionMeta.sessionId}:`,
       err instanceof Error ? err.message : err
     );
+    return [];
   }
 }
