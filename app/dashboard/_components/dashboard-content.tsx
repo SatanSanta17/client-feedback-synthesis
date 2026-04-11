@@ -137,43 +137,43 @@ function DashboardInner() {
   return (
     <FreshnessContext.Provider value={freshnessValue}>
       <div ref={dashboardRef} className="flex flex-col gap-6">
-      {/* Global filter bar */}
-      <FilterBar onExport={handleExport} isExporting={isExporting} />
+        {/* Global filter bar */}
+        <FilterBar onExport={handleExport} isExporting={isExporting} />
 
-      {/* Data freshness */}
-      <FreshnessIndicator lastFetchedAt={lastFetchedAt} className="-mt-4" />
+        {/* Data freshness */}
+        <FreshnessIndicator lastFetchedAt={lastFetchedAt} className="-mt-4" />
 
-      {/* Headline insights */}
-      <InsightCardsRow
-        latestBatch={insights.latestBatch}
-        isLoading={insights.isLoading}
-        error={insights.error}
-        onRefresh={insights.refresh}
-        isRefreshing={insights.isRefreshing}
-      />
-      <PreviousInsights
-        batches={insights.previousBatches}
-        loadPrevious={insights.loadPrevious}
-        isPreviousLoading={insights.isPreviousLoading}
-      />
+        {/* Headline insights */}
+        <InsightCardsRow
+          latestBatch={insights.latestBatch}
+          isLoading={insights.isLoading}
+          error={insights.error}
+          onRefresh={insights.refresh}
+          isRefreshing={insights.isRefreshing}
+        />
+        <PreviousInsights
+          batches={insights.previousBatches}
+          loadPrevious={insights.loadPrevious}
+          isPreviousLoading={insights.isPreviousLoading}
+        />
 
-      {/* Responsive widget grid: 1 col mobile, 2 col md, 3 col lg */}
-      <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">
-        <SentimentWidget onDrillDown={handleDrillDown} onFilter={applyWidgetFilter} />
-        <UrgencyWidget onDrillDown={handleDrillDown} onFilter={applyWidgetFilter} />
-        <SessionVolumeWidget />
-        <ClientHealthWidget onDrillDown={handleDrillDown} onFilter={applyWidgetFilter} />
-        <CompetitiveMentionsWidget onDrillDown={handleDrillDown} />
-        <TopThemesWidget onDrillDown={handleDrillDown} />
-        <ThemeTrendsWidget onDrillDown={handleDrillDown} />
-        <ThemeClientMatrixWidget onDrillDown={handleDrillDown} />
-      </div>
+        {/* Responsive widget grid: 1 col mobile, 2 col md, 3 col lg */}
+        <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">
+          <SentimentWidget onDrillDown={handleDrillDown} onFilter={applyWidgetFilter} />
+          <UrgencyWidget onDrillDown={handleDrillDown} onFilter={applyWidgetFilter} />
+          <SessionVolumeWidget />
+          <ClientHealthWidget onDrillDown={handleDrillDown} onFilter={applyWidgetFilter} />
+          <CompetitiveMentionsWidget onDrillDown={handleDrillDown} />
+          <TopThemesWidget onDrillDown={handleDrillDown} />
+          <ThemeTrendsWidget onDrillDown={handleDrillDown} />
+          <ThemeClientMatrixWidget onDrillDown={handleDrillDown} />
+        </div>
 
-      {/* Drill-down panel */}
-      <DrillDownPanel
-        context={drillDownContext}
-        onClose={handleDrillDownClose}
-      />
+        {/* Drill-down panel */}
+        <DrillDownPanel
+          context={drillDownContext}
+          onClose={handleDrillDownClose}
+        />
       </div>
     </FreshnessContext.Provider>
   );

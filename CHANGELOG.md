@@ -6,6 +6,36 @@ All notable changes to this project are documented here, grouped by PRD and part
 
 ## [Unreleased]
 
+### PRD-021 Part 6: Filters and Interactivity — 2026-04-12
+
+**Cross-widget filtering (P6.R2):**
+- Shift+click on sentiment/urgency/client-health widget data points sets global URL filters (`severity`, `urgency`, `clients`) that all widgets respond to via existing `useDashboardFetch` + `FilterBar` infrastructure
+- `applyWidgetFilter()` callback in `dashboard-content.tsx` — receives `Record<string, string>`, merges into URL params via `router.replace()`
+- Three widgets updated with `onFilter` prop and `event.shiftKey` detection: `sentiment-widget.tsx`, `urgency-widget.tsx`, `client-health-widget.tsx`
+
+**Data freshness indicator (P6.R6):**
+- `freshness-context.tsx` — lightweight context providing `onFetchComplete` callback, avoids prop-drilling through 8 widgets
+- `freshness-indicator.tsx` — "Data as of just now / Nm ago / HH:MM" display with 30-second auto-refresh timer
+- `use-dashboard-fetch.ts` — calls `onFetchComplete()` from context after each successful fetch
+- `dashboard-content.tsx` — ref+state pair with 30s interval sync, wraps children in `FreshnessContext.Provider`
+
+**Dashboard screenshot export (P6.R7):**
+- `export-dashboard.ts` — `exportDashboardAsImage()` utility: dynamically imports `html2canvas` (~200KB deferred), prepends temporary filter context header to capture area, captures at 2x retina scale, triggers PNG download with date-stamped filename, cleans up header in `finally` block
+- `filter-bar.tsx` — "Export as Image" button with Camera icon (Loader2 spinner during export), `onExport`/`isExporting` props, positioned right via `ml-auto`
+- `dashboard-content.tsx` — `dashboardRef` on wrapper div, `isExporting` state, `activeFilters` derived from URL params, `handleExport` async callback
+
+**Audit fixes:**
+- `freshness-indicator.tsx` — replaced string concatenation with `cn()` for className composition
+- `dashboard-content.tsx` — fixed indentation inside `dashboardRef` wrapper div
+
+**Already implemented (no changes needed):**
+- P6.R1 (global filter propagation) — Part 2
+- P6.R3 (widget loading states) — Part 2
+- P6.R4 (widget error states) — Part 2
+- P6.R5 (empty states per widget) — Part 2
+
+---
+
 ### PRD-021 Part 5: AI-Generated Headline Insights — 2026-04-12
 
 **Database:**

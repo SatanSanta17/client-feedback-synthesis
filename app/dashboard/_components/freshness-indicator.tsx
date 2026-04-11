@@ -3,6 +3,8 @@
 import { useEffect, useState } from "react";
 import { Clock } from "lucide-react";
 
+import { cn } from "@/lib/utils";
+
 // ---------------------------------------------------------------------------
 // FreshnessIndicator — subtle "Data as of HH:MM" / "Updated Nm ago" label
 // that auto-refreshes every 30 seconds.
@@ -49,7 +51,7 @@ export function FreshnessIndicator({
 
   return (
     <span
-      className={`inline-flex items-center gap-1 text-xs text-[var(--text-tertiary)] ${className ?? ""}`}
+      className={cn("inline-flex items-center gap-1 text-xs text-[var(--text-tertiary)]", className)}
     >
       <Clock className="h-3 w-3" />
       Data as of {formatRelativeTime(lastFetchedAt)}

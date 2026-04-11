@@ -1,6 +1,6 @@
 # TRD-021: AI-Powered Insights Dashboard
 
-> **Status:** Parts 1–5 implemented. Part 6 detailed.
+> **Status:** Parts 1–6 implemented.
 > **PRD:** `docs/021-insights-dashboard/prd.md` (approved)
 > **Mirrors:** PRD Parts 1–6. Each part is written and reviewed one at a time.
 
