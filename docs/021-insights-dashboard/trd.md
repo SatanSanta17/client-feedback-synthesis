@@ -642,7 +642,7 @@ On re-extraction, cascade delete on `signal_themes.embedding_id` removes old ass
 
 #### Increment 1.3: AI Service Refactor and Theme Assignment Prompt
 
-**What:** Refactor `ai-service.ts` to expose two public generics (`callModelText`, `callModelObject<T>`) that all non-streaming LLM calls use. Migrate existing callers (`extractSignals`, `synthesiseMasterSignal`, `generateConversationTitle`). Create the theme assignment prompt. This increment touches existing code but produces zero behavior change for existing callers — it's a pure refactor with the addition of the theme prompt.
+**What:** Refactor `ai-service.ts` to expose two public generics (`callModelText`, `callModelObject<T>`) that all non-streaming LLM calls use. Migrate existing callers (`extractSignals`, `synthesiseMasterSignal`, `generateConversationTitle`). Create the theme assignment prompt. For `extractSignals` and `synthesiseMasterSignal`, this is a pure refactor with zero behavior change. For `generateConversationTitle`, this adds retry logic that was previously missing (PRD-020 bug fix) — the external contract (`string | null`) is unchanged, but transient failures now retry up to 3 times before returning `null`.
 
 **Steps:**
 

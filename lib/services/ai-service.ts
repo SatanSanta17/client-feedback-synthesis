@@ -2,6 +2,7 @@ import { generateText, generateObject, APICallError, type LanguageModel } from "
 import { anthropic } from "@ai-sdk/anthropic";
 import { openai } from "@ai-sdk/openai";
 import { google } from "@ai-sdk/google";
+import type { z } from "zod";
 import {
   STRUCTURED_EXTRACTION_SYSTEM_PROMPT,
   buildStructuredExtractionUserMessage,
@@ -103,10 +104,11 @@ export async function extractSignals(
 
   const userMessage = buildStructuredExtractionUserMessage(rawNotes, customGuidance);
 
-  const structuredJson = await callModelObject({
+  const structuredJson = await callModelObject<ExtractedSignals>({
     systemPrompt: STRUCTURED_EXTRACTION_SYSTEM_PROMPT,
     userMessage,
     schema: extractionSchema,
+    schemaName: "extractionSchema",
     maxTokens: EXTRACT_SIGNALS_MAX_TOKENS,
     operationName: "extractSignals",
   });
@@ -167,7 +169,7 @@ export async function synthesiseMasterSignal(
     `[ai-service] synthesiseMasterSignal — mode: ${isIncremental ? "incremental" : "cold start"}, sessions: ${sessions.length}`
   );
 
-  return callModel({
+  return callModelText({
     systemPrompt,
     userMessage,
     maxTokens: MASTER_SIGNAL_MAX_TOKENS,
@@ -182,7 +184,7 @@ export async function synthesiseMasterSignal(
 /**
  * Executes an async operation with retry logic for transient AI failures.
  * Classifies errors into non-retryable (config, quota, client) and retryable
- * (rate limit, server, network) categories. Used by both callModel and
+ * (rate limit, server, network) categories. Used by both callModelText and
  * callModelObject to avoid duplicating the retry/error logic.
  */
 async function withRetry<T>(
@@ -257,10 +259,10 @@ async function withRetry<T>(
 }
 
 // ---------------------------------------------------------------------------
-// Provider-agnostic model calls (text and object)
+// Public provider-agnostic model calls (text and object)
 // ---------------------------------------------------------------------------
 
-interface CallModelOptions {
+export interface CallModelTextOptions {
   systemPrompt: string;
   userMessage: string;
   maxTokens: number;
@@ -268,10 +270,11 @@ interface CallModelOptions {
 }
 
 /**
- * Calls the configured AI model via generateText() with retry logic.
- * Returns the text content from the response.
+ * Public text-based LLM call with retry logic.
+ * Wraps generateText() + withRetry() + resolveModel().
+ * All non-streaming text LLM calls should use this function.
  */
-async function callModel(options: CallModelOptions): Promise<string> {
+export async function callModelText(options: CallModelTextOptions): Promise<string> {
   const { systemPrompt, userMessage, maxTokens, operationName } = options;
   const { model, label } = resolveModel();
 
@@ -298,27 +301,30 @@ async function callModel(options: CallModelOptions): Promise<string> {
   });
 }
 
-interface CallModelObjectOptions {
+export interface CallModelObjectOptions<T> {
   systemPrompt: string;
   userMessage: string;
-  schema: typeof extractionSchema;
+  schema: z.ZodSchema<T>;
+  schemaName: string;
   maxTokens: number;
   operationName: string;
 }
 
 /**
- * Calls the configured AI model via generateObject() with retry logic.
- * Returns the validated object conforming to the extraction schema.
+ * Public generic object-based LLM call with retry logic.
+ * Wraps generateObject() + withRetry() + resolveModel().
+ * Accepts any Zod schema and returns a typed, validated object.
+ * All non-streaming structured LLM calls should use this function.
  */
-async function callModelObject(
-  options: CallModelObjectOptions
-): Promise<ExtractedSignals> {
-  const { systemPrompt, userMessage, schema, maxTokens, operationName } = options;
+export async function callModelObject<T>(
+  options: CallModelObjectOptions<T>
+): Promise<T> {
+  const { systemPrompt, userMessage, schema, schemaName, maxTokens, operationName } = options;
   const { model, label } = resolveModel();
 
   return withRetry(operationName, async (attempt) => {
     console.log(
-      `[ai-service] ${operationName} — attempt ${attempt + 1}/${MAX_RETRIES + 1}, model: ${label}, mode: generateObject`
+      `[ai-service] ${operationName} — attempt ${attempt + 1}/${MAX_RETRIES + 1}, model: ${label}, mode: generateObject, schema: ${schemaName}`
     );
 
     const { object } = await generateObject({
@@ -326,11 +332,12 @@ async function callModelObject(
       system: systemPrompt,
       prompt: userMessage,
       schema,
+      schemaName,
       maxOutputTokens: maxTokens,
     });
 
     console.log(
-      `[ai-service] ${operationName} — success (generateObject)`
+      `[ai-service] ${operationName} — success (generateObject/${schemaName})`
     );
     return object;
   });
@@ -348,30 +355,29 @@ async function callModelObject(
  * Returns the title string on success, or null if the LLM call fails.
  * Failures are logged but never thrown — the caller keeps the truncated
  * placeholder title.
+ *
+ * Now uses callModelText() which provides retry logic for transient failures
+ * (429, 5xx, network) — fixes a PRD-020 bug where title generation had no
+ * retries.
  */
 export async function generateConversationTitle(
   firstMessage: string
 ): Promise<string | null> {
   try {
-    const { model, label } = resolveModel();
-
     console.log(
-      `[ai-service] generateConversationTitle — model: ${label}, messageLength: ${firstMessage.length}`
+      `[ai-service] generateConversationTitle — messageLength: ${firstMessage.length}`
     );
 
-    const { text } = await generateText({
-      model,
-      system: GENERATE_TITLE_SYSTEM_PROMPT,
-      prompt: firstMessage,
-      maxOutputTokens: GENERATE_TITLE_MAX_TOKENS,
+    const raw = await callModelText({
+      systemPrompt: GENERATE_TITLE_SYSTEM_PROMPT,
+      userMessage: firstMessage,
+      maxTokens: GENERATE_TITLE_MAX_TOKENS,
+      operationName: "generateConversationTitle",
     });
 
-    const title = text.trim();
-
-    if (!title) {
-      console.warn("[ai-service] generateConversationTitle — empty response");
-      return null;
-    }
+    // callModelText() rejects empty strings, but the title still needs
+    // trimming — the LLM may return leading/trailing whitespace.
+    const title = raw.trim();
 
     console.log(
       `[ai-service] generateConversationTitle — generated: "${title}"`
