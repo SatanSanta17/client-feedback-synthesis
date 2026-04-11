@@ -1,7 +1,9 @@
 // ---------------------------------------------------------------------------
 // exportDashboardAsImage — captures the dashboard container as a PNG with
 // an auto-generated filter context header for self-documenting exports.
-// html2canvas is dynamically imported to avoid ~200KB in the initial bundle.
+// Uses html-to-image which leverages the browser's native rendering via SVG
+// foreignObject — no custom CSS parser, so modern colour functions (lab(),
+// oklch(), etc.) work without issues.
 // ---------------------------------------------------------------------------
 
 const LOG_PREFIX = "[export-dashboard]";
@@ -85,24 +87,19 @@ export async function exportDashboardAsImage(
   containerEl.prepend(header);
 
   try {
-    // 2. Dynamically import html2canvas
-    const { default: html2canvas } = await import("html2canvas");
+    // 2. Dynamically import html-to-image (deferred to avoid bundle cost)
+    const { toPng } = await import("html-to-image");
 
-    // 3. Capture
-    const canvas = await html2canvas(containerEl, {
-      useCORS: true,
-      scale: 2, // retina quality
+    // 3. Capture — html-to-image uses SVG foreignObject so the browser's
+    //    own rendering engine handles all CSS, including lab()/oklch().
+    const dataUrl = await toPng(containerEl, {
+      pixelRatio: 2, // retina quality
       backgroundColor: "#ffffff",
     });
 
-    // 4. Convert to blob and trigger download
-    const blob = await new Promise<Blob | null>((resolve) =>
-      canvas.toBlob(resolve, "image/png")
-    );
-
-    if (!blob) {
-      throw new Error("Canvas toBlob returned null");
-    }
+    // 4. Convert data URL to blob and trigger download
+    const res = await fetch(dataUrl);
+    const blob = await res.blob();
 
     const url = URL.createObjectURL(blob);
     const anchor = document.createElement("a");
