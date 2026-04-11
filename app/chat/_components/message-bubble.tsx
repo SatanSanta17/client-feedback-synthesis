@@ -7,6 +7,8 @@
 // Assistant messages: left-aligned, neutral background, markdown rendered.
 // ---------------------------------------------------------------------------
 
+import { memo } from "react";
+
 import { cn } from "@/lib/utils";
 import { MemoizedMarkdown } from "./memoized-markdown";
 import { MessageActions } from "./message-actions";
@@ -29,7 +31,7 @@ interface MessageBubbleProps {
 // Component
 // ---------------------------------------------------------------------------
 
-export function MessageBubble(props: MessageBubbleProps) {
+export const MessageBubble = memo(function MessageBubble(props: MessageBubbleProps) {
   const { message, className } = props;
   // Props used by later increments: isLatest (3.4/3.5), canRetry (3.4)
   const isUser = message.role === "user";
@@ -71,4 +73,6 @@ export function MessageBubble(props: MessageBubbleProps) {
       </div>
     </div>
   );
-}
+});
+
+MessageBubble.displayName = "MessageBubble";

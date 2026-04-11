@@ -97,15 +97,23 @@ export function createConversationRepository(
         query = query.ilike("title", `%${search}%`);
       }
 
-      // Cursor-based pagination: fetch conversations older than the cursor
-      if (cursor) {
+      // Cursor-based pagination: fetch conversations older than the cursor.
+      // Uses compound cursor (updated_at + id) to handle timestamp collisions.
+      const cursorId = options.cursorId;
+      if (cursor && cursorId) {
+        // Rows where updated_at < cursor, OR updated_at == cursor AND id < cursorId
+        query = query.or(
+          `updated_at.lt.${cursor},and(updated_at.eq.${cursor},id.lt.${cursorId})`
+        );
+      } else if (cursor) {
         query = query.lt("updated_at", cursor);
       }
 
-      // Order: pinned first (desc = true first), then by updated_at desc
+      // Order: pinned first (desc = true first), then by updated_at desc, then id desc (tiebreaker)
       query = query
         .order("is_pinned", { ascending: false })
         .order("updated_at", { ascending: false })
+        .order("id", { ascending: false })
         .limit(limit);
 
       const { data, error } = await query;

@@ -7,6 +7,7 @@
 // Triggers context menu on overflow button click.
 // ---------------------------------------------------------------------------
 
+import { memo } from "react";
 import { Pin } from "lucide-react";
 
 import { cn } from "@/lib/utils";
@@ -34,7 +35,7 @@ interface ConversationItemProps {
 // Component
 // ---------------------------------------------------------------------------
 
-export function ConversationItem({
+export const ConversationItem = memo(function ConversationItem({
   className,
   conversation,
   isActive,
@@ -95,4 +96,6 @@ export function ConversationItem({
       </div>
     </div>
   );
-}
+});
+
+ConversationItem.displayName = "ConversationItem";

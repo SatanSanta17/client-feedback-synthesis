@@ -67,12 +67,14 @@ async function fetchConversationsPage(
   archived: boolean,
   limit: number,
   cursor?: string,
+  cursorId?: string,
   search?: string
 ): Promise<{ conversations: Conversation[]; hasMore: boolean }> {
   const params = new URLSearchParams();
   params.set("archived", String(archived));
   params.set("limit", String(limit));
   if (cursor) params.set("cursor", cursor);
+  if (cursorId) params.set("cursorId", cursorId);
   if (search) params.set("search", search);
 
   const res = await fetch(`/api/chat/conversations?${params.toString()}`);
@@ -215,6 +217,7 @@ export function useConversations(
 
     const lastItem = currentList[currentList.length - 1];
     const cursor = lastItem.updatedAt;
+    const cursorId = lastItem.id;
 
     try {
       console.log(
@@ -223,7 +226,8 @@ export function useConversations(
       const data = await fetchConversationsPage(
         isArchiveView,
         PAGE_SIZE,
-        cursor
+        cursor,
+        cursorId
       );
       setList((prev) => [...prev, ...data.conversations]);
       setHasMore(data.hasMore);
@@ -270,13 +274,24 @@ export function useConversations(
         await patchConversation(id, { title });
         console.log(`${LOG_PREFIX} renamed conversation: ${id}`);
       } catch (err) {
-        // Rollback: refetch
+        // Rollback: refetch both lists since the conversation could be in either
         const msg = err instanceof Error ? err.message : "Unknown error";
         console.error(`${LOG_PREFIX} rename failed, rolling back: ${msg}`);
-        // Simple rollback: refetch active list
-        const data = await fetchConversationsPage(false, PAGE_SIZE);
-        setConversations(data.conversations);
-        setActiveHasMore(data.hasMore);
+
+        const [activeData, archivedData] = await Promise.all([
+          fetchConversationsPage(false, PAGE_SIZE),
+          archivedFetched.current
+            ? fetchConversationsPage(true, PAGE_SIZE)
+            : Promise.resolve(null),
+        ]);
+
+        setConversations(activeData.conversations);
+        setActiveHasMore(activeData.hasMore);
+
+        if (archivedData) {
+          setArchivedConversations(archivedData.conversations);
+          setArchivedHasMore(archivedData.hasMore);
+        }
       }
     },
     []

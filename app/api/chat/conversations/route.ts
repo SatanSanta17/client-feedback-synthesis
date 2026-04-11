@@ -39,6 +39,7 @@ export async function GET(request: NextRequest) {
   const archived = searchParams.get("archived") === "true";
   const search = searchParams.get("search") || undefined;
   const cursor = searchParams.get("cursor") || undefined;
+  const cursorId = searchParams.get("cursorId") || undefined;
   const limitParam = parseInt(searchParams.get("limit") || "", 10);
   const limit = Number.isNaN(limitParam)
     ? DEFAULT_LIMIT
@@ -61,6 +62,7 @@ export async function GET(request: NextRequest) {
       search,
       limit: limit + 1, // Fetch one extra to determine hasMore
       cursor,
+      cursorId,
     });
 
     const hasMore = conversations.length > limit;

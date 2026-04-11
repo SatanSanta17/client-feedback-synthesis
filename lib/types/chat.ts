@@ -60,4 +60,6 @@ export interface ConversationListOptions {
   limit: number;
   /** Cursor: `updated_at` ISO string of the oldest loaded conversation. Fetch older. */
   cursor?: string;
+  /** Tiebreaker: conversation `id` for deterministic ordering when `updated_at` values collide. */
+  cursorId?: string;
 }
