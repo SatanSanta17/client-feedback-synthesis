@@ -3,18 +3,17 @@
 // ---------------------------------------------------------------------------
 // ChatPageContent — Client coordinator for /chat (PRD-020 Part 3)
 // ---------------------------------------------------------------------------
-// Composes ConversationSidebar and chat area placeholder.
+// Composes ConversationSidebar and ChatArea.
 // Manages active conversation selection and wires core hooks together.
 // ---------------------------------------------------------------------------
 
-import { useState, useCallback } from "react";
-import { PanelLeft } from "lucide-react";
+import { useState, useCallback, useMemo } from "react";
 
 import { useAuth } from "@/components/providers/auth-provider";
-import { Button } from "@/components/ui/button";
 import { useConversations } from "@/lib/hooks/use-conversations";
 import { useChat } from "@/lib/hooks/use-chat";
 import { ConversationSidebar } from "./conversation-sidebar";
+import { ChatArea } from "./chat-area";
 import type { Conversation } from "@/lib/types/chat";
 
 export function ChatPageContent() {
@@ -58,6 +57,24 @@ export function ChatPageContent() {
     onTitleGenerated: handleTitleGenerated,
   });
 
+  // Derive active conversation object from the list
+  const activeConversation = useMemo(() => {
+    if (!activeConversationId) return null;
+    return (
+      conversationsHook.conversations.find(
+        (c) => c.id === activeConversationId
+      ) ??
+      conversationsHook.archivedConversations.find(
+        (c) => c.id === activeConversationId
+      ) ??
+      null
+    );
+  }, [
+    activeConversationId,
+    conversationsHook.conversations,
+    conversationsHook.archivedConversations,
+  ]);
+
   // Sidebar callbacks
   const handleSelectConversation = useCallback(
     (conversation: Conversation) => {
@@ -76,6 +93,14 @@ export function ChatPageContent() {
     setIsSidebarCollapsed((prev) => !prev);
   }, []);
 
+  const handleOpenMobileSidebar = useCallback(() => {
+    setIsMobileSidebarOpen(true);
+  }, []);
+
+  const handleCloseMobileSidebar = useCallback(() => {
+    setIsMobileSidebarOpen(false);
+  }, []);
+
   if (!user) {
     return null;
   }
@@ -83,7 +108,6 @@ export function ChatPageContent() {
   return (
     <div className="relative flex h-full w-full">
       <ConversationSidebar
-        conversations={conversationsHook.conversations}
         filteredConversations={conversationsHook.filteredConversations}
         activeConversationId={activeConversationId}
         isArchiveView={conversationsHook.isArchiveView}
@@ -102,33 +126,28 @@ export function ChatPageContent() {
         onArchive={conversationsHook.archiveConversation}
         onUnarchive={conversationsHook.unarchiveConversation}
         onToggleCollapsed={handleToggleSidebar}
-        onMobileClose={() => setIsMobileSidebarOpen(false)}
+        onMobileClose={handleCloseMobileSidebar}
       />
 
-      {/* Chat Area — placeholder for Increment 3.3 */}
-      <div className="flex flex-1 flex-col">
-        {/* Mobile header with sidebar toggle */}
-        <div className="flex items-center gap-2 border-b border-border px-3 py-2 md:hidden">
-          <Button
-            variant="ghost"
-            size="icon-sm"
-            onClick={() => setIsMobileSidebarOpen(true)}
-          >
-            <PanelLeft className="size-4" />
-          </Button>
-          <span className="text-sm font-medium">Chat</span>
-        </div>
-
-        <div className="flex flex-1 items-center justify-center text-sm text-muted-foreground">
-          {activeConversationId
-            ? `Chat: ${activeConversationId.slice(0, 8)}…`
-            : "Select or start a new conversation"}
-        </div>
-        <div className="p-4 text-xs text-muted-foreground">
-          Stream state: {chatHook.streamState}
-          {chatHook.error && ` | Error: ${chatHook.error}`}
-        </div>
-      </div>
+      <ChatArea
+        activeConversation={activeConversation}
+        messages={chatHook.messages}
+        isLoadingMessages={chatHook.isLoadingMessages}
+        hasMoreMessages={chatHook.hasMoreMessages}
+        streamState={chatHook.streamState}
+        streamingContent={chatHook.streamingContent}
+        statusText={chatHook.statusText}
+        latestSources={chatHook.latestSources}
+        latestFollowUps={chatHook.latestFollowUps}
+        error={chatHook.error}
+        isSidebarCollapsed={isSidebarCollapsed}
+        onFetchMoreMessages={chatHook.fetchMoreMessages}
+        onSendMessage={chatHook.sendMessage}
+        onCancelStream={chatHook.cancelStream}
+        onRetryLastMessage={chatHook.retryLastMessage}
+        onToggleSidebar={handleToggleSidebar}
+        onOpenMobileSidebar={handleOpenMobileSidebar}
+      />
     </div>
   );
 }

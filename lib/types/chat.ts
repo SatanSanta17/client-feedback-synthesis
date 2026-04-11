@@ -5,6 +5,9 @@
 export type MessageRole = "user" | "assistant";
 export type MessageStatus = "completed" | "streaming" | "failed" | "cancelled";
 
+/** Streaming state machine for the chat UI. */
+export type StreamState = "idle" | "streaming" | "error";
+
 /**
  * A single citation linking an assistant claim to a source session.
  */

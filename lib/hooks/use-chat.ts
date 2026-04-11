@@ -10,7 +10,7 @@
 
 import { useState, useCallback, useRef, useEffect } from "react";
 
-import type { ChatSource, Message } from "@/lib/types/chat";
+import type { ChatSource, Message, StreamState } from "@/lib/types/chat";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -18,12 +18,6 @@ import type { ChatSource, Message } from "@/lib/types/chat";
 
 const LOG_PREFIX = "[useChat]";
 const MESSAGES_PAGE_SIZE = 50;
-
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
-
-type StreamState = "idle" | "streaming" | "error";
 
 interface UseChatOptions {
   conversationId: string | null;

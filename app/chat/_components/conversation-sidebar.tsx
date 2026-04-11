@@ -13,7 +13,6 @@ import {
   ArchiveRestore,
   MessageSquarePlus,
   PanelLeftClose,
-  PanelLeft,
   Search,
   X,
 } from "lucide-react";
@@ -36,8 +35,6 @@ import type { Conversation } from "@/lib/types/chat";
 
 interface ConversationSidebarProps {
   className?: string;
-  /** Active (non-archived) conversations. */
-  conversations: Conversation[];
   /** Filtered conversations (search applied). */
   filteredConversations: Conversation[];
   /** Currently selected conversation ID. */
@@ -280,19 +277,6 @@ export function ConversationSidebar({
       >
         {!isCollapsed && sidebarContent}
       </div>
-
-      {/* Desktop expand button (shown when collapsed) */}
-      {isCollapsed && (
-        <Button
-          variant="ghost"
-          size="icon-sm"
-          onClick={onToggleCollapsed}
-          title="Open sidebar"
-          className="hidden md:flex absolute left-2 top-2 z-10"
-        >
-          <PanelLeft className="size-4" />
-        </Button>
-      )}
 
       {/* Mobile sheet */}
       <Sheet open={isMobileOpen} onOpenChange={(open) => !open && onMobileClose()}>

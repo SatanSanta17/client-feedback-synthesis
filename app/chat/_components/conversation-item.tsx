@@ -73,7 +73,7 @@ export function ConversationItem({
         <div className="truncate text-sm font-medium leading-snug">
           {conversation.title}
         </div>
-        <div className="mt-0.5 text-[0.7rem] text-muted-foreground">
+        <div className="mt-0.5 text-xs text-muted-foreground">
           {formatRelativeTime(conversation.updatedAt)}
         </div>
       </div>
