@@ -16,6 +16,10 @@ import {
   MASTER_SIGNAL_INCREMENTAL_SYSTEM_PROMPT,
   buildMasterSignalUserMessage,
 } from "@/lib/prompts/master-signal-synthesis";
+import {
+  GENERATE_TITLE_SYSTEM_PROMPT,
+  GENERATE_TITLE_MAX_TOKENS,
+} from "@/lib/prompts/generate-title";
 import type { PromptRepository } from "@/lib/repositories/prompt-repository";
 import { getActivePrompt, getActivePromptVersion } from "@/lib/services/prompt-service";
 import type { SignalSession } from "@/lib/types/signal-session";
@@ -330,6 +334,56 @@ async function callModelObject(
     );
     return object;
   });
+}
+
+// ---------------------------------------------------------------------------
+// Conversation title generation (PRD-020 Part 2)
+// ---------------------------------------------------------------------------
+
+/**
+ * Generates a concise 5-8 word title for a new conversation based on the
+ * user's first message. Fire-and-forget: the caller should not await this
+ * in the critical path.
+ *
+ * Returns the title string on success, or null if the LLM call fails.
+ * Failures are logged but never thrown — the caller keeps the truncated
+ * placeholder title.
+ */
+export async function generateConversationTitle(
+  firstMessage: string
+): Promise<string | null> {
+  try {
+    const { model, label } = resolveModel();
+
+    console.log(
+      `[ai-service] generateConversationTitle — model: ${label}, messageLength: ${firstMessage.length}`
+    );
+
+    const { text } = await generateText({
+      model,
+      system: GENERATE_TITLE_SYSTEM_PROMPT,
+      prompt: firstMessage,
+      maxOutputTokens: GENERATE_TITLE_MAX_TOKENS,
+    });
+
+    const title = text.trim();
+
+    if (!title) {
+      console.warn("[ai-service] generateConversationTitle — empty response");
+      return null;
+    }
+
+    console.log(
+      `[ai-service] generateConversationTitle — generated: "${title}"`
+    );
+    return title;
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "Unknown error";
+    console.error(
+      `[ai-service] generateConversationTitle — failed: ${message}`
+    );
+    return null;
+  }
 }
 
 // ---------------------------------------------------------------------------
