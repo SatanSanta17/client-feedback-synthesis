@@ -8,6 +8,8 @@ import { DashboardCard } from "./dashboard-card";
 import { FilterBar } from "./filter-bar";
 import { SentimentWidget } from "./sentiment-widget";
 import { UrgencyWidget } from "./urgency-widget";
+import { SessionVolumeWidget } from "./session-volume-widget";
+import { CompetitiveMentionsWidget } from "./competitive-mentions-widget";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -53,9 +55,9 @@ function DashboardInner() {
       <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">
         <SentimentWidget />
         <UrgencyWidget />
-        <PlaceholderWidget title="Session Volume Over Time" />
+        <SessionVolumeWidget />
         <PlaceholderWidget title="Client Health Grid" />
-        <PlaceholderWidget title="Competitive Mentions" />
+        <CompetitiveMentionsWidget />
       </div>
     </>
   );
