@@ -1,8 +1,8 @@
 # TRD-021: AI-Powered Insights Dashboard
 
-> **Status:** Draft (Part 1 detailed)
+> **Status:** Draft (Parts 1–2 detailed)
 > **PRD:** `docs/021-insights-dashboard/prd.md` (approved)
-> **Mirrors:** PRD Parts 1–6. Each part is written and reviewed one at a time. Parts 2–6 will be added after their preceding parts are implemented.
+> **Mirrors:** PRD Parts 1–6. Each part is written and reviewed one at a time. Parts 3–6 will be added after their preceding parts are implemented.
 
 ---
 
@@ -723,3 +723,501 @@ On re-extraction, cascade delete on `signal_themes.embedding_id` removes old ass
 10. Update `CHANGELOG.md` with Part 1 deliverables.
 
 **Requirement coverage:** All P1.R1–P1.R11. End-of-part audit.
+
+---
+
+## Part 2: Dashboard Layout, Navigation, and Direct Widgets
+
+> Implements **P2.R1–P2.R10** from PRD-021.
+
+### Overview
+
+Create the `/dashboard` route as the first sidebar navigation item. The page has a global filter bar (client, date range, severity, urgency) encoded in URL query parameters, a responsive widget grid, and five direct quantitative widgets that query structured session data from Postgres. No AI or theme data is needed — these widgets run on `sessions.structured_json` fields and the `clients` table. Three new query actions are added to the existing `database-query-service.ts`, and each widget fetches data independently so one slow query doesn't block others.
+
+### Technical Decisions
+
+1. **Recharts for all chart widgets.** The project has no charting library yet. Recharts is the right choice: it's React-native (composable components, not imperative canvas), plays well with Server Components (widgets can be client-only leaves), is the most commonly used chart library in the Next.js ecosystem, and supports all chart types we need (bar, donut/pie, line, scatter). Install `recharts` as a dependency.
+
+2. **Filter state in URL search params, not React context.** Filters are encoded as URL query parameters (`?clients=uuid1,uuid2&dateFrom=2026-01-01&dateTo=2026-03-31&severity=high&urgency=critical`). This makes filtered views bookmarkable and shareable (P2.R3). `useSearchParams()` from `next/navigation` reads the current filters; a `setFilters()` helper updates them via `router.replace()` without a full page reload. Each widget reads filters from the URL — no React context needed. This also means the back button restores the previous filter state naturally.
+
+3. **Each widget fetches independently via separate API calls.** Each widget is a client component that calls `/api/dashboard/[action]` with the current filters. Widgets mount, show a skeleton, fetch their data, and render independently. A slow `competitive_mention_frequency` query doesn't block the `sentiment_distribution` chart from rendering (P6.R3). This is a simple `useEffect` + `useState` pattern per widget — no SWR/React Query needed at this stage.
+
+4. **Single `/api/dashboard` API route, action-based dispatch.** Rather than one API route per widget, a single `/api/dashboard` route accepts `?action=sentiment_distribution&dateFrom=...&clients=...` and delegates to `executeQuery()` from `database-query-service.ts`. This keeps the API surface minimal and reuses the existing query infrastructure. The route validates the action and filters with Zod, resolves team scope from the cookie, and returns the query result as JSON.
+
+5. **Extend `QueryAction` and `QueryFilters`, don't create a parallel system.** The PRD says the dashboard "shares the same service layer as the chat's `queryDatabase` tool." We add 3 new actions (`sessions_over_time`, `client_health_grid`, `competitive_mention_frequency`) to the existing `database-query-service.ts` and extend `QueryFilters` with optional `severity` and `urgency` fields. Existing chat queries continue to work unchanged.
+
+6. **`sessions_over_time` uses `date_trunc()` via a Supabase RPC function.** Supabase's query builder doesn't support `GROUP BY date_trunc()` natively. We create a small Postgres function `sessions_over_time(p_team_id, p_date_from, p_date_to, p_granularity)` that returns `{ bucket: date, count: int }[]`. This keeps the complex SQL in the database where it belongs and the service handler simple.
+
+7. **`competitive_mention_frequency` uses client-side JSON extraction.** Supabase can't natively unnest and aggregate a JSON array. The handler fetches `structured_json` for all matching sessions (selecting only the `competitiveMentions` key via `structured_json->competitiveMentions`) and aggregates competitor names in TypeScript. The data volume is small (one row per session, a few mentions per session) so this is efficient.
+
+8. **`client_health_grid` fetches each client's most recent session.** For each client matching the filters, the handler fetches the most recent session's `sentiment` and `urgency`. This uses a `DISTINCT ON (client_id)` query ordered by `session_date DESC` — standard Postgres pattern. Clients with no extracted sessions (no `structured_json`) are excluded from the grid.
+
+9. **Client selector is a multi-select dropdown populated from the `client_list` action.** The filter bar fetches the client list once on mount using the existing `client_list` action from `database-query-service.ts`. Selected client IDs are stored as a comma-separated list in the `clients` URL param. The multi-select component is built from shadcn/ui Popover + Command (combobox pattern).
+
+10. **Date range picker uses two date inputs (from/to), not a calendar widget.** Simple `<input type="date">` fields styled with the project's design tokens. No external date picker library. The date range maps to `dateFrom` and `dateTo` URL params. Default is empty (all time).
+
+11. **Dashboard page is a Server Component shell with client-side widget leaves.** The `/dashboard/page.tsx` is a Server Component that renders the page title and the filter bar. Each widget is a separate `'use client'` component that reads filters from URL params and fetches its own data. This keeps the page shell fast (no JS bundle) and pushes the client boundary as deep as possible.
+
+12. **Widget card is a shared component.** All widgets share a `DashboardCard` component providing consistent styling: border, padding, heading, optional subtitle, loading skeleton state, and error state with retry. This is co-located in `app/dashboard/_components/dashboard-card.tsx`.
+
+### Forward Compatibility Notes
+
+- **Part 3 (Derived Theme Widgets):** The widget grid, filter bar, and `DashboardCard` component are all reusable. Theme widgets will be additional client components in `app/dashboard/_components/` that call new query actions. The filter bar already supports all the filter types theme widgets need.
+- **Part 4 (Qualitative Drill-Down):** Clicking a widget data point will set a drill-down state (theme, client, sentiment, etc.) that opens a sliding panel. The click handlers are wired in Part 2 as no-ops or console.logs that Part 4 will replace with actual drill-down logic.
+- **Part 6 (Cross-Widget Interaction):** The URL-based filter system naturally supports cross-widget interaction — clicking a data point in one widget updates the URL params, which triggers all widgets to re-fetch. No additional plumbing needed.
+- **Backlog (Screenshot Export):** The widget grid is a single DOM container, making `html2canvas` capture straightforward when P6.R7 is implemented.
+
+### Database Migrations
+
+#### Migration 1: `sessions_over_time` RPC function
+
+```sql
+-- Postgres function for time-bucketed session counts.
+-- Called by the sessions_over_time query action.
+CREATE OR REPLACE FUNCTION sessions_over_time(
+  p_team_id UUID DEFAULT NULL,
+  p_date_from DATE DEFAULT NULL,
+  p_date_to DATE DEFAULT NULL,
+  p_granularity TEXT DEFAULT 'week'
+)
+RETURNS TABLE (bucket DATE, count BIGINT)
+LANGUAGE sql STABLE
+AS $$
+  SELECT
+    date_trunc(p_granularity, s.session_date)::date AS bucket,
+    COUNT(*) AS count
+  FROM sessions s
+  WHERE s.deleted_at IS NULL
+    AND (p_team_id IS NULL AND s.team_id IS NULL OR s.team_id = p_team_id)
+    AND (p_date_from IS NULL OR s.session_date >= p_date_from)
+    AND (p_date_to IS NULL OR s.session_date <= p_date_to)
+  GROUP BY bucket
+  ORDER BY bucket ASC;
+$$;
+```
+
+No new tables are created in Part 2 — only this RPC function.
+
+### Files Changed
+
+| File | Action | Purpose |
+|------|--------|---------|
+| `app/dashboard/page.tsx` | **Create** | Dashboard page — Server Component shell with metadata |
+| `app/dashboard/_components/dashboard-content.tsx` | **Create** | Client component — filter bar, widget grid layout, filter state management |
+| `app/dashboard/_components/dashboard-card.tsx` | **Create** | Shared widget card — heading, subtitle, loading skeleton, error/retry, empty state |
+| `app/dashboard/_components/filter-bar.tsx` | **Create** | Global filter bar — client multi-select, date range, severity, urgency dropdowns |
+| `app/dashboard/_components/sentiment-widget.tsx` | **Create** | Sentiment distribution donut/bar chart (Recharts) |
+| `app/dashboard/_components/urgency-widget.tsx` | **Create** | Urgency distribution bar chart (Recharts) |
+| `app/dashboard/_components/client-health-widget.tsx` | **Create** | Client health grid scatter/matrix (Recharts) |
+| `app/dashboard/_components/session-volume-widget.tsx` | **Create** | Session volume over time line chart with week/month toggle (Recharts) |
+| `app/dashboard/_components/competitive-mentions-widget.tsx` | **Create** | Competitive mentions horizontal bar chart (Recharts) |
+| `app/api/dashboard/route.ts` | **Create** | Dashboard API route — validates action + filters, delegates to `executeQuery()` |
+| `lib/services/database-query-service.ts` | **Edit** | Add 3 new actions: `sessions_over_time`, `client_health_grid`, `competitive_mention_frequency`. Extend `QueryFilters` with `severity`, `urgency`, `clientIds`. |
+| `components/layout/app-sidebar.tsx` | **Edit** | Add "Dashboard" as the first nav item (`/dashboard`, `BarChart3` icon) |
+| `package.json` | **Edit** | Add `recharts` dependency |
+
+### Type Definitions
+
+#### Extended `QueryFilters` (in `database-query-service.ts`)
+
+```typescript
+export interface QueryFilters {
+  teamId: string | null;
+  dateFrom?: string;
+  dateTo?: string;
+  clientName?: string;
+  // New — dashboard filters
+  clientIds?: string[];
+  severity?: string;
+  urgency?: string;
+  granularity?: "week" | "month";
+}
+```
+
+#### Extended `QueryAction` (in `database-query-service.ts`)
+
+```typescript
+export type QueryAction =
+  | "count_clients"
+  | "count_sessions"
+  | "sessions_per_client"
+  | "sentiment_distribution"
+  | "urgency_distribution"
+  | "recent_sessions"
+  | "client_list"
+  // New — dashboard actions
+  | "sessions_over_time"
+  | "client_health_grid"
+  | "competitive_mention_frequency";
+```
+
+#### Dashboard filter state (co-located in `dashboard-content.tsx`)
+
+```typescript
+interface DashboardFilters {
+  clientIds: string[];
+  dateFrom: string;
+  dateTo: string;
+  severity: string;
+  urgency: string;
+}
+```
+
+### New Query Action Designs
+
+#### `sessions_over_time`
+
+**Input filters:** `teamId`, `dateFrom`, `dateTo`, `granularity` (default `"week"`).
+
+**Implementation:** Calls the `sessions_over_time` RPC function via `supabase.rpc()`. Returns `{ buckets: Array<{ bucket: string, count: number }> }`.
+
+```typescript
+async function handleSessionsOverTime(
+  supabase: SupabaseClient,
+  filters: QueryFilters
+): Promise<Record<string, unknown>> {
+  const { data, error } = await supabase.rpc("sessions_over_time", {
+    p_team_id: filters.teamId,
+    p_date_from: filters.dateFrom ?? null,
+    p_date_to: filters.dateTo ?? null,
+    p_granularity: filters.granularity ?? "week",
+  });
+
+  if (error) {
+    console.error(`${LOG_PREFIX} sessions_over_time error:`, error);
+    throw new Error("Failed to fetch sessions over time");
+  }
+
+  return { buckets: data ?? [] };
+}
+```
+
+#### `client_health_grid`
+
+**Input filters:** `teamId`, `dateFrom`, `dateTo`, `clientIds`, `severity`, `urgency`.
+
+**Implementation:** Fetches each client's most recent session with `structured_json` via `DISTINCT ON (client_id)`. Extracts sentiment and urgency from the JSON. Returns `{ clients: Array<{ clientId, clientName, sentiment, urgency, sessionDate }> }`.
+
+```typescript
+async function handleClientHealthGrid(
+  supabase: SupabaseClient,
+  filters: QueryFilters
+): Promise<Record<string, unknown>> {
+  // Fetch all sessions with structured_json, ordered by date desc
+  let query = baseSessionQuery(
+    supabase
+      .from("sessions")
+      .select("client_id, session_date, structured_json, clients(name)")
+      .not("structured_json", "is", null)
+      .order("session_date", { ascending: false }),
+    filters
+  );
+
+  if (filters.clientIds && filters.clientIds.length > 0) {
+    query = query.in("client_id", filters.clientIds);
+  }
+
+  const { data, error } = await query;
+
+  if (error) {
+    console.error(`${LOG_PREFIX} client_health_grid error:`, error);
+    throw new Error("Failed to fetch client health grid");
+  }
+
+  // Keep only the most recent session per client (DISTINCT ON simulation)
+  const latestByClient = new Map<string, Record<string, unknown>>();
+  for (const row of data ?? []) {
+    const clientId = row.client_id as string;
+    if (!latestByClient.has(clientId)) {
+      latestByClient.set(clientId, row);
+    }
+  }
+
+  const clients = Array.from(latestByClient.values()).map((row) => {
+    const json = row.structured_json as Record<string, unknown> | null;
+    return {
+      clientId: row.client_id,
+      clientName: extractClientName(row),
+      sentiment: (json?.sentiment as string) ?? "unknown",
+      urgency: (json?.urgency as string) ?? "unknown",
+      sessionDate: row.session_date,
+    };
+  });
+
+  return { clients };
+}
+```
+
+#### `competitive_mention_frequency`
+
+**Input filters:** `teamId`, `dateFrom`, `dateTo`, `clientIds`.
+
+**Implementation:** Fetches `structured_json` for all matching sessions, extracts the `competitiveMentions` array from each, and aggregates by competitor name. Returns `{ competitors: Array<{ name, count }> }` sorted by count descending.
+
+```typescript
+async function handleCompetitiveMentionFrequency(
+  supabase: SupabaseClient,
+  filters: QueryFilters
+): Promise<Record<string, unknown>> {
+  let query = baseSessionQuery(
+    supabase
+      .from("sessions")
+      .select("structured_json")
+      .not("structured_json", "is", null),
+    filters
+  );
+
+  if (filters.clientIds && filters.clientIds.length > 0) {
+    query = query.in("client_id", filters.clientIds);
+  }
+
+  const { data, error } = await query;
+
+  if (error) {
+    console.error(`${LOG_PREFIX} competitive_mention_frequency error:`, error);
+    throw new Error("Failed to fetch competitive mentions");
+  }
+
+  const countMap = new Map<string, number>();
+  for (const row of data ?? []) {
+    const json = row.structured_json as Record<string, unknown> | null;
+    const mentions = json?.competitiveMentions as Array<{ competitor?: string }> | undefined;
+    if (mentions) {
+      for (const mention of mentions) {
+        const name = mention.competitor;
+        if (name) {
+          countMap.set(name, (countMap.get(name) ?? 0) + 1);
+        }
+      }
+    }
+  }
+
+  const competitors = Array.from(countMap.entries())
+    .map(([name, count]) => ({ name, count }))
+    .sort((a, b) => b.count - a.count);
+
+  return { competitors };
+}
+```
+
+### API Route Design
+
+#### `app/api/dashboard/route.ts`
+
+```typescript
+// GET /api/dashboard?action=sentiment_distribution&dateFrom=...&clients=uuid1,uuid2&severity=high
+const dashboardParamsSchema = z.object({
+  action: z.enum([
+    "sentiment_distribution",
+    "urgency_distribution",
+    "sessions_over_time",
+    "client_health_grid",
+    "competitive_mention_frequency",
+    "client_list",
+  ]),
+  dateFrom: z.string().optional(),
+  dateTo: z.string().optional(),
+  clients: z.string().optional(),     // comma-separated UUIDs
+  severity: z.string().optional(),
+  urgency: z.string().optional(),
+  granularity: z.enum(["week", "month"]).optional(),
+});
+```
+
+The route:
+1. Validates query params with Zod.
+2. Resolves the Supabase anon client and team ID (RLS-protected reads).
+3. Splits the `clients` param into an array of UUIDs.
+4. Calls `executeQuery()` with the action and filters.
+5. Returns `{ action, data }` as JSON.
+
+Uses the **anon client** (not service-role) so RLS enforces team scoping and personal workspace isolation. This matches the chat `queryDatabase` pattern (Architectural Decision #14).
+
+### Widget Component Pattern
+
+Each widget follows the same structure:
+
+```typescript
+"use client";
+
+import { useSearchParams } from "next/navigation";
+import { useState, useEffect } from "react";
+import { DashboardCard } from "./dashboard-card";
+
+interface SentimentWidgetProps {
+  className?: string;
+}
+
+export function SentimentWidget({ className }: SentimentWidgetProps) {
+  const searchParams = useSearchParams();
+  const [data, setData] = useState<SentimentData | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    const params = new URLSearchParams(searchParams.toString());
+    params.set("action", "sentiment_distribution");
+
+    setIsLoading(true);
+    setError(null);
+
+    fetch(`/api/dashboard?${params.toString()}`)
+      .then((res) => res.json())
+      .then((result) => setData(result.data))
+      .catch((err) => setError(err.message))
+      .finally(() => setIsLoading(false));
+  }, [searchParams]); // Re-fetch when any filter changes
+
+  return (
+    <DashboardCard
+      title="Sentiment Distribution"
+      isLoading={isLoading}
+      error={error}
+      onRetry={() => { /* re-trigger fetch */ }}
+      isEmpty={!data || Object.values(data).every((v) => v === 0)}
+      emptyMessage="No sentiment data for the selected filters"
+      className={className}
+    >
+      {/* Recharts PieChart / BarChart */}
+    </DashboardCard>
+  );
+}
+```
+
+### Sidebar Navigation Update
+
+`components/layout/app-sidebar.tsx` — add Dashboard as the first item:
+
+```typescript
+import { BarChart3, Pencil, MessageSquare, Settings } from "lucide-react";
+
+const NAV_ITEMS = [
+  { label: "Dashboard", href: "/dashboard", icon: BarChart3 },
+  { label: "Capture", href: "/capture", icon: Pencil },
+  { label: "Chat", href: "/chat", icon: MessageSquare },
+  { label: "Settings", href: "/settings", icon: Settings },
+];
+```
+
+### Implementation Increments
+
+#### Increment 2.1: Database Migration and Query Service Extension
+
+**What:** Create the `sessions_over_time` RPC function. Add 3 new query actions and extended filters to `database-query-service.ts`.
+
+**Steps:**
+
+1. Apply the `sessions_over_time` RPC function migration in Supabase.
+2. Extend `QueryFilters` with `clientIds`, `severity`, `urgency`, `granularity`.
+3. Extend `QueryAction` with `sessions_over_time`, `client_health_grid`, `competitive_mention_frequency`.
+4. Implement `handleSessionsOverTime()` — calls the RPC function.
+5. Implement `handleClientHealthGrid()` — fetches most-recent session per client, extracts sentiment/urgency from JSON.
+6. Implement `handleCompetitiveMentionFrequency()` — fetches structured_json, unnests competitive mentions, aggregates by name.
+7. Update the `ACTION_MAP` with the 3 new handlers.
+8. Update existing handlers (`handleSentimentDistribution`, `handleUrgencyDistribution`, `handleRecentSessions`) to support the new `clientIds`, `severity`, and `urgency` filters where relevant.
+9. Verify: `npx tsc --noEmit` passes.
+
+**Requirement coverage:** P2.R10 (new query actions in shared service layer).
+
+#### Increment 2.2: Dashboard API Route and Page Shell
+
+**What:** Create the `/api/dashboard` route and the `/dashboard` page shell (Server Component + empty grid layout). Install Recharts. Update sidebar navigation.
+
+**Steps:**
+
+1. Install `recharts` — `npm install recharts`.
+2. Create `app/api/dashboard/route.ts` — GET handler with Zod-validated action + filter params, delegates to `executeQuery()`.
+3. Create `app/dashboard/page.tsx` — Server Component with metadata, renders `DashboardContent`.
+4. Create `app/dashboard/_components/dashboard-content.tsx` — `'use client'` component, reads URL search params, renders filter bar placeholder and responsive widget grid (empty cards for now).
+5. Create `app/dashboard/_components/dashboard-card.tsx` — shared widget card with loading, error, empty, and content states.
+6. Edit `components/layout/app-sidebar.tsx` — add "Dashboard" as the first nav item with `BarChart3` icon.
+7. Verify: the `/dashboard` route renders, the sidebar shows Dashboard first, the API route returns data for existing actions.
+
+**Requirement coverage:** P2.R1 (route + sidebar), P2.R4 (responsive grid layout).
+
+#### Increment 2.3: Global Filter Bar
+
+**What:** Build the filter bar component with client multi-select, date range, severity, and urgency filters. Wire filter state to URL search params.
+
+**Steps:**
+
+1. Create `app/dashboard/_components/filter-bar.tsx` — client multi-select (shadcn Popover + Command), two date inputs, severity dropdown, urgency dropdown.
+2. On mount, fetch client list via `/api/dashboard?action=client_list` to populate the multi-select.
+3. Wire all filter changes to `router.replace()` with updated search params (no full reload).
+4. Read initial filter values from URL search params on mount (P2.R3 — bookmarkable).
+5. Add "Clear filters" button that removes all filter params.
+6. Wire `DashboardContent` to pass filter changes through to child widgets via search params.
+7. Verify: changing a filter updates the URL, reloading the page preserves filters, "Clear filters" resets.
+
+**Requirement coverage:** P2.R2 (global filter bar), P2.R3 (URL-encoded filter state).
+
+#### Increment 2.4: Sentiment and Urgency Widgets
+
+**What:** Build the sentiment distribution and urgency distribution widgets with Recharts.
+
+**Steps:**
+
+1. Create `sentiment-widget.tsx` — fetches `sentiment_distribution` action, renders a Recharts `PieChart` (donut variant via `innerRadius`). Colour-coded: positive=green, neutral=grey, negative=red, mixed=amber. Clickable segments (console.log for now — Part 4 wires drill-down).
+2. Create `urgency-widget.tsx` — fetches `urgency_distribution` action, renders a Recharts `BarChart`. Colour-coded: low=green, medium=amber, high=orange, critical=red. Clickable bars.
+3. Both widgets use the `DashboardCard` wrapper for loading/error/empty states.
+4. Both re-fetch when `searchParams` changes (global filter reactivity).
+5. Verify: widgets render with real data, respond to filter changes, show skeleton while loading.
+
+**Requirement coverage:** P2.R5 (sentiment), P2.R6 (urgency).
+
+#### Increment 2.5: Session Volume and Competitive Mentions Widgets
+
+**What:** Build the session volume over time and competitive mentions widgets.
+
+**Steps:**
+
+1. Create `session-volume-widget.tsx` — fetches `sessions_over_time` action with a `granularity` toggle (week/month). Renders a Recharts `LineChart` or `AreaChart`. X-axis is time buckets, Y-axis is session count. The granularity toggle is local to the widget (not a global filter).
+2. Create `competitive-mentions-widget.tsx` — fetches `competitive_mention_frequency` action. Renders a Recharts horizontal `BarChart` (layout="vertical") with competitor names on Y-axis and counts on X-axis. Sorted by count descending. Clickable bars.
+3. Both widgets use `DashboardCard` and re-fetch on filter changes.
+4. Verify: session volume chart shows time series, granularity toggle works, competitive mentions ranks competitors correctly.
+
+**Requirement coverage:** P2.R8 (session volume), P2.R9 (competitive mentions).
+
+#### Increment 2.6: Client Health Grid Widget
+
+**What:** Build the client health grid widget — a scatter/matrix positioning clients by sentiment and urgency.
+
+**Steps:**
+
+1. Create `client-health-widget.tsx` — fetches `client_health_grid` action. Renders a Recharts `ScatterChart` with sentiment on X-axis (categorical: positive=1, neutral=2, negative=3, mixed=4) and urgency on Y-axis (low=1, medium=2, high=3, critical=4). Each dot represents a client, sized uniformly, colour-coded by urgency. Tooltip shows client name, sentiment, urgency, and last session date. Clickable dots.
+2. Handle edge cases: clients with "unknown" sentiment/urgency are excluded. Empty state when no clients have extracted sessions.
+3. Use `DashboardCard` wrapper. Re-fetch on filter changes.
+4. Verify: grid positions clients correctly, tooltip works, click handler fires.
+
+**Requirement coverage:** P2.R7 (client health grid).
+
+#### Increment 2.7: Cleanup and Audit
+
+**What:** End-of-part audit across all files created/modified in Part 2.
+
+**Steps:**
+
+1. Run `npx tsc --noEmit` for a full type check.
+2. Verify all file references in the TRD exist in the codebase.
+3. SRP check: page shell is thin, each widget is self-contained, filter bar handles only filter state, API route only validates and dispatches.
+4. DRY check: `DashboardCard` is shared across all widgets, `baseSessionQuery()` is shared across all action handlers, no duplicated fetch logic.
+5. Logging check: API route logs entry and exit, each new query handler logs errors.
+6. Dead code check: no unused imports or variables.
+7. Convention check: naming, exports, import order, `'use client'` only on leaf components.
+8. Verify all PRD Part 2 acceptance criteria are met:
+   - `/dashboard` route exists and is the first item in sidebar navigation ✓
+   - Global filter bar with client, date range, severity, and urgency filters ✓
+   - Filter state encoded in URL query parameters ✓
+   - All widgets react to global filter changes ✓
+   - Sentiment distribution widget renders correctly with clickable segments ✓
+   - Urgency distribution widget renders correctly with clickable bars ✓
+   - Client health grid shows each client positioned by sentiment and urgency ✓
+   - Session volume over time chart with selectable week/month granularity ✓
+   - Competitive mentions chart ranks competitors by frequency ✓
+   - All widgets consume the shared `queryDatabase` service layer ✓
+   - New query actions added to the database query service ✓
+   - Responsive grid layout: 2-3 columns on desktop, single column on mobile ✓
+9. Update `ARCHITECTURE.md` — add `/dashboard` route, new files to file map, new RPC function, updated database-query-service description.
+10. Update `CHANGELOG.md` with Part 2 deliverables.
+
+**Requirement coverage:** All P2.R1–P2.R10. End-of-part audit.

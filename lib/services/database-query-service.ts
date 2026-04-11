@@ -25,13 +25,22 @@ export type QueryAction =
   | "sentiment_distribution"
   | "urgency_distribution"
   | "recent_sessions"
-  | "client_list";
+  | "client_list"
+  // Dashboard actions (PRD-021 Part 2)
+  | "sessions_over_time"
+  | "client_health_grid"
+  | "competitive_mention_frequency";
 
 export interface QueryFilters {
   teamId: string | null;
   dateFrom?: string;
   dateTo?: string;
   clientName?: string;
+  // Dashboard filters (PRD-021 Part 2)
+  clientIds?: string[];
+  severity?: string;
+  urgency?: string;
+  granularity?: "week" | "month";
 }
 
 export interface DatabaseQueryResult {
@@ -44,8 +53,9 @@ export interface DatabaseQueryResult {
 // ---------------------------------------------------------------------------
 
 /**
- * Applies team scoping, soft-delete filtering, and optional date range to a
- * query on the `sessions` table. Most handlers share this exact pattern.
+ * Applies team scoping, soft-delete filtering, optional date range, and
+ * optional client ID filtering to a query on the `sessions` table.
+ * Most handlers share this exact pattern.
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Supabase query builder types are loosely typed
 function baseSessionQuery(query: any, filters: QueryFilters): any {
@@ -56,6 +66,9 @@ function baseSessionQuery(query: any, filters: QueryFilters): any {
   }
   if (filters.dateTo) {
     q = q.lte("session_date", filters.dateTo);
+  }
+  if (filters.clientIds && filters.clientIds.length > 0) {
+    q = q.in("client_id", filters.clientIds);
   }
   return q;
 }
@@ -270,7 +283,7 @@ async function handleClientList(
   filters: QueryFilters
 ): Promise<Record<string, unknown>> {
   const query = baseClientQuery(
-    supabase.from("clients").select("name").order("name", { ascending: true }),
+    supabase.from("clients").select("id, name").order("name", { ascending: true }),
     filters
   );
 
@@ -281,9 +294,128 @@ async function handleClientList(
     throw new Error("Failed to fetch client list");
   }
 
-  const clients = (data ?? []).map((row: Record<string, unknown>) => row.name as string);
+  const clients = (data ?? []).map((row: Record<string, unknown>) => ({
+    id: row.id as string,
+    name: row.name as string,
+  }));
 
   return { clients };
+}
+
+// ---------------------------------------------------------------------------
+// Dashboard action handlers (PRD-021 Part 2)
+// ---------------------------------------------------------------------------
+
+async function handleSessionsOverTime(
+  supabase: SupabaseClient,
+  filters: QueryFilters
+): Promise<Record<string, unknown>> {
+  const { data, error } = await supabase.rpc("sessions_over_time", {
+    p_team_id: filters.teamId,
+    p_date_from: filters.dateFrom ?? null,
+    p_date_to: filters.dateTo ?? null,
+    p_granularity: filters.granularity ?? "week",
+  });
+
+  if (error) {
+    console.error(`${LOG_PREFIX} sessions_over_time error:`, error);
+    throw new Error("Failed to fetch sessions over time");
+  }
+
+  return { buckets: data ?? [] };
+}
+
+async function handleClientHealthGrid(
+  supabase: SupabaseClient,
+  filters: QueryFilters
+): Promise<Record<string, unknown>> {
+  const query = baseSessionQuery(
+    supabase
+      .from("sessions")
+      .select("client_id, session_date, structured_json, clients(name)")
+      .not("structured_json", "is", null)
+      .order("session_date", { ascending: false }),
+    filters
+  );
+
+  const { data, error } = await query;
+
+  if (error) {
+    console.error(`${LOG_PREFIX} client_health_grid error:`, error);
+    throw new Error("Failed to fetch client health grid");
+  }
+
+  // Keep only the most recent session per client (DISTINCT ON simulation)
+  const latestByClient = new Map<string, Record<string, unknown>>();
+  for (const row of (data ?? []) as Record<string, unknown>[]) {
+    const clientId = row.client_id as string;
+    if (!latestByClient.has(clientId)) {
+      latestByClient.set(clientId, row);
+    }
+  }
+
+  const clients = Array.from(latestByClient.values())
+    .map((row) => {
+      const json = row.structured_json as Record<string, unknown> | null;
+      const sentiment = (json?.sentiment as string) ?? "unknown";
+      const urgency = (json?.urgency as string) ?? "unknown";
+
+      // Apply severity/urgency post-filters if provided
+      if (filters.urgency && urgency !== filters.urgency) return null;
+
+      return {
+        clientId: row.client_id,
+        clientName: extractClientName(row),
+        sentiment,
+        urgency,
+        sessionDate: row.session_date,
+      };
+    })
+    .filter(Boolean);
+
+  return { clients };
+}
+
+async function handleCompetitiveMentionFrequency(
+  supabase: SupabaseClient,
+  filters: QueryFilters
+): Promise<Record<string, unknown>> {
+  const query = baseSessionQuery(
+    supabase
+      .from("sessions")
+      .select("structured_json")
+      .not("structured_json", "is", null),
+    filters
+  );
+
+  const { data, error } = await query;
+
+  if (error) {
+    console.error(`${LOG_PREFIX} competitive_mention_frequency error:`, error);
+    throw new Error("Failed to fetch competitive mentions");
+  }
+
+  const countMap = new Map<string, number>();
+  for (const row of (data ?? []) as Record<string, unknown>[]) {
+    const json = row.structured_json as Record<string, unknown> | null;
+    const mentions = json?.competitiveMentions as
+      | Array<{ competitor?: string }>
+      | undefined;
+    if (mentions) {
+      for (const mention of mentions) {
+        const name = mention.competitor;
+        if (name) {
+          countMap.set(name, (countMap.get(name) ?? 0) + 1);
+        }
+      }
+    }
+  }
+
+  const competitors = Array.from(countMap.entries())
+    .map(([name, count]) => ({ name, count }))
+    .sort((a, b) => b.count - a.count);
+
+  return { competitors };
 }
 
 // ---------------------------------------------------------------------------
@@ -301,6 +433,10 @@ const ACTION_MAP: Record<
   urgency_distribution: handleUrgencyDistribution,
   recent_sessions: handleRecentSessions,
   client_list: handleClientList,
+  // Dashboard actions (PRD-021 Part 2)
+  sessions_over_time: handleSessionsOverTime,
+  client_health_grid: handleClientHealthGrid,
+  competitive_mention_frequency: handleCompetitiveMentionFrequency,
 };
 
 // ---------------------------------------------------------------------------
@@ -324,6 +460,10 @@ export async function executeQuery(
       dateFrom: filters.dateFrom,
       dateTo: filters.dateTo,
       clientName: filters.clientName,
+      clientIds: filters.clientIds,
+      severity: filters.severity,
+      urgency: filters.urgency,
+      granularity: filters.granularity,
     })}`
   );
 
