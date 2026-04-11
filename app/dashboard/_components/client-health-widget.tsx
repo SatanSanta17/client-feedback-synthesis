@@ -15,6 +15,7 @@ import {
 import { DashboardCard } from "./dashboard-card";
 import { useDashboardFetch } from "./use-dashboard-fetch";
 import { URGENCY_COLOURS } from "./chart-colours";
+import type { DrillDownContext } from "./drill-down-types";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -22,6 +23,7 @@ import { URGENCY_COLOURS } from "./chart-colours";
 
 interface ClientHealthWidgetProps {
   className?: string;
+  onDrillDown?: (context: DrillDownContext) => void;
 }
 
 interface ClientRow {
@@ -39,6 +41,7 @@ interface ClientHealthData {
 interface ScatterPoint {
   x: number;
   y: number;
+  clientId: string;
   clientName: string;
   sentiment: string;
   urgency: string;
@@ -112,7 +115,7 @@ function HealthTooltip({ active, payload }: CustomTooltipProps) {
 // ClientHealthWidget
 // ---------------------------------------------------------------------------
 
-export function ClientHealthWidget({ className }: ClientHealthWidgetProps) {
+export function ClientHealthWidget({ className, onDrillDown }: ClientHealthWidgetProps) {
   const { data, isLoading, error, refetch } =
     useDashboardFetch<ClientHealthData>({ action: "client_health_grid" });
 
@@ -130,6 +133,7 @@ export function ClientHealthWidget({ className }: ClientHealthWidgetProps) {
       .map((c) => ({
         x: SENTIMENT_MAP[c.sentiment],
         y: URGENCY_MAP[c.urgency],
+        clientId: c.clientId,
         clientName: c.clientName,
         sentiment: c.sentiment,
         urgency: c.urgency,
@@ -180,12 +184,13 @@ export function ClientHealthWidget({ className }: ClientHealthWidgetProps) {
           />
           <Scatter
             data={scatterData}
-            onClick={(_point, _index, event) => {
-              // Drill-down wired in Part 4
-              // Access the original data point from the scatter data
-              void event;
+            onClick={(_point) => {
               const entry = _point as unknown as ScatterPoint;
-              console.log("[ClientHealthWidget] clicked:", entry.clientName);
+              onDrillDown?.({
+                type: "client",
+                clientId: entry.clientId,
+                clientName: entry.clientName,
+              });
             }}
             style={{ cursor: "pointer" }}
           >

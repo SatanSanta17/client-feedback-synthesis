@@ -5,6 +5,7 @@ import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer, Legend } from "recha
 import { DashboardCard } from "./dashboard-card";
 import { useDashboardFetch } from "./use-dashboard-fetch";
 import { SENTIMENT_COLOURS } from "./chart-colours";
+import type { DrillDownContext } from "./drill-down-types";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -12,6 +13,7 @@ import { SENTIMENT_COLOURS } from "./chart-colours";
 
 interface SentimentWidgetProps {
   className?: string;
+  onDrillDown?: (context: DrillDownContext) => void;
 }
 
 interface SentimentData {
@@ -25,7 +27,7 @@ interface SentimentData {
 // SentimentWidget
 // ---------------------------------------------------------------------------
 
-export function SentimentWidget({ className }: SentimentWidgetProps) {
+export function SentimentWidget({ className, onDrillDown }: SentimentWidgetProps) {
   const { data, isLoading, error, refetch } =
     useDashboardFetch<SentimentData>({ action: "sentiment_distribution" });
 
@@ -59,8 +61,8 @@ export function SentimentWidget({ className }: SentimentWidgetProps) {
             outerRadius={80}
             paddingAngle={2}
             onClick={(entry) => {
-              // Drill-down wired in Part 4
-              console.log("[SentimentWidget] clicked:", entry.name);
+              const value = entry.name as "positive" | "negative" | "neutral" | "mixed";
+              onDrillDown?.({ type: "sentiment", value });
             }}
             style={{ cursor: "pointer" }}
           >

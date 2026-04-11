@@ -11,6 +11,7 @@ import {
 
 import { DashboardCard } from "./dashboard-card";
 import { useDashboardFetch } from "./use-dashboard-fetch";
+import type { DrillDownContext } from "./drill-down-types";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -18,6 +19,7 @@ import { useDashboardFetch } from "./use-dashboard-fetch";
 
 interface CompetitiveMentionsWidgetProps {
   className?: string;
+  onDrillDown?: (context: DrillDownContext) => void;
 }
 
 interface Competitor {
@@ -35,6 +37,7 @@ interface CompetitiveData {
 
 export function CompetitiveMentionsWidget({
   className,
+  onDrillDown,
 }: CompetitiveMentionsWidgetProps) {
   const { data, isLoading, error, refetch } =
     useDashboardFetch<CompetitiveData>({
@@ -84,8 +87,7 @@ export function CompetitiveMentionsWidget({
             fill="#8b5cf6"
             radius={[0, 4, 4, 0]}
             onClick={(entry) => {
-              // Drill-down wired in Part 4
-              console.log("[CompetitiveMentionsWidget] clicked:", entry.name);
+              onDrillDown?.({ type: "competitor", competitor: entry.name as string });
             }}
             style={{ cursor: "pointer" }}
           />

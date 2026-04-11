@@ -6,6 +6,7 @@ import { cn } from "@/lib/utils";
 import { DashboardCard } from "./dashboard-card";
 import { useDashboardFetch } from "./use-dashboard-fetch";
 import { BRAND_PRIMARY_RGB } from "./chart-colours";
+import type { DrillDownContext } from "./drill-down-types";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -13,6 +14,7 @@ import { BRAND_PRIMARY_RGB } from "./chart-colours";
 
 interface ThemeClientMatrixWidgetProps {
   className?: string;
+  onDrillDown?: (context: DrillDownContext) => void;
 }
 
 interface ThemeMeta {
@@ -81,6 +83,7 @@ const INITIAL_TOOLTIP: TooltipState = {
 
 export function ThemeClientMatrixWidget({
   className,
+  onDrillDown,
 }: ThemeClientMatrixWidgetProps) {
   const { data, isLoading, error, refetch } =
     useDashboardFetch<MatrixData>({ action: "theme_client_matrix" });
@@ -214,11 +217,13 @@ export function ThemeClientMatrixWidget({
                       }
                       onMouseLeave={handleCellLeave}
                       onClick={() => {
-                        // Drill-down wired in Part 4
-                        console.log(
-                          "[ThemeClientMatrixWidget] clicked:",
-                          { themeId: theme.id, clientId: client.id }
-                        );
+                        onDrillDown?.({
+                          type: "theme_client",
+                          themeId: theme.id,
+                          themeName: theme.name,
+                          clientId: client.id,
+                          clientName: client.name,
+                        });
                       }}
                     >
                       <div

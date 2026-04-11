@@ -15,6 +15,7 @@ import { Button } from "@/components/ui/button";
 import { DashboardCard } from "./dashboard-card";
 import { useDashboardFetch } from "./use-dashboard-fetch";
 import { BRAND_PRIMARY_HEX } from "./chart-colours";
+import type { DrillDownContext } from "./drill-down-types";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -22,6 +23,7 @@ import { BRAND_PRIMARY_HEX } from "./chart-colours";
 
 interface TopThemesWidgetProps {
   className?: string;
+  onDrillDown?: (context: DrillDownContext) => void;
 }
 
 interface ThemeEntry {
@@ -98,7 +100,7 @@ function BreakdownTooltip({ active, payload }: BreakdownTooltipProps) {
 // TopThemesWidget
 // ---------------------------------------------------------------------------
 
-export function TopThemesWidget({ className }: TopThemesWidgetProps) {
+export function TopThemesWidget({ className, onDrillDown }: TopThemesWidgetProps) {
   const { data, isLoading, error, refetch } =
     useDashboardFetch<TopThemesData>({ action: "top_themes" });
 
@@ -151,9 +153,12 @@ export function TopThemesWidget({ className }: TopThemesWidgetProps) {
             fill={BRAND_PRIMARY_HEX}
             radius={[0, 4, 4, 0]}
             onClick={(entry) => {
-              // Drill-down wired in Part 4
               const theme = entry as unknown as ThemeEntry;
-              console.log("[TopThemesWidget] clicked:", theme.themeId);
+              onDrillDown?.({
+                type: "theme",
+                themeId: theme.themeId,
+                themeName: theme.themeName,
+              });
             }}
             style={{ cursor: "pointer" }}
           />

@@ -31,6 +31,7 @@ import {
 import { DashboardCard } from "./dashboard-card";
 import { useDashboardFetch } from "./use-dashboard-fetch";
 import { THEME_LINE_COLOURS } from "./chart-colours";
+import type { DrillDownContext } from "./drill-down-types";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -38,6 +39,7 @@ import { THEME_LINE_COLOURS } from "./chart-colours";
 
 interface ThemeTrendsWidgetProps {
   className?: string;
+  onDrillDown?: (context: DrillDownContext) => void;
 }
 
 interface ThemeMeta {
@@ -96,7 +98,7 @@ function rankThemesByTotal(
 // ThemeTrendsWidget
 // ---------------------------------------------------------------------------
 
-export function ThemeTrendsWidget({ className }: ThemeTrendsWidgetProps) {
+export function ThemeTrendsWidget({ className, onDrillDown }: ThemeTrendsWidgetProps) {
   const [granularity, setGranularity] = useState<Granularity>("week");
   const [themePopoverOpen, setThemePopoverOpen] = useState(false);
 
@@ -299,7 +301,22 @@ export function ThemeTrendsWidget({ className }: ThemeTrendsWidgetProps) {
               stroke={THEME_LINE_COLOURS[idx % THEME_LINE_COLOURS.length]}
               strokeWidth={2}
               dot={{ r: 3 }}
-              activeDot={{ r: 5 }}
+              activeDot={{
+                r: 5,
+                style: { cursor: "pointer" },
+                onClick: (_event: unknown, payload: unknown) => {
+                  const point = payload as { payload?: Record<string, string | number> };
+                  const bucket = point?.payload?.label as string | undefined;
+                  if (bucket) {
+                    onDrillDown?.({
+                      type: "theme_bucket",
+                      themeId: tid,
+                      themeName: nameMap.get(tid) ?? tid,
+                      bucket,
+                    });
+                  }
+                },
+              }}
             />
           ))}
         </LineChart>

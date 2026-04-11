@@ -13,6 +13,7 @@ import {
 import { DashboardCard } from "./dashboard-card";
 import { useDashboardFetch } from "./use-dashboard-fetch";
 import { URGENCY_COLOURS } from "./chart-colours";
+import type { DrillDownContext } from "./drill-down-types";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -20,6 +21,7 @@ import { URGENCY_COLOURS } from "./chart-colours";
 
 interface UrgencyWidgetProps {
   className?: string;
+  onDrillDown?: (context: DrillDownContext) => void;
 }
 
 interface UrgencyData {
@@ -39,7 +41,7 @@ const URGENCY_KEYS = ["low", "medium", "high", "critical"] as const;
 // UrgencyWidget
 // ---------------------------------------------------------------------------
 
-export function UrgencyWidget({ className }: UrgencyWidgetProps) {
+export function UrgencyWidget({ className, onDrillDown }: UrgencyWidgetProps) {
   const { data, isLoading, error, refetch } =
     useDashboardFetch<UrgencyData>({ action: "urgency_distribution" });
 
@@ -84,8 +86,8 @@ export function UrgencyWidget({ className }: UrgencyWidgetProps) {
             dataKey="value"
             radius={[4, 4, 0, 0]}
             onClick={(entry) => {
-              // Drill-down wired in Part 4
-              console.log("[UrgencyWidget] clicked:", entry.key);
+              const value = entry.key as "low" | "medium" | "high" | "critical";
+              onDrillDown?.({ type: "urgency", value });
             }}
             style={{ cursor: "pointer" }}
           >
