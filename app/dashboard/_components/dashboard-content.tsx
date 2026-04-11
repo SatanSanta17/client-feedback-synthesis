@@ -4,12 +4,12 @@ import { Suspense } from "react";
 import { useSearchParams } from "next/navigation";
 
 import { cn } from "@/lib/utils";
-import { DashboardCard } from "./dashboard-card";
 import { FilterBar } from "./filter-bar";
 import { SentimentWidget } from "./sentiment-widget";
 import { UrgencyWidget } from "./urgency-widget";
 import { SessionVolumeWidget } from "./session-volume-widget";
 import { CompetitiveMentionsWidget } from "./competitive-mentions-widget";
+import { ClientHealthWidget } from "./client-health-widget";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -17,24 +17,6 @@ import { CompetitiveMentionsWidget } from "./competitive-mentions-widget";
 
 interface DashboardContentProps {
   className?: string;
-}
-
-// ---------------------------------------------------------------------------
-// Placeholder widget cards (replaced in Increments 2.4–2.6)
-// ---------------------------------------------------------------------------
-
-function PlaceholderWidget({ title }: { title: string }) {
-  return (
-    <DashboardCard
-      title={title}
-      isLoading={false}
-      error={null}
-      isEmpty
-      emptyMessage="Widget coming soon"
-    >
-      {null}
-    </DashboardCard>
-  );
 }
 
 // ---------------------------------------------------------------------------
@@ -56,7 +38,7 @@ function DashboardInner() {
         <SentimentWidget />
         <UrgencyWidget />
         <SessionVolumeWidget />
-        <PlaceholderWidget title="Client Health Grid" />
+        <ClientHealthWidget />
         <CompetitiveMentionsWidget />
       </div>
     </>
