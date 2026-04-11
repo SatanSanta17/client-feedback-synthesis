@@ -620,6 +620,8 @@ const ACTION_MAP: Record<QueryAction, (supabase: SupabaseClient, filters: QueryF
 
 Each handler builds a parameterized Supabase query. Team scoping is applied via the `scopeByTeam()` helper from `lib/repositories/supabase/scope-by-team.ts`. The `sentiment_distribution` and `urgency_distribution` queries read from `sessions.structured_json` — the extraction JSON stores `overallSentiment` and `urgencyLevel` at the top level. We query these with Supabase's `->>'key'` jsonb operator.
 
+> **Data isolation:** The `queryDatabase` tool passes the RLS-protected anon client (not the service-role client) to `executeQuery()`. This ensures row-level security policies enforce both team scoping and personal workspace isolation (`created_by = auth.uid()`). The service-role client is only used for the embedding repository, which applies its own user-level filtering via the `filter_user_id` parameter in the `match_session_embeddings` RPC function.
+
 #### `lib/services/ai-service.ts` — additions
 
 Add `generateConversationTitle()`:
@@ -677,9 +679,10 @@ The prompt instructs the LLM to produce a short descriptive title for a conversa
 const chatSendSchema = z.object({
   conversationId: z.string().uuid().nullable(),
   message: z.string().min(1).max(10000),
-  teamId: z.string().uuid().nullable(),
 });
 ```
+
+> **Data isolation:** `teamId` is always resolved server-side from the `active_team_id` cookie via `getActiveTeamId()` — never accepted from the client request body. This prevents workspace spoofing and matches how all other API routes resolve workspace context.
 
 **Flow:**
 
@@ -701,7 +704,8 @@ const stream = createChatStream({
   modelLabel,
   chatService,
   embeddingRepo,
-  serviceClient,
+  anonClient: supabase,    // RLS-protected — used for queryDatabase tool
+  userId: user.id,          // For personal workspace isolation in embedding search
   teamId,
   conversationId,
   assistantMessageId: assistantMessage.id,

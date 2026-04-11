@@ -40,7 +40,7 @@ This PRD builds four things: the vector storage layer (pgvector on Supabase), a 
 - **P1.R3** Create an index on the `embedding` column for efficient similarity search. Use HNSW (Hierarchical Navigable Small World) index type as it provides better query performance than IVFFlat for the expected data volume (thousands of chunks, not millions): `CREATE INDEX ON session_embeddings USING hnsw (embedding vector_cosine_ops)`.
 
 - **P1.R4** Enable Row-Level Security on `session_embeddings`. Policies:
-  - Embeddings are readable by any authenticated user within the same team context (team_id matches or both are null for personal workspace). This is team-scoped (not user-private) because retrieval needs to search across all sessions the user has access to.
+  - Embeddings are readable by any authenticated user within the same team context (team_id matches or both are null for personal workspace). This is team-scoped (not user-private) because retrieval needs to search across all sessions the user has access to. When called via the `match_session_embeddings` RPC (which uses `SECURITY DEFINER` and bypasses RLS), personal workspace isolation is enforced by the `filter_user_id` parameter — the RPC checks `sessions.created_by = filter_user_id` when `filter_team_id IS NULL`.
   - Embeddings are insertable, updatable, and deletable only by authenticated users within the same team context.
   - Policy pattern matches the existing `sessions` table RLS.
 

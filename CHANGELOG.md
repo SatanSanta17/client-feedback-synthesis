@@ -6,6 +6,30 @@ All notable changes to this project are documented here, grouped by PRD and part
 
 ## [Unreleased]
 
+### PRD-020 Post-Part 3 Bug Fixes — 2026-04-11
+
+**Critical: Data isolation fix**
+- **Root cause:** `ChatPageContent` hardcoded `teamId = null` instead of reading from auth context; chat send route accepted `teamId` from request body (allowing client-side override); service-role client bypassed RLS for `queryDatabase` tool, exposing all users' personal workspace data when `team_id IS NULL`
+- Wired `activeTeamId` from `useAuth()` context in `ChatPageContent` — chat page now respects active workspace
+- Removed `teamId` from chat send request body schema — route now always reads from `active_team_id` cookie via `getActiveTeamId()`, matching all other routes
+- Switched `queryDatabase` tool from service-role client to RLS-protected anon client for data isolation
+- Added `filter_user_id` parameter to `match_session_embeddings` RPC function — enforces `sessions.created_by = filter_user_id` in personal workspace to prevent cross-user embedding leakage
+- Updated `createEmbeddingRepository()` to accept optional `userId` parameter, passed to RPC for personal workspace scoping
+- Removed `serviceClient` from `ChatStreamDeps` interface (no longer needed — anon client handles data reads, embedding repo is pre-injected)
+- Removed `teamId` from `useChat` hook options and request payload
+
+**UI fixes**
+- Fixed `<!--follow-ups:...-->` HTML comment rendering in streamed messages — added `stripFollowUpBlock()` in `use-chat.ts` that strips both complete and partial follow-up blocks during streaming and from completed messages
+- Changed follow-up chip clicks from auto-send to textarea insertion — added `suggestedText` prop on `ChatInput`, chips now populate textarea for user review before sending
+- Fixed user message copy button invisible — added `text-foreground` on actions container to override inherited `text-primary-foreground` from user bubble
+- Enabled textarea during streaming — removed `disabled={isStreaming}` so users can type ahead while response generates
+- Changed chat input focus ring to `--brand-primary-light` design token
+- Moved follow-up suggestion pills outside the message bubble — now rendered below the bubble in a flex column layout
+- Added AI disclaimer text below chat input
+- Fixed pin not re-sorting conversation list — added `sortConversations()` helper (pinned first → updatedAt desc → id desc) to optimistic update
+- Replaced rename dialog with inline editing — title becomes editable in-place on "Rename" click, Enter saves, Escape cancels; deleted `rename-dialog.tsx`
+- Added pinned section separator in conversation sidebar — "Pinned" label + divider between pinned and unpinned groups, hidden when no pinned conversations
+
 ### PRD-020 Part 3: Chat UI Components — 2026-04-11
 - Created `app/chat/page.tsx` — thin server component with metadata, renders ChatPageContent
 - Created conversation sidebar (`conversation-sidebar.tsx`, `conversation-item.tsx`, `conversation-context-menu.tsx`, `rename-dialog.tsx`) — collapsible desktop panel (280px ↔ 0) + mobile Sheet drawer, search, active/archived tabs, context menu with rename/pin/archive/delete

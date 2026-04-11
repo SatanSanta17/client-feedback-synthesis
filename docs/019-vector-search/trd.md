@@ -600,7 +600,8 @@ export interface EmbeddingRepository {
 ```typescript
 export function createEmbeddingRepository(
   serviceClient: SupabaseClient,
-  teamId: string | null
+  teamId: string | null,
+  userId?: string
 ): EmbeddingRepository;
 ```
 
@@ -627,6 +628,7 @@ CREATE OR REPLACE FUNCTION match_session_embeddings(
   match_count INT,
   similarity_threshold FLOAT DEFAULT 0.3,
   filter_team_id UUID DEFAULT NULL,
+  filter_user_id UUID DEFAULT NULL,
   filter_chunk_types TEXT[] DEFAULT NULL,
   filter_client_name TEXT DEFAULT NULL,
   filter_date_from DATE DEFAULT NULL,
@@ -654,8 +656,11 @@ AS $$
   FROM session_embeddings se
   INNER JOIN sessions s ON s.id = se.session_id AND s.deleted_at IS NULL
   WHERE
-    (filter_team_id IS NULL AND se.team_id IS NULL
-     OR se.team_id = filter_team_id)
+    (
+      (filter_team_id IS NULL AND se.team_id IS NULL
+       AND (filter_user_id IS NULL OR s.created_by = filter_user_id))
+      OR se.team_id = filter_team_id
+    )
     AND (filter_chunk_types IS NULL
      OR se.chunk_type = ANY(filter_chunk_types))
     AND (filter_client_name IS NULL
@@ -673,7 +678,7 @@ $$;
 - The adapter calls this function via `serviceClient.rpc("match_session_embeddings", { ... })` and maps the result rows to `SimilarityResult[]`.
 - Logs entry (options summary) and exit (result count).
 
-**Why `SECURITY DEFINER`:** The RPC function needs to read from `session_embeddings` and join to `sessions`. Using `SECURITY DEFINER` with the function owner (service role) bypasses RLS for this server-side search operation. The team scoping is enforced by the `filter_team_id` parameter, which the application layer always provides from the authenticated user's active workspace.
+**Why `SECURITY DEFINER`:** The RPC function needs to read from `session_embeddings` and join to `sessions`. Using `SECURITY DEFINER` with the function owner (service role) bypasses RLS for this server-side search operation. The team scoping is enforced by the `filter_team_id` parameter, which the application layer always provides from the authenticated user's active workspace. For personal workspace queries (`filter_team_id IS NULL`), the `filter_user_id` parameter further restricts results to sessions owned by the requesting user, preventing cross-user data leakage when RLS is bypassed by the `SECURITY DEFINER` context. The application layer passes `filter_user_id` only when `teamId` is null; for team workspaces, team membership and `team_id` matching provide sufficient isolation.
 
 **Why join to `sessions WHERE deleted_at IS NULL`:** Embeddings for soft-deleted sessions remain in the database (no application-level cleanup). The join ensures they are excluded from search results without requiring a separate cleanup job.
 

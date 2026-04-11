@@ -118,7 +118,7 @@ The chat is user-private — each user's conversations are visible only to them,
   New actions are added by defining a new case in the query handler — no schema migration required. The action set is designed to grow as user query patterns emerge.
 
 - **P2.R7** Create a chat API route at `/api/chat/send` (POST) that handles the full generation flow:
-  1. Validate input: `conversationId` (optional — if null, create a new conversation), `message` (the user's question), `teamId`.
+  1. Validate input: `conversationId` (optional — if null, create a new conversation), `message` (the user's question). The `teamId` is always resolved server-side from the `active_team_id` cookie — never accepted from the client request body. This matches how all other API routes resolve workspace context and prevents client-side workspace spoofing.
   2. If new conversation: create conversation row with a placeholder title (first 80 characters of the message). Fire-and-forget a lightweight LLM call to generate a descriptive 5-8 word title; on success, update the conversation title asynchronously. If the LLM call fails, the truncated placeholder remains.
   3. Insert user message row (role: `user`, status: `completed`).
   4. Insert assistant message row (role: `assistant`, status: `streaming`, content: empty string).
@@ -132,7 +132,7 @@ The chat is user-private — each user's conversations are visible only to them,
   8. On stream completion: send `sources` (citations from `searchInsights` results), `follow_ups` (contextual suggestions), and `done` events. Update the assistant message row with full content, sources, status: `completed`, and metadata (model, tools called, token count if available).
   9. On stream error: update the assistant message row with status: `failed`, log the error server-side.
 
-- **P2.R8** The `queryDatabase` tool handler lives in `lib/services/database-query-service.ts`. It is a pure service function (no HTTP imports) that takes an action string and filters, executes the corresponding parameterized Supabase query, and returns typed results. Each action is a separate function internally. New actions are added by creating a new function and registering it in the action map. All queries respect team scoping via `team_id`.
+- **P2.R8** The `queryDatabase` tool handler lives in `lib/services/database-query-service.ts`. It is a pure service function (no HTTP imports) that takes an action string and filters, executes the corresponding parameterized Supabase query, and returns typed results. Each action is a separate function internally. New actions are added by creating a new function and registering it in the action map. All queries respect workspace scoping: the `queryDatabase` tool receives the RLS-protected anon client (not the service-role client) so that row-level security enforces both team scoping (`team_id`) and personal workspace isolation (`created_by = auth.uid()`). The embedding similarity search additionally passes `userId` to the RPC function for personal workspace isolation when using the service-role client.
 
 - **P2.R9** Conversation context bounding: when building the LLM prompt, include conversation history up to an 80,000-token budget. Walk backward from the most recent message, including messages until the budget would be exceeded. Older messages beyond the budget are excluded. Token counting uses a fast approximation (character count / 4) rather than a tokenizer library — precision is not critical here, the budget has ample margin.
 
@@ -169,6 +169,11 @@ The chat is user-private — each user's conversations are visible only to them,
 - [ ] Chat prompt is defined in `lib/prompts/chat-prompt.ts`
 - [ ] Database query service is framework-agnostic with no HTTP imports
 - [ ] All database queries respect team scoping
+- [ ] `queryDatabase` tool uses RLS-protected anon client (not service-role) for data isolation
+- [ ] Embedding similarity search passes `userId` for personal workspace isolation
+- [ ] `teamId` is resolved server-side from cookie — never accepted from client request body
+- [ ] Personal workspace queries only return data owned by the authenticated user
+- [ ] Team workspace queries return all team data accessible to any team member
 - [ ] Server attempts to complete generation even if client disconnects
 
 ---

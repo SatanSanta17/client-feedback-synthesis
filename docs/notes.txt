@@ -23,3 +23,20 @@ minimal human in the loop interaction
 Beyond insight extraction, the platform is evolving into an end-to-end product development lifecycle solution. It aims to seamlessly transition from client interactions to requirement identification, feature recommendations, architectural design, and rapid prototyping.
 
 The system is designed to support iterative workflows—facilitating approvals, deployment, and continuous enhancements—while maintaining alignment with evolving client needs. With minimal human intervention, the goal is to create a streamlined, intelligent pipeline that accelerates development while preserving accuracy and consistency.
+
+
+
+
+
+
+[HMR] connected
+
+forward-logs-shared.ts:95 [Fast Refresh] rebuilding
+
+forward-logs-shared.ts:95 [Fast Refresh] done in 142ms
+
+installHook.js:1 Warning: Missing `Description` or `aria-describedby={undefined}` for {DialogContent}.
+
+overrideMethod @ installHook.js:1Understand this warning
+
+installHook.js:1 Warning: Missing `Description` or `aria-describedby={undefined}` for {DialogContent}.
