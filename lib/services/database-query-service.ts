@@ -9,6 +9,7 @@
 // ---------------------------------------------------------------------------
 
 import { type SupabaseClient } from "@supabase/supabase-js";
+import { z } from "zod";
 
 import { scopeByTeam } from "@/lib/repositories/supabase/scope-by-team";
 
@@ -33,7 +34,9 @@ export type QueryAction =
   // Theme widget actions (PRD-021 Part 3)
   | "top_themes"
   | "theme_trends"
-  | "theme_client_matrix";
+  | "theme_client_matrix"
+  // Drill-down action (PRD-021 Part 4)
+  | "drill_down";
 
 export interface QueryFilters {
   teamId: string | null;
@@ -47,6 +50,8 @@ export interface QueryFilters {
   granularity?: "week" | "month";
   // Theme widget filters (PRD-021 Part 3)
   confidenceMin?: number;
+  // Drill-down filter (PRD-021 Part 4)
+  drillDown?: string;
 }
 
 export interface DatabaseQueryResult {
@@ -734,6 +739,686 @@ function dateTrunc(granularity: "week" | "month", date: Date): string {
 }
 
 // ---------------------------------------------------------------------------
+// Drill-down action handler (PRD-021 Part 4)
+// ---------------------------------------------------------------------------
+
+/** Zod schema for the drill-down JSON payload — discriminated union on `type`. */
+const drillDownSchema = z.discriminatedUnion("type", [
+  z.object({
+    type: z.literal("sentiment"),
+    value: z.enum(["positive", "negative", "neutral", "mixed"]),
+  }),
+  z.object({
+    type: z.literal("urgency"),
+    value: z.enum(["low", "medium", "high", "critical"]),
+  }),
+  z.object({
+    type: z.literal("client"),
+    clientId: z.string().min(1),
+    clientName: z.string().min(1),
+  }),
+  z.object({
+    type: z.literal("competitor"),
+    competitor: z.string().min(1),
+  }),
+  z.object({
+    type: z.literal("theme"),
+    themeId: z.string().min(1),
+    themeName: z.string().min(1),
+  }),
+  z.object({
+    type: z.literal("theme_bucket"),
+    themeId: z.string().min(1),
+    themeName: z.string().min(1),
+    bucket: z.string().min(1),
+  }),
+  z.object({
+    type: z.literal("theme_client"),
+    themeId: z.string().min(1),
+    themeName: z.string().min(1),
+    clientId: z.string().min(1),
+    clientName: z.string().min(1),
+  }),
+]);
+
+/** Max signals returned by a drill-down query. */
+const DRILL_DOWN_LIMIT = 100;
+
+/**
+ * Builds the filter label displayed in the drill-down panel header.
+ */
+function buildFilterLabel(
+  ctx: z.infer<typeof drillDownSchema>
+): string {
+  switch (ctx.type) {
+    case "sentiment":
+      return `Sentiment: ${ctx.value.charAt(0).toUpperCase() + ctx.value.slice(1)}`;
+    case "urgency":
+      return `Urgency: ${ctx.value.charAt(0).toUpperCase() + ctx.value.slice(1)}`;
+    case "client":
+      return `Client: ${ctx.clientName}`;
+    case "competitor":
+      return `Competitor: ${ctx.competitor}`;
+    case "theme":
+      return `Theme: ${ctx.themeName}`;
+    case "theme_bucket":
+      return `Theme: ${ctx.themeName} (${ctx.bucket})`;
+    case "theme_client":
+      return `Theme: ${ctx.themeName} + Client: ${ctx.clientName}`;
+  }
+}
+
+/**
+ * Groups flat signal rows by client, enforcing the DRILL_DOWN_LIMIT cap.
+ * Returns the grouped response shape expected by DrillDownResult.
+ */
+function groupByClient(
+  rows: Array<{
+    embeddingId: string;
+    sessionId: string;
+    sessionDate: string;
+    chunkText: string;
+    chunkType: string;
+    themeName: string | null;
+    metadata: Record<string, unknown>;
+    clientId: string;
+    clientName: string;
+  }>,
+  filterLabel: string
+): Record<string, unknown> {
+  const totalSignals = rows.length;
+
+  // Cap at DRILL_DOWN_LIMIT (rows are already sorted by session_date desc)
+  const capped = rows.slice(0, DRILL_DOWN_LIMIT);
+
+  const clientMap = new Map<
+    string,
+    {
+      clientId: string;
+      clientName: string;
+      signals: Array<{
+        embeddingId: string;
+        sessionId: string;
+        sessionDate: string;
+        chunkText: string;
+        chunkType: string;
+        themeName: string | null;
+        metadata: Record<string, unknown>;
+      }>;
+    }
+  >();
+
+  for (const row of capped) {
+    let group = clientMap.get(row.clientId);
+    if (!group) {
+      group = {
+        clientId: row.clientId,
+        clientName: row.clientName,
+        signals: [],
+      };
+      clientMap.set(row.clientId, group);
+    }
+    group.signals.push({
+      embeddingId: row.embeddingId,
+      sessionId: row.sessionId,
+      sessionDate: row.sessionDate,
+      chunkText: row.chunkText,
+      chunkType: row.chunkType,
+      themeName: row.themeName,
+      metadata: row.metadata,
+    });
+  }
+
+  const clients = Array.from(clientMap.values())
+    .map((g) => ({
+      ...g,
+      signalCount: g.signals.length,
+    }))
+    .sort((a, b) => b.signalCount - a.signalCount);
+
+  return {
+    filterLabel,
+    totalSignals,
+    totalClients: clients.length,
+    clients,
+  };
+}
+
+// ---- Direct drill-down helpers (sentiment, urgency, client, competitor) ----
+
+/**
+ * Fetches session_embeddings joined to sessions → clients for direct widget
+ * drill-downs. Applies global filters (team, date range, client IDs) and
+ * returns flat signal rows sorted by session_date descending.
+ */
+async function fetchDirectDrillDownRows(
+  supabase: SupabaseClient,
+  filters: QueryFilters,
+  sessionFilter: {
+    jsonField?: string;
+    jsonValue?: string;
+    clientId?: string;
+  }
+): Promise<
+  Array<{
+    embeddingId: string;
+    sessionId: string;
+    sessionDate: string;
+    chunkText: string;
+    chunkType: string;
+    themeName: string | null;
+    metadata: Record<string, unknown>;
+    clientId: string;
+    clientName: string;
+  }>
+> {
+  // Step 1: Get matching sessions
+  let sessionQuery = baseSessionQuery(
+    supabase
+      .from("sessions")
+      .select("id, session_date, client_id, structured_json, clients(name)")
+      .not("structured_json", "is", null)
+      .order("session_date", { ascending: false }),
+    filters
+  );
+
+  if (sessionFilter.clientId) {
+    sessionQuery = sessionQuery.eq("client_id", sessionFilter.clientId);
+  }
+
+  const { data: sessions, error: sessError } = await sessionQuery;
+  if (sessError) {
+    console.error(`${LOG_PREFIX} drill_down session fetch error:`, sessError);
+    throw new Error("Failed to fetch drill-down sessions");
+  }
+
+  if (!sessions || sessions.length === 0) return [];
+
+  // Step 2: Filter sessions by JSON field if needed
+  type SessionRow = {
+    id: string;
+    session_date: string;
+    client_id: string;
+    structured_json: Record<string, unknown> | null;
+    clients: { name: string } | null;
+  };
+
+  let filtered = sessions as SessionRow[];
+  if (sessionFilter.jsonField && sessionFilter.jsonValue) {
+    filtered = filtered.filter((s) => {
+      const val = s.structured_json?.[sessionFilter.jsonField!] as
+        | string
+        | undefined;
+      return val === sessionFilter.jsonValue;
+    });
+  }
+
+  if (filtered.length === 0) return [];
+
+  const sessionIds = filtered.map((s) => s.id);
+  const sessionLookup = new Map<string, SessionRow>();
+  for (const s of filtered) {
+    sessionLookup.set(s.id, s);
+  }
+
+  // Step 3: Fetch embeddings for matching sessions
+  let embeddingQuery = supabase
+    .from("session_embeddings")
+    .select("id, session_id, chunk_text, chunk_type, metadata")
+    .in("session_id", sessionIds)
+    .order("created_at", { ascending: false });
+
+  // Team scoping on embeddings
+  if (filters.teamId) {
+    embeddingQuery = embeddingQuery.eq("team_id", filters.teamId);
+  } else {
+    embeddingQuery = embeddingQuery.is("team_id", null);
+  }
+
+  const { data: embeddings, error: embError } = await embeddingQuery;
+  if (embError) {
+    console.error(`${LOG_PREFIX} drill_down embedding fetch error:`, embError);
+    throw new Error("Failed to fetch drill-down embeddings");
+  }
+
+  // Step 4: Merge into flat rows
+  const rows: Array<{
+    embeddingId: string;
+    sessionId: string;
+    sessionDate: string;
+    chunkText: string;
+    chunkType: string;
+    themeName: string | null;
+    metadata: Record<string, unknown>;
+    clientId: string;
+    clientName: string;
+  }> = [];
+
+  for (const emb of embeddings ?? []) {
+    const embRow = emb as {
+      id: string;
+      session_id: string;
+      chunk_text: string;
+      chunk_type: string;
+      metadata: Record<string, unknown> | null;
+    };
+    const session = sessionLookup.get(embRow.session_id);
+    if (!session) continue;
+
+    rows.push({
+      embeddingId: embRow.id,
+      sessionId: embRow.session_id,
+      sessionDate: session.session_date,
+      chunkText: embRow.chunk_text,
+      chunkType: embRow.chunk_type,
+      themeName: null, // direct drill-downs don't carry theme info
+      metadata: embRow.metadata ?? {},
+      clientId: session.client_id,
+      clientName: session.clients?.name ?? "Unknown",
+    });
+  }
+
+  return rows;
+}
+
+/**
+ * Handles the competitor drill-down variant. Filters sessions that mention the
+ * competitor in structured_json.competitiveMentions, then fetches embeddings
+ * with chunk_type = 'competitive_mention' whose metadata matches.
+ */
+async function handleCompetitorDrillDown(
+  supabase: SupabaseClient,
+  filters: QueryFilters,
+  competitor: string
+): Promise<
+  Array<{
+    embeddingId: string;
+    sessionId: string;
+    sessionDate: string;
+    chunkText: string;
+    chunkType: string;
+    themeName: string | null;
+    metadata: Record<string, unknown>;
+    clientId: string;
+    clientName: string;
+  }>
+> {
+  // Step 1: Get sessions with structured_json
+  const sessionQuery = baseSessionQuery(
+    supabase
+      .from("sessions")
+      .select("id, session_date, client_id, structured_json, clients(name)")
+      .not("structured_json", "is", null)
+      .order("session_date", { ascending: false }),
+    filters
+  );
+
+  const { data: sessions, error: sessError } = await sessionQuery;
+  if (sessError) {
+    console.error(
+      `${LOG_PREFIX} drill_down competitor session fetch error:`,
+      sessError
+    );
+    throw new Error("Failed to fetch drill-down sessions for competitor");
+  }
+
+  if (!sessions || sessions.length === 0) return [];
+
+  type SessionRow = {
+    id: string;
+    session_date: string;
+    client_id: string;
+    structured_json: Record<string, unknown> | null;
+    clients: { name: string } | null;
+  };
+
+  // Step 2: Filter to sessions mentioning this competitor
+  const matchingSessions = (sessions as SessionRow[]).filter((s) => {
+    const mentions = s.structured_json?.competitiveMentions as
+      | Array<{ competitor?: string }>
+      | undefined;
+    if (!mentions) return false;
+    return mentions.some(
+      (m) => m.competitor?.toLowerCase() === competitor.toLowerCase()
+    );
+  });
+
+  if (matchingSessions.length === 0) return [];
+
+  const sessionIds = matchingSessions.map((s) => s.id);
+  const sessionLookup = new Map<string, SessionRow>();
+  for (const s of matchingSessions) {
+    sessionLookup.set(s.id, s);
+  }
+
+  // Step 3: Fetch competitive_mention embeddings for these sessions
+  let embeddingQuery = supabase
+    .from("session_embeddings")
+    .select("id, session_id, chunk_text, chunk_type, metadata")
+    .in("session_id", sessionIds)
+    .eq("chunk_type", "competitive_mention")
+    .order("created_at", { ascending: false });
+
+  if (filters.teamId) {
+    embeddingQuery = embeddingQuery.eq("team_id", filters.teamId);
+  } else {
+    embeddingQuery = embeddingQuery.is("team_id", null);
+  }
+
+  const { data: embeddings, error: embError } = await embeddingQuery;
+  if (embError) {
+    console.error(
+      `${LOG_PREFIX} drill_down competitor embedding fetch error:`,
+      embError
+    );
+    throw new Error("Failed to fetch drill-down embeddings for competitor");
+  }
+
+  // Step 4: Filter embeddings whose metadata references this competitor
+  const rows: Array<{
+    embeddingId: string;
+    sessionId: string;
+    sessionDate: string;
+    chunkText: string;
+    chunkType: string;
+    themeName: string | null;
+    metadata: Record<string, unknown>;
+    clientId: string;
+    clientName: string;
+  }> = [];
+
+  for (const emb of embeddings ?? []) {
+    const embRow = emb as {
+      id: string;
+      session_id: string;
+      chunk_text: string;
+      chunk_type: string;
+      metadata: Record<string, unknown> | null;
+    };
+
+    // Check metadata for competitor match
+    const meta = embRow.metadata ?? {};
+    const embCompetitor = (meta.competitor as string) ?? "";
+    if (embCompetitor.toLowerCase() !== competitor.toLowerCase()) continue;
+
+    const session = sessionLookup.get(embRow.session_id);
+    if (!session) continue;
+
+    rows.push({
+      embeddingId: embRow.id,
+      sessionId: embRow.session_id,
+      sessionDate: session.session_date,
+      chunkText: embRow.chunk_text,
+      chunkType: embRow.chunk_type,
+      themeName: null,
+      metadata: meta,
+      clientId: session.client_id,
+      clientName: session.clients?.name ?? "Unknown",
+    });
+  }
+
+  return rows;
+}
+
+// ---- Theme drill-down helpers (theme, theme_bucket, theme_client) ----------
+
+/**
+ * Fetches signals assigned to a theme via signal_themes → session_embeddings →
+ * sessions → clients. Optionally narrows by date bucket or client.
+ */
+async function fetchThemeDrillDownRows(
+  supabase: SupabaseClient,
+  filters: QueryFilters,
+  themeId: string,
+  opts?: { bucket?: string; clientId?: string }
+): Promise<
+  Array<{
+    embeddingId: string;
+    sessionId: string;
+    sessionDate: string;
+    chunkText: string;
+    chunkType: string;
+    themeName: string | null;
+    metadata: Record<string, unknown>;
+    clientId: string;
+    clientName: string;
+  }>
+> {
+  // Resolve theme name
+  const themeMap = await fetchActiveThemeMap(supabase, filters.teamId);
+  const themeName = themeMap.get(themeId) ?? null;
+
+  // Query signal_themes with nested joins
+  let query = supabase
+    .from("signal_themes")
+    .select(
+      `
+      embedding_id,
+      confidence,
+      session_embeddings!inner(
+        id,
+        chunk_text,
+        chunk_type,
+        metadata,
+        session_id,
+        team_id,
+        sessions!inner(
+          session_date,
+          client_id,
+          deleted_at,
+          clients(name)
+        )
+      )
+    `
+    )
+    .eq("theme_id", themeId)
+    .is("session_embeddings.sessions.deleted_at", null);
+
+  // Team scoping
+  if (filters.teamId) {
+    query = query.eq("session_embeddings.team_id", filters.teamId);
+  } else {
+    query = query.is("session_embeddings.team_id", null);
+  }
+
+  // Global date range
+  if (filters.dateFrom) {
+    query = query.gte(
+      "session_embeddings.sessions.session_date",
+      filters.dateFrom
+    );
+  }
+  if (filters.dateTo) {
+    query = query.lte(
+      "session_embeddings.sessions.session_date",
+      filters.dateTo
+    );
+  }
+
+  // Global client IDs
+  if (filters.clientIds && filters.clientIds.length > 0) {
+    query = query.in(
+      "session_embeddings.sessions.client_id",
+      filters.clientIds
+    );
+  }
+
+  // Confidence threshold
+  if (filters.confidenceMin !== undefined) {
+    query = query.gte("confidence", filters.confidenceMin);
+  }
+
+  // Theme-client drill-down: narrow to specific client
+  if (opts?.clientId) {
+    query = query.eq(
+      "session_embeddings.sessions.client_id",
+      opts.clientId
+    );
+  }
+
+  const { data, error } = await query;
+  if (error) {
+    console.error(`${LOG_PREFIX} drill_down theme fetch error:`, error);
+    throw new Error("Failed to fetch drill-down data for theme");
+  }
+
+  // Parse nested join results
+  type ThemeDrillRow = {
+    embedding_id: string;
+    confidence: number | null;
+    session_embeddings: {
+      id: string;
+      chunk_text: string;
+      chunk_type: string;
+      metadata: Record<string, unknown> | null;
+      session_id: string;
+      sessions: {
+        session_date: string;
+        client_id: string;
+        deleted_at: string | null;
+        clients: { name: string } | null;
+      };
+    };
+  };
+
+  const typedRows = (data ?? []) as unknown as ThemeDrillRow[];
+  const granularity = filters.granularity ?? "week";
+
+  const rows: Array<{
+    embeddingId: string;
+    sessionId: string;
+    sessionDate: string;
+    chunkText: string;
+    chunkType: string;
+    themeName: string | null;
+    metadata: Record<string, unknown>;
+    clientId: string;
+    clientName: string;
+  }> = [];
+
+  for (const row of typedRows) {
+    const emb = row.session_embeddings;
+    const session = emb.sessions;
+
+    // Theme-bucket drill-down: narrow to the clicked time bucket
+    if (opts?.bucket) {
+      const rowBucket = dateTrunc(
+        granularity,
+        new Date(session.session_date)
+      );
+      if (rowBucket !== opts.bucket) continue;
+    }
+
+    rows.push({
+      embeddingId: emb.id,
+      sessionId: emb.session_id,
+      sessionDate: session.session_date,
+      chunkText: emb.chunk_text,
+      chunkType: emb.chunk_type,
+      themeName,
+      metadata: emb.metadata ?? {},
+      clientId: session.client_id,
+      clientName: session.clients?.name ?? "Unknown",
+    });
+  }
+
+  // Sort by session_date descending
+  rows.sort(
+    (a, b) =>
+      new Date(b.sessionDate).getTime() - new Date(a.sessionDate).getTime()
+  );
+
+  return rows;
+}
+
+/**
+ * Main drill-down handler. Parses the drillDown JSON, dispatches to the
+ * appropriate strategy, groups results by client, and returns the response.
+ */
+async function handleDrillDown(
+  supabase: SupabaseClient,
+  filters: QueryFilters
+): Promise<Record<string, unknown>> {
+  if (!filters.drillDown) {
+    throw new Error("drill_down action requires a drillDown filter");
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(filters.drillDown);
+  } catch {
+    throw new Error("drillDown filter is not valid JSON");
+  }
+
+  const result = drillDownSchema.safeParse(parsed);
+  if (!result.success) {
+    const msg = result.error.issues.map((i) => i.message).join(", ");
+    throw new Error(`Invalid drillDown payload: ${msg}`);
+  }
+
+  const ctx = result.data;
+  const filterLabel = buildFilterLabel(ctx);
+
+  console.log(
+    `${LOG_PREFIX} handleDrillDown — type: ${ctx.type}, label: "${filterLabel}"`
+  );
+
+  let rows: Array<{
+    embeddingId: string;
+    sessionId: string;
+    sessionDate: string;
+    chunkText: string;
+    chunkType: string;
+    themeName: string | null;
+    metadata: Record<string, unknown>;
+    clientId: string;
+    clientName: string;
+  }>;
+
+  switch (ctx.type) {
+    case "sentiment":
+      rows = await fetchDirectDrillDownRows(supabase, filters, {
+        jsonField: "sentiment",
+        jsonValue: ctx.value,
+      });
+      break;
+    case "urgency":
+      rows = await fetchDirectDrillDownRows(supabase, filters, {
+        jsonField: "urgency",
+        jsonValue: ctx.value,
+      });
+      break;
+    case "client":
+      rows = await fetchDirectDrillDownRows(supabase, filters, {
+        clientId: ctx.clientId,
+      });
+      break;
+    case "competitor":
+      rows = await handleCompetitorDrillDown(
+        supabase,
+        filters,
+        ctx.competitor
+      );
+      break;
+    case "theme":
+      rows = await fetchThemeDrillDownRows(supabase, filters, ctx.themeId);
+      break;
+    case "theme_bucket":
+      rows = await fetchThemeDrillDownRows(supabase, filters, ctx.themeId, {
+        bucket: ctx.bucket,
+      });
+      break;
+    case "theme_client":
+      rows = await fetchThemeDrillDownRows(supabase, filters, ctx.themeId, {
+        clientId: ctx.clientId,
+      });
+      break;
+  }
+
+  return groupByClient(rows, filterLabel);
+}
+
+// ---------------------------------------------------------------------------
 // Action map
 // ---------------------------------------------------------------------------
 
@@ -756,6 +1441,8 @@ const ACTION_MAP: Record<
   top_themes: handleTopThemes,
   theme_trends: handleThemeTrends,
   theme_client_matrix: handleThemeClientMatrix,
+  // Drill-down action (PRD-021 Part 4)
+  drill_down: handleDrillDown,
 };
 
 // ---------------------------------------------------------------------------
@@ -784,6 +1471,7 @@ export async function executeQuery(
       urgency: filters.urgency,
       granularity: filters.granularity,
       confidenceMin: filters.confidenceMin,
+      drillDown: filters.drillDown ? "(present)" : undefined,
     })}`
   );
 

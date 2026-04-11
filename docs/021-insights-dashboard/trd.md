@@ -1,8 +1,8 @@
 # TRD-021: AI-Powered Insights Dashboard
 
-> **Status:** Parts 1–3 implemented. Parts 4–6 pending.
+> **Status:** Parts 1–3 implemented. Part 4 detailed. Parts 5–6 pending.
 > **PRD:** `docs/021-insights-dashboard/prd.md` (approved)
-> **Mirrors:** PRD Parts 1–6. Each part is written and reviewed one at a time. Parts 4–6 will be added after their preceding parts are implemented.
+> **Mirrors:** PRD Parts 1–6. Each part is written and reviewed one at a time. Parts 5–6 will be added after their preceding parts are implemented.
 
 ---
 
@@ -1438,3 +1438,246 @@ Build three theme-powered dashboard widgets that visualise how signal themes dis
 10. Update `CHANGELOG.md` with Part 3 deliverables.
 
 **Requirement coverage:** All P3.R1–P3.R6. End-of-part audit.
+
+---
+
+## Part 4: Qualitative Drill-Down
+
+> Implements **P4.R1–P4.R6** from PRD-021.
+
+### Overview
+
+Every clickable data point on every dashboard widget (7 widgets with click handlers) now opens a shared drill-down sliding panel from the right edge. The panel shows the actual client quotes and signals behind the clicked data point, grouped by client in a collapsible accordion. Each signal row includes chunk text, client quote, chunk-type badge, theme label, session date, and a "View Session" link that opens a dialog with the full `StructuredSignalView`. A single new API action (`drill_down`) handles all drill-down queries, accepting a discriminated union of filter shapes that correspond to each widget's click context.
+
+### Technical Decisions
+
+1. **Two-layer drill-down: presentation-agnostic content + swappable shell.** The drill-down is split into two components:
+   - `DrillDownContent` — owns all data fetching (via `useDashboardFetch`), the count header, filter label, client accordion, signal rows, and "View Session" button. It receives a `DrillDownContext` and renders pure UI with no knowledge of *how* it is displayed. It is a plain `<div>` with no overlay/positioning logic.
+   - `DrillDownPanel` — a thin shell that wraps `DrillDownContent` inside a shadcn `Sheet` (side="right"). It owns only the open/close state and the overlay.
+
+   If the slide-over panel doesn't work out (e.g., it clips the dashboard, conflicts with the sidebar, or feels wrong on smaller screens), switching to a centred `Dialog` modal is a **single-file change**: replace the `Sheet` wrapper in `DrillDownPanel` with a `Dialog` wrapper. `DrillDownContent`, all widget wiring, and the API layer are completely untouched. All 7 widgets call the same `onDrillDown(context)` callback on `dashboard-content.tsx`; they have no knowledge of whether the result opens a panel or a modal.
+
+2. **Discriminated union for drill-down context.** Each widget produces a different click payload:
+   - Sentiment widget → `{ type: 'sentiment', value: 'positive' | 'negative' | 'neutral' | 'mixed' }`
+   - Urgency widget → `{ type: 'urgency', value: 'low' | 'medium' | 'high' | 'critical' }`
+   - Client health widget → `{ type: 'client', clientId: string, clientName: string }`
+   - Competitive mentions widget → `{ type: 'competitor', competitor: string }`
+   - Top themes widget → `{ type: 'theme', themeId: string, themeName: string }`
+   - Theme trends widget → `{ type: 'theme_bucket', themeId: string, themeName: string, bucket: string }`
+   - Theme-client matrix widget → `{ type: 'theme_client', themeId: string, themeName: string, clientId: string, clientName: string }`
+
+   This union type (`DrillDownContext`) is passed from widgets → coordinator → panel → API. The API handler dispatches to different query strategies based on `type`.
+
+3. **Direct database queries, not vector retrieval, for drill-down data.** The PRD mentions "combining a filtered query with a retrieval query." However, for drill-down, we need *exact* matches (signals with sentiment = 'negative', or signals assigned to theme X), not semantic similarity. Using the retrieval service (which does cosine similarity search) would return *related* but not *exact* results. Instead, the drill-down API queries the database directly:
+   - **Direct widget drill-downs** (sentiment, urgency, client, competitor): Query `sessions` + `session_embeddings` with metadata/structured_json filters to get the exact matching signal chunks.
+   - **Theme widget drill-downs** (theme, theme_bucket, theme_client): Query `signal_themes` → `session_embeddings` → `sessions` with exact `theme_id` filter to get the assigned signals.
+
+   This is more accurate than retrieval and avoids an LLM call (no embedding needed).
+
+4. **Single `drill_down` action in the database query service, not 7 separate actions.** The drill-down query is added as one new action with an internal `drillDownType` discriminator rather than 7 granular actions. This keeps the `QueryAction` union manageable. The handler parses the `drillDownType` from the filters and dispatches internally.
+
+5. **New `drillDown` field in `QueryFilters` as an opaque JSON string.** Rather than polluting `QueryFilters` with 7 new optional fields (themeId, competitorName, sentimentValue, etc.), the drill-down context is serialised as a JSON string in a single `drillDown` field. The handler parses and validates it with Zod. This isolates drill-down complexity from the existing filter interface.
+
+6. **`Sheet` as the initial presentation shell (swappable to `Dialog`).** The codebase already uses `Sheet` (e.g., conversation sidebar on mobile). The `DrillDownPanel` shell wraps `DrillDownContent` inside a `Sheet` with `side="right"`. On desktop it occupies ~45% of the viewport width via a custom class; on mobile it goes full-width. If testing reveals the slide-over doesn't work well (e.g., viewport conflicts, mobile usability), the shell file is the only thing that changes — swap `Sheet`/`SheetContent` for `Dialog`/`DialogContent`, adjust width classes, done. `DrillDownContent` and all widget wiring remain identical. This is the explicit escape hatch from decision #1.
+
+7. **Client accordion uses native `<details>/<summary>` HTML elements.** Each client group is a collapsible section. Multiple can be open simultaneously (P4.R2) — `<details>` supports this natively without state management. This avoids adding a new shadcn component dependency (`Collapsible` and `Accordion` are not currently installed). The native elements are styled with Tailwind to match the app's design language. Each client section shows the client name, matching signal count, and a summary line.
+
+8. **"View Session" opens a `Dialog` with `StructuredSignalView`, not a route navigation.** The PRD references the "session preview modal from PRD-020." The existing `StructuredSignalView` component (`components/capture/structured-signal-view.tsx`) renders the full structured signal view. The drill-down wraps it in a shadcn `Dialog` that fetches the session's `structured_json` by session ID. This keeps the user on the dashboard without losing drill-down context.
+
+9. **Drill-down response groups signals by client.** The API returns data pre-grouped by client to avoid client-side grouping of potentially large result sets:
+   ```typescript
+   {
+     filterLabel: string;       // e.g. "Sentiment: Negative" or "Theme: Onboarding Friction"
+     totalSignals: number;
+     totalClients: number;
+     clients: Array<{
+       clientId: string;
+       clientName: string;
+       signalCount: number;
+       signals: Array<{
+         embeddingId: string;
+         sessionId: string;
+         sessionDate: string;
+         chunkText: string;
+         chunkType: string;
+         themeName: string | null;  // null for direct widget drill-downs
+         metadata: Record<string, unknown>;
+       }>
+     }>
+   }
+   ```
+
+10. **Drill-down respects global dashboard filters.** The drill-down query inherits the current URL search params (date range, client IDs, severity, urgency, confidenceMin) in addition to the click-specific context. This means "clicking negative sentiment when filtered to Q1 2026" only shows negative sessions from Q1 2026. Global filters are already in the URL and passed through `useDashboardFetch` / the API route.
+
+11. **Session volume widget gets no drill-down.** The session volume chart (area chart) shows aggregate counts over time — there's no meaningful "click a data point" interaction because the data points represent bucketed counts, not individual sessions. The `SessionVolumeWidget` retains no click handler. This widget is intentionally excluded from the drill-down system.
+
+12. **Limit drill-down results to 100 signals.** To prevent excessive payloads for broad drill-downs (e.g., clicking "positive" sentiment across all time), the handler caps results at 100 signals total (sorted by session_date descending). The panel header indicates if results are truncated: "Showing 100 of 342 signals."
+
+### Forward Compatibility Notes
+
+- **Part 6 (Cross-widget interaction):** The drill-down panel opens via a shared `onDrillDown(context: DrillDownContext)` callback passed to all widgets. Part 6 can reuse this same callback mechanism to set global filters on click instead of (or in addition to) opening the drill-down.
+- **Backlog (Widget drill-down to chat):** The drill-down panel will have a natural slot for an "Ask about this in Chat" button. The `DrillDownContext` provides all the info needed to pre-fill a chat question.
+- **Backlog (Manual theme assignment):** The drill-down panel shows individual signals with their theme labels. A future UI can add a "Reassign theme" action next to each signal row.
+
+### Query Action Design
+
+#### `drill_down`
+
+**Client-supplied filters:** `dateFrom`, `dateTo`, `clientIds`, `confidenceMin`, `drillDown` (JSON string)
+**Server-resolved context:** `teamId` (from `active_team_id` cookie — never client-supplied)
+
+**Drill-down type dispatch:**
+
+| `drillDownType` | Query strategy | Join chain |
+|---|---|---|
+| `sentiment` | `sessions` WHERE `structured_json->>'sentiment' = value` → `session_embeddings` for chunk texts | sessions → session_embeddings |
+| `urgency` | `sessions` WHERE `structured_json->>'urgency' = value` → `session_embeddings` | sessions → session_embeddings |
+| `client` | `sessions` WHERE `client_id = clientId` → `session_embeddings` | sessions → session_embeddings |
+| `competitor` | `sessions` WHERE `structured_json->'competitiveMentions'` contains competitor → `session_embeddings` filtered to `chunk_type = 'competitive_mention'` with metadata match | sessions → session_embeddings |
+| `theme` | `signal_themes` WHERE `theme_id = themeId` → `session_embeddings` → `sessions` | signal_themes → session_embeddings → sessions |
+| `theme_bucket` | Same as `theme` + date range narrowed to the clicked bucket | signal_themes → session_embeddings → sessions |
+| `theme_client` | Same as `theme` + `sessions.client_id = clientId` | signal_themes → session_embeddings → sessions → clients |
+
+All strategies apply global filters (team scoping, date range, client IDs) and group results by client.
+
+**Response shape:**
+```typescript
+{
+  filterLabel: string;
+  totalSignals: number;
+  totalClients: number;
+  clients: Array<{
+    clientId: string;
+    clientName: string;
+    signalCount: number;
+    signals: Array<{
+      embeddingId: string;
+      sessionId: string;
+      sessionDate: string;
+      chunkText: string;
+      chunkType: string;
+      themeName: string | null;
+      metadata: Record<string, unknown>;
+    }>
+  }>
+}
+```
+
+### Files Changed
+
+| File | Action | Purpose |
+|---|---|---|
+| `app/dashboard/_components/drill-down-content.tsx` | **Create** | Presentation-agnostic drill-down body — data fetching, count header, filter label, client accordion, signal rows, "View Session" button |
+| `app/dashboard/_components/drill-down-panel.tsx` | **Create** | Thin shell — wraps `DrillDownContent` inside a `Sheet` (swappable to `Dialog` in one file change) |
+| `app/dashboard/_components/drill-down-types.ts` | **Create** | `DrillDownContext` discriminated union type, shared by all widgets and the panel |
+| `app/dashboard/_components/session-preview-dialog.tsx` | **Create** | Dialog wrapping `StructuredSignalView` — fetches session structured_json by ID |
+| `app/dashboard/_components/dashboard-content.tsx` | **Edit** | Add drill-down state (`DrillDownContext | null`), pass `onDrillDown` callback to all widgets, render `DrillDownPanel` |
+| `app/dashboard/_components/sentiment-widget.tsx` | **Edit** | Replace `console.log` stub with `onDrillDown({ type: 'sentiment', value })` |
+| `app/dashboard/_components/urgency-widget.tsx` | **Edit** | Replace `console.log` stub with `onDrillDown({ type: 'urgency', value })` |
+| `app/dashboard/_components/client-health-widget.tsx` | **Edit** | Replace `console.log` stub with `onDrillDown({ type: 'client', clientId, clientName })` |
+| `app/dashboard/_components/competitive-mentions-widget.tsx` | **Edit** | Replace `console.log` stub with `onDrillDown({ type: 'competitor', competitor })` |
+| `app/dashboard/_components/top-themes-widget.tsx` | **Edit** | Replace `console.log` stub with `onDrillDown({ type: 'theme', themeId, themeName })` |
+| `app/dashboard/_components/theme-trends-widget.tsx` | **Edit** | Add click handler on lines — `onDrillDown({ type: 'theme_bucket', themeId, themeName, bucket })` |
+| `app/dashboard/_components/theme-client-matrix-widget.tsx` | **Edit** | Replace `console.log` stub with `onDrillDown({ type: 'theme_client', themeId, themeName, clientId, clientName })` |
+| `lib/services/database-query-service.ts` | **Edit** | Add `drill_down` action with internal dispatch by `drillDownType`, add `drillDown` to `QueryFilters` |
+| `app/api/dashboard/route.ts` | **Edit** | Add `drill_down` to Zod enum, add `drillDown` string param |
+
+### Implementation Increments
+
+#### Increment 4.1: Drill-Down Types and API Action
+
+**What:** Define the `DrillDownContext` type system, add the `drill_down` query action to the service layer, and extend the API route.
+
+**Steps:**
+
+1. Create `app/dashboard/_components/drill-down-types.ts` — export `DrillDownContext` discriminated union (7 variants), `DrillDownSignal` interface (single signal row), `DrillDownClientGroup` interface (client with signals), `DrillDownResult` interface (full response).
+2. Add `drillDown?: string` to `QueryFilters` in `database-query-service.ts`.
+3. Create a Zod validation schema for the drill-down JSON payload in the service (one discriminated union schema with `type` as discriminator).
+4. Implement `handleDrillDown()` — parse and validate the `drillDown` JSON, dispatch to internal helper functions by `type`. Start with the 3 simpler direct drill-downs: `sentiment`, `urgency`, `client`. Each queries `sessions` + `session_embeddings` with the appropriate filter, groups by client, caps at 100 signals, returns the grouped response.
+5. Implement the `competitor` drill-down — query sessions with `structured_json->'competitiveMentions'` containing the competitor name, fetch related embeddings filtered to `chunk_type = 'competitive_mention'`.
+6. Implement the 3 theme drill-downs (`theme`, `theme_bucket`, `theme_client`) — query `signal_themes` → `session_embeddings` → `sessions` → `clients`, applying the theme-specific filters.
+7. Add `drill_down` to `ACTION_MAP`.
+8. Edit `app/api/dashboard/route.ts` — add `drill_down` to Zod action enum, add `drillDown: z.string().optional()` param, pass through to filters.
+9. Verify: `npx tsc --noEmit` passes.
+
+**Requirement coverage:** P4.R4 (drill-down data combines database queries), P4.R1 (click → drill-down data).
+
+#### Increment 4.2: Drill-Down Content and Panel Shell
+
+**What:** Build the two-layer drill-down: a presentation-agnostic `DrillDownContent` and a thin `DrillDownPanel` shell wrapping it in a `Sheet`.
+
+**Steps:**
+
+1. Create `app/dashboard/_components/drill-down-content.tsx` — accepts `context: DrillDownContext` (non-null, the shell controls visibility). Uses `useDashboardFetch` with action `drill_down` and `extraParams: { drillDown: JSON.stringify(context) }`. This component is a plain `<div>` — no overlay, no positioning, no open/close logic.
+2. Render count header: "Showing N signals from N clients" (or "Showing N of M signals" if truncated).
+3. Render active filter context label from the `filterLabel` field (e.g., "Sentiment: Negative", "Theme: Onboarding Friction + Client: Acme Corp").
+4. Render client accordion — each client as a native `<details>/<summary>` element with trigger showing client name + signal count. Multiple can be open simultaneously.
+5. Inside each expanded client: signal rows showing chunk text (max 3 lines with expand toggle), chunk-type badge, theme label badge (if present), session date, "View Session" button.
+6. Accept an `onViewSession: (sessionId: string) => void` callback so the parent can handle session preview (keeps `DrillDownContent` free of dialog logic).
+7. Loading state: skeleton rows while data loads.
+8. Error state: inline error with retry.
+9. Empty state: "No signals found for this filter."
+10. Create `app/dashboard/_components/drill-down-panel.tsx` — accepts `context: DrillDownContext | null` and `onClose: () => void`. When `context` is non-null, renders a `Sheet` (side="right") containing `DrillDownContent`. Styled: `w-[45vw]` on desktop (min 400px), full width on mobile. This file is the single swap point if the Sheet approach doesn't work — replace with `Dialog`/`DialogContent` and adjust width classes.
+
+**Requirement coverage:** P4.R1 (click opens panel), P4.R2 (client accordion), P4.R3 (signal details), P4.R5 (slide panel from right, responsive), P4.R6 (count header and filter context).
+
+#### Increment 4.3: Session Preview Dialog
+
+**What:** Build the "View Session" dialog that shows the full structured signal view.
+
+**Steps:**
+
+1. Create `app/dashboard/_components/session-preview-dialog.tsx` — accepts `sessionId: string | null` and `onClose: () => void`. When `sessionId` is non-null, fetches the session's `structured_json` from a new lightweight API action (`session_detail`).
+2. Add `session_detail` action to `database-query-service.ts` — fetches a single session by ID with team scoping, returns `structured_json`, `client_name`, `session_date`.
+3. Add `session_detail` to the Zod enum and accept `sessionId` param in the API route.
+4. Render the dialog with `StructuredSignalView` inside (imported from `components/capture/structured-signal-view.tsx`). Include session date and client name in the dialog header.
+5. Loading state: skeleton inside dialog while session loads.
+6. Error state: inline error message.
+
+**Requirement coverage:** P4.R3 ("View Session" link opens session preview modal).
+
+#### Increment 4.4: Wire Widgets to Drill-Down
+
+**What:** Replace all `console.log` stubs with actual drill-down callbacks.
+
+**Steps:**
+
+1. Edit `dashboard-content.tsx` — add `drillDownContext` state (`DrillDownContext | null`, default null). Create `handleDrillDown` callback. Pass `onDrillDown={handleDrillDown}` to all widgets (except SessionVolumeWidget). Render `<DrillDownPanel context={drillDownContext} onClose={() => setDrillDownContext(null)} />`.
+2. Add `onDrillDown?: (context: DrillDownContext) => void` prop to all 7 clickable widget components' props interfaces.
+3. Edit `sentiment-widget.tsx` — replace `console.log` with `onDrillDown?.({ type: 'sentiment', value: entry.name })`.
+4. Edit `urgency-widget.tsx` — replace `console.log` with `onDrillDown?.({ type: 'urgency', value: entry.key })`.
+5. Edit `client-health-widget.tsx` — replace `console.log` with `onDrillDown?.({ type: 'client', clientId: entry.clientId, clientName: entry.clientName })`.
+6. Edit `competitive-mentions-widget.tsx` — replace `console.log` with `onDrillDown?.({ type: 'competitor', competitor: entry.name })`.
+7. Edit `top-themes-widget.tsx` — replace `console.log` with `onDrillDown?.({ type: 'theme', themeId: theme.themeId, themeName: theme.themeName })`.
+8. Edit `theme-trends-widget.tsx` — add `activeDot` click handler on each `Line` → `onDrillDown?.({ type: 'theme_bucket', themeId: tid, themeName, bucket: point.label })`.
+9. Edit `theme-client-matrix-widget.tsx` — replace `console.log` with `onDrillDown?.({ type: 'theme_client', themeId: theme.id, themeName: theme.name, clientId: client.id, clientName: client.name })`.
+10. Verify: all widgets open the drill-down panel on click, panel shows correct data, "View Session" dialog works.
+
+**Requirement coverage:** P4.R1 (every clickable data point opens drill-down), all widget wiring.
+
+#### Increment 4.5: Cleanup and Audit
+
+**What:** End-of-part audit across all files created/modified in Part 4.
+
+**Steps:**
+
+1. Run `npx tsc --noEmit` for a full type check.
+2. Verify all file references in the TRD exist in the codebase.
+3. SRP check: drill-down types are isolated, panel is self-contained, session preview dialog is self-contained, each widget only adds a prop and callback call.
+4. DRY check: `DrillDownContext` is shared (not duplicated per widget), `useDashboardFetch` is reused for drill-down data, `StructuredSignalView` is reused (not recreated).
+5. Logging check: drill-down handler logs entry/errors, session_detail handler logs errors.
+6. Dead code check: all `console.log` stubs removed, no unused imports.
+7. Convention check: naming, exports, import order, `'use client'` only on leaf components.
+8. Verify all PRD Part 4 acceptance criteria are met:
+   - Clicking any widget data point opens a drill-down panel ✓
+   - Drill-down shows a client accordion list with expandable rows ✓
+   - Multiple clients can be expanded simultaneously ✓
+   - Expanded rows show actual signal texts, quotes, severity, chunk type, theme, and session date ✓
+   - "View Session" link opens the session preview modal (StructuredSignalView in Dialog) ✓
+   - Drill-down data uses database queries grouped by client ✓
+   - Panel is responsive: ~45% width on desktop, full width on mobile ✓
+   - Count header and active filter context are displayed ✓
+9. Update `ARCHITECTURE.md` — add new files to file map, update database-query-service description (15 actions), update dashboard feature description.
+10. Update `CHANGELOG.md` with Part 4 deliverables.
+
+**Requirement coverage:** All P4.R1–P4.R6. End-of-part audit.
