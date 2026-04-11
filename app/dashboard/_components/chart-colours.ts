@@ -16,3 +16,18 @@ export const URGENCY_COLOURS: Record<string, string> = {
   high: "#f97316",     // orange-500
   critical: "#ef4444", // red-500
 };
+
+/**
+ * 8-colour palette for multi-line theme charts. Colours cycle when
+ * more than 8 themes are selected.
+ */
+export const THEME_LINE_COLOURS: string[] = [
+  "#6366f1", // indigo-500
+  "#ec4899", // pink-500
+  "#14b8a6", // teal-500
+  "#f59e0b", // amber-500
+  "#8b5cf6", // violet-500
+  "#ef4444", // red-500
+  "#06b6d4", // cyan-500
+  "#84cc16", // lime-500
+];

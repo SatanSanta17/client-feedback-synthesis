@@ -11,6 +11,7 @@ import { SessionVolumeWidget } from "./session-volume-widget";
 import { CompetitiveMentionsWidget } from "./competitive-mentions-widget";
 import { ClientHealthWidget } from "./client-health-widget";
 import { TopThemesWidget } from "./top-themes-widget";
+import { ThemeTrendsWidget } from "./theme-trends-widget";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -42,6 +43,7 @@ function DashboardInner() {
         <ClientHealthWidget />
         <CompetitiveMentionsWidget />
         <TopThemesWidget />
+        <ThemeTrendsWidget />
       </div>
     </>
   );
