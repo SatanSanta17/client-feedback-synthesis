@@ -46,3 +46,13 @@ export type {
   SearchOptions,
   SimilarityResult,
 } from "./embedding-repository";
+export type {
+  ConversationRepository,
+  ConversationInsert,
+  ConversationUpdate,
+} from "./conversation-repository";
+export type {
+  MessageRepository,
+  MessageInsert,
+  MessageUpdate,
+} from "./message-repository";

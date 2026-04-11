@@ -11,3 +11,5 @@ export { createInvitationRepository } from "./supabase-invitation-repository";
 export { createPromptRepository } from "./supabase-prompt-repository";
 export { createAttachmentRepository } from "./supabase-attachment-repository";
 export { createEmbeddingRepository } from "./supabase-embedding-repository";
+export { createConversationRepository } from "./supabase-conversation-repository";
+export { createMessageRepository } from "./supabase-message-repository";
