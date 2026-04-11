@@ -13,7 +13,7 @@
 - a lot of states need to be handled on client side first and then hit server for example when the session is stale and i hit re-extract the staleness indicator should disappear without even saving it if i save then it goes permanantly if not then it doesnt go permanantly basically trying to make it optimistic update something like that i dont know if that makes sense we need to discuss more on this
 - check how much tokens can be passed in different models
 - footer when moving from landing page to app the footer state is not maintained if i am in dark mode in landing page and click on login then the footer shows the option to turn theme to dark which is already implemented
-
+- regular cleanup as the painpoints are resolved (cleanup Dashboard)
 - Embedding failure doesn't block extraction — covered (P3.R6) rettry logic for failed embeding ?
 
 but it doesnt end here i am trying to build a platform that handles end to end product development life cycle which starts from client calls--> identifying requirements--> advise features--> design architecture--> develop a prototype--> get approval--> and deploy 
