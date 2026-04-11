@@ -3,6 +3,8 @@
 import { useCallback, useEffect, useState } from "react";
 import { useSearchParams } from "next/navigation";
 
+import { useFreshnessContext } from "./freshness-context";
+
 // ---------------------------------------------------------------------------
 // Shared hook: fetches a dashboard action and re-fetches on filter changes.
 // Eliminates duplicated fetch logic across all widget components.
@@ -26,6 +28,7 @@ export function useDashboardFetch<T>(
 ): UseDashboardFetchResult<T> {
   const { action, extraParams } = options;
   const searchParams = useSearchParams();
+  const { onFetchComplete } = useFreshnessContext();
 
   const [data, setData] = useState<T | null>(null);
   const [isLoading, setIsLoading] = useState(true);
@@ -53,7 +56,10 @@ export function useDashboardFetch<T>(
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         return res.json();
       })
-      .then((result) => setData(result.data as T))
+      .then((result) => {
+        setData(result.data as T);
+        onFetchComplete();
+      })
       .catch((err) =>
         setError(err instanceof Error ? err.message : "Something went wrong")
       )

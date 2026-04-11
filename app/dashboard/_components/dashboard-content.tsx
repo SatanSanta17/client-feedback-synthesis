@@ -1,6 +1,6 @@
 "use client";
 
-import { Suspense, useCallback, useState } from "react";
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 
 import { cn } from "@/lib/utils";
@@ -18,6 +18,8 @@ import type { DrillDownContext } from "./drill-down-types";
 import { useInsights } from "./use-insights";
 import { InsightCardsRow } from "./insight-cards-row";
 import { PreviousInsights } from "./previous-insights";
+import { FreshnessContext } from "./freshness-context";
+import { FreshnessIndicator } from "./freshness-indicator";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -68,10 +70,49 @@ function DashboardInner() {
     [router, searchParams]
   );
 
+  // ----------- Data freshness tracking -----------
+  const lastFetchedAtRef = useRef<number>(0);
+  const [lastFetchedAt, setLastFetchedAt] = useState<number | null>(null);
+
+  const handleFetchComplete = useCallback(() => {
+    lastFetchedAtRef.current = Date.now();
+  }, []);
+
+  // Sync ref → state every 30 seconds (avoids re-rendering all children on
+  // every individual widget fetch while keeping the indicator up to date).
+  useEffect(() => {
+    const id = setInterval(() => {
+      if (lastFetchedAtRef.current > 0) {
+        setLastFetchedAt(lastFetchedAtRef.current);
+      }
+    }, 30_000);
+
+    // Also do an immediate sync once ref is populated (short delay so the
+    // first batch of widget fetches has time to complete).
+    const initialId = setTimeout(() => {
+      if (lastFetchedAtRef.current > 0) {
+        setLastFetchedAt(lastFetchedAtRef.current);
+      }
+    }, 2_000);
+
+    return () => {
+      clearInterval(id);
+      clearTimeout(initialId);
+    };
+  }, []);
+
+  const freshnessValue = useMemo(
+    () => ({ onFetchComplete: handleFetchComplete }),
+    [handleFetchComplete]
+  );
+
   return (
-    <>
+    <FreshnessContext.Provider value={freshnessValue}>
       {/* Global filter bar */}
       <FilterBar />
+
+      {/* Data freshness */}
+      <FreshnessIndicator lastFetchedAt={lastFetchedAt} className="-mt-4" />
 
       {/* Headline insights */}
       <InsightCardsRow
@@ -104,7 +145,7 @@ function DashboardInner() {
         context={drillDownContext}
         onClose={handleDrillDownClose}
       />
-    </>
+    </FreshnessContext.Provider>
   );
 }
 
