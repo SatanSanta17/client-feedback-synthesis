@@ -15,6 +15,9 @@ import { ThemeTrendsWidget } from "./theme-trends-widget";
 import { ThemeClientMatrixWidget } from "./theme-client-matrix-widget";
 import { DrillDownPanel } from "./drill-down-panel";
 import type { DrillDownContext } from "./drill-down-types";
+import { useInsights } from "./use-insights";
+import { InsightCardsRow } from "./insight-cards-row";
+import { PreviousInsights } from "./previous-insights";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -33,6 +36,9 @@ function DashboardInner() {
   const searchParams = useSearchParams();
   void searchParams;
 
+  // Insights state
+  const insights = useInsights();
+
   // Drill-down state: non-null opens the panel
   const [drillDownContext, setDrillDownContext] =
     useState<DrillDownContext | null>(null);
@@ -49,6 +55,20 @@ function DashboardInner() {
     <>
       {/* Global filter bar */}
       <FilterBar />
+
+      {/* Headline insights */}
+      <InsightCardsRow
+        latestBatch={insights.latestBatch}
+        isLoading={insights.isLoading}
+        error={insights.error}
+        onRefresh={insights.refresh}
+        isRefreshing={insights.isRefreshing}
+      />
+      <PreviousInsights
+        batches={insights.previousBatches}
+        loadPrevious={insights.loadPrevious}
+        isPreviousLoading={insights.isPreviousLoading}
+      />
 
       {/* Responsive widget grid: 1 col mobile, 2 col md, 3 col lg */}
       <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">
