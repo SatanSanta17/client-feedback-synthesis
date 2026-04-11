@@ -20,7 +20,7 @@ Synthesiser is a web application for teams to capture structured client session 
 
 ## Current State
 
-**Status:** PRD-002 through PRD-010 implemented. PRD-012 Parts 1–5 (Design Tokens and Typography + DRY Extraction + SRP Component Decomposition + API Route/Service Cleanup + Dependency Inversion) implemented. PRD-013 Parts 1–2 (File Upload Infrastructure + Persistence & Signal Extraction Integration) implemented. PRD-014 Parts 1–4 (Session Traceability & Staleness Data Model + View Prompt on Capture Page + Show Prompt Version in Past Sessions + Staleness Indicators & Re-extraction Warnings) implemented. PRD-015 Part 1 (Public Landing Page) implemented. The app is a fully functional team-capable client feedback capture and synthesis platform with a public landing page. Google OAuth login (open to any Google account), working capture form with AI signal extraction and file attachment upload with server-side persistence, past sessions table with filters/inline editing/soft delete, master signal page with AI synthesis and PDF download, prompt editor with version history, and team access with role-based permissions.
+**Status:** PRD-002 through PRD-010 implemented. PRD-012 Parts 1–5 (Design Tokens and Typography + DRY Extraction + SRP Component Decomposition + API Route/Service Cleanup + Dependency Inversion) implemented. PRD-013 Parts 1–2 (File Upload Infrastructure + Persistence & Signal Extraction Integration) implemented. PRD-014 Parts 1–4 (Session Traceability & Staleness Data Model + View Prompt on Capture Page + Show Prompt Version in Past Sessions + Staleness Indicators & Re-extraction Warnings) implemented. PRD-015 Part 1 (Public Landing Page) implemented. PRD-019 Parts 1–4 (pgvector Setup & Embeddings Table + Chunking Logic + Embedding Pipeline + Retrieval Service) implemented. PRD-020 Parts 1–3 (Sidebar Navigation + Chat Data Model and Streaming Infrastructure + Chat UI Components) implemented. PRD-021 Parts 1–6 (Theme Assignment at Extraction Time + Dashboard Layout, Navigation, and Direct Widgets + Derived Theme Widgets + Qualitative Drill-Down + AI-Generated Headline Insights + Filters and Interactivity) implemented. The app is a fully functional team-capable client feedback capture and synthesis platform with a public landing page, vector search infrastructure, Instagram-style hover-to-expand sidebar navigation, complete RAG chat interface (conversations sidebar, message thread with virtualized scrolling, streaming with markdown, citations, follow-ups, in-conversation search, archive read-only mode), and full server-side RAG chat infrastructure (conversations, messages, tool-augmented streaming, LLM title generation). Google OAuth login (open to any Google account), working capture form with AI signal extraction and file attachment upload with server-side persistence, past sessions table with filters/inline editing/soft delete, master signal page with AI synthesis and PDF download, prompt editor with version history, team access with role-based permissions, automatic embedding generation on session save/extraction, and semantic retrieval service with adaptive query classification for downstream RAG and insights features.
 
 **Core features live:**
 - Public landing page at `/` with hero, feature cards, how-it-works flow, and CTA (authenticated users auto-redirect to `/capture`)
@@ -33,8 +33,11 @@ Synthesiser is a web application for teams to capture structured client session 
 - Team-scoped sessions, clients, master signals, and prompts
 - Team management (members, roles, ownership transfer, rename, delete)
 - Data retention on member departure
+- RAG chat interface at `/chat` — conversation sidebar (search, pin, archive, rename, delete), virtualized message thread, markdown rendering with citations, follow-up suggestions, in-conversation search with match navigation, starter questions, archive read-only with unarchive
+- AI-powered theme assignment — automatic topic-based classification of signal chunks during extraction, chained after embedding generation (fire-and-forget), workspace-scoped themes with many-to-many signal-theme junction, primary/secondary themes with confidence scores
+- AI-powered insights dashboard at `/dashboard` — sentiment distribution (donut chart), urgency distribution (bar chart), session volume over time (area chart with week/month toggle), client health grid (scatter plot), competitive mentions (horizontal bar chart), top themes (horizontal bar chart with chunk-type breakdown tooltip), theme trends (multi-line chart with local theme selector and granularity toggle), theme-client matrix (heatmap grid with intensity-mapped cells); global filter bar (client multi-select, date range, severity, urgency) with URL-encoded state; `confidenceMin` available as URL param for theme query filtering; all widgets consume a shared `queryDatabase` service layer via `/api/dashboard` route; qualitative drill-down — clicking any widget data point opens a sliding Sheet panel showing actual signal texts grouped by client in collapsible accordion, with chunk-type/theme badges, session date, and "View Session" button that opens a Dialog with the full StructuredSignalView; two-layer architecture (DrillDownContent + DrillDownPanel) for swappable presentation shell; AI-generated headline insights — 3–5 classified insight cards (trend/anomaly/milestone) with type-specific colour accents displayed above the widget grid, manual "Refresh Insights" button, automatic generation after session extraction via fire-and-forget chain, collapsible "Previous Insights" section with lazy-loaded historical batches; cross-widget filtering — shift+click on sentiment/urgency/client data points sets global URL filters that all widgets respond to; data freshness indicator — "Data as of [time]" display updated via FreshnessContext from all widget fetches; dashboard screenshot export — "Export as Image" button dynamically imports html2canvas, prepends temporary filter context header, captures at 2x retina scale, triggers PNG download with date-stamped filename
 
-**Database tables:** `clients`, `sessions`, `session_attachments`, `master_signals`, `profiles`, `prompt_versions`, `teams`, `team_members`, `team_invitations` — all with RLS.
+**Database tables:** `clients`, `sessions`, `session_attachments`, `session_embeddings`, `themes`, `signal_themes`, `master_signals`, `profiles`, `prompt_versions`, `teams`, `team_members`, `team_invitations`, `conversations`, `messages`, `dashboard_insights` — all with RLS. **RPC functions:** `match_session_embeddings` (vector similarity search), `sessions_over_time` (time-bucketed session counts by week/month for dashboard).
 
 ---
 
@@ -50,8 +53,8 @@ synthesiser/
 ├── middleware.ts                # Route protection + active_team_id cookie validation
 ├── next.config.ts               # Next.js config — image remote patterns (Google avatars)
 ├── app/
-│   ├── globals.css              # Global CSS tokens (brand colours, status colours, AI action colours, typography, surfaces)
-│   ├── layout.tsx               # Root layout — AuthProvider + AppHeader + AppFooter + Toaster
+│   ├── globals.css              # Global CSS tokens (brand colours, status colours, AI action colours, typography, surfaces, sidebar width tokens)
+│   ├── layout.tsx               # Root layout — AuthProvider + AuthenticatedLayout + Toaster
 │   ├── page.tsx                 # Landing page (public) — authenticated users redirect to /capture
 │   ├── _components/
 │   │   └── landing-page.tsx     # Client component — auth-aware landing page (hero, features, how-it-works, CTA)
@@ -62,6 +65,15 @@ synthesiser/
 │   │   │   │   └── route.ts     # POST — extract signals from raw notes via AI model
 │   │   │   └── generate-master-signal/
 │   │   │       └── route.ts     # POST — generate/regenerate master signal — delegates to generateOrUpdateMasterSignal() service
+│   │   ├── chat/
+│   │   │   ├── conversations/
+│   │   │   │   ├── route.ts     # GET — list conversations (active/archived, cursor-based pagination, search)
+│   │   │   │   └── [id]/
+│   │   │   │       ├── route.ts     # PATCH (rename/pin/archive/unarchive) and DELETE (soft-delete) conversation
+│   │   │   │       └── messages/
+│   │   │   │           └── route.ts # GET — list messages for a conversation (cursor-based, newest-first)
+│   │   │   └── send/
+│   │   │       └── route.ts     # POST — streaming chat route: auth, validation, conversation setup, delegates to chat-stream-service; returns SSE response
 │   │   ├── clients/
 │   │   │   └── route.ts         # GET (search, hasSession filter) and POST (create) — team-scoped
 │   │   ├── files/
@@ -109,9 +121,61 @@ synthesiser/
 │   │                   ├── route.ts     # DELETE — remove member from team
 │   │                   └── role/
 │   │                       └── route.ts # PATCH — change member role
+│   │   └── dashboard/
+│   │       ├── route.ts         # GET — dashboard query route: Zod-validated action (13 actions incl. drill_down, session_detail, insights_latest, insights_history) + filter params (including confidenceMin, drillDown, sessionId), delegates to executeQuery() via anon client (RLS-protected)
+│   │       └── insights/
+│   │           └── route.ts     # POST — generate headline insights: auth check, service-role client, calls generateHeadlineInsights(), returns new batch
 │   ├── auth/
 │   │   └── callback/
 │   │       └── route.ts         # OAuth callback — code exchange, pending invite auto-accept
+│   ├── chat/
+│   │   ├── page.tsx             # Chat tab — server component with metadata, renders ChatPageContent
+│   │   └── _components/
+│   │       ├── chat-area.tsx               # Main chat area — composes header, search bar, message thread, input, error banner; manages in-conversation search state
+│   │       ├── chat-header.tsx             # Conversation title bar — sidebar toggle, mobile menu, search toggle
+│   │       ├── chat-input.tsx              # Auto-expanding textarea (1–6 rows) with send/stop buttons, Enter/Shift+Enter, archived unarchive bar
+│   │       ├── chat-page-content.tsx       # Client coordinator — wires useConversations + useChat, manages active conversation, sidebar state
+│   │       ├── chat-search-bar.tsx         # In-conversation search — input, match count, prev/next navigation, keyboard shortcuts
+│   │       ├── citation-chips.tsx          # Pill-shaped citation chips with client name · date, opens CitationPreviewDialog
+│   │       ├── citation-preview-dialog.tsx # Dialog showing source chunk text, metadata, "View full session" link
+│   │       ├── conversation-context-menu.tsx # Right-click context menu — rename, pin, archive/unarchive, delete
+│   │       ├── conversation-item.tsx       # Single conversation row — title, date, pin/archive badges, context menu
+│   │       ├── conversation-sidebar.tsx    # Collapsible sidebar — search, active/archived lists, new chat button, desktop panel + mobile Sheet
+│   │       ├── follow-up-chips.tsx         # Clickable follow-up question pills with Sparkles icon
+│   │       ├── highlighted-text.tsx        # Search highlight — splits text by regex, wraps matches in <mark>; exports highlightChildren() recursive utility
+│   │       ├── memoized-markdown.tsx       # React.memo'd ReactMarkdown with remark-gfm, search highlighting via component overrides
+│   │       ├── message-actions.tsx         # Hover-visible copy/action buttons on messages
+│   │       ├── message-bubble.tsx          # Single message — user (right, coloured) or assistant (left, markdown), citations, follow-ups, status
+│   │       ├── message-status-indicator.tsx # Status badges for failed/cancelled/stale with retry button
+│   │       ├── message-thread.tsx          # Virtualized message list (react-virtuoso reverse mode) — infinite scroll, streaming sentinel, search scroll-to
+│   │       ├── starter-questions.tsx       # Empty state — 4 hardcoded starter question chips
+│   │       └── streaming-message.tsx       # Live streaming assistant response — spinner, status text, markdown, blinking cursor
+│   ├── dashboard/
+│   │   ├── page.tsx             # Dashboard page — server component with metadata, renders DashboardContent
+│   │   └── _components/
+│   │       ├── chart-colours.ts            # Shared chart colour/label constants — brand primary hex/rgb, sentiment/urgency colour maps, theme line palette, CHUNK_TYPE_LABELS with formatChunkType/formatChunkTypePlural helpers
+│   │       ├── client-health-widget.tsx    # Client health grid — ScatterChart positioning clients by sentiment × urgency, custom tooltip, drill-down on click, shift+click cross-filter (clients)
+│   │       ├── competitive-mentions-widget.tsx # Competitive mentions — horizontal BarChart sorted by frequency, drill-down on click
+│   │       ├── dashboard-card.tsx          # Shared widget card — title, loading skeleton, error/retry, empty state, content slot
+│   │       ├── dashboard-content.tsx       # Client coordinator — FilterBar + InsightCardsRow + PreviousInsights + responsive widget grid (8 widgets), drill-down state + DrillDownPanel, cross-widget filtering (applyWidgetFilter), freshness tracking (ref+context), screenshot export (dashboardRef), Suspense boundary
+│   │       ├── export-dashboard.ts         # Dashboard screenshot export — dynamically imports html2canvas, prepends temporary filter context header, captures at 2x scale, triggers PNG download, cleans up
+│   │       ├── freshness-context.tsx      # FreshnessContext — lightweight context providing onFetchComplete callback so useDashboardFetch can report fetch timestamps without prop-drilling
+│   │       ├── freshness-indicator.tsx    # Data freshness display — "Data as of just now / Nm ago / HH:MM" with 30-second auto-refresh timer
+│   │       ├── drill-down-content.tsx      # Presentation-agnostic drill-down body — data fetching via useDashboardFetch, count header, filter label, client accordion (native details/summary), signal rows with badges, "View Session" button
+│   │       ├── drill-down-panel.tsx        # Thin Sheet shell wrapping DrillDownContent (swappable to Dialog in one file); owns SessionPreviewDialog
+│   │       ├── drill-down-types.ts         # DrillDownContext discriminated union (7 variants), DrillDownSignal, DrillDownClientGroup, DrillDownResult interfaces
+│   │       ├── filter-bar.tsx             # Global filter bar — client multi-select (Popover+Command), date range, severity, urgency dropdowns, URL search params, "Export as Image" button
+│   │       ├── insight-cards-row.tsx      # Headline insight cards — horizontal scrollable row, type-specific styling (trend/anomaly/milestone), refresh button, skeleton/error/empty states
+│   │       ├── previous-insights.tsx      # Previous insight batches — collapsible details/summary, lazy-loaded on first expand, compact list with type icons
+│   │       ├── sentiment-widget.tsx        # Sentiment distribution — PieChart (donut) with clickable segments, drill-down on click, shift+click cross-filter (severity)
+│   │       ├── session-preview-dialog.tsx  # Session preview Dialog — fetches session_detail, renders StructuredSignalView with client name + date header
+│   │       ├── session-volume-widget.tsx   # Session volume over time — AreaChart with local week/month granularity toggle (no drill-down)
+│   │       ├── theme-client-matrix-widget.tsx # Theme-client matrix — HTML heatmap grid, opacity-mapped cells, sticky headers, custom tooltip, drill-down on click
+│   │       ├── theme-trends-widget.tsx    # Theme trends — LineChart with local week/month toggle, top-5 default with theme multi-select (Popover+Command), 8-colour palette, drill-down on activeDot click
+│   │       ├── top-themes-widget.tsx      # Top themes — horizontal BarChart, chunk-type breakdown tooltip, 15-theme default with show-all toggle, drill-down on click
+│   │       ├── urgency-widget.tsx          # Urgency distribution — BarChart with colour-coded bars, drill-down on click, shift+click cross-filter (urgency)
+│   │       ├── use-dashboard-fetch.ts     # Shared fetch hook — action + filter params from URL, loading/error/data lifecycle, re-fetch on filter change, reports successful fetches to FreshnessContext
+│   │       └── use-insights.ts           # Insight data hook — fetches latest batch on mount, exposes refresh (POST), lazy-load previous batches
 │   ├── capture/
 │   │   ├── page.tsx             # Capture tab — server component, renders CapturePageContent
 │   │   └── _components/
@@ -182,12 +246,14 @@ synthesiser/
 │   │   ├── role-picker.tsx      # Controlled role picker (value, onValueChange) + exported Role type
 │   │   └── table-shell.tsx      # Shared bordered table wrapper (TableShell) + standardised header cell (TableHeadCell)
 │   ├── layout/
-│   │   ├── app-footer.tsx       # Footer — developer contact (name, email, GitHub, LinkedIn)
-│   │   ├── app-header.tsx       # Top bar — TabNav + WorkspaceSwitcher + UserMenu
+│   │   ├── app-footer.tsx       # Footer — public routes only (developer contact + theme toggle)
+│   │   ├── app-sidebar.tsx      # Instagram-style hover-to-expand sidebar — icon-only at rest, overlay on hover, mobile drawer via Sheet; nav links (Dashboard, Capture, Chat, Settings), workspace switcher, more menu, user menu
+│   │   ├── authenticated-layout.tsx # Auth-aware layout wrapper — sidebar + margin for authenticated routes, footer-only for public routes
 │   │   ├── create-team-dialog.tsx # Controlled team creation dialog (opened from workspace switcher)
-│   │   ├── tab-nav.tsx          # Route-based tab navigation with active indicator
-│   │   ├── user-menu.tsx        # Auth-aware user menu — avatar, email, sign-out dropdown
-│   │   └── workspace-switcher.tsx # Always-visible workspace dropdown — switch, create team, CTA
+│   │   ├── synthesiser-logo.tsx # SVG logo component — full (wordmark) and icon-only variants
+│   │   ├── theme-toggle.tsx     # Theme toggle button — Sun/Moon icon with label
+│   │   ├── user-menu.tsx        # Auth-aware user menu — avatar, email, sign-out dropdown; supports side/collapsed/onOpenChange props for sidebar integration
+│   │   └── workspace-switcher.tsx # Always-visible workspace dropdown — switch, create team, CTA; supports collapsed/onOpenChange props for sidebar integration
 │   └── ui/                      # shadcn/ui primitives (do not modify) + shared dialogs
 │       ├── badge.tsx
 │       ├── confirm-dialog.tsx    # Reusable confirmation dialog (config-driven: title, description, destructive variant, loading state)
@@ -199,6 +265,7 @@ synthesiser/
 │       ├── label.tsx
 │       ├── popover.tsx
 │       ├── select.tsx
+│       ├── sheet.tsx            # Slide-out drawer (left/right/top/bottom) built on Radix Dialog primitives
 │       ├── sonner.tsx
 │       ├── tabs.tsx
 │       └── textarea.tsx
@@ -209,24 +276,45 @@ synthesiser/
 │   ├── cookies/
 │   │   └── active-team.ts       # Client-side active team cookie helpers (getActiveTeamId, setActiveTeamCookie, clearActiveTeamCookie)
 │   ├── hooks/
-│   │   └── use-signal-extraction.ts # Shared extraction state machine hook (ExtractionState, promptVersionId, getInput callback, re-extract confirm flow, forceConfirmOnReextract for server-side manual edit flag)
+│   │   ├── use-chat.ts          # Chat streaming hook — SSE parsing, AbortController cancellation, sendMessage/cancelStream/retryLastMessage/fetchMoreMessages (PRD-020 Part 2–3)
+│   │   ├── use-conversations.ts # Conversation list management — dual active/archived lists, optimistic CRUD, cursor-based pagination, search (PRD-020 Part 2–3)
+│   │   ├── use-signal-extraction.ts # Shared extraction state machine hook (ExtractionState, promptVersionId, getInput callback, re-extract confirm flow, forceConfirmOnReextract for server-side manual edit flag)
+│   │   └── use-theme.ts         # Theme hook — reads/writes theme cookie, returns { theme, setTheme }
 │   ├── types/
-│   │   └── signal-session.ts    # SignalSession interface — shared between ai-service and master-signal-service
+│   │   ├── chat.ts              # MessageRole, MessageStatus, ChatSource, Message, Conversation, ConversationListOptions — types for the chat system (PRD-020)
+│   │   ├── embedding-chunk.ts   # ChunkType, EmbeddingChunk, SessionMeta — types for the vector search chunking/embedding pipeline (PRD-019)
+│   │   ├── retrieval-result.ts  # QueryClassification, ClassificationResult, RetrievalOptions, RetrievalResult — types for the retrieval service (PRD-019)
+│   │   ├── signal-session.ts    # SignalSession interface — shared between ai-service and master-signal-service
+│   │   ├── theme.ts             # Theme, SignalTheme, LLMThemeAssignment, ThemeAssignmentResult — types for the theme assignment system (PRD-021)
+│   │   └── insight.ts           # InsightType, DashboardInsight, InsightBatch — types for AI-generated headline insights (PRD-021 Part 5)
 │   ├── utils.ts                 # cn() utility (clsx + tailwind-merge) + PROSE_CLASSES constant
 │   ├── email-templates/
 │   │   └── invite-email.ts      # HTML email template for team invitations
 │   ├── prompts/
+│   │   ├── chat-prompt.ts       # Chat system prompt — tool usage instructions, citation rules, follow-up generation format; CHAT_MAX_TOKENS (PRD-020)
+│   │   ├── classify-query.ts    # System prompt and max tokens for query classification — broad/specific/comparative (PRD-019)
+│   │   ├── generate-title.ts    # Lightweight title generation prompt (5-8 word summary); GENERATE_TITLE_MAX_TOKENS (PRD-020)
 │   │   ├── master-signal-synthesis.ts # System prompts (cold start + incremental) and user message builder
 │   │   ├── signal-extraction.ts # System prompt and user message template for signal extraction (used by prompt editor)
-│   │   └── structured-extraction.ts # System prompt and user message builder for generateObject() extraction (PRD-018)
+│   │   ├── structured-extraction.ts # System prompt and user message builder for generateObject() extraction (PRD-018)
+│   │   ├── theme-assignment.ts    # Theme assignment system prompt, max tokens, and buildThemeAssignmentUserMessage() for generateObject() classification (PRD-021)
+│   │   └── headline-insights.ts  # Headline insights system prompt, max tokens, InsightAggregates interface, buildHeadlineInsightsUserMessage() for generateObject() insight generation (PRD-021 Part 5)
 │   ├── schemas/
-│   │   └── extraction-schema.ts   # Zod schema for structured extraction output — signalChunkSchema, extractionSchema, type exports
+│   │   ├── extraction-schema.ts   # Zod schema for structured extraction output — signalChunkSchema, extractionSchema, type exports
+│   │   ├── theme-assignment-schema.ts # Zod schema for theme assignment LLM response — themeAssignmentResponseSchema, ThemeAssignmentResponse type (PRD-021)
+│   │   └── headline-insights-schema.ts # Zod schema for headline insights LLM response — headlineInsightsResponseSchema (1–5 items), HeadlineInsightsResponse type (PRD-021 Part 5)
 │   ├── repositories/
 │   │   ├── index.ts                    # Re-exports all repository interfaces and SessionNotFoundRepoError
 │   │   ├── attachment-repository.ts    # AttachmentRepository interface
 │   │   ├── client-repository.ts        # ClientRepository interface
+│   │   ├── conversation-repository.ts  # ConversationRepository interface + ConversationInsert, ConversationUpdate types (PRD-020)
+│   │   ├── embedding-repository.ts    # EmbeddingRepository interface + EmbeddingRow, SearchOptions, SimilarityResult types (PRD-019)
 │   │   ├── invitation-repository.ts    # InvitationRepository interface
+│   │   ├── theme-repository.ts        # ThemeRepository interface + ThemeInsert, ThemeUpdate types (PRD-021)
+│   │   ├── signal-theme-repository.ts # SignalThemeRepository interface + SignalThemeInsert type (PRD-021)
+│   │   ├── insight-repository.ts     # InsightRepository interface + InsightInsert type (PRD-021 Part 5)
 │   │   ├── master-signal-repository.ts # MasterSignalRepository interface
+│   │   ├── message-repository.ts       # MessageRepository interface + MessageInsert, MessageUpdate types (PRD-020)
 │   │   ├── profile-repository.ts       # ProfileRepository interface
 │   │   ├── prompt-repository.ts        # PromptRepository interface
 │   │   ├── session-repository.ts       # SessionRepository interface + domain types + SessionNotFoundRepoError
@@ -236,6 +324,12 @@ synthesiser/
 │   │   │   ├── scope-by-team.ts                  # Shared helper — scopeByTeam(query, teamId) for workspace scoping
 │   │   │   ├── supabase-attachment-repository.ts  # Supabase adapter for AttachmentRepository
 │   │   │   ├── supabase-client-repository.ts      # Supabase adapter for ClientRepository
+│   │   │   ├── supabase-conversation-repository.ts # Supabase adapter for ConversationRepository — cursor pagination, pinned-first ordering (PRD-020)
+│   │   │   ├── supabase-embedding-repository.ts   # Supabase adapter for EmbeddingRepository — uses service-role client, similarity search via match_session_embeddings RPC with filter_user_id for personal workspace isolation (PRD-019)
+│   │   │   ├── supabase-theme-repository.ts       # Supabase adapter for ThemeRepository — workspace-scoped with scopeByTeam(), case-insensitive findByName via ilike (PRD-021)
+│   │   │   ├── supabase-signal-theme-repository.ts # Supabase adapter for SignalThemeRepository — bulk insert, query by embedding IDs or theme ID (PRD-021)
+│   │   │   ├── supabase-insight-repository.ts    # Supabase adapter for InsightRepository — batch read/write, team-scoped, groupIntoBatches() helper (PRD-021 Part 5)
+│   │   │   ├── supabase-message-repository.ts     # Supabase adapter for MessageRepository — cursor pagination, newest-first (PRD-020)
 │   │   │   ├── supabase-invitation-repository.ts  # Supabase adapter for InvitationRepository
 │   │   │   ├── supabase-master-signal-repository.ts # Supabase adapter for MasterSignalRepository
 │   │   │   ├── supabase-profile-repository.ts     # Supabase adapter for ProfileRepository
@@ -245,7 +339,16 @@ synthesiser/
 │   │   └── mock/
 │   │       └── mock-session-repository.ts         # In-memory mock for SessionRepository (testing)
 │   ├── services/
-│   │   ├── ai-service.ts        # AI service — extractSignals() → ExtractionResult (generateObject), synthesiseMasterSignal() (generateText), provider-agnostic via Vercel AI SDK
+│   │   ├── ai-service.ts        # AI service — public generics callModelText() and callModelObject<T>() with retry; extractSignals(), synthesiseMasterSignal(), generateConversationTitle(); provider-agnostic via Vercel AI SDK
+│   │   ├── chat-service.ts      # Chat service — conversation CRUD, message CRUD, buildContextMessages() with 80K-token budget (PRD-020)
+│   │   ├── chat-stream-service.ts # Streaming orchestration — tool definitions (searchInsights, queryDatabase), streamText call, SSE event emission, message finalization (PRD-020)
+│   │   ├── chunking-service.ts  # Pure chunking functions — chunkStructuredSignals() and chunkRawNotes() — transforms extraction JSON into EmbeddingChunk arrays (PRD-019)
+│   │   ├── database-query-service.ts # Database query service — action map (17 actions: 7 chat + 3 dashboard + 3 theme widgets + drill_down + session_detail + insights_latest + insights_history) with parameterized Supabase queries, team-scoped; extended filters (clientIds, severity, urgency, granularity, confidenceMin, drillDown, sessionId) for dashboard (PRD-020, PRD-021); shared theme helpers (fetchActiveThemeMap, fetchSignalThemeRows) for DRY multi-table joins; drill-down handler with Zod-validated discriminated union dispatch (7 strategies) and 100-signal cap; insight handlers with batch grouping
+│   │   ├── embedding-service.ts # Provider-agnostic embedding service — embedTexts() with batching, retry, dimension validation (PRD-019)
+│   │   ├── embedding-orchestrator.ts # Coordination layer — generateSessionEmbeddings() ties chunking → embedding → persistence, returns embedding IDs for downstream chaining, fire-and-forget (PRD-019, PRD-021)
+│   │   ├── theme-service.ts     # Theme assignment orchestrator — assignSessionThemes() fetches themes, calls LLM, resolves/creates themes, bulk inserts assignments; chained after embedding generation (PRD-021)
+│   │   ├── insight-service.ts   # Headline insight generation — generateHeadlineInsights() (aggregates → LLM → batch insert), maybeRefreshInsights() (conditional fire-and-forget after extraction) (PRD-021 Part 5)
+│   │   ├── retrieval-service.ts # Retrieval service — retrieveRelevantChunks() with adaptive query classification, embedding, similarity search, deduplication (PRD-019)
 │   │   ├── attachment-service.ts # Attachment CRUD — accepts AttachmentRepository
 │   │   ├── client-service.ts    # Client search and creation — accepts ClientRepository
 │   │   ├── email-service.ts     # Provider-agnostic email sending — sendEmail(), resolveEmailProvider(), Resend adapter
@@ -257,6 +360,7 @@ synthesiser/
 │   │   ├── session-service.ts   # Session CRUD + checkSessionAccess() — accepts SessionRepository + ClientRepository + MasterSignalRepository
 │   │   └── team-service.ts      # Team CRUD + getTeamMembersWithProfiles(), getTeamsWithRolesForUser() — accepts TeamRepository
 │   ├── utils/
+│   │   ├── chat-helpers.ts        # Pure utilities — SSE encoding, follow-up parsing, source mapping and deduplication (PRD-020)
 │   │   ├── compose-ai-input.ts    # Composes raw notes + attachments into a single AI input string
 │   │   ├── format-file-size.ts    # File size formatting (bytes → "1.2 KB", "3.4 MB")
 │   │   ├── format-relative-time.ts # Relative time formatting ("just now", "5m ago", "3d ago")
@@ -267,23 +371,7 @@ synthesiser/
 │   └── supabase/
 │       ├── server.ts            # Server-side Supabase clients (anon + service role) + getActiveTeamId()
 │       └── client.ts            # Browser-side Supabase client factory
-└── docs/                            # Each folder contains prd.md + trd.md (and optional SQL migrations)
-    ├── master-prd/              # Master PRD — full product scope
-    ├── 001-foundation/
-    ├── 002-capture-tab/
-    ├── 003-signal-extraction/
-    ├── 004-master-signals/
-    ├── 005-prompt-editor/
-    ├── 006-master-signal-cleanup/
-    ├── 007-prompt-editor-toggle/
-    ├── 008-open-access/
-    ├── 009-ai-provider-abstraction/
-    ├── 010-team-access/
-    ├── 011-email-auth/
-    ├── 012-code-quality/
-    ├── 013-file-upload/
-    ├── 014-prompt-traceability/
-    └── 015-landing-page/
+└── docs/                            # Each numbered folder contains prd.md + trd.md (and optional SQL migrations)
 ```
 
 > This map is updated after each increment ships. Only files that exist in the codebase are listed here.
@@ -356,6 +444,60 @@ Stores uploaded file metadata and parsed content for session attachments. Origin
 **Indexes:** `session_attachments_session_id_idx` — on `session_id` where `deleted_at IS NULL`.
 **RLS:** Personal: users SELECT/INSERT their own attachments. Team: members SELECT team attachments; INSERT allowed for authenticated users. Service role handles DELETE (soft-delete + storage cleanup).
 **Storage bucket:** `SYNTHESISER_FILE_UPLOAD` — private, max 10 MB per file. Files stored at `{ownerId}/{sessionId}/{uuid}.{ext}`. All operations via service role client.
+
+### `session_embeddings`
+
+Stores vector embeddings of chunked session extraction data for semantic similarity search. Each row represents one embeddable chunk (e.g., a single pain point, requirement, or summary) with its vector and metadata.
+
+| Column | Type | Notes |
+|--------|------|-------|
+| `id` | UUID (PK) | `gen_random_uuid()` |
+| `session_id` | UUID (FK → sessions) | NOT NULL. ON DELETE CASCADE — embeddings removed when session is deleted. |
+| `team_id` | UUID (FK → teams) | Nullable. NULL = personal workspace. Mirrors scoping pattern of `sessions`. |
+| `chunk_text` | TEXT | NOT NULL. Human-readable text of the embedded chunk. |
+| `chunk_type` | TEXT | NOT NULL. One of: `summary`, `client_profile`, `pain_point`, `requirement`, `aspiration`, `competitive_mention`, `blocker`, `tool_and_platform`, `custom`, `raw`. Stored as text (not enum) for extensibility. |
+| `metadata` | JSONB | NOT NULL, default `'{}'`. Type-specific fields: `client_name`, `session_date`, `severity`, `priority`, `competitor`, `category_name`, `client_quote`, etc. |
+| `embedding` | vector(1536) | NOT NULL. Embedding vector (dimension matches configured embedding model). |
+| `schema_version` | INTEGER | NOT NULL, default `1`. Matches extraction schema version for schema-aware retrieval. |
+| `created_at` | TIMESTAMPTZ | Default `now()` |
+
+**Indexes:** `session_embeddings_embedding_hnsw_idx` — HNSW index on `embedding` using `vector_cosine_ops` for cosine similarity search. `session_embeddings_session_id_idx` — on `session_id` for cascade deletes and re-extraction cleanup. `session_embeddings_team_chunk_type_idx` — on `(team_id, chunk_type)` for filtered similarity searches.
+**RLS:** Personal: users SELECT/INSERT/UPDATE/DELETE embeddings for their own sessions. Team: members SELECT/INSERT/UPDATE/DELETE team embeddings via `is_team_member()`.
+
+### `themes`
+
+Workspace-scoped topic-based themes assigned to signal chunks by the AI during extraction. Themes describe *what* a signal is about (e.g., "Onboarding Friction", "API Performance"), not what type it is (chunk_type already captures that).
+
+| Column | Type | Notes |
+|--------|------|-------|
+| `id` | UUID (PK) | `gen_random_uuid()` |
+| `name` | TEXT | NOT NULL. Human-readable theme label (2-4 words, topic-based). |
+| `description` | TEXT | Nullable. One-sentence description of what the theme covers. |
+| `team_id` | UUID (FK → teams) | Nullable. NULL = personal workspace. |
+| `initiated_by` | UUID (FK → auth.users) | NOT NULL. The user whose action triggered theme creation. |
+| `origin` | TEXT | NOT NULL, default `'ai'`. Either `'ai'` (created during extraction) or `'user'` (future manual creation). |
+| `is_archived` | BOOLEAN | NOT NULL, default `false`. Archived themes are excluded from future assignments but preserved for historical data. |
+| `created_at` | TIMESTAMPTZ | Default `now()` |
+| `updated_at` | TIMESTAMPTZ | Default `now()` |
+
+**Indexes:** `themes_team_id_idx` — on `team_id` for workspace-scoped queries. Partial unique indexes: `themes_unique_name_team` — `UNIQUE (LOWER(name), team_id) WHERE team_id IS NOT NULL` for team dedup; `themes_unique_name_personal` — `UNIQUE (LOWER(name), initiated_by) WHERE team_id IS NULL` for personal workspace dedup.
+**RLS:** Personal: users SELECT/INSERT/UPDATE/DELETE their own themes. Team: members SELECT/INSERT/UPDATE/DELETE team themes via `is_team_member()`. Service-role client used for AI-driven writes during fire-and-forget extraction.
+
+### `signal_themes`
+
+Many-to-many junction table linking signal embeddings to themes. Each row represents one theme assignment for one signal chunk, with confidence score and attribution.
+
+| Column | Type | Notes |
+|--------|------|-------|
+| `id` | UUID (PK) | `gen_random_uuid()` |
+| `embedding_id` | UUID (FK → session_embeddings) | NOT NULL. ON DELETE CASCADE — assignments removed when embeddings are re-extracted. |
+| `theme_id` | UUID (FK → themes) | NOT NULL. ON DELETE CASCADE — assignments removed when theme is deleted. |
+| `assigned_by` | TEXT | NOT NULL, default `'ai'`. Either `'ai'` or `'user'` (future manual assignment). |
+| `confidence` | REAL | Nullable. AI confidence score (0.0–1.0). NULL for manual assignments. |
+| `created_at` | TIMESTAMPTZ | Default `now()` |
+
+**Indexes:** `signal_themes_embedding_id_idx` — on `embedding_id` for join queries from embeddings to themes. `signal_themes_theme_id_idx` — on `theme_id` for theme-centric queries (dashboard widgets). Unique index: `signal_themes_embedding_theme_unique` — `UNIQUE (embedding_id, theme_id)` prevents duplicate assignments.
+**RLS:** Inherits access from parent tables via FK joins. Personal: users SELECT/INSERT/DELETE assignments for their own embeddings. Team: members SELECT/INSERT/DELETE team assignments via `is_team_member()`. Service-role client used for AI-driven bulk inserts.
 
 ### `master_signals`
 
@@ -459,9 +601,47 @@ Stores versioned AI system prompts per user or team workspace. Each save/reset/r
 **Indexes:** Partial unique index enforces one active per key per workspace scope.
 **RLS:** Users can SELECT/INSERT/UPDATE their own prompt versions. Team members can access team-scoped prompts.
 
+### `conversations`
+
+Stores chat conversation threads. User-private (not team-shared). Scoped by team context for data isolation.
+
+| Column | Type | Notes |
+|--------|------|-------|
+| `id` | UUID (PK) | `gen_random_uuid()` |
+| `title` | TEXT | NOT NULL. Placeholder (first 80 chars), then LLM-generated title. |
+| `created_by` | UUID (FK → auth.users) | NOT NULL. Owning user. |
+| `team_id` | UUID (FK → teams) | Nullable. NULL = personal workspace. ON DELETE SET NULL. |
+| `is_pinned` | BOOLEAN | NOT NULL, default `false`. |
+| `is_archived` | BOOLEAN | NOT NULL, default `false`. |
+| `created_at` | TIMESTAMPTZ | Default `now()` |
+| `updated_at` | TIMESTAMPTZ | Auto-updated via trigger + message insert trigger. |
+
+**Indexes:** `idx_conversations_user_list` on `(created_by, is_archived, is_pinned DESC, updated_at DESC)`.
+**RLS:** User-private — SELECT, INSERT, UPDATE, DELETE all require `created_by = auth.uid()`.
+
+### `messages`
+
+Stores individual messages within conversations. Access derived from conversation ownership.
+
+| Column | Type | Notes |
+|--------|------|-------|
+| `id` | UUID (PK) | `gen_random_uuid()` |
+| `conversation_id` | UUID (FK → conversations) | NOT NULL. ON DELETE CASCADE. |
+| `parent_message_id` | UUID (FK → messages) | Nullable. For future edit/retry branching. ON DELETE SET NULL. |
+| `role` | TEXT | NOT NULL, CHECK: `user`, `assistant`. |
+| `content` | TEXT | NOT NULL, default `''`. |
+| `sources` | JSONB | Nullable. Array of ChatSource objects (sessionId, clientName, sessionDate, chunkText, chunkType). |
+| `status` | TEXT | NOT NULL, default `completed`, CHECK: `completed`, `streaming`, `failed`, `cancelled`. |
+| `metadata` | JSONB | Nullable. Model label, tools called, etc. |
+| `created_at` | TIMESTAMPTZ | Default `now()` |
+
+**Indexes:** `idx_messages_conversation_created` on `(conversation_id, created_at ASC)`.
+**RLS:** Derived from conversation ownership — all operations require `EXISTS (SELECT 1 FROM conversations WHERE id = conversation_id AND created_by = auth.uid())`.
+
 ### Shared functions and triggers
 
-- `update_updated_at()` — BEFORE UPDATE trigger on `clients`, `sessions`, `profiles`, and `teams` tables, sets `updated_at = now()`.
+- `update_updated_at()` — BEFORE UPDATE trigger on `clients`, `sessions`, `profiles`, `teams`, and `conversations` tables, sets `updated_at = now()`.
+- `update_conversation_updated_at()` — AFTER INSERT trigger on `messages`, bumps `conversations.updated_at` to `now()` for the parent conversation.
 - `handle_new_user()` — SECURITY DEFINER function, triggered AFTER INSERT on `auth.users`, creates a `profiles` row.
 - `is_admin()` — SECURITY DEFINER function, returns `true` if the current user's profile has `is_admin = true`. Retained in database.
 - `is_team_member(team_uuid)` — SECURITY DEFINER function, returns `true` if the current user is an active member of the given team.
@@ -563,6 +743,9 @@ Stores versioned AI system prompts per user or team workspace. Each save/reset/r
 | `RESEND_API_KEY` | Server only | Resend API key (required when `EMAIL_PROVIDER=resend`) |
 | `BREVO_API_KEY` | Server only | Brevo API key (required when `EMAIL_PROVIDER=brevo`) |
 | `EMAIL_FROM` | Server only | Sender email address for outbound emails |
+| `EMBEDDING_PROVIDER` | Server only | Embedding provider (`openai`) |
+| `EMBEDDING_MODEL` | Server only | Provider-specific embedding model identifier (e.g., `text-embedding-3-small`) |
+| `EMBEDDING_DIMENSIONS` | Server only | Vector dimension — must match `session_embeddings.embedding` column (e.g., `1536`) |
 
 See `.env.example` for the full template.
 
@@ -572,8 +755,8 @@ See `.env.example` for the full template.
 
 1. **Standalone app.** Separate deployment, separate auth, separate database. No shared components.
 2. **Supabase for auth and database.** Provides Google OAuth, PostgreSQL, RLS, and auto-generated types out of the box. Reduces infrastructure overhead.
-3. **Server-side AI calls only, provider-agnostic.** API keys never touch the browser. All AI operations go through Next.js API routes. The AI service uses the Vercel AI SDK (`generateText()` for master signal synthesis, `generateObject()` for structured signal extraction) and supports multiple providers (Anthropic, OpenAI, Google) via `AI_PROVIDER` and `AI_MODEL` env vars.
-4. **Manual theme tagging (not AI-driven).** Users explicitly link sessions to themes. Automatic theme extraction is deferred to backlog.
+3. **Server-side AI calls only, provider-agnostic.** API keys never touch the browser. All AI operations go through Next.js API routes. The AI service exposes two public generics — `callModelText()` and `callModelObject<T>()` — that wrap provider resolution, retry logic, and error classification. All non-streaming LLM calls (extraction, synthesis, title generation, theme assignment) use these generics. Streaming chat uses `streamText()` directly. Supports multiple providers (Anthropic, OpenAI, Google) via `AI_PROVIDER` and `AI_MODEL` env vars.
+4. **AI-driven theme assignment at extraction time.** Signal chunks are automatically classified into topic-based themes during extraction via a chained fire-and-forget LLM call (PRD-021). The LLM strongly prefers existing themes over creating new ones; the database enforces uniqueness via case-insensitive partial indexes. Each chunk can have multiple themes (primary + secondary) with confidence scores. Manual theme management is deferred to backlog.
 5. **Clients as a first-class entity.** Separate `clients` table (not derived from unique session values) to support future enrichment and enterprise features.
 6. **Architecture follows code, not the other way around.** This document is updated after implementation, never speculatively. If it's in this file, it exists in the codebase.
 7. **AI prompts are DB-first with hardcoded fallback.** Active prompts are read from `prompt_versions` at runtime. If the DB is unreachable, the AI service falls back to the hardcoded constants in `lib/prompts/`.
@@ -583,3 +766,5 @@ See `.env.example` for the full template.
 11. **Data retention on member departure.** When a member is removed or leaves, their sessions and other data remain in the team (owned by `team_id`). The `team_members.removed_at` timestamp records the departure. Re-inviting a departed member restores full access.
 12. **Provider-agnostic email service.** Email sending is abstracted via `email-service.ts` with `resolveEmailProvider()` — supports Resend and Brevo, extensible to SMTP and others via `EMAIL_PROVIDER` env var.
 13. **Dependency Inversion via repository pattern.** All 8 data-access services accept injected repository interfaces instead of importing Supabase directly. Repository interfaces live in `lib/repositories/`, Supabase adapters in `lib/repositories/supabase/`, and an in-memory mock in `lib/repositories/mock/`. Route handlers create Supabase clients, instantiate repositories via factory functions (`createSessionRepository`, etc.), and pass them to services. Services have zero coupling to Supabase — the `lib/services/` directory contains no `@/lib/supabase/server` imports. Workspace scoping (`team_id` filtering) is centralised in a shared `scopeByTeam()` helper within the adapter layer.
+14. **Chat data isolation: anon client for reads, service-role for embeddings.** The RAG chat system uses two Supabase clients: the RLS-protected anon client for all data reads (via the `queryDatabase` tool), ensuring row-level security enforces both team scoping and personal workspace isolation (`created_by = auth.uid()`); and the service-role client only for the embedding repository (similarity search RPC). The embedding RPC adds explicit `filter_user_id` scoping for personal workspace queries. `teamId` is always resolved server-side from the `active_team_id` cookie — never accepted from the client request body.
+15. **Dashboard widgets are self-contained client components.** Each widget owns its own fetch lifecycle via the shared `useDashboardFetch` hook, reading global filter state from URL search params (bookmarkable/shareable). The `/api/dashboard` route validates action + filter params with Zod and delegates to `executeQuery()` using the anon Supabase client (RLS-protected). Chart colours and chunk-type labels are centralised in `chart-colours.ts` to avoid duplication. Recharts is the charting library for most widgets; the theme-client matrix uses an HTML grid for heatmap rendering (PRD-021 Parts 2–3). Theme query handlers share `fetchActiveThemeMap()` and `fetchSignalThemeRows()` to DRY the multi-table join chain (`signal_themes` → `session_embeddings` → `sessions`). The `confidenceMin` URL param filters theme assignments by confidence score (forward-compatible for Part 6 UI slider). Qualitative drill-down (PRD-021 Part 4) uses a two-layer architecture: `DrillDownContent` is a presentation-agnostic `<div>` owning data fetching, client accordion, and signal rows; `DrillDownPanel` is a thin `Sheet` shell (swappable to `Dialog` in one file change). All 7 clickable widgets pass a `DrillDownContext` discriminated union via `onDrillDown` callback to the coordinator (`dashboard-content.tsx`). The drill-down API action uses Zod validation on the JSON payload and dispatches to 7 internal query strategies (3 direct + 1 competitor + 3 theme), capping results at 100 signals. A separate `session_detail` action fetches a single session for the `SessionPreviewDialog`.

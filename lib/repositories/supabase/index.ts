@@ -10,3 +10,9 @@ export { createMasterSignalRepository } from "./supabase-master-signal-repositor
 export { createInvitationRepository } from "./supabase-invitation-repository";
 export { createPromptRepository } from "./supabase-prompt-repository";
 export { createAttachmentRepository } from "./supabase-attachment-repository";
+export { createEmbeddingRepository } from "./supabase-embedding-repository";
+export { createConversationRepository } from "./supabase-conversation-repository";
+export { createMessageRepository } from "./supabase-message-repository";
+export { createThemeRepository } from "./supabase-theme-repository";
+export { createSignalThemeRepository } from "./supabase-signal-theme-repository";
+export { createInsightRepository } from "./supabase-insight-repository";

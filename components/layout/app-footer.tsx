@@ -18,9 +18,6 @@ export function AppFooter() {
 
   if (pathname === "/") return null;
 
-  /* theme always starts as "light" on both server and client, then
-     corrects after mount — so the button structure is always identical
-     during hydration (Moon icon + "Dark" label). No DOM mismatch. */
   const isDark = theme === "dark";
   const ThemeIcon = isDark ? Sun : Moon;
 

@@ -40,3 +40,32 @@ export type {
   AttachmentRow,
   AttachmentInsert,
 } from "./attachment-repository";
+export type {
+  EmbeddingRepository,
+  EmbeddingRow,
+  SearchOptions,
+  SimilarityResult,
+} from "./embedding-repository";
+export type {
+  ConversationRepository,
+  ConversationInsert,
+  ConversationUpdate,
+} from "./conversation-repository";
+export type {
+  MessageRepository,
+  MessageInsert,
+  MessageUpdate,
+} from "./message-repository";
+export type {
+  ThemeRepository,
+  ThemeInsert,
+  ThemeUpdate,
+} from "./theme-repository";
+export type {
+  SignalThemeRepository,
+  SignalThemeInsert,
+} from "./signal-theme-repository";
+export type {
+  InsightRepository,
+  InsightInsert,
+} from "./insight-repository";

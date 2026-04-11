@@ -6,6 +6,272 @@ All notable changes to this project are documented here, grouped by PRD and part
 
 ## [Unreleased]
 
+### PRD-021 Part 6: Filters and Interactivity — 2026-04-12
+
+**Cross-widget filtering (P6.R2):**
+- Shift+click on sentiment/urgency/client-health widget data points sets global URL filters (`severity`, `urgency`, `clients`) that all widgets respond to via existing `useDashboardFetch` + `FilterBar` infrastructure
+- `applyWidgetFilter()` callback in `dashboard-content.tsx` — receives `Record<string, string>`, merges into URL params via `router.replace()`
+- Three widgets updated with `onFilter` prop and `event.shiftKey` detection: `sentiment-widget.tsx`, `urgency-widget.tsx`, `client-health-widget.tsx`
+
+**Data freshness indicator (P6.R6):**
+- `freshness-context.tsx` — lightweight context providing `onFetchComplete` callback, avoids prop-drilling through 8 widgets
+- `freshness-indicator.tsx` — "Data as of just now / Nm ago / HH:MM" display with 30-second auto-refresh timer
+- `use-dashboard-fetch.ts` — calls `onFetchComplete()` from context after each successful fetch
+- `dashboard-content.tsx` — ref+state pair with 30s interval sync, wraps children in `FreshnessContext.Provider`
+
+**Dashboard screenshot export (P6.R7):**
+- `export-dashboard.ts` — `exportDashboardAsImage()` utility: dynamically imports `html2canvas` (~200KB deferred), prepends temporary filter context header to capture area, captures at 2x retina scale, triggers PNG download with date-stamped filename, cleans up header in `finally` block
+- `filter-bar.tsx` — "Export as Image" button with Camera icon (Loader2 spinner during export), `onExport`/`isExporting` props, positioned right via `ml-auto`
+- `dashboard-content.tsx` — `dashboardRef` on wrapper div, `isExporting` state, `activeFilters` derived from URL params, `handleExport` async callback
+
+**Audit fixes:**
+- `freshness-indicator.tsx` — replaced string concatenation with `cn()` for className composition
+- `dashboard-content.tsx` — fixed indentation inside `dashboardRef` wrapper div
+
+**Already implemented (no changes needed):**
+- P6.R1 (global filter propagation) — Part 2
+- P6.R3 (widget loading states) — Part 2
+- P6.R4 (widget error states) — Part 2
+- P6.R5 (empty states per widget) — Part 2
+
+---
+
+### PRD-021 Part 5: AI-Generated Headline Insights — 2026-04-12
+
+**Database:**
+- `dashboard_insights` table — `id` (UUID PK), `content` (text), `insight_type` (CHECK: trend/anomaly/milestone), `batch_id` (UUID), `team_id` (FK nullable), `created_by` (FK), `generated_at` (timestamptz); indexes on `(team_id, batch_id)` and `(team_id, generated_at DESC)`; RLS policies for team member reads, personal workspace reads, and authenticated inserts
+
+**New lib files:**
+- `lib/types/insight.ts` — `InsightType`, `DashboardInsight`, `InsightBatch` types
+- `lib/schemas/headline-insights-schema.ts` — Zod schema for LLM response (1–5 classified insight items), `HeadlineInsightsResponse` inferred type
+- `lib/prompts/headline-insights.ts` — system prompt (3–5 change-focused, classified, no-fabrication rules), `InsightAggregates` interface, `buildHeadlineInsightsUserMessage()` user message builder with previous batch comparison
+- `lib/repositories/insight-repository.ts` — `InsightRepository` interface (`getLatestBatch`, `getPreviousBatches`, `insertBatch`, `getLastGeneratedAt`) + `InsightInsert` type
+- `lib/repositories/supabase/supabase-insight-repository.ts` — Supabase adapter with `mapRow()`, `groupIntoBatches()`, inline team scoping
+- `lib/services/insight-service.ts` — `generateHeadlineInsights()` (5 aggregate queries in parallel via `executeQuery()` → previous batch fetch → `callModelObject()` → batch insert), `maybeRefreshInsights()` (staleness check via session count since last generation, fire-and-forget safe)
+
+**API routes:**
+- `POST /api/dashboard/insights` — auth check, service-role client, calls `generateHeadlineInsights()`, returns `{ insights }`
+- `insights_latest` and `insights_history` read actions added to `GET /api/dashboard` Zod enum and `database-query-service.ts` action map (now 17 actions)
+
+**New UI components:**
+- `use-insights.ts` — `useInsights()` hook: fetches latest batch on mount, `refresh()` POSTs for new generation, `loadPrevious()` lazy-loads history
+- `insight-cards-row.tsx` — horizontal scrollable card row with type-specific styling (trend=blue/info, anomaly=amber/warning, milestone=green/success), relative timestamp, "Refresh Insights" button with spinner, skeleton/error/empty states
+- `previous-insights.tsx` — collapsible `<details>/<summary>` with lazy load on first expand, compact batch list with type icons and formatted dates
+
+**Dashboard wiring:**
+- `dashboard-content.tsx` — `useInsights()` called in `DashboardInner`, `InsightCardsRow` + `PreviousInsights` rendered between FilterBar and widget grid
+
+**Auto-refresh wiring:**
+- `app/api/sessions/route.ts` POST — fire-and-forget chain extended: `generateEmbeddings() → assignThemes() → maybeRefreshInsights()`
+- `app/api/sessions/[id]/route.ts` PUT — same chain extension for re-extraction flow
+
+---
+
+### PRD-021 Part 4: Qualitative Drill-Down — 2026-04-12
+
+**New components:**
+- `drill-down-types.ts` — `DrillDownContext` discriminated union (7 variants: sentiment, urgency, client, competitor, theme, theme_bucket, theme_client), `DrillDownSignal`, `DrillDownClientGroup`, `DrillDownResult` interfaces
+- `drill-down-content.tsx` — Presentation-agnostic drill-down body; fetches data via `useDashboardFetch` with `drill_down` action; renders count header (with truncation indicator), filter label, client accordion (native `<details>/<summary>`, multiple open simultaneously), signal rows with chunk-type badge, theme badge, session date, text truncation toggle, "View Session" button; loading/error/empty states
+- `drill-down-panel.tsx` — Thin Sheet shell (side="right", 45vw desktop / full mobile) wrapping `DrillDownContent`; swappable to Dialog in one file change; owns `SessionPreviewDialog` state
+- `session-preview-dialog.tsx` — Dialog wrapping `StructuredSignalView`; fetches session via `session_detail` action; client name + date in header; loading skeleton, error retry, no-data states
+
+**Database query service extensions:**
+- `drill_down` action — Zod-validated discriminated union payload with 7 dispatch strategies: 3 direct (sentiment, urgency, client via `fetchDirectDrillDownRows`), 1 competitor (sessions + filtered embeddings), 3 theme (signal_themes join via `fetchThemeDrillDownRows` with optional bucket/client narrowing); results grouped by client via `groupByClient()`, capped at 100 signals
+- `session_detail` action — fetches single session by ID with team scoping, returns `structuredJson`, `clientName`, `sessionDate`
+- `drillDown?: string` and `sessionId?: string` added to `QueryFilters`
+
+**API route extensions:**
+- 2 new actions (`drill_down`, `session_detail`) added to Zod enum
+- `drillDown: z.string().optional()` and `sessionId: z.string().uuid().optional()` params
+
+**Widget wiring (7 widgets):**
+- All 7 clickable widgets now accept `onDrillDown?: (context: DrillDownContext) => void` prop
+- `dashboard-content.tsx` manages `drillDownContext` state, passes `handleDrillDown` callback to all widgets, renders `DrillDownPanel`
+- All `console.log` drill-down stubs replaced with actual `onDrillDown` calls
+- `client-health-widget.tsx` — `clientId` added to `ScatterPoint` for drill-down
+- `theme-trends-widget.tsx` — `activeDot.onClick` handler dispatches `theme_bucket` context
+- `SessionVolumeWidget` intentionally excluded (no meaningful click interaction)
+
+**Shared infrastructure (DRY):**
+- `CHUNK_TYPE_LABELS`, `formatChunkType()`, `formatChunkTypePlural()` extracted to `chart-colours.ts` — replaces local definitions in `drill-down-content.tsx` and `top-themes-widget.tsx`
+
+---
+
+### PRD-021 Part 3: Derived Theme Widgets — 2026-04-12
+
+**New dashboard widgets:**
+- Top Themes — horizontal BarChart (layout="vertical") ranked by signal count descending; custom tooltip shows per-chunk-type breakdown (e.g., "5 Pain points, 3 Requirements, 2 Blockers"); 15-theme default with "Show all N themes" toggle; clickable bars (drill-down stub for Part 4); spans 2 grid columns
+- Theme Trends — multi-line LineChart with X-axis time buckets, Y-axis signal count, each theme a separate coloured line; defaults to top 5 themes by total count; local theme multi-select (Popover + Command); local week/month granularity toggle; 8-colour cycling palette; spans 2 grid columns
+- Theme-Client Matrix — HTML heatmap grid (not Recharts); themes on rows, clients on columns; cell background opacity proportional to count; sticky row/column headers for scrollable overflow; custom positioned tooltip ("Theme X + Client Y: N signals"); clickable cells (drill-down stub for Part 4); spans 3 grid columns
+
+**Database query service extensions:**
+- 3 new actions: `top_themes` (aggregate by theme_id with chunk_type sub-counts), `theme_trends` (group by date_trunc + theme_id), `theme_client_matrix` (sparse cells grouped by theme_id + client_id)
+- `confidenceMin?: number` added to `QueryFilters` — filters signal_themes by confidence threshold (available as URL param `?confidenceMin=0.8`, UI slider deferred to Part 6)
+- `fetchActiveThemeMap()` shared helper — queries `themes` table for workspace-scoped id→name Map
+- `fetchSignalThemeRows()` shared helper — multi-table join (`signal_themes` → `session_embeddings!inner` → `sessions!inner`) with team scoping, date range, client IDs, and confidence threshold
+- `dateTrunc()` utility — week (Monday-aligned) and month truncation for TypeScript-side grouping
+
+**API route extensions:**
+- 3 new actions added to Zod enum in `/api/dashboard` route
+- `confidenceMin` param: `z.coerce.number().min(0).max(1).optional()`
+
+**Shared infrastructure:**
+- `BRAND_PRIMARY_HEX` and `BRAND_PRIMARY_RGB` constants extracted to `chart-colours.ts` (DRY)
+- `THEME_LINE_COLOURS` 8-colour palette added to `chart-colours.ts`
+- All 3 theme widgets use `useDashboardFetch` and `DashboardCard` (shared patterns from Part 2)
+- Dashboard grid now contains 8 widgets total (5 direct + 3 theme-derived)
+
+---
+
+### PRD-021 Part 2: Dashboard Layout, Navigation, and Direct Widgets — 2026-04-12
+
+**New route and page:**
+- `/dashboard` page — server component with metadata, responsive widget grid (1→2→3 columns), global filter bar
+- `/api/dashboard` GET route — Zod-validated action + filter params, delegates to `executeQuery()` via RLS-protected anon client
+- Dashboard is now the first item in sidebar navigation (BarChart3 icon)
+
+**Global filter bar:**
+- Client multi-select (Popover + Command with search), date range (from/to), sentiment dropdown, urgency dropdown
+- All filter state encoded in URL search params (bookmarkable/shareable)
+- "Clear filters" button resets all params
+
+**Dashboard widgets (Recharts):**
+- Sentiment distribution — donut PieChart (positive=green, neutral=slate, negative=red, mixed=amber), clickable segments
+- Urgency distribution — BarChart (low=green, medium=amber, high=orange, critical=red), clickable bars
+- Session volume over time — AreaChart with local week/month granularity toggle, CartesianGrid
+- Client health grid — ScatterChart positioning clients by sentiment (X) × urgency (Y), colour-coded dots, custom tooltip
+- Competitive mentions — horizontal BarChart sorted by frequency, clickable bars
+
+**Database query service extensions:**
+- 3 new actions: `sessions_over_time` (via RPC), `client_health_grid`, `competitive_mention_frequency`
+- Extended `QueryFilters` with `clientIds`, `severity`, `urgency`, `granularity`
+- `handleClientList()` now returns `{ id, name }` objects (was just name strings)
+- `sessions_over_time` RPC function for time-bucketed GROUP BY queries
+
+**Shared infrastructure:**
+- `useDashboardFetch<T>` hook — shared fetch lifecycle across all widgets, reads URL search params for global filter reactivity, supports widget-local extra params
+- `DashboardCard` component — shared card chrome with loading skeleton, error/retry, empty state, content slot
+- `chart-colours.ts` — centralised sentiment and urgency hex colour maps (DRY extraction)
+
+### PRD-021 Part 1: Theme Assignment at Extraction Time — 2026-04-12
+
+**New tables:**
+- `themes` — workspace-scoped topic-based themes with `initiated_by`, `origin` (ai/user), `is_archived`, and case-insensitive partial unique indexes for name deduplication
+- `signal_themes` — many-to-many junction linking embeddings to themes, with `assigned_by` (ai/user), `confidence` score, and cascade deletes on both FKs
+
+**AI service refactor:**
+- Extracted two public generics: `callModelText()` and `callModelObject<T>()` — all non-streaming LLM calls now route through these with retry logic and error classification
+- Migrated `extractSignals()`, `synthesiseMasterSignal()`, and `generateConversationTitle()` to use the new generics
+- Fixed PRD-020 bug: `generateConversationTitle()` now gets 3 retries for transient failures (previously had zero)
+
+**Theme assignment pipeline:**
+- Created `theme-service.ts` with `assignSessionThemes()` — fetches workspace themes, calls LLM once per extraction, resolves/creates themes with concurrent-safe unique constraint handling, bulk inserts assignments
+- Created theme assignment prompt (`lib/prompts/theme-assignment.ts`) — topic-based classification with primary/secondary theme distinction and confidence ranges
+- Created Zod schema (`lib/schemas/theme-assignment-schema.ts`) for validated LLM response
+- Created `ThemeRepository` and `SignalThemeRepository` interfaces with Supabase adapters
+
+**Extraction flow wiring:**
+- Modified `generateSessionEmbeddings()` to return embedding IDs (`string[]` instead of `void`) and accept `preComputedChunks`
+- Wired `assignSessionThemes()` into both POST and PUT session routes, chained after embedding generation (fire-and-forget)
+- Replaced all silent `.catch(() => {})` calls with dev-aware catches that emit yellow ANSI warnings in development mode
+
+### PRD-020 Post-Part 3 Bug Fixes — 2026-04-11
+
+**Critical: Data isolation fix**
+- **Root cause:** `ChatPageContent` hardcoded `teamId = null` instead of reading from auth context; chat send route accepted `teamId` from request body (allowing client-side override); service-role client bypassed RLS for `queryDatabase` tool, exposing all users' personal workspace data when `team_id IS NULL`
+- Wired `activeTeamId` from `useAuth()` context in `ChatPageContent` — chat page now respects active workspace
+- Removed `teamId` from chat send request body schema — route now always reads from `active_team_id` cookie via `getActiveTeamId()`, matching all other routes
+- Switched `queryDatabase` tool from service-role client to RLS-protected anon client for data isolation
+- Added `filter_user_id` parameter to `match_session_embeddings` RPC function — enforces `sessions.created_by = filter_user_id` in personal workspace to prevent cross-user embedding leakage
+- Updated `createEmbeddingRepository()` to accept optional `userId` parameter, passed to RPC for personal workspace scoping
+- Removed `serviceClient` from `ChatStreamDeps` interface (no longer needed — anon client handles data reads, embedding repo is pre-injected)
+- Removed `teamId` from `useChat` hook options and request payload
+
+**UI fixes**
+- Fixed `<!--follow-ups:...-->` HTML comment rendering in streamed messages — added `stripFollowUpBlock()` in `use-chat.ts` that strips both complete and partial follow-up blocks during streaming and from completed messages
+- Changed follow-up chip clicks from auto-send to textarea insertion — added `suggestedText` prop on `ChatInput`, chips now populate textarea for user review before sending
+- Fixed user message copy button invisible — added `text-foreground` on actions container to override inherited `text-primary-foreground` from user bubble
+- Enabled textarea during streaming — removed `disabled={isStreaming}` so users can type ahead while response generates
+- Changed chat input focus ring to `--brand-primary-light` design token
+- Moved follow-up suggestion pills outside the message bubble — now rendered below the bubble in a flex column layout
+- Added AI disclaimer text below chat input
+- Fixed pin not re-sorting conversation list — added `sortConversations()` helper (pinned first → updatedAt desc → id desc) to optimistic update
+- Replaced rename dialog with inline editing — title becomes editable in-place on "Rename" click, Enter saves, Escape cancels; deleted `rename-dialog.tsx`
+- Added pinned section separator in conversation sidebar — "Pinned" label + divider between pinned and unpinned groups, hidden when no pinned conversations
+
+### PRD-020 Part 3: Chat UI Components — 2026-04-11
+- Created `app/chat/page.tsx` — thin server component with metadata, renders ChatPageContent
+- Created conversation sidebar (`conversation-sidebar.tsx`, `conversation-item.tsx`, `conversation-context-menu.tsx`, `rename-dialog.tsx`) — collapsible desktop panel (280px ↔ 0) + mobile Sheet drawer, search, active/archived tabs, context menu with rename/pin/archive/delete
+- Created `chat-page-content.tsx` — client coordinator wiring `useConversations` + `useChat` hooks, manages active conversation ID, sidebar collapse/mobile state, conversation creation with prepend placeholder
+- Created chat area (`chat-area.tsx`, `chat-header.tsx`, `chat-input.tsx`) — header with sidebar/search toggles, auto-expanding textarea (1–6 rows) with Send/Stop buttons, archived unarchive bar
+- Created message rendering (`message-bubble.tsx`, `message-thread.tsx`, `message-actions.tsx`, `memoized-markdown.tsx`) — react-virtuoso reverse mode with sentinel pattern for streaming, React.memo'd ReactMarkdown with remark-gfm, hover-visible copy actions
+- Created streaming UI (`streaming-message.tsx`, `message-status-indicator.tsx`) — live markdown rendering with blinking cursor, status badges for failed/cancelled/stale with retry
+- Created citations and follow-ups (`citation-chips.tsx`, `citation-preview-dialog.tsx`, `follow-up-chips.tsx`, `starter-questions.tsx`) — pill-shaped citation chips opening preview dialog, clickable follow-up question chips, 4 starter questions in empty state
+- Created in-conversation search (`chat-search-bar.tsx`, `highlighted-text.tsx`) — Ctrl/Cmd+F keyboard shortcut, match count with prev/next navigation, recursive text highlighting in markdown via component overrides
+- Created `use-chat.ts` — custom SSE streaming hook with AbortController cancellation, streaming state machine (idle/streaming/error)
+- Created `use-conversations.ts` — dual active/archived list management with optimistic CRUD, compound cursor pagination, search filtering
+- **End-of-part audit:** a11y fixes (aria-labels on sidebar clear button, aria-hidden on decorative icons), verified no dead code/import violations, TypeScript check clean
+
+### PRD-020 Part 2: Chat Data Model and Streaming Infrastructure — 2026-04-11
+- Created `conversations` and `messages` database tables with RLS (user-private conversations, derived access for messages), indexes, and auto-update triggers
+- Created `lib/types/chat.ts` — `MessageRole`, `MessageStatus`, `ChatSource`, `Message`, `Conversation`, `ConversationListOptions` types
+- Created `ConversationRepository` and `MessageRepository` interfaces with Supabase adapters — cursor-based pagination, pinned-first ordering for conversations, newest-first for messages
+- Created `lib/services/chat-service.ts` — conversation CRUD, message CRUD, `buildContextMessages()` with 80,000-token budget (char/4 approximation)
+- Created `lib/services/database-query-service.ts` — 7 predefined actions (`count_clients`, `count_sessions`, `sessions_per_client`, `sentiment_distribution`, `urgency_distribution`, `recent_sessions`, `client_list`) with team scoping via `scopeByTeam()` and shared query helpers (DRY extraction)
+- Created `lib/prompts/chat-prompt.ts` — chat system prompt with tool usage instructions, citation rules, follow-up generation as `<!--follow-ups:["..."]-->` HTML comment block
+- Created `lib/prompts/generate-title.ts` — lightweight 5-8 word title generation prompt
+- Added `generateConversationTitle()` to `lib/services/ai-service.ts` — fire-and-forget LLM title generation, returns null on failure
+- Created `lib/services/chat-stream-service.ts` — streaming orchestration: `searchInsights` and `queryDatabase` tool definitions (Vercel AI SDK v6 `tool()` + `inputSchema: zodSchema()`), `streamText()` with `stopWhen: stepCountIs(3)`, custom SSE events via `ReadableStream`, follow-up parsing, source deduplication, message finalization
+- Created `lib/utils/chat-helpers.ts` — pure utility functions: `sseEvent()`, `parseFollowUps()`, `toSource()`, `deduplicateSources()`
+- Created `app/api/chat/send/route.ts` — thin POST controller: auth, Zod validation, conversation create-or-resolve, message lifecycle, delegates streaming to `chat-stream-service`; returns SSE response with `X-Conversation-Id` header
+- **End-of-part audit:** SRP refactor (route → stream service → helpers), DRY extraction in database-query-service (shared `baseSessionQuery`/`baseClientQuery`/`aggregateJsonField`/`extractClientName` helpers), import order fixes, TypeScript check clean
+
+### PRD-020 Part 1: Sidebar Navigation — 2026-04-11
+- Replaced top-bar header (`app-header.tsx`, `tab-nav.tsx`) with an Instagram-style hover-to-expand sidebar (`app-sidebar.tsx`) — icon-only (64px) at rest, overlay (240px) on hover, no content shift
+- Created `authenticated-layout.tsx` — auth-aware layout wrapper that renders sidebar + margin for authenticated routes and footer-only for public routes
+- Created `components/ui/sheet.tsx` — slide-out drawer (left/right/top/bottom) built on Radix Dialog primitives, used for mobile sidebar
+- Updated `user-menu.tsx` — added `side`, `collapsed`, and `onOpenChange` props for sidebar integration; avatar wrapped in fixed-size div to prevent squishing
+- Updated `workspace-switcher.tsx` — added `collapsed` and `onOpenChange` props for sidebar integration
+- Added `--sidebar-width-expanded` and `--sidebar-width-collapsed` CSS custom properties to `globals.css`
+- Mobile: hamburger trigger (md:hidden) opens left-side Sheet drawer with full sidebar content
+- Portal-mounted dropdown collapse fix: ref-based counter (`openDropdownCount`) with 100ms grace period prevents sidebar from collapsing while dropdowns are open
+- Deleted `app-header.tsx` and `tab-nav.tsx` — replaced by sidebar navigation
+- Footer removed from authenticated layouts; theme toggle moved into sidebar "More" menu
+- Updated `layout.tsx` — replaced AppHeader with AuthenticatedLayout wrapper
+- **End-of-part audit:** TypeScript check clean (`npx tsc --noEmit`), no dead references, all 12 PRD acceptance criteria verified
+
+### PRD-019 Part 4: Retrieval Service — 2026-04-11
+- Created `lib/types/retrieval-result.ts` — `QueryClassification` union (broad/specific/comparative), `ClassificationResult`, `RetrievalOptions`, `RetrievalResult` interfaces
+- Created `lib/prompts/classify-query.ts` — version-controlled system prompt and max tokens constant for lightweight LLM query classification
+- Created `lib/services/retrieval-service.ts` — `retrieveRelevantChunks()` with 5-step flow: classify query (adaptive chunk count) → embed query (ephemeral, never persisted) → similarity search via repository RPC → deduplicate by exact text match → map to typed RetrievalResult[]; classification via `generateObject()` + Zod schema reusing `resolveModel()` from ai-service; classification failure falls back to broad (15 chunks); embedding/search errors propagate to caller
+- Exported `resolveModel()` from `lib/services/ai-service.ts` (previously internal) for reuse by the retrieval service
+- **End-of-part audit:** No fixes needed — SRP/DRY/logging/dead code/convention compliance/TypeScript strictness/framework-agnostic all clean
+
+### PRD-019 Part 3: Embedding Pipeline — 2026-04-10
+- Installed `openai` npm package for embedding API calls
+- Created `lib/services/embedding-service.ts` — provider-agnostic `embedTexts()` with OpenAI adapter, batching (20 per API call, 200ms inter-batch delay), `withEmbeddingRetry()` with exponential backoff and Retry-After handling on 429, dimension validation on first call, four error classes (`EmbeddingServiceError`, `EmbeddingConfigError`, `EmbeddingRequestError`, `EmbeddingRateLimitError`)
+- Created `lib/repositories/embedding-repository.ts` — `EmbeddingRepository` interface with `upsertChunks()`, `deleteBySessionId()`, `similaritySearch()` + `EmbeddingRow`, `SearchOptions`, `SimilarityResult` types
+- Created `lib/repositories/supabase/supabase-embedding-repository.ts` — Supabase adapter using service-role client; similarity search via `match_session_embeddings` RPC function
+- Created `docs/019-vector-search/002-match-session-embeddings-rpc.sql` — RPC function with team scoping, metadata filtering (chunk type, client name, date range), soft-delete exclusion via sessions join, configurable similarity threshold
+- Created `lib/services/embedding-orchestrator.ts` — `generateSessionEmbeddings()` coordinating chunking → embedding → persistence; handles structured JSON vs raw notes fallback; deletes old embeddings on re-extraction; entire body wrapped in try/catch for fire-and-forget usage
+- Wired fire-and-forget embedding into `POST /api/sessions` (embed on create) and `PUT /api/sessions/[id]` (re-embed on every update with `isReExtraction: true`)
+- Updated `.env.example` with `EMBEDDING_PROVIDER`, `EMBEDDING_MODEL`, `EMBEDDING_DIMENSIONS`
+- Updated `lib/repositories/index.ts` and `lib/repositories/supabase/index.ts` with embedding repository re-exports
+- **End-of-part audit:** Fixed dead `EmbeddingRateLimitError` class — wired into retry exhaustion on 429; fixed import ordering in both session route files; updated ARCHITECTURE.md (new files in file map, embedding env vars in env table, updated Current State)
+
+### PRD-019 Part 2: Chunking Logic — 2026-04-10
+- Created `lib/types/embedding-chunk.ts` — `ChunkType` union (10 chunk types), `EmbeddingChunk` interface, `SessionMeta` interface
+- Created `lib/services/chunking-service.ts` — pure `chunkStructuredSignals()` producing typed chunks from all `ExtractedSignals` sections (summary, client profile, pain points, requirements, aspirations, competitive mentions, blockers, tools & platforms, custom categories) with snake_case metadata and null-value omission; pure `chunkRawNotes()` splitting raw notes by paragraph for raw-only sessions
+- **End-of-part audit:** No fixes needed — SRP/DRY/dead code/convention compliance/TypeScript strictness/purity all clean
+
+### PRD-019 Part 1: pgvector Setup and Embeddings Table — 2026-04-10
+- Enabled `pgvector` extension on the Supabase instance (`CREATE EXTENSION IF NOT EXISTS vector`)
+- Created `session_embeddings` table with columns: `id`, `session_id` (FK → sessions, ON DELETE CASCADE), `team_id` (FK → teams, nullable), `chunk_text`, `chunk_type` (text), `metadata` (jsonb), `embedding` (vector(1536)), `schema_version`, `created_at`
+- Created HNSW index on `embedding` column (`vector_cosine_ops`) for cosine similarity search
+- Created composite indexes on `(session_id)` and `(team_id, chunk_type)` for cascade deletes and filtered searches
+- Enabled RLS with 8 policies (personal + team for SELECT/INSERT/UPDATE/DELETE) mirroring `sessions` table pattern via `is_team_member()`
+- Updated ARCHITECTURE.md — added `session_embeddings` to Data Model section, database tables list, and docs file map
+
 ### PRD-018 Part 2: Switch UI to Render from JSON — 2026-04-10
 - Created `components/capture/structured-signal-view.tsx` — renders `ExtractedSignals` JSON as typed UI with discrete sections (summary, sentiment, urgency, decision timeline, client profile, pain points, requirements, aspirations, competitive mentions, blockers, platforms & channels, custom categories); severity/priority/sentiment/urgency badges using design tokens; client quote formatting; empty-state handling
 - Updated `structured-notes-panel.tsx` — branches between `StructuredSignalView` (when `structuredJson` is present) and `MarkdownPanel` fallback (pre-Part 1 sessions); edit toggle switches from JSON view to markdown editor for manual edits; added `showHeading` and `className` props

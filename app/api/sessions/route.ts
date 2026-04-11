@@ -1,14 +1,28 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { MAX_COMBINED_CHARS } from "@/lib/constants";
+import { EXTRACTION_SCHEMA_VERSION } from "@/lib/schemas/extraction-schema";
+import { createClient, createServiceRoleClient, getActiveTeamId } from "@/lib/supabase/server";
+import { createSessionRepository } from "@/lib/repositories/supabase/supabase-session-repository";
+import { createClientRepository } from "@/lib/repositories/supabase/supabase-client-repository";
+import { createEmbeddingRepository } from "@/lib/repositories/supabase/supabase-embedding-repository";
+import { createThemeRepository } from "@/lib/repositories/supabase/supabase-theme-repository";
+import { createSignalThemeRepository } from "@/lib/repositories/supabase/supabase-signal-theme-repository";
+import { createInsightRepository } from "@/lib/repositories/supabase/supabase-insight-repository";
+import { maybeRefreshInsights } from "@/lib/services/insight-service";
 import {
   getSessions,
   createSession,
   ClientDuplicateError,
 } from "@/lib/services/session-service";
-import { createClient, createServiceRoleClient, getActiveTeamId } from "@/lib/supabase/server";
-import { createSessionRepository } from "@/lib/repositories/supabase/supabase-session-repository";
-import { createClientRepository } from "@/lib/repositories/supabase/supabase-client-repository";
+import { generateSessionEmbeddings } from "@/lib/services/embedding-orchestrator";
+import { assignSessionThemes } from "@/lib/services/theme-service";
+import {
+  chunkStructuredSignals,
+  chunkRawNotes,
+} from "@/lib/services/chunking-service";
+import type { ExtractedSignals } from "@/lib/schemas/extraction-schema";
+import type { SessionMeta } from "@/lib/types/embedding-chunk";
 
 // --- GET /api/sessions?clientId=&dateFrom=&dateTo=&offset=&limit= ---
 
@@ -146,6 +160,65 @@ export async function POST(request: NextRequest) {
     });
 
     console.log("[api/sessions] POST — created session:", session.id);
+
+    // Resolve user ID for theme initiated_by
+    const { data: { user } } = await supabase.auth.getUser();
+    const userId = user?.id ?? "unknown";
+
+    // Pre-compute chunks once — shared by embedding orchestrator and theme service
+    const sessionMeta: SessionMeta = {
+      sessionId: session.id,
+      clientName: parsed.data.clientName,
+      sessionDate: parsed.data.sessionDate,
+      teamId,
+      schemaVersion: EXTRACTION_SCHEMA_VERSION,
+    };
+    const structuredJson = (parsed.data.structuredJson as ExtractedSignals | null) ?? null;
+    const chunks = structuredJson
+      ? chunkStructuredSignals(structuredJson, sessionMeta)
+      : chunkRawNotes(parsed.data.rawNotes, sessionMeta);
+
+    // Fire-and-forget: embeddings → theme assignment (chained, P1.R7)
+    const embeddingRepo = createEmbeddingRepository(serviceClient, teamId);
+    const themeRepo = createThemeRepository(serviceClient, teamId);
+    const signalThemeRepo = createSignalThemeRepository(serviceClient);
+
+    generateSessionEmbeddings({
+      sessionMeta,
+      structuredJson,
+      rawNotes: parsed.data.rawNotes,
+      embeddingRepo,
+      preComputedChunks: chunks,
+    })
+      .then(async (embeddingIds) => {
+        if (!embeddingIds || embeddingIds.length === 0) return;
+        await assignSessionThemes({
+          chunks,
+          embeddingIds,
+          teamId,
+          userId,
+          themeRepo,
+          signalThemeRepo,
+        });
+      })
+      .then(async () => {
+        const insightRepo = createInsightRepository(serviceClient);
+        await maybeRefreshInsights({
+          teamId,
+          userId,
+          insightRepo,
+          supabase: serviceClient,
+        });
+      })
+      .catch((err) => {
+        if (process.env.NODE_ENV === "development") {
+          console.warn(
+            "\x1b[33m⚠ [POST /api/sessions] EMBEDDING+THEME+INSIGHTS CHAIN FAILED:\x1b[0m",
+            err instanceof Error ? err.message : err
+          );
+        }
+      });
+
     return NextResponse.json({ session }, { status: 201 });
   } catch (err) {
     if (err instanceof ClientDuplicateError) {

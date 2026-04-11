@@ -116,6 +116,10 @@
   --ai-action-foreground: oklch(0.25 0.05 60);
   --ai-action-hover: oklch(0.72 0.17 75);
   --ai-action-light: oklch(0.95 0.04 75);
+
+  /* Sidebar dimensions */
+  --sidebar-width-expanded: 240px;
+  --sidebar-width-collapsed: 64px;
 }
 
 html.dark {

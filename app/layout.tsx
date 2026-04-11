@@ -2,8 +2,7 @@ import type { Metadata } from "next";
 import { cookies } from "next/headers";
 import { Geist, Geist_Mono } from "next/font/google";
 import { Toaster } from "sonner";
-import { AppHeader } from "@/components/layout/app-header";
-import { AppFooter } from "@/components/layout/app-footer";
+import { AuthenticatedLayout } from "@/components/layout/authenticated-layout";
 import { AuthProvider } from "@/components/providers/auth-provider";
 import "./globals.css";
 
@@ -21,6 +20,9 @@ export const metadata: Metadata = {
   title: "Synthesiser",
   description:
     "Capture and synthesise client feedback with AI-powered signal extraction",
+  icons: {
+    icon: "/icon.svg",
+  },
 };
 
 export default async function RootLayout({
@@ -40,9 +42,9 @@ export default async function RootLayout({
     >
       <body className="flex min-h-full flex-col bg-[var(--surface-page)] text-[var(--text-primary)]">
         <AuthProvider>
-          <AppHeader />
-          <main className="flex flex-1 flex-col">{children}</main>
-          <AppFooter />
+          <AuthenticatedLayout>
+            {children}
+          </AuthenticatedLayout>
           <Toaster position="bottom-right" richColors />
         </AuthProvider>
       </body>

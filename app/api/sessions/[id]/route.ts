@@ -1,6 +1,18 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { MAX_COMBINED_CHARS } from "@/lib/constants";
+import { EXTRACTION_SCHEMA_VERSION } from "@/lib/schemas/extraction-schema";
+import { createClient, createServiceRoleClient, getActiveTeamId } from "@/lib/supabase/server";
+import { mapAccessError } from "@/lib/utils/map-access-error";
+import { createSessionRepository } from "@/lib/repositories/supabase/supabase-session-repository";
+import { createClientRepository } from "@/lib/repositories/supabase/supabase-client-repository";
+import { createTeamRepository } from "@/lib/repositories/supabase/supabase-team-repository";
+import { createMasterSignalRepository } from "@/lib/repositories/supabase/supabase-master-signal-repository";
+import { createEmbeddingRepository } from "@/lib/repositories/supabase/supabase-embedding-repository";
+import { createThemeRepository } from "@/lib/repositories/supabase/supabase-theme-repository";
+import { createSignalThemeRepository } from "@/lib/repositories/supabase/supabase-signal-theme-repository";
+import { createInsightRepository } from "@/lib/repositories/supabase/supabase-insight-repository";
+import { maybeRefreshInsights } from "@/lib/services/insight-service";
 import {
   checkSessionAccess,
   updateSession,
@@ -8,12 +20,14 @@ import {
   SessionNotFoundError,
   ClientDuplicateError,
 } from "@/lib/services/session-service";
-import { createClient, createServiceRoleClient, getActiveTeamId } from "@/lib/supabase/server";
-import { mapAccessError } from "@/lib/utils/map-access-error";
-import { createSessionRepository } from "@/lib/repositories/supabase/supabase-session-repository";
-import { createClientRepository } from "@/lib/repositories/supabase/supabase-client-repository";
-import { createTeamRepository } from "@/lib/repositories/supabase/supabase-team-repository";
-import { createMasterSignalRepository } from "@/lib/repositories/supabase/supabase-master-signal-repository";
+import { generateSessionEmbeddings } from "@/lib/services/embedding-orchestrator";
+import { assignSessionThemes } from "@/lib/services/theme-service";
+import {
+  chunkStructuredSignals,
+  chunkRawNotes,
+} from "@/lib/services/chunking-service";
+import type { ExtractedSignals } from "@/lib/schemas/extraction-schema";
+import type { SessionMeta } from "@/lib/types/embedding-chunk";
 
 // --- PUT /api/sessions/[id] ---
 
@@ -115,6 +129,66 @@ export async function PUT(
     }, user.id);
 
     console.log("[api/sessions/[id]] PUT — updated:", session.id);
+
+    // Pre-compute chunks once — shared by embedding orchestrator and theme service
+    const sessionMeta: SessionMeta = {
+      sessionId: id,
+      clientName: parsed.data.clientName,
+      sessionDate: parsed.data.sessionDate,
+      teamId,
+      schemaVersion: EXTRACTION_SCHEMA_VERSION,
+    };
+    const structuredJson = parsed.data.isExtraction
+      ? ((parsed.data.structuredJson as ExtractedSignals | null) ?? null)
+      : null;
+    const chunks = structuredJson
+      ? chunkStructuredSignals(structuredJson, sessionMeta)
+      : chunkRawNotes(parsed.data.rawNotes, sessionMeta);
+
+    // Fire-and-forget: embeddings → theme assignment (chained, P1.R7)
+    // Always re-embed on PUT — isReExtraction deletes old embeddings first,
+    // and the cascade on signal_themes.embedding_id cleans up old assignments (P1.R9)
+    const embeddingRepo = createEmbeddingRepository(serviceClient, teamId);
+    const themeRepo = createThemeRepository(serviceClient, teamId);
+    const signalThemeRepo = createSignalThemeRepository(serviceClient);
+
+    generateSessionEmbeddings({
+      sessionMeta,
+      structuredJson,
+      rawNotes: parsed.data.rawNotes,
+      embeddingRepo,
+      isReExtraction: true,
+      preComputedChunks: chunks,
+    })
+      .then(async (embeddingIds) => {
+        if (!embeddingIds || embeddingIds.length === 0) return;
+        await assignSessionThemes({
+          chunks,
+          embeddingIds,
+          teamId,
+          userId: user.id,
+          themeRepo,
+          signalThemeRepo,
+        });
+      })
+      .then(async () => {
+        const insightRepo = createInsightRepository(serviceClient);
+        await maybeRefreshInsights({
+          teamId,
+          userId: user.id,
+          insightRepo,
+          supabase: serviceClient,
+        });
+      })
+      .catch((err) => {
+        if (process.env.NODE_ENV === "development") {
+          console.warn(
+            "\x1b[33m⚠ [PUT /api/sessions/[id]] EMBEDDING+THEME+INSIGHTS CHAIN FAILED:\x1b[0m",
+            err instanceof Error ? err.message : err
+          );
+        }
+      });
+
     return NextResponse.json({ session });
   } catch (err) {
     if (err instanceof SessionNotFoundError) {

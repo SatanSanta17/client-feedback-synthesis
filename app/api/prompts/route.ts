@@ -8,12 +8,21 @@ import {
 import { createPromptRepository } from "@/lib/repositories/supabase/supabase-prompt-repository";
 import { getTeamMember } from "@/lib/services/team-service";
 import { createTeamRepository } from "@/lib/repositories/supabase/supabase-team-repository";
+import { SIGNAL_EXTRACTION_SYSTEM_PROMPT } from "@/lib/prompts/signal-extraction";
+import { MASTER_SIGNAL_COLD_START_SYSTEM_PROMPT, MASTER_SIGNAL_INCREMENTAL_SYSTEM_PROMPT } from "@/lib/prompts/master-signal-synthesis";
 
 const PROMPT_KEYS = [
   "signal_extraction",
   "master_signal_cold_start",
   "master_signal_incremental",
 ] as const;
+
+/** Hardcoded default prompts — used as fallback when no DB version exists. */
+const DEFAULT_PROMPTS: Record<string, string> = {
+  signal_extraction: SIGNAL_EXTRACTION_SYSTEM_PROMPT,
+  master_signal_cold_start: MASTER_SIGNAL_COLD_START_SYSTEM_PROMPT,
+  master_signal_incremental: MASTER_SIGNAL_INCREMENTAL_SYSTEM_PROMPT,
+};
 
 const promptQuerySchema = z.object({
   key: z.enum(PROMPT_KEYS, {
@@ -61,11 +70,17 @@ export async function GET(request: NextRequest) {
     const history = await getPromptHistory(promptRepo, promptKey);
     const active = history.find((v) => v.is_active) ?? null;
 
+    // If no saved version exists, return the hardcoded default as a synthetic
+    // active entry so the client always has something to display.
+    const fallbackActive = active ?? (DEFAULT_PROMPTS[promptKey]
+      ? { id: null, content: DEFAULT_PROMPTS[promptKey], is_active: true, is_default: true }
+      : null);
+
     console.log(
-      `[api/prompts] GET — returning ${history.length} versions for ${promptKey}`
+      `[api/prompts] GET — returning ${history.length} versions for ${promptKey}${!active && fallbackActive ? " (using hardcoded default)" : ""}`
     );
 
-    return NextResponse.json({ active, history });
+    return NextResponse.json({ active: fallbackActive, history });
   } catch (err) {
     console.error(
       "[api/prompts] GET — unexpected error:",
