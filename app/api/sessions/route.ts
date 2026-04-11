@@ -8,6 +8,8 @@ import { createClientRepository } from "@/lib/repositories/supabase/supabase-cli
 import { createEmbeddingRepository } from "@/lib/repositories/supabase/supabase-embedding-repository";
 import { createThemeRepository } from "@/lib/repositories/supabase/supabase-theme-repository";
 import { createSignalThemeRepository } from "@/lib/repositories/supabase/supabase-signal-theme-repository";
+import { createInsightRepository } from "@/lib/repositories/supabase/supabase-insight-repository";
+import { maybeRefreshInsights } from "@/lib/services/insight-service";
 import {
   getSessions,
   createSession,
@@ -199,10 +201,19 @@ export async function POST(request: NextRequest) {
           signalThemeRepo,
         });
       })
+      .then(async () => {
+        const insightRepo = createInsightRepository(serviceClient);
+        await maybeRefreshInsights({
+          teamId,
+          userId,
+          insightRepo,
+          supabase: serviceClient,
+        });
+      })
       .catch((err) => {
         if (process.env.NODE_ENV === "development") {
           console.warn(
-            "\x1b[33m⚠ [POST /api/sessions] EMBEDDING+THEME CHAIN FAILED:\x1b[0m",
+            "\x1b[33m⚠ [POST /api/sessions] EMBEDDING+THEME+INSIGHTS CHAIN FAILED:\x1b[0m",
             err instanceof Error ? err.message : err
           );
         }
