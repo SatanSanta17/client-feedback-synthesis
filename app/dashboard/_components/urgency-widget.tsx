@@ -22,6 +22,7 @@ import type { DrillDownContext } from "./drill-down-types";
 interface UrgencyWidgetProps {
   className?: string;
   onDrillDown?: (context: DrillDownContext) => void;
+  onFilter?: (filters: Record<string, string>) => void;
 }
 
 interface UrgencyData {
@@ -41,7 +42,7 @@ const URGENCY_KEYS = ["low", "medium", "high", "critical"] as const;
 // UrgencyWidget
 // ---------------------------------------------------------------------------
 
-export function UrgencyWidget({ className, onDrillDown }: UrgencyWidgetProps) {
+export function UrgencyWidget({ className, onDrillDown, onFilter }: UrgencyWidgetProps) {
   const { data, isLoading, error, refetch } =
     useDashboardFetch<UrgencyData>({ action: "urgency_distribution" });
 
@@ -85,9 +86,14 @@ export function UrgencyWidget({ className, onDrillDown }: UrgencyWidgetProps) {
           <Bar
             dataKey="value"
             radius={[4, 4, 0, 0]}
-            onClick={(entry) => {
+            onClick={(entry, _index, event) => {
               const value = entry.key as "low" | "medium" | "high" | "critical";
-              onDrillDown?.({ type: "urgency", value });
+              const nativeEvent = event as unknown as MouseEvent | undefined;
+              if (nativeEvent?.shiftKey && onFilter) {
+                onFilter({ urgency: value });
+              } else {
+                onDrillDown?.({ type: "urgency", value });
+              }
             }}
             style={{ cursor: "pointer" }}
           >

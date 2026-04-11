@@ -14,6 +14,7 @@ import type { DrillDownContext } from "./drill-down-types";
 interface SentimentWidgetProps {
   className?: string;
   onDrillDown?: (context: DrillDownContext) => void;
+  onFilter?: (filters: Record<string, string>) => void;
 }
 
 interface SentimentData {
@@ -27,7 +28,7 @@ interface SentimentData {
 // SentimentWidget
 // ---------------------------------------------------------------------------
 
-export function SentimentWidget({ className, onDrillDown }: SentimentWidgetProps) {
+export function SentimentWidget({ className, onDrillDown, onFilter }: SentimentWidgetProps) {
   const { data, isLoading, error, refetch } =
     useDashboardFetch<SentimentData>({ action: "sentiment_distribution" });
 
@@ -60,9 +61,14 @@ export function SentimentWidget({ className, onDrillDown }: SentimentWidgetProps
             innerRadius={50}
             outerRadius={80}
             paddingAngle={2}
-            onClick={(entry) => {
+            onClick={(entry, _index, event) => {
               const value = entry.name as "positive" | "negative" | "neutral" | "mixed";
-              onDrillDown?.({ type: "sentiment", value });
+              const nativeEvent = event as unknown as MouseEvent | undefined;
+              if (nativeEvent?.shiftKey && onFilter) {
+                onFilter({ severity: value });
+              } else {
+                onDrillDown?.({ type: "sentiment", value });
+              }
             }}
             style={{ cursor: "pointer" }}
           >

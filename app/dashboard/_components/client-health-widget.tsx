@@ -24,6 +24,7 @@ import type { DrillDownContext } from "./drill-down-types";
 interface ClientHealthWidgetProps {
   className?: string;
   onDrillDown?: (context: DrillDownContext) => void;
+  onFilter?: (filters: Record<string, string>) => void;
 }
 
 interface ClientRow {
@@ -115,7 +116,7 @@ function HealthTooltip({ active, payload }: CustomTooltipProps) {
 // ClientHealthWidget
 // ---------------------------------------------------------------------------
 
-export function ClientHealthWidget({ className, onDrillDown }: ClientHealthWidgetProps) {
+export function ClientHealthWidget({ className, onDrillDown, onFilter }: ClientHealthWidgetProps) {
   const { data, isLoading, error, refetch } =
     useDashboardFetch<ClientHealthData>({ action: "client_health_grid" });
 
@@ -184,13 +185,18 @@ export function ClientHealthWidget({ className, onDrillDown }: ClientHealthWidge
           />
           <Scatter
             data={scatterData}
-            onClick={(_point) => {
+            onClick={(_point, _index, event) => {
               const entry = _point as unknown as ScatterPoint;
-              onDrillDown?.({
-                type: "client",
-                clientId: entry.clientId,
-                clientName: entry.clientName,
-              });
+              const nativeEvent = event as unknown as MouseEvent | undefined;
+              if (nativeEvent?.shiftKey && onFilter) {
+                onFilter({ clients: entry.clientId });
+              } else {
+                onDrillDown?.({
+                  type: "client",
+                  clientId: entry.clientId,
+                  clientName: entry.clientName,
+                });
+              }
             }}
             style={{ cursor: "pointer" }}
           >

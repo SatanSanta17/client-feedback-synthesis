@@ -1,8 +1,8 @@
 # TRD-021: AI-Powered Insights Dashboard
 
-> **Status:** Parts 1–5 implemented. Part 6 pending.
+> **Status:** Parts 1–5 implemented. Part 6 detailed.
 > **PRD:** `docs/021-insights-dashboard/prd.md` (approved)
-> **Mirrors:** PRD Parts 1–6. Each part is written and reviewed one at a time. Part 6 will be added after Part 5 is implemented.
+> **Mirrors:** PRD Parts 1–6. Each part is written and reviewed one at a time.
 
 ---
 
@@ -1907,3 +1907,146 @@ A new `dashboard_insights` table stores AI-generated headline insights, each cla
 9. Update `CHANGELOG.md` with Part 5 deliverables.
 
 **Requirement coverage:** All P5.R1–P5.R8. End-of-part audit.
+
+---
+
+## Part 6: Filters and Interactivity
+
+> Implements **P6.R1–P6.R7** from PRD-021.
+
+### Overview
+
+Part 6 polishes the dashboard's filter system and adds two new interactive features. Three of the seven PRD requirements (P6.R1 global filter propagation, P6.R3 widget loading states, P6.R4 widget error states, P6.R5 empty states) are **already implemented** across Parts 2–4: all widgets use `useDashboardFetch` (which reads URL search params and re-fetches on change), and the shared `DashboardCard` component handles loading skeletons, error retry, and contextual empty messages. The remaining new work is: cross-widget filtering (P6.R2) — clicking a data point in one widget sets a global URL filter that makes all widgets respond; a data freshness indicator (P6.R6) — a "Last updated" timestamp near the filter bar; and dashboard screenshot export (P6.R7) — a client-side PNG capture via `html2canvas` with active filter context as a self-documenting header.
+
+### Already Implemented (no changes needed)
+
+| Requirement | How it was delivered | Part |
+|---|---|---|
+| P6.R1 — Global filters propagate | `FilterBar` writes URL search params; all widgets read params via `useDashboardFetch` and re-fetch on change; `baseSessionQuery()` in database-query-service applies all filters | Part 2 |
+| P6.R3 — Widget loading states | `DashboardCard` renders `CardSkeleton` while `isLoading` is true; each widget fetches independently | Part 2 |
+| P6.R4 — Widget error states | `DashboardCard` renders `ErrorState` with retry button; other widgets continue to function | Part 2 |
+| P6.R5 — Empty states per widget | `DashboardCard` renders `EmptyState` with contextual messages (e.g., "No sentiment data for the selected filters") | Part 2 |
+
+### Technical Decisions (new work)
+
+1. **Cross-widget filtering via URL params, not drill-down replacement (P6.R2).** Clicking a data point in a widget currently opens the drill-down panel (Part 4). Cross-widget filtering is an _additional_ interaction, not a replacement. The pattern: hold Shift and click (or use a dedicated "Filter by this" context action) to apply the data point as a global URL filter. This avoids breaking the existing drill-down UX while adding the new capability. Implementation: a shared `applyWidgetFilter()` helper that calls `router.replace()` with the appropriate param (e.g., clicking "Acme Corp" in client health → sets `clients=<acmeId>`; clicking "negative" in sentiment → sets `severity=negative`). The filter bar already reads these params and shows the "Clear filters" button.
+
+2. **Modifier-key detection for dual click behaviour.** Widget click handlers already receive an `onDrillDown` callback. We add a second optional callback `onFilter?: (params: Record<string, string>) => void` to the widgets that support cross-filtering. Each widget's click handler checks `event.shiftKey` — if held, it calls `onFilter` instead of `onDrillDown`. A tooltip or visual hint ("Shift+click to filter") appears on hover over clickable data points. Widgets that support cross-filtering: SentimentWidget (→ `severity`), UrgencyWidget (→ `urgency`), ClientHealthWidget (→ `clients`), CompetitiveMentionsWidget (→ no direct filter param, so excluded), TopThemesWidget (→ no direct filter param, so excluded). Theme-based widgets don't map to existing URL filter params, so they are excluded from cross-filtering.
+
+3. **`applyWidgetFilter()` helper in dashboard-content.tsx.** A `useCallback` that receives a `Record<string, string>` and merges each key-value into the URL search params via `router.replace()`. This is the single point where cross-filter writes happen. It's passed down to widgets as the `onFilter` callback. The filter bar and `useDashboardFetch` already handle the rest — all widgets re-fetch automatically when params change.
+
+4. **"Clear filters" button already exists.** The filter bar (Part 2) already renders a "Clear filters" button when `hasActiveFilters` is true. It calls `router.replace("/dashboard")` to reset all params. No changes needed — it already resets any filter that cross-widget clicks might set.
+
+5. **Data freshness indicator via `useFreshnessTimestamp()` hook (P6.R6).** A lightweight hook that tracks the most recent successful fetch timestamp across all widgets. Each `useDashboardFetch` call already has a `finally()` that sets `isLoading = false`; we add a shared context (or a simple ref-based approach in `DashboardInner`) that records `Date.now()` whenever any widget fetch completes. The freshness indicator renders as a subtle line below the filter bar: "Data as of 2:34 PM" or "Updated 3m ago", updating every 30 seconds via a timer. The value reflects the most recent widget fetch, not a global refresh — so it naturally updates when any widget re-fetches (filter change, retry, etc.).
+
+6. **Freshness timestamp stored in a ref, not context.** Using React context for the timestamp would re-render all children on every update (since the value changes on every widget fetch). Instead, `DashboardInner` holds a `useRef<number>` and a `useState<number>` pair: each widget fetch completion calls a stable `onFetchComplete` callback that updates the ref; a 30-second `setInterval` reads the ref and updates the state only when it has changed. This avoids unnecessary re-renders while keeping the displayed value fresh.
+
+7. **Screenshot export via `html2canvas` (P6.R7).** Install `html2canvas` as a client-side dependency. The "Export as Image" button lives in the filter bar area (right side, next to "Clear filters"). On click, it: (a) renders a temporary header element above the dashboard capture area showing the active filter context (date range, selected clients, sentiment, urgency — or "All data" if no filters), (b) calls `html2canvas()` on the dashboard container (the element that wraps FilterBar + InsightCardsRow + widget grid), (c) converts the canvas to a PNG blob, (d) triggers a browser download via `URL.createObjectURL()` + a temporary `<a>` tag with `download` attribute, (e) cleans up the temporary header element.
+
+8. **Capture area uses a ref on the dashboard container.** `DashboardInner` wraps its content in a `<div ref={dashboardRef}>`. The export function targets this ref. The temporary filter context header is prepended inside this div before capture, then removed after `html2canvas` resolves.
+
+9. **`html2canvas` is dynamically imported.** To avoid adding ~200KB to the initial bundle, `html2canvas` is imported only when the user clicks "Export as Image" via `const { default: html2canvas } = await import("html2canvas")`. The button shows a brief loading spinner during the import + capture.
+
+10. **Export filename includes date and filter context.** Format: `dashboard-2026-04-12.png` (no filters) or `dashboard-2026-04-12-acme-corp.png` (with client filter). This makes exported files self-identifying when saved to disk.
+
+### Forward Compatibility Notes
+
+- **Backlog (Dashboard PDF export):** The `dashboardRef` and capture-area pattern introduced here can be reused by a future PDF export feature (e.g., Puppeteer or jsPDF). The temporary header element approach is the same — the PDF renderer would target the same ref.
+- **Backlog (Custom dashboard layouts):** Cross-widget filtering operates on URL params regardless of widget arrangement. If users can rearrange widgets in the future, the filtering mechanism is unaffected.
+
+### Files Changed
+
+| File | Action | Purpose |
+|---|---|---|
+| `app/dashboard/_components/dashboard-content.tsx` | **Edit** | Add `dashboardRef`, `applyWidgetFilter` callback, `onFetchComplete` freshness callback, `FreshnessIndicator` rendering, "Export as Image" button, pass `onFilter` to widgets |
+| `app/dashboard/_components/filter-bar.tsx` | **Edit** | Add "Export as Image" button (receives `onExport` callback); accept `isExporting` prop for loading state |
+| `app/dashboard/_components/freshness-indicator.tsx` | **Create** | Subtle "Data as of [time]" display with 30-second auto-refresh; accepts `lastFetchedAt` timestamp |
+| `app/dashboard/_components/use-dashboard-fetch.ts` | **Edit** | Accept optional `onFetchComplete` callback; invoke it in the `.finally()` block after successful fetches |
+| `app/dashboard/_components/export-dashboard.ts` | **Create** | `exportDashboardAsImage(dashboardRef, activeFilters)` — dynamic `html2canvas` import, temporary header render, capture, download, cleanup |
+| `app/dashboard/_components/sentiment-widget.tsx` | **Edit** | Add `onFilter` prop; shift+click calls `onFilter({ severity: value })` instead of `onDrillDown` |
+| `app/dashboard/_components/urgency-widget.tsx` | **Edit** | Add `onFilter` prop; shift+click calls `onFilter({ urgency: value })` instead of `onDrillDown` |
+| `app/dashboard/_components/client-health-widget.tsx` | **Edit** | Add `onFilter` prop; shift+click calls `onFilter({ clients: clientId })` instead of `onDrillDown` |
+| `package.json` | **Edit** | Add `html2canvas` dependency |
+
+### Implementation Increments
+
+#### Increment 6.1: Cross-Widget Filtering
+
+**What:** Add cross-widget filtering — shift+click on a widget data point applies it as a global URL filter that all widgets respond to.
+
+**Steps:**
+
+1. Edit `app/dashboard/_components/dashboard-content.tsx` — add `applyWidgetFilter` callback using `useRouter` and `useSearchParams`: receives `Record<string, string>`, merges each key-value into URL params via `router.replace()`. Pass as `onFilter` prop to `SentimentWidget`, `UrgencyWidget`, `ClientHealthWidget`.
+2. Edit `app/dashboard/_components/sentiment-widget.tsx` — add `onFilter?: (params: Record<string, string>) => void` to props. In the pie segment click handler, check `event.shiftKey`: if held, call `onFilter?.({ severity: value })` instead of `onDrillDown`.
+3. Edit `app/dashboard/_components/urgency-widget.tsx` — same pattern: shift+click calls `onFilter?.({ urgency: value })`.
+4. Edit `app/dashboard/_components/client-health-widget.tsx` — same pattern: shift+click calls `onFilter?.({ clients: clientId })`.
+5. Verify: `npx tsc --noEmit`.
+
+**Requirement coverage:** P6.R2 (cross-widget interaction, clear filters already exists from Part 2).
+
+#### Increment 6.2: Data Freshness Indicator
+
+**What:** Add a "Data as of [time]" indicator that tracks the most recent widget fetch.
+
+**Steps:**
+
+1. Create `app/dashboard/_components/freshness-indicator.tsx` — a small component that receives `lastFetchedAt: number | null`, renders "Data as of HH:MM" or "Updated Nm ago" using a 30-second `setInterval` to re-render the relative time. If `lastFetchedAt` is null, renders nothing (initial load).
+2. Edit `app/dashboard/_components/use-dashboard-fetch.ts` — add an optional `onFetchComplete?: () => void` to `UseDashboardFetchOptions`. Call it in the `.finally()` block after `setIsLoading(false)` (only on success, not error).
+3. Edit `app/dashboard/_components/dashboard-content.tsx` — add `lastFetchedAtRef` (useRef<number>) and `lastFetchedAt` (useState<number | null>). Create a stable `handleFetchComplete` callback that sets the ref to `Date.now()`. Run a `useEffect` with a 30-second interval that reads the ref and updates the state. Pass `onFetchComplete={handleFetchComplete}` through to widgets (this requires threading through; alternatively, use the existing `useDashboardFetch` refetch timing). Render `<FreshnessIndicator lastFetchedAt={lastFetchedAt} />` between the filter bar and the insight cards row.
+4. Thread `onFetchComplete` through all 8 widgets. Since all widgets call `useDashboardFetch`, the cleanest approach is to modify `useDashboardFetch` to accept the callback and have `DashboardInner` pass a single shared callback. However, `useDashboardFetch` is called inside each widget — `DashboardInner` doesn't control the hook call. Alternative: `DashboardInner` creates a stable callback in a ref and makes it available via a lightweight React context (`FreshnessContext`). Each `useDashboardFetch` call reads from context in its `.finally()`. This avoids prop drilling through all 8 widgets.
+5. Create `app/dashboard/_components/freshness-context.tsx` — a minimal context with `Provider` that holds the `onFetchComplete` callback. `DashboardInner` wraps its children in this provider.
+6. Edit `app/dashboard/_components/use-dashboard-fetch.ts` — import `FreshnessContext`, call the context callback in `.finally()` on success.
+7. Verify: `npx tsc --noEmit`.
+
+**Requirement coverage:** P6.R6 (data freshness indicator).
+
+#### Increment 6.3: Dashboard Screenshot Export
+
+**What:** Add an "Export as Image" button that captures the dashboard as a PNG with active filter context.
+
+**Steps:**
+
+1. Install `html2canvas`: `npm install html2canvas`.
+2. Create `app/dashboard/_components/export-dashboard.ts` — export `exportDashboardAsImage(containerEl: HTMLElement, activeFilters: Record<string, string>)`:
+   a. Build a filter context string: "All data" if no filters, or "Clients: X, Y | Date: from–to | Sentiment: Z" etc.
+   b. Create a temporary `<div>` with the filter context text, styled with padding, background, and a bottom border. Prepend it to `containerEl`.
+   c. Dynamically import `html2canvas`: `const { default: html2canvas } = await import("html2canvas")`.
+   d. Call `html2canvas(containerEl, { useCORS: true, scale: 2 })` (2x for retina quality).
+   e. Convert canvas to blob: `canvas.toBlob()`.
+   f. Create a download link via `URL.createObjectURL()`, set `download` attribute to `dashboard-YYYY-MM-DD.png` (with optional filter suffix), click it, revoke the URL.
+   g. Remove the temporary header `<div>` from `containerEl`.
+   h. Return a promise that resolves when complete.
+3. Edit `app/dashboard/_components/dashboard-content.tsx`:
+   a. Add `dashboardRef` (useRef<HTMLDivElement>) on the wrapper `<div>` inside `DashboardInner` (the element that contains FilterBar + insights + widgets).
+   b. Add `isExporting` state and an `handleExport` async callback that: sets `isExporting(true)`, calls `exportDashboardAsImage(dashboardRef.current, activeFilters)`, sets `isExporting(false)` in finally.
+   c. Derive `activeFilters` from `searchParams` (read clients, dateFrom, dateTo, severity, urgency).
+4. Edit `app/dashboard/_components/filter-bar.tsx` — add `onExport?: () => void` and `isExporting?: boolean` props. Render an "Export as Image" button (Camera or Download icon from lucide-react) next to "Clear filters". Disabled while `isExporting`, shows spinner.
+5. Verify: `npx tsc --noEmit`.
+
+**Requirement coverage:** P6.R7 (dashboard screenshot export with filter context).
+
+#### Increment 6.4: Cleanup and Audit
+
+**What:** End-of-part audit across all files created/modified in Part 6.
+
+**Steps:**
+
+1. Run `npx tsc --noEmit` for a full type check.
+2. SRP check: cross-filter logic in dashboard-content (coordinator), freshness in its own component + context, export in its own utility function.
+3. DRY check: `applyWidgetFilter` is a single callback (not duplicated per widget). `onFetchComplete` is shared via context (not prop-drilled 8 times). Export utility is reusable.
+4. Logging check: export function logs start/complete/error. No server-side logging needed (all client-side).
+5. Dead code check: no unused imports.
+6. Convention check: naming, exports, import order, `'use client'` only on leaf components.
+7. Verify all PRD Part 6 acceptance criteria:
+   - Global filters propagate to all widgets simultaneously ✓ (already in Part 2)
+   - Cross-widget clicks set global filters and update all widgets ✓
+   - "Clear filters" button resets all filters to defaults ✓ (already in Part 2)
+   - Each widget has independent loading skeletons ✓ (already in Part 2)
+   - Failed widgets show inline retry errors without breaking other widgets ✓ (already in Part 2)
+   - Empty states display contextually per widget ✓ (already in Part 2)
+   - Data freshness indicator shows last update time ✓
+   - "Export as Image" button captures current dashboard as PNG with filter context ✓
+8. Update `ARCHITECTURE.md` — add new files to file map, update dashboard feature description with cross-filtering, freshness indicator, and screenshot export.
+9. Update `CHANGELOG.md` with Part 6 deliverables.
+
+**Requirement coverage:** All P6.R1–P6.R7. End-of-part and end-of-PRD audit.

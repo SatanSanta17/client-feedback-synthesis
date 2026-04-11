@@ -1,7 +1,7 @@
 "use client";
 
 import { Suspense, useCallback, useState } from "react";
-import { useSearchParams } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 
 import { cn } from "@/lib/utils";
 import { FilterBar } from "./filter-bar";
@@ -32,6 +32,7 @@ interface DashboardContentProps {
 // ---------------------------------------------------------------------------
 
 function DashboardInner() {
+  const router = useRouter();
   // Widgets will consume searchParams to re-fetch on filter changes
   const searchParams = useSearchParams();
   void searchParams;
@@ -50,6 +51,22 @@ function DashboardInner() {
   const handleDrillDownClose = useCallback(() => {
     setDrillDownContext(null);
   }, []);
+
+  // Cross-widget filter: merges key-value pairs into URL search params
+  const applyWidgetFilter = useCallback(
+    (filters: Record<string, string>) => {
+      const params = new URLSearchParams(searchParams.toString());
+      for (const [key, value] of Object.entries(filters)) {
+        if (value) {
+          params.set(key, value);
+        } else {
+          params.delete(key);
+        }
+      }
+      router.replace(`/dashboard?${params.toString()}`, { scroll: false });
+    },
+    [router, searchParams]
+  );
 
   return (
     <>
@@ -72,10 +89,10 @@ function DashboardInner() {
 
       {/* Responsive widget grid: 1 col mobile, 2 col md, 3 col lg */}
       <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">
-        <SentimentWidget onDrillDown={handleDrillDown} />
-        <UrgencyWidget onDrillDown={handleDrillDown} />
+        <SentimentWidget onDrillDown={handleDrillDown} onFilter={applyWidgetFilter} />
+        <UrgencyWidget onDrillDown={handleDrillDown} onFilter={applyWidgetFilter} />
         <SessionVolumeWidget />
-        <ClientHealthWidget onDrillDown={handleDrillDown} />
+        <ClientHealthWidget onDrillDown={handleDrillDown} onFilter={applyWidgetFilter} />
         <CompetitiveMentionsWidget onDrillDown={handleDrillDown} />
         <TopThemesWidget onDrillDown={handleDrillDown} />
         <ThemeTrendsWidget onDrillDown={handleDrillDown} />
