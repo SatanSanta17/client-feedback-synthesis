@@ -29,7 +29,8 @@ The dashboard shares the same service layer as the chat's `queryDatabase` tool (
   - `name` — text, NOT NULL. Human-readable theme label (e.g., "Onboarding Friction", "Pricing Concerns", "API Performance"). Unique per team (or per personal workspace).
   - `description` — text, nullable. LLM-generated one-sentence description of what this theme covers. Generated when the theme is first created, can be manually edited.
   - `team_id` — UUID, nullable. Null for personal workspace. Themes are team-scoped — different teams may have different theme vocabularies.
-  - `created_by` — UUID, FK to `auth.users`, NOT NULL.
+  - `initiated_by` — UUID, FK to `auth.users`, NOT NULL. The user whose action caused this theme to exist (e.g., the user who triggered the extraction that led the AI to create it, or the user who manually creates it in a future theme management UI).
+  - `origin` — text, NOT NULL, default `'ai'`. One of: `ai` (auto-created by LLM during extraction), `user` (manually created — future theme management UI).
   - `is_archived` — boolean, NOT NULL, default `false`. Archived themes are excluded from new assignments but their historical data is preserved.
   - `created_at` — timestamptz, NOT NULL, default `now()`.
   - `updated_at` — timestamptz, NOT NULL, default `now()`.
@@ -59,17 +60,19 @@ The dashboard shares the same service layer as the chat's `queryDatabase` tool (
   - Assign themes that are topic-based (what the signal is about), not type-based (chunk_type already captures whether something is a pain point or requirement).
   - Themes span chunk types: the same theme (e.g., "Onboarding Friction") can apply to pain points, requirements, blockers, and aspirations.
   - Prefer existing themes. Only create a new theme if the signal genuinely covers a topic not represented in the current theme list.
-  - For structured signal chunks: assign exactly one theme per signal.
-  - For raw text chunks (chunk_type: `raw`): assign one or more themes per chunk, since raw paragraphs often cover multiple topics. Report a lower confidence score for raw chunk assignments to reflect the inherent ambiguity.
-  - Return a structured response: array of `{ signalIndex: number, themes: Array<{ themeName: string, isNew: boolean, confidence: number }> }`. Structured chunks will have exactly one entry in the `themes` array; raw chunks may have multiple.
+  - For all signal chunks (both structured and raw): assign one **primary** theme (highest confidence) and optionally one or more **secondary** themes when the signal genuinely spans multiple topics. The primary theme should have confidence ≥ 0.8. Secondary themes should only be added when the signal substantively covers another topic — not for tangential mentions.
+  - For raw text chunks (chunk_type: `raw`): multiple themes are more common since raw paragraphs often mix topics. Report lower confidence scores (0.3–0.7) for raw chunk assignments to reflect the inherent ambiguity.
+  - Return a structured response: array of `{ signalIndex: number, themes: Array<{ themeName: string, isNew: boolean, confidence: number }> }`. Most structured chunks will have one entry in the `themes` array; multi-topic signals and raw chunks may have multiple.
 
-- **P1.R7** Wire theme assignment into the extraction flow, running **in parallel** with embedding generation. After chunking completes (PRD-019 Part 2), both the embedding call and the theme assignment call are fired simultaneously. Neither depends on the other — both depend only on the chunk output. This minimises added latency to the extraction flow (theme assignment adds near-zero wall-clock time since it runs concurrently with embedding). Theme assignment failures do not block extraction or embedding — if it fails, log the error and continue. Signals without theme assignments will still appear in the dashboard's direct widgets; they just won't contribute to theme-based views until re-extracted or manually assigned.
+- **P1.R7** Wire theme assignment into the extraction flow, **chained after embedding generation**. Theme assignment needs embedding IDs to create the `signal_themes` junction rows, so it runs after embeddings are persisted. The entire chain (embedding → theme assignment) is fire-and-forget — it executes asynchronously after the session API response is returned, adding zero latency to the user-facing flow. Theme assignment failures do not block extraction or embedding — if it fails, log the error and continue. If embedding generation itself fails, theme assignment is skipped. Signals without theme assignments will still appear in the dashboard's direct widgets; they just won't contribute to theme-based views until re-extracted or manually assigned.
 
-- **P1.R8** Theme assignment applies to **both structured and raw-only sessions**. For structured sessions, each signal chunk (pain point, requirement, etc.) is assigned to one theme. For raw-only sessions (chunk_type: `raw`), each raw paragraph chunk may be assigned to **multiple themes** since raw text often mixes topics. The LLM prompt accounts for this: for structured chunks it returns one theme per signal; for raw chunks it may return multiple themes per chunk. The `signal_themes` junction table already supports many-to-many via multiple rows per embedding_id. Raw chunk theme assignments are tagged with lower confidence scores to reflect the inherent ambiguity.
+- **P1.R8** Theme assignment applies to **both structured and raw-only sessions**. All signal chunks — structured and raw — may be assigned to **multiple themes** when they genuinely span topics. The LLM assigns one primary theme (highest confidence) and adds secondary themes only when substantively warranted. For raw-only sessions, multi-theme assignments are more common since raw paragraphs often mix topics and carry lower confidence scores. The `signal_themes` junction table supports many-to-many via multiple rows per `embedding_id`. Downstream widgets (Part 3) can filter by confidence threshold to control how secondary assignments affect counts and trends.
 
 - **P1.R9** On re-extraction: when embeddings are deleted and regenerated (PRD-019 P3.R7), the cascade delete on `signal_themes` removes old assignments. The new embeddings go through theme assignment again, potentially being assigned to different themes if the extraction output changed.
 
 - **P1.R10** The theme assignment LLM call uses the same provider-agnostic AI service pattern as extraction. It should use the fastest/cheapest available model (configurable via env vars or hardcoded to the same `AI_PROVIDER`/`AI_MODEL` used for extraction). The call is lightweight — input is just signal texts (no raw notes) plus theme names, and output is a structured array.
+
+- **P1.R11** **Dev-mode visible warnings for fire-and-forget failures.** All fire-and-forget error catches in the extraction flow — both the existing embedding generation catches and the new theme assignment catch — must emit a visible `console.warn` with ANSI yellow colouring when `NODE_ENV === 'development'`. In production, errors are swallowed silently (the internal orchestrators already log at `console.error` level). This ensures developers are aware of background failures without leaving the browser tab. This retroactively applies to the existing `.catch(() => {})` calls on embedding generation in both session routes (POST and PUT).
 
 ### Acceptance Criteria
 
@@ -79,12 +82,14 @@ The dashboard shares the same service layer as the chat's `queryDatabase` tool (
 - [ ] LLM strongly prefers existing themes over creating new ones
 - [ ] New themes are auto-created with LLM-generated descriptions
 - [ ] Themes span chunk types — the same theme can apply to pain points, requirements, blockers, etc.
-- [ ] Theme assignment runs in parallel with embedding generation, adding near-zero latency
-- [ ] Raw-only session chunks are themed with multiple theme assignments allowed per chunk
+- [ ] Theme assignment runs chained after embedding generation (fire-and-forget), adding zero latency to user response
+- [ ] All chunks (structured and raw) support multiple theme assignments via the junction table
+- [ ] Structured chunks have one primary theme (confidence ≥ 0.8) with optional secondary themes for multi-topic signals
 - [ ] Raw chunk theme assignments have lower confidence scores than structured chunk assignments
 - [ ] Theme assignment failure does not block extraction or embedding
 - [ ] Re-extraction cascade-deletes old assignments and generates new ones
 - [ ] Theme assignment prompt is defined in `lib/prompts/theme-assignment.ts`
+- [ ] Fire-and-forget catches emit yellow console warnings in development mode (both embedding and theme assignment)
 
 ---
 
@@ -280,6 +285,8 @@ The dashboard shares the same service layer as the chat's `queryDatabase` tool (
 
 - **P6.R6** Dashboard data freshness indicator: a subtle timestamp near the filter bar showing "Data as of [time]" or "Last updated [time ago]" so users know how current the view is. This updates when any widget re-fetches.
 
+- **P6.R7** **Dashboard screenshot export** — an "Export as Image" button in the filter bar area that captures the current dashboard viewport (all visible widgets with their current filter state) as a PNG image and triggers a browser download. Uses a client-side capture library (e.g., `html2canvas`). The exported image includes the filter bar context (active filters, date range) as a header so the screenshot is self-documenting. No server-side rendering — this is a pure client-side capture.
+
 ### Acceptance Criteria
 
 - [ ] Global filters propagate to all widgets simultaneously
@@ -289,6 +296,7 @@ The dashboard shares the same service layer as the chat's `queryDatabase` tool (
 - [ ] Failed widgets show inline retry errors without breaking other widgets
 - [ ] Empty states display contextually per widget
 - [ ] Data freshness indicator shows last update time
+- [ ] "Export as Image" button captures current dashboard as PNG with filter context
 
 ---
 
@@ -297,7 +305,7 @@ The dashboard shares the same service layer as the chat's `queryDatabase` tool (
 - **Theme management UI** — a "Manage Themes" page or modal where users can rename themes, merge two themes into one (reassigning all signals), archive themes, and view theme details (description, signal count, client spread). Keeps the theme list clean over time.
 - **Manual theme assignment** — allow users to manually reassign a signal from one theme to another in the drill-down view. Updates the `signal_themes.assigned_by` field to `user`.
 - **Custom dashboard layouts** — let users rearrange, resize, hide, or pin specific widgets. Store layout preferences per user.
-- **Dashboard export** — export the current dashboard view as a PDF report or screenshot. Include all visible widgets with their current filter state.
+- **Dashboard PDF export** — export the current dashboard view as a formatted PDF report with clean page breaks, headers, and filter context. Requires server-side rendering (e.g., Puppeteer or jsPDF). The basic screenshot export (PNG via `html2canvas`) is covered in P6.R7.
 - **Anomaly detection** — automated detection of statistically significant changes (e.g., sentiment shift for a client, sudden spike in a theme) without relying on the LLM. Alerts surface as badges on the dashboard icon in the sidebar.
 - **Comparison mode** — side-by-side comparison of two time periods or two client groups across all widgets.
 - **Dashboard sharing** — share a dashboard view (with filters) as a link that other team members can open.
