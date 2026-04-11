@@ -142,7 +142,6 @@ synthesiser/
 │   │       ├── message-bubble.tsx          # Single message — user (right, coloured) or assistant (left, markdown), citations, follow-ups, status
 │   │       ├── message-status-indicator.tsx # Status badges for failed/cancelled/stale with retry button
 │   │       ├── message-thread.tsx          # Virtualized message list (react-virtuoso reverse mode) — infinite scroll, streaming sentinel, search scroll-to
-│   │       ├── rename-dialog.tsx           # Conversation rename dialog
 │   │       ├── starter-questions.tsx       # Empty state — 4 hardcoded starter question chips
 │   │       └── streaming-message.tsx       # Live streaming assistant response — spinner, status text, markdown, blinking cursor
 │   ├── capture/

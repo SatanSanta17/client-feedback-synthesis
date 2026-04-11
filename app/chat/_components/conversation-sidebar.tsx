@@ -7,7 +7,7 @@
 // Contains: new chat button, search input, archive toggle, conversation list.
 // ---------------------------------------------------------------------------
 
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import {
   Archive,
   ArchiveRestore,
@@ -26,7 +26,6 @@ import {
   SheetTitle,
 } from "@/components/ui/sheet";
 import { ConversationItem } from "./conversation-item";
-import { RenameDialog } from "./rename-dialog";
 import type { Conversation } from "@/lib/types/chat";
 
 // ---------------------------------------------------------------------------
@@ -94,11 +93,16 @@ export function ConversationSidebar({
   // Search bar visibility
   const [isSearchOpen, setIsSearchOpen] = useState(false);
 
-  // Rename dialog state
-  const [renameTarget, setRenameTarget] = useState<{
-    id: string;
-    title: string;
-  } | null>(null);
+  // Split conversations into pinned and unpinned groups
+  const { pinnedConversations, unpinnedConversations } = useMemo(() => {
+    const pinned: Conversation[] = [];
+    const unpinned: Conversation[] = [];
+    for (const c of filteredConversations) {
+      if (c.isPinned) pinned.push(c);
+      else unpinned.push(c);
+    }
+    return { pinnedConversations: pinned, unpinnedConversations: unpinned };
+  }, [filteredConversations]);
 
   // Shared sidebar content (used both in desktop panel and mobile sheet)
   const sidebarContent = (
@@ -208,33 +212,55 @@ export function ConversationSidebar({
                 : "No conversations yet"}
           </div>
         ) : (
-          <div className="flex flex-col gap-0.5 p-1.5">
-            {/* Animated list container for smooth archive toggle */}
-            <div
-              className="transition-all duration-150 ease-in-out"
-              key={isArchiveView ? "archived" : "active"}
-            >
-              {filteredConversations.map((conversation) => (
-                <ConversationItem
-                  key={conversation.id}
-                  conversation={conversation}
-                  isActive={conversation.id === activeConversationId}
-                  isArchiveView={isArchiveView}
-                  onSelect={() => onSelectConversation(conversation)}
-                  onRename={() =>
-                    setRenameTarget({
-                      id: conversation.id,
-                      title: conversation.title,
-                    })
-                  }
-                  onPin={() =>
-                    onPin(conversation.id, !conversation.isPinned)
-                  }
-                  onArchive={() => onArchive(conversation.id)}
-                  onUnarchive={() => onUnarchive(conversation.id)}
-                />
-              ))}
-            </div>
+          <div
+            className="flex flex-col gap-0.5 p-1.5 transition-all duration-150 ease-in-out"
+            key={isArchiveView ? "archived" : "active"}
+          >
+            {/* Pinned section — only shown when pinned conversations exist */}
+            {pinnedConversations.length > 0 && (
+              <>
+                <div className="px-2 pb-1 pt-1.5 text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
+                  Pinned
+                </div>
+                {pinnedConversations.map((conversation) => (
+                  <ConversationItem
+                    key={conversation.id}
+                    conversation={conversation}
+                    isActive={conversation.id === activeConversationId}
+                    isArchiveView={isArchiveView}
+                    onSelect={() => onSelectConversation(conversation)}
+                    onRename={onRename}
+                    onPin={() =>
+                      onPin(conversation.id, !conversation.isPinned)
+                    }
+                    onArchive={() => onArchive(conversation.id)}
+                    onUnarchive={() => onUnarchive(conversation.id)}
+                  />
+                ))}
+
+                {/* Separator between pinned and unpinned */}
+                {unpinnedConversations.length > 0 && (
+                  <div className="my-1 border-t border-border" />
+                )}
+              </>
+            )}
+
+            {/* Unpinned conversations */}
+            {unpinnedConversations.map((conversation) => (
+              <ConversationItem
+                key={conversation.id}
+                conversation={conversation}
+                isActive={conversation.id === activeConversationId}
+                isArchiveView={isArchiveView}
+                onSelect={() => onSelectConversation(conversation)}
+                onRename={onRename}
+                onPin={() =>
+                  onPin(conversation.id, !conversation.isPinned)
+                }
+                onArchive={() => onArchive(conversation.id)}
+                onUnarchive={() => onUnarchive(conversation.id)}
+              />
+            ))}
 
             {/* Load more */}
             {hasMore && (
@@ -251,18 +277,6 @@ export function ConversationSidebar({
         )}
       </div>
 
-      {/* Rename dialog */}
-      <RenameDialog
-        open={renameTarget !== null}
-        currentTitle={renameTarget?.title ?? ""}
-        onSave={async (newTitle) => {
-          if (renameTarget) {
-            await onRename(renameTarget.id, newTitle);
-          }
-          setRenameTarget(null);
-        }}
-        onClose={() => setRenameTarget(null)}
-      />
     </div>
   );
 

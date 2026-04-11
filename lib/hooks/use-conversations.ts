@@ -19,6 +19,22 @@ import type { ConversationUpdate } from "@/lib/repositories/conversation-reposit
 const LOG_PREFIX = "[useConversations]";
 const PAGE_SIZE = 30;
 
+/**
+ * Sort conversations in the same order the DB returns them:
+ * pinned first (desc), then by updatedAt desc, then id desc (tiebreaker).
+ */
+function sortConversations(list: Conversation[]): Conversation[] {
+  return [...list].sort((a, b) => {
+    // Pinned first
+    if (a.isPinned !== b.isPinned) return a.isPinned ? -1 : 1;
+    // Then by updatedAt descending
+    const dateCompare = b.updatedAt.localeCompare(a.updatedAt);
+    if (dateCompare !== 0) return dateCompare;
+    // Tiebreaker: id descending
+    return b.id.localeCompare(a.id);
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -299,9 +315,11 @@ export function useConversations(
 
   const pinConversation = useCallback(
     async (id: string, pinned: boolean) => {
-      // Optimistic update
+      // Optimistic update — toggle flag and re-sort so pinned items move to top
       setConversations((prev) =>
-        prev.map((c) => (c.id === id ? { ...c, isPinned: pinned } : c))
+        sortConversations(
+          prev.map((c) => (c.id === id ? { ...c, isPinned: pinned } : c))
+        )
       );
 
       try {
@@ -312,9 +330,11 @@ export function useConversations(
       } catch (err) {
         const msg = err instanceof Error ? err.message : "Unknown error";
         console.error(`${LOG_PREFIX} pin toggle failed: ${msg}`);
-        // Rollback
+        // Rollback — toggle back and re-sort
         setConversations((prev) =>
-          prev.map((c) => (c.id === id ? { ...c, isPinned: !pinned } : c))
+          sortConversations(
+            prev.map((c) => (c.id === id ? { ...c, isPinned: !pinned } : c))
+          )
         );
       }
     },

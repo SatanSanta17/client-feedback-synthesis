@@ -76,57 +76,62 @@ export const MessageBubble = memo(function MessageBubble(props: MessageBubblePro
   return (
     <div
       className={cn(
-        "group/message flex w-full gap-2 px-4 py-2",
+        "group/message flex w-full px-4 py-2",
         isUser ? "justify-end" : "justify-start",
         className
       )}
     >
-      <div
-        className={cn(
-          "relative max-w-[85%] rounded-2xl px-4 py-2.5 md:max-w-[75%]",
-          isUser
-            ? "bg-primary text-primary-foreground"
-            : "bg-muted/70 text-foreground"
-        )}
-      >
-        {/* Message content */}
-        {isUser ? (
-          <p className="whitespace-pre-wrap text-sm leading-relaxed">
-            <HighlightedText text={message.content} searchQuery={searchQuery} />
-          </p>
-        ) : (
-          <MemoizedMarkdown content={message.content} searchQuery={searchQuery} />
-        )}
+      {/* Column wrapper — keeps bubble + follow-ups stacked vertically */}
+      <div className="flex max-w-[85%] flex-col md:max-w-[75%]">
+        <div
+          className={cn(
+            "relative rounded-2xl px-4 py-2.5",
+            isUser
+              ? "bg-primary text-primary-foreground"
+              : "bg-muted/70 text-foreground"
+          )}
+        >
+          {/* Message content */}
+          {isUser ? (
+            <p className="whitespace-pre-wrap text-sm leading-relaxed">
+              <HighlightedText text={message.content} searchQuery={searchQuery} />
+            </p>
+          ) : (
+            <MemoizedMarkdown content={message.content} searchQuery={searchQuery} />
+          )}
 
-        {/* Citation chips — below assistant content when sources exist */}
-        {hasSources && <CitationChips sources={message.sources!} />}
+          {/* Citation chips — below assistant content when sources exist */}
+          {hasSources && <CitationChips sources={message.sources!} />}
 
-        {/* Follow-up chips — only on the latest completed assistant message */}
+          {/* Status indicator for failed/cancelled messages */}
+          {showStatus && (
+            <MessageStatusIndicator
+              status={message.status}
+              canRetry={canRetry}
+              onRetry={onRetry}
+            />
+          )}
+
+          {/* Actions bar (hover-visible) — force foreground colour so the icon
+              is visible below user bubbles (which set text-primary-foreground). */}
+          <div
+            className={cn(
+              "absolute -bottom-6 z-10 text-foreground",
+              isUser ? "right-0" : "left-0"
+            )}
+          >
+            <MessageActions content={message.content} role={message.role} />
+          </div>
+        </div>
+
+        {/* Follow-up chips — outside the bubble, stacked below */}
         {showFollowUps && (
           <FollowUpChips
             questions={followUps!}
             onSendFollowUp={onSendFollowUp!}
+            className="mt-6"
           />
         )}
-
-        {/* Status indicator for failed/cancelled messages */}
-        {showStatus && (
-          <MessageStatusIndicator
-            status={message.status}
-            canRetry={canRetry}
-            onRetry={onRetry}
-          />
-        )}
-
-        {/* Actions bar (hover-visible) */}
-        <div
-          className={cn(
-            "absolute -bottom-6 z-10",
-            isUser ? "right-0" : "left-0"
-          )}
-        >
-          <MessageActions content={message.content} role={message.role} />
-        </div>
       </div>
     </div>
   );

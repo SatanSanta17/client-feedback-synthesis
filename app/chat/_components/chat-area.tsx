@@ -175,13 +175,16 @@ export function ChatArea(props: ChatAreaProps) {
     return () => document.removeEventListener("keydown", handleKeyDown);
   }, [hasMessages]);
 
-  // Follow-up chip click → send as a new message
-  const handleSendFollowUp = useCallback(
-    (question: string) => {
-      onSendMessage(question);
-    },
-    [onSendMessage]
-  );
+  // Follow-up chip click → insert into textarea for review/edit.
+  // Wrap in an object so React sees a new reference even if the same text
+  // is clicked twice (e.g. user clears the textarea and re-clicks).
+  const [suggestedText, setSuggestedText] = useState<{
+    text: string;
+    ts: number;
+  } | null>(null);
+  const handleSendFollowUp = useCallback((question: string) => {
+    setSuggestedText({ text: question, ts: Date.now() });
+  }, []);
 
   // Active search query to pass down (only when search is open and has text)
   const activeSearchQuery = isSearchOpen && searchQuery.trim() ? searchQuery : null;
@@ -259,6 +262,7 @@ export function ChatArea(props: ChatAreaProps) {
       <ChatInput
         streamState={streamState}
         isArchived={isArchived}
+        suggestedText={suggestedText}
         onSendMessage={onSendMessage}
         onCancelStream={onCancelStream}
         onUnarchive={isArchived ? onUnarchive : undefined}

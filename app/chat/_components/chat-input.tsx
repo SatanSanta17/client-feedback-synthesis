@@ -34,6 +34,10 @@ interface ChatInputProps {
   streamState: StreamState;
   /** Whether the conversation is archived (disables input). */
   isArchived: boolean;
+  /** Text to inject into the textarea (e.g. from follow-up chip click).
+   *  Wrapped in an object so a new reference triggers the effect even for
+   *  the same text clicked twice. */
+  suggestedText?: { text: string; ts: number } | null;
   /** Send a new message. */
   onSendMessage: (content: string) => Promise<void>;
   /** Cancel the in-progress stream. */
@@ -50,6 +54,7 @@ interface ChatInputProps {
 export function ChatInput({
   streamState,
   isArchived,
+  suggestedText,
   onSendMessage,
   onCancelStream,
   onUnarchive,
@@ -59,6 +64,17 @@ export function ChatInput({
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const isStreaming = streamState === "streaming";
   const canSend = value.trim().length > 0 && !isStreaming;
+
+  // Populate textarea when suggestedText changes (e.g. follow-up chip click)
+  const prevSuggestedTsRef = useRef(0);
+  useEffect(() => {
+    if (suggestedText && suggestedText.ts !== prevSuggestedTsRef.current) {
+      setValue(suggestedText.text);
+      prevSuggestedTsRef.current = suggestedText.ts;
+      // Focus the textarea so the user can edit or press Enter
+      requestAnimationFrame(() => textareaRef.current?.focus());
+    }
+  }, [suggestedText]);
 
   // -----------------------------------------------------------------------
   // Auto-resize textarea
@@ -153,7 +169,6 @@ export function ChatInput({
           onKeyDown={handleKeyDown}
           placeholder="Ask about your client feedback…"
           rows={MIN_ROWS}
-          disabled={isStreaming}
           aria-label="Message input"
           className={cn(
             "flex-1 resize-none rounded-xl border border-input bg-background px-4 py-2.5",
@@ -189,6 +204,9 @@ export function ChatInput({
           </Button>
         )}
       </div>
+      <p className="mx-auto mt-1.5 max-w-3xl text-center text-[11px] text-muted-foreground/70">
+        AI-generated responses may be inaccurate. Please verify all data before acting on it.
+      </p>
     </div>
   );
 }

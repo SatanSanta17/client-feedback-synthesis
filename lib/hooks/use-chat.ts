@@ -10,6 +10,7 @@
 
 import { useState, useCallback, useRef, useEffect } from "react";
 
+import { parseFollowUps } from "@/lib/utils/chat-helpers";
 import type { ChatSource, Message, StreamState } from "@/lib/types/chat";
 
 // ---------------------------------------------------------------------------
@@ -18,6 +19,22 @@ import type { ChatSource, Message, StreamState } from "@/lib/types/chat";
 
 const LOG_PREFIX = "[useChat]";
 const MESSAGES_PAGE_SIZE = 50;
+
+/**
+ * Strip a complete `<!--follow-ups:...-->` block OR a trailing partial one
+ * (e.g. `<!--follow-ups:["What are cli`) from streaming content so
+ * follow-up metadata never flashes in the message bubble.
+ */
+const FOLLOW_UP_COMPLETE_RE = /<!--follow-ups:(\[[\s\S]*?\])-->/;
+const FOLLOW_UP_PARTIAL_RE = /<!--follow-ups:[\s\S]*$/;
+
+function stripFollowUpBlock(text: string): string {
+  // First try complete match
+  const complete = text.replace(FOLLOW_UP_COMPLETE_RE, "").trimEnd();
+  if (complete !== text) return complete;
+  // Then try partial trailing match
+  return text.replace(FOLLOW_UP_PARTIAL_RE, "").trimEnd();
+}
 
 interface UseChatOptions {
   conversationId: string | null;
@@ -332,7 +349,11 @@ export function useChat(options: UseChatOptions): UseChatReturn {
 
               case "delta":
                 accumulatedContent += (eventData.text as string) ?? "";
-                setStreamingContent(accumulatedContent);
+                // Strip complete or partial <!--follow-ups:...--> so it
+                // never flashes in the streaming display.
+                setStreamingContent(
+                  stripFollowUpBlock(accumulatedContent)
+                );
                 break;
 
               case "sources":
@@ -360,14 +381,18 @@ export function useChat(options: UseChatOptions): UseChatReturn {
           }
         }
 
-        // Stream completed — add the final assistant message to the list
+        // Stream completed — strip any <!--follow-ups:...--> comment the LLM
+        // may have emitted inline so it never appears in the rendered message.
+        const { cleanContent } = parseFollowUps(accumulatedContent);
+
+        // Add the final assistant message to the list
         const completedMessage: Message = {
           id: assistantMessageId ?? `temp-assistant-${Date.now()}`,
           conversationId:
             newConversationId ?? conversationIdRef.current ?? "",
           parentMessageId: null,
           role: "assistant",
-          content: accumulatedContent,
+          content: cleanContent,
           sources: accumulatedSources,
           status: "completed",
           metadata: null,
