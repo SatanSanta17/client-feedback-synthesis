@@ -23,7 +23,6 @@ const MAX_TITLE_LENGTH = 80;
 const chatSendSchema = z.object({
   conversationId: z.string().uuid().nullable(),
   message: z.string().min(1, "Message is required").max(10000, "Message too long"),
-  teamId: z.string().uuid().nullable(),
 });
 
 // ---------------------------------------------------------------------------
@@ -58,10 +57,12 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ message }, { status: 400 });
   }
 
-  const { conversationId: inputConversationId, message, teamId: inputTeamId } = parsed.data;
+  const { conversationId: inputConversationId, message } = parsed.data;
 
-  // Use provided teamId or fall back to active team cookie
-  const teamId = inputTeamId ?? (await getActiveTeamId());
+  // Always read teamId from the server-side cookie — never trust the client.
+  // This matches how all other API routes resolve workspace context and ensures
+  // data isolation: the cookie is HttpOnly and managed by the auth layer.
+  const teamId = await getActiveTeamId();
 
   console.log(
     `${LOG_PREFIX} POST — userId: ${user.id}, conversationId: ${inputConversationId ?? "new"}, teamId: ${teamId ?? "personal"}`
@@ -71,7 +72,7 @@ export async function POST(request: NextRequest) {
   const serviceClient = createServiceRoleClient();
   const conversationRepo = createConversationRepository(supabase);
   const messageRepo = createMessageRepository(supabase);
-  const embeddingRepo = createEmbeddingRepository(serviceClient, teamId);
+  const embeddingRepo = createEmbeddingRepository(serviceClient, teamId, user.id);
   const chatService = createChatService(conversationRepo, messageRepo);
 
   try {
@@ -144,7 +145,8 @@ export async function POST(request: NextRequest) {
       modelLabel,
       chatService,
       embeddingRepo,
-      serviceClient,
+      anonClient: supabase,
+      userId: user.id,
       teamId,
       conversationId,
       assistantMessageId: assistantMessage.id,

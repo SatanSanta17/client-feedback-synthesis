@@ -59,7 +59,9 @@ export interface ChatStreamDeps {
   modelLabel: string;
   chatService: ChatService;
   embeddingRepo: EmbeddingRepository;
-  serviceClient: SupabaseClient;
+  /** RLS-protected client (carries user cookies) — used for data queries. */
+  anonClient: SupabaseClient;
+  userId: string;
   teamId: string | null;
   conversationId: string;
   assistantMessageId: string;
@@ -88,7 +90,8 @@ export function createChatStream(deps: ChatStreamDeps): ReadableStream {
     modelLabel,
     chatService,
     embeddingRepo,
-    serviceClient,
+    anonClient,
+    userId,
     teamId,
     conversationId,
     assistantMessageId,
@@ -120,7 +123,7 @@ export function createChatStream(deps: ChatStreamDeps): ReadableStream {
             queryDatabase: buildQueryDatabaseTool(
               controller,
               encoder,
-              serviceClient,
+              anonClient,
               teamId
             ),
           },
@@ -349,7 +352,7 @@ function buildSearchInsightsTool(
 function buildQueryDatabaseTool(
   controller: ReadableStreamDefaultController,
   encoder: TextEncoder,
-  serviceClient: SupabaseClient,
+  supabaseClient: SupabaseClient,
   teamId: string | null
 ) {
   return tool({
@@ -387,7 +390,7 @@ function buildQueryDatabaseTool(
       );
 
       const result = await executeQuery(
-        serviceClient,
+        supabaseClient,
         action as QueryAction,
         {
           teamId,

@@ -17,10 +17,14 @@ import type {
  *
  * @param serviceClient - Service-role client (bypasses RLS)
  * @param teamId        - Active workspace scope (null = personal)
+ * @param userId        - Authenticated user ID — used to enforce personal workspace
+ *                        isolation in the similarity search RPC (prevents cross-user
+ *                        data leakage when teamId is null).
  */
 export function createEmbeddingRepository(
   serviceClient: SupabaseClient,
-  teamId: string | null
+  teamId: string | null,
+  userId?: string
 ): EmbeddingRepository {
   return {
     async upsertChunks(chunks: EmbeddingRow[]): Promise<void> {
@@ -105,6 +109,7 @@ export function createEmbeddingRepository(
           match_count: maxResults,
           similarity_threshold: similarityThreshold,
           filter_team_id: teamId,
+          filter_user_id: !teamId && userId ? userId : null,
           filter_chunk_types: chunkTypes ?? null,
           filter_client_name: clientName ?? null,
           filter_date_from: dateFrom ?? null,

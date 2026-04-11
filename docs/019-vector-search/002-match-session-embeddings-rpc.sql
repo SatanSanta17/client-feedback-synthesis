@@ -7,6 +7,7 @@ CREATE OR REPLACE FUNCTION match_session_embeddings(
   match_count INT,
   similarity_threshold FLOAT DEFAULT 0.3,
   filter_team_id UUID DEFAULT NULL,
+  filter_user_id UUID DEFAULT NULL,
   filter_chunk_types TEXT[] DEFAULT NULL,
   filter_client_name TEXT DEFAULT NULL,
   filter_date_from DATE DEFAULT NULL,
@@ -34,9 +35,14 @@ AS $$
   FROM session_embeddings se
   INNER JOIN sessions s ON s.id = se.session_id AND s.deleted_at IS NULL
   WHERE
-    -- Team scoping: match team_id or both null (personal workspace)
-    (filter_team_id IS NULL AND se.team_id IS NULL
-     OR se.team_id = filter_team_id)
+    -- Team scoping: match team_id or both null (personal workspace).
+    -- In personal workspace, also enforce user ownership via sessions.created_by
+    -- to prevent cross-user data leakage when called with service-role client.
+    (
+      (filter_team_id IS NULL AND se.team_id IS NULL
+       AND (filter_user_id IS NULL OR s.created_by = filter_user_id))
+      OR se.team_id = filter_team_id
+    )
     -- Optional chunk type filter
     AND (filter_chunk_types IS NULL
      OR se.chunk_type = ANY(filter_chunk_types))

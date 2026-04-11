@@ -17,8 +17,8 @@ import { ChatArea } from "./chat-area";
 import type { Conversation } from "@/lib/types/chat";
 
 export function ChatPageContent() {
-  const { user } = useAuth();
-  const teamId = null; // TODO: wire active team from context when teams are implemented
+  const { user, activeTeamId } = useAuth();
+  const teamId = activeTeamId ?? null;
 
   // Active conversation selection
   const [activeConversationId, setActiveConversationId] = useState<
@@ -69,7 +69,6 @@ export function ChatPageContent() {
   // Chat streaming
   const chatHook = useChat({
     conversationId: activeConversationId,
-    teamId,
     onConversationCreated: handleConversationCreated,
     onTitleGenerated: handleTitleGenerated,
   });

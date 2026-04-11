@@ -38,7 +38,6 @@ function stripFollowUpBlock(text: string): string {
 
 interface UseChatOptions {
   conversationId: string | null;
-  teamId: string | null;
   onConversationCreated?: (id: string) => void;
   onTitleGenerated?: (id: string, title: string) => void;
 }
@@ -131,7 +130,7 @@ export function useChat(options: UseChatOptions): UseChatReturn {
   // Note: onTitleGenerated is accepted for forward compatibility but not yet
   // wired — titles arrive via fire-and-forget server generation and the client
   // discovers them through conversation list refetch in useConversations.
-  const { conversationId, teamId, onConversationCreated } = options;
+  const { conversationId, onConversationCreated } = options;
 
   // Message state
   const [messages, setMessages] = useState<Message[]>([]);
@@ -292,7 +291,6 @@ export function useChat(options: UseChatOptions): UseChatReturn {
           body: JSON.stringify({
             conversationId: conversationIdRef.current,
             message: content,
-            teamId,
           }),
           signal: controller.signal,
         });
@@ -422,7 +420,7 @@ export function useChat(options: UseChatOptions): UseChatReturn {
         abortControllerRef.current = null;
       }
     },
-    [teamId]
+    []
   );
 
   // -------------------------------------------------------------------------
