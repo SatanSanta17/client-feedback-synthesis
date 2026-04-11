@@ -47,12 +47,14 @@ export function ViewPromptDialog({
 }: ViewPromptDialogProps) {
   const [fetchState, setFetchState] = useState<FetchState>("idle")
   const [promptContent, setPromptContent] = useState<string | null>(null)
+  const [isDefault, setIsDefault] = useState(false)
 
   // Fetch prompt when dialog opens and no external content is provided (P2.R4)
   useEffect(() => {
     if (!open) {
       // Reset on close
       setFetchState("idle")
+      setIsDefault(false)
       setPromptContent(null)
       return
     }
@@ -77,6 +79,7 @@ export function ViewPromptDialog({
         if (cancelled) return
         const content = data.active?.content ?? null
         setPromptContent(content)
+        setIsDefault(!!data.active?.is_default)
         setFetchState(content ? "success" : "error")
       })
       .catch(() => {
@@ -93,10 +96,15 @@ export function ViewPromptDialog({
         <DialogHeader className="-mx-4 -mt-4 border-b bg-muted/50 p-4 rounded-t-xl">
           <DialogTitle className="flex items-center gap-2">
             {title}
+            {isDefault && (
+              <span className="rounded-full bg-muted px-2 py-0.5 text-xs font-normal text-muted-foreground">
+                Default
+              </span>
+            )}
           </DialogTitle>
-          {description && (
-            <DialogDescription>{description}</DialogDescription>
-          )}
+          <DialogDescription className={description ? undefined : "sr-only"}>
+            {description ?? "View the extraction prompt content"}
+          </DialogDescription>
         </DialogHeader>
 
         <div className="flex-1 min-h-0 overflow-y-auto">
