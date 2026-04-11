@@ -56,3 +56,12 @@ export type {
   MessageInsert,
   MessageUpdate,
 } from "./message-repository";
+export type {
+  ThemeRepository,
+  ThemeInsert,
+  ThemeUpdate,
+} from "./theme-repository";
+export type {
+  SignalThemeRepository,
+  SignalThemeInsert,
+} from "./signal-theme-repository";
