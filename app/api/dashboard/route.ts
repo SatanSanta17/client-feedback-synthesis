@@ -22,6 +22,10 @@ const dashboardParamsSchema = z.object({
     "client_health_grid",
     "competitive_mention_frequency",
     "client_list",
+    // Theme widget actions (PRD-021 Part 3)
+    "top_themes",
+    "theme_trends",
+    "theme_client_matrix",
   ]),
   dateFrom: z.string().optional(),
   dateTo: z.string().optional(),
@@ -29,6 +33,7 @@ const dashboardParamsSchema = z.object({
   severity: z.string().optional(),
   urgency: z.string().optional(),
   granularity: z.enum(["week", "month"]).optional(),
+  confidenceMin: z.coerce.number().min(0).max(1).optional(),
 });
 
 // ---------------------------------------------------------------------------
@@ -47,8 +52,16 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ message }, { status: 400 });
   }
 
-  const { action, dateFrom, dateTo, clients, severity, urgency, granularity } =
-    parsed.data;
+  const {
+    action,
+    dateFrom,
+    dateTo,
+    clients,
+    severity,
+    urgency,
+    granularity,
+    confidenceMin,
+  } = parsed.data;
 
   console.log(`${LOG_PREFIX} GET — action: ${action}`);
 
@@ -68,6 +81,7 @@ export async function GET(request: NextRequest) {
     severity,
     urgency,
     granularity: granularity as QueryFilters["granularity"],
+    confidenceMin,
   };
 
   try {

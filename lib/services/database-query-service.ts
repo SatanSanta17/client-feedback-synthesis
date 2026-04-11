@@ -29,7 +29,11 @@ export type QueryAction =
   // Dashboard actions (PRD-021 Part 2)
   | "sessions_over_time"
   | "client_health_grid"
-  | "competitive_mention_frequency";
+  | "competitive_mention_frequency"
+  // Theme widget actions (PRD-021 Part 3)
+  | "top_themes"
+  | "theme_trends"
+  | "theme_client_matrix";
 
 export interface QueryFilters {
   teamId: string | null;
@@ -41,6 +45,8 @@ export interface QueryFilters {
   severity?: string;
   urgency?: string;
   granularity?: "week" | "month";
+  // Theme widget filters (PRD-021 Part 3)
+  confidenceMin?: number;
 }
 
 export interface DatabaseQueryResult {
@@ -113,6 +119,131 @@ function aggregateJsonField(
 function extractClientName(row: any): string {
   const clientData = row.clients as { name: string } | null;
   return clientData?.name ?? "Unknown";
+}
+
+// ---------------------------------------------------------------------------
+// Theme query helpers (PRD-021 Part 3)
+// ---------------------------------------------------------------------------
+
+/**
+ * Fetches all active (non-archived) themes for a workspace and returns a
+ * Map of id → name. Used by all 3 theme widget handlers.
+ */
+async function fetchActiveThemeMap(
+  supabase: SupabaseClient,
+  teamId: string | null
+): Promise<Map<string, string>> {
+  let query = supabase
+    .from("themes")
+    .select("id, name")
+    .eq("is_archived", false);
+
+  query = scopeByTeam(query, teamId);
+
+  const { data, error } = await query;
+
+  if (error) {
+    console.error(`${LOG_PREFIX} fetchActiveThemeMap error:`, error);
+    throw new Error("Failed to fetch active themes");
+  }
+
+  const map = new Map<string, string>();
+  for (const row of (data ?? []) as Array<{ id: string; name: string }>) {
+    map.set(row.id, row.name);
+  }
+
+  return map;
+}
+
+/**
+ * Row shape returned by the signal_themes → session_embeddings → sessions
+ * nested join query. Supabase returns nested objects for joins.
+ */
+interface SignalThemeJoinRow {
+  theme_id: string;
+  confidence: number | null;
+  session_embeddings: {
+    chunk_type: string;
+    session_id: string;
+    sessions: {
+      session_date: string;
+      client_id: string;
+      deleted_at: string | null;
+    };
+  };
+}
+
+/**
+ * Fetches signal_themes joined through session_embeddings → sessions,
+ * applying team scoping, date range, client IDs, and confidence threshold.
+ * Shared by all 3 theme widget handlers.
+ */
+async function fetchSignalThemeRows(
+  supabase: SupabaseClient,
+  filters: QueryFilters
+): Promise<SignalThemeJoinRow[]> {
+  let query = supabase
+    .from("signal_themes")
+    .select(
+      `
+      theme_id,
+      confidence,
+      session_embeddings!inner(
+        chunk_type,
+        session_id,
+        team_id,
+        sessions!inner(
+          session_date,
+          client_id,
+          deleted_at
+        )
+      )
+    `
+    )
+    .is("session_embeddings.sessions.deleted_at", null);
+
+  // Team scoping on session_embeddings (which carries team_id)
+  if (filters.teamId) {
+    query = query.eq("session_embeddings.team_id", filters.teamId);
+  } else {
+    query = query.is("session_embeddings.team_id", null);
+  }
+
+  // Date range filters on sessions
+  if (filters.dateFrom) {
+    query = query.gte(
+      "session_embeddings.sessions.session_date",
+      filters.dateFrom
+    );
+  }
+  if (filters.dateTo) {
+    query = query.lte(
+      "session_embeddings.sessions.session_date",
+      filters.dateTo
+    );
+  }
+
+  // Client ID filter on sessions
+  if (filters.clientIds && filters.clientIds.length > 0) {
+    query = query.in(
+      "session_embeddings.sessions.client_id",
+      filters.clientIds
+    );
+  }
+
+  // Confidence threshold on signal_themes
+  if (filters.confidenceMin !== undefined) {
+    query = query.gte("confidence", filters.confidenceMin);
+  }
+
+  const { data, error } = await query;
+
+  if (error) {
+    console.error(`${LOG_PREFIX} fetchSignalThemeRows error:`, error);
+    throw new Error("Failed to fetch signal theme data");
+  }
+
+  return (data ?? []) as unknown as SignalThemeJoinRow[];
 }
 
 // ---------------------------------------------------------------------------
@@ -419,6 +550,190 @@ async function handleCompetitiveMentionFrequency(
 }
 
 // ---------------------------------------------------------------------------
+// Theme widget action handlers (PRD-021 Part 3)
+// ---------------------------------------------------------------------------
+
+async function handleTopThemes(
+  supabase: SupabaseClient,
+  filters: QueryFilters
+): Promise<Record<string, unknown>> {
+  const [themeMap, rows] = await Promise.all([
+    fetchActiveThemeMap(supabase, filters.teamId),
+    fetchSignalThemeRows(supabase, filters),
+  ]);
+
+  // Aggregate by theme_id with chunk_type sub-counts
+  const themeAgg = new Map<
+    string,
+    { count: number; breakdown: Record<string, number> }
+  >();
+
+  for (const row of rows) {
+    const tid = row.theme_id;
+    if (!themeMap.has(tid)) continue; // skip archived/deleted themes
+
+    let agg = themeAgg.get(tid);
+    if (!agg) {
+      agg = { count: 0, breakdown: {} };
+      themeAgg.set(tid, agg);
+    }
+
+    agg.count++;
+    const chunkType = row.session_embeddings.chunk_type;
+    agg.breakdown[chunkType] = (agg.breakdown[chunkType] ?? 0) + 1;
+  }
+
+  // Sort by total count descending
+  const themes = Array.from(themeAgg.entries())
+    .map(([themeId, { count, breakdown }]) => ({
+      themeId,
+      themeName: themeMap.get(themeId) ?? "Unknown",
+      count,
+      breakdown,
+    }))
+    .sort((a, b) => b.count - a.count);
+
+  return { themes };
+}
+
+async function handleThemeTrends(
+  supabase: SupabaseClient,
+  filters: QueryFilters
+): Promise<Record<string, unknown>> {
+  const [themeMap, rows] = await Promise.all([
+    fetchActiveThemeMap(supabase, filters.teamId),
+    fetchSignalThemeRows(supabase, filters),
+  ]);
+
+  const granularity = filters.granularity ?? "week";
+
+  // Group by (bucket, theme_id) in TypeScript
+  const bucketMap = new Map<string, Record<string, number>>();
+
+  for (const row of rows) {
+    const tid = row.theme_id;
+    if (!themeMap.has(tid)) continue;
+
+    const sessionDate = new Date(row.session_embeddings.sessions.session_date);
+    const bucket = dateTrunc(granularity, sessionDate);
+
+    let counts = bucketMap.get(bucket);
+    if (!counts) {
+      counts = {};
+      bucketMap.set(bucket, counts);
+    }
+    counts[tid] = (counts[tid] ?? 0) + 1;
+  }
+
+  // Sort buckets chronologically
+  const buckets = Array.from(bucketMap.entries())
+    .map(([bucket, counts]) => ({ bucket, counts }))
+    .sort((a, b) => a.bucket.localeCompare(b.bucket));
+
+  // Build theme metadata list (only themes that appear in data)
+  const seenThemeIds = new Set<string>();
+  for (const { counts } of buckets) {
+    for (const tid of Object.keys(counts)) {
+      seenThemeIds.add(tid);
+    }
+  }
+
+  const themes = Array.from(seenThemeIds).map((id) => ({
+    themeId: id,
+    themeName: themeMap.get(id) ?? "Unknown",
+  }));
+
+  return { themes, buckets };
+}
+
+async function handleThemeClientMatrix(
+  supabase: SupabaseClient,
+  filters: QueryFilters
+): Promise<Record<string, unknown>> {
+  // Need client names — fetch from sessions join with clients
+  const [themeMap, rows, clientData] = await Promise.all([
+    fetchActiveThemeMap(supabase, filters.teamId),
+    fetchSignalThemeRows(supabase, filters),
+    (async () => {
+      const q = baseClientQuery(
+        supabase
+          .from("clients")
+          .select("id, name")
+          .order("name", { ascending: true }),
+        filters
+      );
+      const { data, error } = await q;
+      if (error) {
+        console.error(`${LOG_PREFIX} theme_client_matrix client fetch error:`, error);
+        throw new Error("Failed to fetch clients for theme matrix");
+      }
+      return (data ?? []) as Array<{ id: string; name: string }>;
+    })(),
+  ]);
+
+  const clientMap = new Map<string, string>();
+  for (const c of clientData) {
+    clientMap.set(c.id, c.name);
+  }
+
+  // Group by (theme_id, client_id) — sparse cells
+  const cellMap = new Map<string, number>(); // "themeId|clientId" → count
+  const seenThemeIds = new Set<string>();
+  const seenClientIds = new Set<string>();
+
+  for (const row of rows) {
+    const tid = row.theme_id;
+    if (!themeMap.has(tid)) continue;
+
+    const clientId = row.session_embeddings.sessions.client_id;
+    if (!clientMap.has(clientId)) continue;
+
+    const key = `${tid}|${clientId}`;
+    cellMap.set(key, (cellMap.get(key) ?? 0) + 1);
+    seenThemeIds.add(tid);
+    seenClientIds.add(clientId);
+  }
+
+  const themesList = Array.from(seenThemeIds).map((id) => ({
+    id,
+    name: themeMap.get(id) ?? "Unknown",
+  }));
+
+  const clientsList = Array.from(seenClientIds).map((id) => ({
+    id,
+    name: clientMap.get(id) ?? "Unknown",
+  }));
+
+  const cells = Array.from(cellMap.entries()).map(([key, count]) => {
+    const [themeId, clientId] = key.split("|");
+    return { themeId, clientId, count };
+  });
+
+  return { themes: themesList, clients: clientsList, cells };
+}
+
+/**
+ * Truncates a date to the start of its week (Monday) or month.
+ * Returns an ISO date string (YYYY-MM-DD).
+ */
+function dateTrunc(granularity: "week" | "month", date: Date): string {
+  if (granularity === "month") {
+    const y = date.getUTCFullYear();
+    const m = String(date.getUTCMonth() + 1).padStart(2, "0");
+    return `${y}-${m}-01`;
+  }
+  // Week: truncate to Monday
+  const day = date.getUTCDay(); // 0 = Sunday
+  const diff = day === 0 ? 6 : day - 1; // Monday = 0
+  const monday = new Date(date);
+  monday.setUTCDate(date.getUTCDate() - diff);
+  const y = monday.getUTCFullYear();
+  const m = String(monday.getUTCMonth() + 1).padStart(2, "0");
+  const d = String(monday.getUTCDate()).padStart(2, "0");
+  return `${y}-${m}-${d}`;
+}
+
+// ---------------------------------------------------------------------------
 // Action map
 // ---------------------------------------------------------------------------
 
@@ -437,6 +752,10 @@ const ACTION_MAP: Record<
   sessions_over_time: handleSessionsOverTime,
   client_health_grid: handleClientHealthGrid,
   competitive_mention_frequency: handleCompetitiveMentionFrequency,
+  // Theme widget actions (PRD-021 Part 3)
+  top_themes: handleTopThemes,
+  theme_trends: handleThemeTrends,
+  theme_client_matrix: handleThemeClientMatrix,
 };
 
 // ---------------------------------------------------------------------------
@@ -464,6 +783,7 @@ export async function executeQuery(
       severity: filters.severity,
       urgency: filters.urgency,
       granularity: filters.granularity,
+      confidenceMin: filters.confidenceMin,
     })}`
   );
 

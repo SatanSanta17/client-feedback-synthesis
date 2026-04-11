@@ -1,6 +1,6 @@
 # TRD-021: AI-Powered Insights Dashboard
 
-> **Status:** Draft (Parts 1–2 detailed)
+> **Status:** Draft (Parts 1–3 detailed)
 > **PRD:** `docs/021-insights-dashboard/prd.md` (approved)
 > **Mirrors:** PRD Parts 1–6. Each part is written and reviewed one at a time. Parts 3–6 will be added after their preceding parts are implemented.
 
@@ -1221,3 +1221,220 @@ const NAV_ITEMS = [
 10. Update `CHANGELOG.md` with Part 2 deliverables.
 
 **Requirement coverage:** All P2.R1–P2.R10. End-of-part audit.
+
+---
+
+## Part 3: Derived Theme Widgets
+
+> Implements **P3.R1–P3.R6** from PRD-021.
+
+### Overview
+
+Build three theme-powered dashboard widgets that visualise how signal themes distribute, trend, and correlate with clients. These widgets join `signal_themes` → `session_embeddings` → `sessions` (→ `clients`) to aggregate theme data, respecting the same global filter bar and URL-param-driven filter state from Part 2. Three new query actions are added to `database-query-service.ts`. The widgets follow the same self-contained pattern established in Part 2: each is a `'use client'` leaf component using `useDashboardFetch`, `DashboardCard`, and Recharts.
+
+### Technical Decisions
+
+1. **All theme queries join through `session_embeddings` for team scoping.** The `signal_themes` table has no `team_id` column — scoping is derived from its parent `session_embeddings.team_id` (which mirrors `sessions.team_id`). All three query handlers join `signal_themes` → `session_embeddings` → `sessions` to apply team scoping, date range, and client ID filters via the sessions table. This avoids duplicating scoping logic and keeps the `signal_themes` table lean.
+
+2. **Confidence threshold as a query filter parameter.** The PRD notes that "downstream widgets can filter by confidence threshold to control how secondary assignments affect counts and trends." A new optional `confidenceMin` field is added to `QueryFilters` (default: no threshold — include all assignments). The filter bar does **not** expose this in the UI for Part 3; it is available as a URL param (`?confidenceMin=0.8`) for power users and for Part 6 to wire up later. All three theme query handlers apply `WHERE confidence >= confidenceMin` when the param is present.
+
+3. **`top_themes` returns per-chunk-type breakdown in a single query.** Rather than making N+1 queries (one per theme for breakdown), the handler fetches all matching `signal_themes` rows joined to `session_embeddings` (for `chunk_type`) in a single query, then aggregates in TypeScript: group by `theme_id`, count total signals, and sub-count by `chunk_type`. The result is sorted by total signal count descending. This is efficient because the data volume is bounded — themes are workspace-scoped and the theme count is typically 10-50.
+
+4. **`theme_trends` uses `date_trunc()` in TypeScript, not an RPC.** Unlike `sessions_over_time` (which needed a Postgres RPC for complex GROUP BY on the sessions table), theme trends aggregate a smaller, already-joined dataset. The handler fetches `signal_themes` → `session_embeddings` → `sessions` (selecting `session_date` and `theme_id`), groups by `date_trunc(granularity, session_date)` and `theme_id` in TypeScript, and returns `{ buckets: Array<{ bucket: string, themes: Record<themeId, count> }> }`. This avoids creating another RPC function and keeps the logic transparent.
+
+5. **`theme_client_matrix` returns a sparse matrix, not a full grid.** The handler fetches all `signal_themes` rows joined through to `clients`, groups by `(theme_id, client_id)`, counts signal assignments per pair, and returns only non-zero cells: `{ cells: Array<{ themeId, themeName, clientId, clientName, count }> }`. The widget constructs the full grid client-side. This avoids transmitting a potentially large `themes × clients` dense matrix when most cells are zero.
+
+6. **Theme name resolution via a single lookup query.** All three handlers need to map `theme_id` to `theme_name` for display. Rather than joining `themes` in every query (adding complexity to already multi-table joins), each handler fetches active themes once via `supabase.from('themes').select('id, name')` scoped by team, builds an `id → name` Map, and attaches names during TypeScript aggregation. This is a single small query (10-50 rows) cached in-memory for the handler's lifetime.
+
+7. **Theme trends widget defaults to top 5 themes, user-selectable.** The widget fetches `theme_trends` with all themes, but the chart only renders the 5 most frequent (by total signal count) by default. A local multi-select allows the user to add/remove themes from the chart — this is widget-local state (not a global filter), matching how the session volume widget has a local granularity toggle. The theme selection is not encoded in URL params.
+
+8. **Theme-client matrix uses a heatmap-style grid, not a Recharts chart.** A traditional chart (scatter, bar) doesn't communicate the matrix structure well. The widget renders an HTML `<div>` grid with themes on rows and clients on columns (or vice versa for narrow screens). Cell background intensity is proportional to signal count (CSS `opacity` mapped from 0 to max count). Hover shows count tooltip. Click triggers drill-down (Part 4). This avoids forcing Recharts into a use case it's not designed for.
+
+9. **Cold-start empty state per widget, not per page.** When no themes exist, each theme widget independently shows "Themes will appear as you extract more sessions" via the `DashboardCard` empty state. The direct widgets (sentiment, urgency, etc.) continue to function normally. This is handled by the `isEmpty` prop on `DashboardCard` — no special-case logic needed.
+
+10. **`top_themes` widget limits to 15 themes by default.** To prevent visual clutter, the horizontal bar chart shows at most 15 themes. If more exist, a "Show all N themes" toggle expands the list. The query handler returns all themes (no server-side limit) so the widget can toggle client-side without re-fetching.
+
+### Forward Compatibility Notes
+
+- **Part 4 (Qualitative Drill-Down):** All three widgets have click handlers wired as `console.log` stubs, matching the Part 2 pattern. Part 4 will replace these with drill-down panel openings. The `top_themes` click passes `themeId`; the `theme_client_matrix` click passes `{ themeId, clientId }`; the `theme_trends` click passes `{ themeId, bucket }`.
+- **Part 6 (Confidence Threshold UI):** The `confidenceMin` filter is already plumbed through `QueryFilters` and the API route. Part 6 can add a slider or input to the filter bar that sets `?confidenceMin=0.7` in the URL.
+
+### Query Action Designs
+
+#### `top_themes`
+
+**Client-supplied filters:** `dateFrom`, `dateTo`, `clientIds`, `confidenceMin`
+**Server-resolved context:** `teamId` (from `active_team_id` cookie — never client-supplied)
+
+**Query strategy:**
+1. Fetch active themes for workspace: `themes` WHERE `team_id = ?` AND `is_archived = false` → build `id → name` Map.
+2. Fetch matching assignments: `signal_themes` JOIN `session_embeddings` ON `embedding_id` JOIN `sessions` ON `session_id`, applying team scope, date range, client IDs, and optional confidence threshold.
+3. Aggregate in TypeScript: group by `theme_id`, count total, sub-count by `chunk_type`.
+4. Sort by total count descending.
+
+**Response shape:**
+```typescript
+{
+  themes: Array<{
+    themeId: string;
+    themeName: string;
+    count: number;
+    breakdown: Record<string, number>; // chunk_type → count
+  }>
+}
+```
+
+#### `theme_trends`
+
+**Client-supplied filters:** `dateFrom`, `dateTo`, `clientIds`, `confidenceMin`, `granularity` (week | month)
+**Server-resolved context:** `teamId` (from `active_team_id` cookie — never client-supplied)
+
+**Query strategy:**
+1. Fetch active themes → `id → name` Map.
+2. Fetch matching assignments joined to `sessions` for `session_date`.
+3. Group in TypeScript by `date_trunc(granularity, session_date)` and `theme_id`.
+4. Return time-bucketed theme counts.
+
+**Response shape:**
+```typescript
+{
+  themes: Array<{ themeId: string; themeName: string }>;
+  buckets: Array<{
+    bucket: string; // ISO date string
+    counts: Record<string, number>; // themeId → count
+  }>
+}
+```
+
+#### `theme_client_matrix`
+
+**Client-supplied filters:** `dateFrom`, `dateTo`, `clientIds`, `confidenceMin`
+**Server-resolved context:** `teamId` (from `active_team_id` cookie — never client-supplied)
+
+**Query strategy:**
+1. Fetch active themes → `id → name` Map.
+2. Fetch matching assignments joined through `session_embeddings` → `sessions` → `clients`.
+3. Group by `(theme_id, client_id)`, count per pair.
+4. Return sparse cells with names resolved.
+
+**Response shape:**
+```typescript
+{
+  themes: Array<{ id: string; name: string }>;
+  clients: Array<{ id: string; name: string }>;
+  cells: Array<{
+    themeId: string;
+    clientId: string;
+    count: number;
+  }>
+}
+```
+
+### Files Changed
+
+| File | Action | Purpose |
+|------|--------|---------|
+| `app/dashboard/_components/top-themes-widget.tsx` | **Create** | Top themes horizontal bar chart with chunk-type breakdown tooltip |
+| `app/dashboard/_components/theme-trends-widget.tsx` | **Create** | Theme trends line chart with local theme selector |
+| `app/dashboard/_components/theme-client-matrix-widget.tsx` | **Create** | Theme-client heatmap grid with intensity-mapped cells |
+| `app/dashboard/_components/dashboard-content.tsx` | **Edit** | Add 3 new theme widgets to the grid layout |
+| `lib/services/database-query-service.ts` | **Edit** | Add 3 new actions (`top_themes`, `theme_trends`, `theme_client_matrix`), add `confidenceMin` to `QueryFilters` |
+| `app/api/dashboard/route.ts` | **Edit** | Add 3 new actions to Zod enum, add `confidenceMin` param |
+
+### Implementation Increments
+
+#### Increment 3.1: Query Service Extension
+
+**What:** Add 3 new theme query actions to `database-query-service.ts` and extend the API route to accept them. Add `confidenceMin` to `QueryFilters`.
+
+**Steps:**
+
+1. Extend `QueryAction` with `top_themes`, `theme_trends`, `theme_client_matrix`.
+2. Add `confidenceMin?: number` to `QueryFilters`.
+3. Create a shared `fetchActiveThemeMap()` helper — queries `themes` table for workspace, returns `Map<string, string>` (id → name). Used by all 3 handlers.
+4. Implement `handleTopThemes()` — fetch `signal_themes` JOIN `session_embeddings` JOIN `sessions`, apply filters + optional confidence threshold, aggregate by `theme_id` with `chunk_type` sub-counts, sort by count descending.
+5. Implement `handleThemeTrends()` — same join + filters, group by `(date_trunc(granularity, session_date), theme_id)` in TypeScript, return time-bucketed counts.
+6. Implement `handleThemeClientMatrix()` — same join + filters + JOIN `clients`, group by `(theme_id, client_id)`, return sparse cells with resolved names.
+7. Add all 3 handlers to `ACTION_MAP`.
+8. Edit `app/api/dashboard/route.ts` — add 3 new actions to Zod enum, add `confidenceMin` as `z.coerce.number().min(0).max(1).optional()`.
+9. Update `executeQuery()` logging to include `confidenceMin`.
+10. Verify: `npx tsc --noEmit` passes.
+
+**Requirement coverage:** P3.R4 (new query actions), P3.R6 (global filter respect).
+
+#### Increment 3.2: Top Themes Widget
+
+**What:** Build the top themes horizontal bar chart widget.
+
+**Steps:**
+
+1. Create `app/dashboard/_components/top-themes-widget.tsx` — fetches `top_themes` action, renders a Recharts horizontal `BarChart` (layout="vertical") with theme names on Y-axis and signal counts on X-axis. Sorted by count descending. Bar fill uses the brand primary colour.
+2. On hover/tooltip: show per-chunk-type breakdown (e.g., "5 pain points, 3 requirements, 2 blockers").
+3. Default display limit of 15 themes. If more exist, show a "Show all N themes" toggle below the chart.
+4. Clickable bars — `console.log` for now (Part 4 wires drill-down with `themeId`).
+5. Empty state: "Themes will appear as you extract more sessions."
+6. Re-fetch on search param changes (global filter reactivity via `useDashboardFetch`).
+7. Verify: widget renders with real data, responds to filter changes.
+
+**Requirement coverage:** P3.R1 (top themes ranked by signal count with chunk-type breakdown), P3.R5 (cold-start empty state).
+
+#### Increment 3.3: Theme Trends Widget
+
+**What:** Build the theme trends line chart widget.
+
+**Steps:**
+
+1. Create `app/dashboard/_components/theme-trends-widget.tsx` — fetches `theme_trends` action with local `granularity` toggle (week/month, matching session volume widget pattern).
+2. Render a Recharts `LineChart` — X-axis is time buckets, Y-axis is signal count, each line is a theme (different colour per theme).
+3. Default to top 5 themes by total count. Add a local multi-select (shadcn Popover + Command, matching the filter bar pattern) to add/remove themes from the chart. This is local state, not URL-encoded.
+4. Colour assignment: cycle through a predefined palette of 8 distinct colours. If more than 8 themes are selected, colours repeat.
+5. Tooltip shows bucket date + all visible theme counts.
+6. Empty state: "Themes will appear as you extract more sessions."
+7. Re-fetch on search param changes.
+8. Verify: chart shows time series with multiple theme lines, theme selector works, granularity toggle works.
+
+**Requirement coverage:** P3.R2 (theme frequency over time with selectable themes), P3.R5 (cold-start empty state).
+
+#### Increment 3.4: Theme-Client Matrix Widget
+
+**What:** Build the theme-client heatmap grid widget.
+
+**Steps:**
+
+1. Create `app/dashboard/_components/theme-client-matrix-widget.tsx` — fetches `theme_client_matrix` action.
+2. Render as an HTML grid (not Recharts) — themes on rows, clients on columns. Each cell has background opacity proportional to its count (0 = transparent, max count = full intensity using brand primary colour).
+3. Cell content shows the count number. Hover shows a tooltip: "Theme X + Client Y: N signals".
+4. Clickable cells — `console.log` for now (Part 4 wires drill-down with `{ themeId, clientId }`).
+5. Handle large matrices: if more than 10 themes or 10 clients, show scrollable overflow with sticky row/column headers.
+6. Empty state: "Themes will appear as you extract more sessions."
+7. Re-fetch on search param changes.
+8. Verify: grid renders correctly, colour intensity reflects counts, tooltip works, click handler fires.
+
+**Requirement coverage:** P3.R3 (heatmap grid with theme-client pairs), P3.R5 (cold-start empty state).
+
+#### Increment 3.5: Cleanup and Audit
+
+**What:** End-of-part audit across all files created/modified in Part 3.
+
+**Steps:**
+
+1. Run `npx tsc --noEmit` for a full type check.
+2. Verify all file references in the TRD exist in the codebase.
+3. SRP check: each widget is self-contained, query handlers do one thing, shared helpers extracted.
+4. DRY check: `fetchActiveThemeMap()` is shared across all 3 handlers, `useDashboardFetch` and `DashboardCard` shared, no duplicated fetch or aggregation logic.
+5. Logging check: API route logs new actions, each new query handler logs errors.
+6. Dead code check: no unused imports or variables.
+7. Convention check: naming, exports, import order, `'use client'` only on leaf components.
+8. Verify all PRD Part 3 acceptance criteria are met:
+   - Top themes widget ranks themes by signal count with chunk-type breakdown ✓
+   - Clicking a theme triggers drill-down (console.log stub — Part 4 wires) ✓
+   - Theme trends widget shows theme frequency over time with selectable themes ✓
+   - Theme-client matrix shows heatmap of signal counts per theme-client pair ✓
+   - Clicking a matrix cell triggers drill-down (console.log stub) ✓
+   - New query actions added to the shared service layer ✓
+   - Cold-start empty state displays correctly when no themes exist ✓
+   - All derived widgets respect global filters ✓
+9. Update `ARCHITECTURE.md` — add new widget files to file map, update database-query-service description (13 actions), add `confidenceMin` to env/filter docs.
+10. Update `CHANGELOG.md` with Part 3 deliverables.
+
+**Requirement coverage:** All P3.R1–P3.R6. End-of-part audit.
