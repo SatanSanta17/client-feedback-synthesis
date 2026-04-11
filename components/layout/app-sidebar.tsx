@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
+  BarChart3,
   Pencil,
   MessageSquare,
   Settings,
@@ -44,6 +45,11 @@ interface NavItem {
 /* ------------------------------------------------------------------ */
 
 const NAV_ITEMS: NavItem[] = [
+  {
+    label: "Dashboard",
+    href: "/dashboard",
+    icon: <BarChart3 className="size-5 shrink-0" />,
+  },
   {
     label: "Capture",
     href: "/capture",
