@@ -23,6 +23,15 @@ import type { Message, StreamState } from "@/lib/types/chat";
 /** Virtual index offset — starts high so prepended items get lower indices. */
 const FIRST_ITEM_INDEX_BASE = 100_000;
 
+/** Loading spinner shown at the top of the list during infinite scroll fetch. */
+function VirtuosoHeaderSpinner() {
+  return (
+    <div className="flex justify-center py-3" aria-label="Loading older messages">
+      <div className="h-5 w-5 animate-spin rounded-full border-2 border-muted-foreground border-t-transparent" />
+    </div>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Props
 // ---------------------------------------------------------------------------
@@ -165,7 +174,7 @@ export function MessageThread({
 
   if (isLoadingMessages) {
     return (
-      <div className="flex flex-1 flex-col gap-3 p-4">
+      <div className="flex flex-1 flex-col gap-3 p-4" aria-busy="true" aria-label="Loading messages">
         {Array.from({ length: 4 }).map((_, i) => (
           <div
             key={i}
@@ -196,12 +205,7 @@ export function MessageThread({
       overscan={200}
       increaseViewportBy={{ top: 400, bottom: 200 }}
       components={{
-        Header: () =>
-          isFetchingMore ? (
-            <div className="flex justify-center py-3">
-              <div className="h-5 w-5 animate-spin rounded-full border-2 border-muted-foreground border-t-transparent" />
-            </div>
-          ) : null,
+        Header: isFetchingMore ? VirtuosoHeaderSpinner : undefined,
       }}
     />
   );

@@ -70,6 +70,7 @@ export function CitationChips({ sources, className }: CitationChipsProps) {
             key={source.sessionId}
             type="button"
             onClick={() => setSelectedSource(source)}
+            aria-label={`View citation from ${source.clientName}, ${formatSourceDate(source.sessionDate)}`}
             className={cn(
               "inline-flex items-center gap-1 rounded-full border border-border/60 bg-background/80 px-2.5 py-1",
               "text-xs text-muted-foreground transition-colors",
@@ -77,7 +78,7 @@ export function CitationChips({ sources, className }: CitationChipsProps) {
               "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             )}
           >
-            <FileText className="size-3 shrink-0" />
+            <FileText className="size-3 shrink-0" aria-hidden="true" />
             <span className="truncate max-w-[160px]">
               {source.clientName}
             </span>

@@ -92,7 +92,10 @@ export function ChatInput({
       }
     });
 
-    onSendMessage(trimmed);
+    onSendMessage(trimmed).catch((err) => {
+      const msg = err instanceof Error ? err.message : "Unknown error";
+      console.error("[ChatInput] send failed:", msg);
+    });
   }, [value, isStreaming, onSendMessage]);
 
   const handleKeyDown = useCallback(

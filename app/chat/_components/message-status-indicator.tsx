@@ -10,6 +10,7 @@
 // Only shown on the latest assistant message.
 // ---------------------------------------------------------------------------
 
+import type { LucideIcon } from "lucide-react";
 import { AlertCircle, RotateCcw, XCircle } from "lucide-react";
 
 import { cn } from "@/lib/utils";
@@ -33,9 +34,12 @@ interface MessageStatusIndicatorProps {
 // Status config
 // ---------------------------------------------------------------------------
 
+/** Statuses that get a visual indicator. Keyed by the subset of MessageStatus that isn't "completed". */
+type IndicatorStatus = Exclude<MessageStatus, "completed">;
+
 const STATUS_CONFIG: Record<
-  string,
-  { label: string; icon: typeof AlertCircle; className: string }
+  IndicatorStatus,
+  { label: string; icon: LucideIcon; className: string }
 > = {
   failed: {
     label: "Failed to generate",
@@ -64,17 +68,16 @@ export function MessageStatusIndicator({
   onRetry,
   className,
 }: MessageStatusIndicatorProps) {
+  // Only render for non-completed statuses that have a config entry
+  if (status === "completed") return null;
   const config = STATUS_CONFIG[status];
-
-  // Only render for non-completed statuses that have a config
-  if (!config) return null;
 
   const Icon = config.icon;
 
   return (
     <div className={cn("mt-2 flex items-center gap-2", className)}>
       <div className={cn("flex items-center gap-1 text-xs", config.className)}>
-        <Icon className="size-3.5" />
+        <Icon className="size-3.5" aria-hidden="true" />
         <span>{config.label}</span>
       </div>
 

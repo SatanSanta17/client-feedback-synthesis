@@ -65,56 +65,60 @@ export function CitationPreviewDialog({
   open,
   onOpenChange,
 }: CitationPreviewDialogProps) {
-  if (!source) return null;
-
+  // Do NOT early-return when source is null — Dialog must remain mounted for
+  // the close animation to complete. The `open` prop controls visibility.
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-lg">
-        <DialogHeader>
-          <DialogTitle className="flex items-center gap-2 text-base">
-            <FileText className="size-4 shrink-0 text-muted-foreground" />
-            {source.clientName}
-          </DialogTitle>
-          <DialogDescription className="sr-only">
-            Citation source from {source.clientName}
-          </DialogDescription>
-        </DialogHeader>
+        {source && (
+          <>
+            <DialogHeader>
+              <DialogTitle className="flex items-center gap-2 text-base">
+                <FileText className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
+                {source.clientName}
+              </DialogTitle>
+              <DialogDescription className="sr-only">
+                Citation source from {source.clientName}
+              </DialogDescription>
+            </DialogHeader>
 
-        {/* Metadata */}
-        <div className="flex flex-wrap gap-3 text-xs text-muted-foreground">
-          <span className="inline-flex items-center gap-1">
-            <Calendar className="size-3" />
-            {formatDate(source.sessionDate)}
-          </span>
-          <span className="inline-flex items-center gap-1">
-            <Tag className="size-3" />
-            {formatChunkType(source.chunkType)}
-          </span>
-        </div>
+            {/* Metadata */}
+            <div className="flex flex-wrap gap-3 text-xs text-muted-foreground">
+              <span className="inline-flex items-center gap-1">
+                <Calendar className="size-3" aria-hidden="true" />
+                {formatDate(source.sessionDate)}
+              </span>
+              <span className="inline-flex items-center gap-1">
+                <Tag className="size-3" aria-hidden="true" />
+                {formatChunkType(source.chunkType)}
+              </span>
+            </div>
 
-        {/* Chunk text */}
-        <div
-          className={cn(
-            "mt-2 max-h-64 overflow-y-auto rounded-lg border border-border bg-muted/30 p-3",
-            "text-sm leading-relaxed text-foreground"
-          )}
-        >
-          <p className="whitespace-pre-wrap">{source.chunkText}</p>
-        </div>
-
-        {/* Footer with link to session */}
-        <div className="mt-2 flex justify-end">
-          <Button variant="outline" size="sm" asChild>
-            <Link
-              href={`/sessions/${source.sessionId}`}
-              target="_blank"
-              rel="noopener noreferrer"
+            {/* Chunk text */}
+            <div
+              className={cn(
+                "mt-2 max-h-64 overflow-y-auto rounded-lg border border-border bg-muted/30 p-3",
+                "text-sm leading-relaxed text-foreground"
+              )}
             >
-              <ExternalLink className="mr-1.5 size-3.5" />
-              View full session
-            </Link>
-          </Button>
-        </div>
+              <p className="whitespace-pre-wrap">{source.chunkText}</p>
+            </div>
+
+            {/* Footer with link to session */}
+            <div className="mt-2 flex justify-end">
+              <Button variant="outline" size="sm" asChild>
+                <Link
+                  href={`/sessions/${source.sessionId}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
+                  <ExternalLink className="mr-1.5 size-3.5" aria-hidden="true" />
+                  View full session
+                </Link>
+              </Button>
+            </div>
+          </>
+        )}
       </DialogContent>
     </Dialog>
   );

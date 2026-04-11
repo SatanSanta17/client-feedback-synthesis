@@ -9,7 +9,7 @@
 // ---------------------------------------------------------------------------
 
 import { cn } from "@/lib/utils";
-import { MemoizedMarkdown, PROSE_CLASSES } from "./memoized-markdown";
+import { PROSE_CLASSES } from "./memoized-markdown";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
@@ -19,6 +19,10 @@ import remarkGfm from "remark-gfm";
 
 /** Stable remark plugins array for streaming renderer. */
 const REMARK_PLUGINS = [remarkGfm];
+
+/** Shared spinner classes — extracted to avoid duplication. */
+const SPINNER_CLASSES =
+  "h-3.5 w-3.5 animate-spin rounded-full border-2 border-muted-foreground/30 border-t-muted-foreground";
 
 // ---------------------------------------------------------------------------
 // Props
@@ -42,6 +46,7 @@ export function StreamingMessage({
   className,
 }: StreamingMessageProps) {
   const hasContent = content.length > 0;
+  const displayStatus = statusText ?? (!hasContent ? "Thinking…" : null);
 
   return (
     <div
@@ -51,16 +56,18 @@ export function StreamingMessage({
       )}
     >
       <div className="relative max-w-[85%] rounded-2xl bg-muted/70 px-4 py-2.5 text-foreground md:max-w-[75%]">
-        {/* Ephemeral status text — fades between states */}
-        {statusText && (
+        {/* Ephemeral status text — fades between states (aria-live region) */}
+        {displayStatus && (
           <div
+            role="status"
+            aria-live="polite"
             className={cn(
               "flex items-center gap-2 text-xs text-muted-foreground transition-opacity duration-300",
               hasContent && "mb-2"
             )}
           >
-            <div className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-muted-foreground/30 border-t-muted-foreground" />
-            <span className="animate-pulse">{statusText}</span>
+            <div className={SPINNER_CLASSES} aria-hidden="true" />
+            <span className="animate-pulse">{displayStatus}</span>
           </div>
         )}
 
@@ -80,14 +87,6 @@ export function StreamingMessage({
               className="ml-0.5 inline-block h-4 w-0.5 animate-pulse bg-foreground align-text-bottom"
               aria-hidden="true"
             />
-          </div>
-        )}
-
-        {/* If no content yet and no status text, show generic indicator */}
-        {!hasContent && !statusText && (
-          <div className="flex items-center gap-2 text-xs text-muted-foreground">
-            <div className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-muted-foreground/30 border-t-muted-foreground" />
-            <span className="animate-pulse">Thinking…</span>
           </div>
         )}
       </div>

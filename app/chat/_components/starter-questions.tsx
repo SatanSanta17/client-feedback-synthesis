@@ -51,6 +51,7 @@ export function StarterQuestions({
           type="button"
           onClick={() => onSendMessage(question)}
           disabled={disabled}
+          aria-label={`Ask: ${question}`}
           className={cn(
             "flex items-start gap-2.5 rounded-xl border border-border/60 bg-background px-3.5 py-3",
             "text-left text-sm text-foreground transition-colors",
@@ -59,7 +60,7 @@ export function StarterQuestions({
             "disabled:cursor-not-allowed disabled:opacity-50"
           )}
         >
-          <MessageCircleQuestion className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
+          <MessageCircleQuestion className="mt-0.5 size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
           <span>{question}</span>
         </button>
       ))}
