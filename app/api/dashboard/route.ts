@@ -29,6 +29,9 @@ const dashboardParamsSchema = z.object({
     // Drill-down actions (PRD-021 Part 4)
     "drill_down",
     "session_detail",
+    // Insight actions (PRD-021 Part 5)
+    "insights_latest",
+    "insights_history",
   ]),
   dateFrom: z.string().optional(),
   dateTo: z.string().optional(),
