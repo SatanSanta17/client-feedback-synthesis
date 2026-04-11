@@ -40,6 +40,10 @@ interface MessageThreadProps {
   statusText: string | null;
   /** Retry handler for failed/cancelled assistant messages. */
   onRetry: () => void;
+  /** Follow-up questions from the latest completed stream. */
+  latestFollowUps: string[];
+  /** Called when a follow-up chip is clicked — sends it as a new message. */
+  onSendFollowUp: (question: string) => void;
   className?: string;
 }
 
@@ -74,6 +78,8 @@ export function MessageThread({
   streamingContent,
   statusText,
   onRetry,
+  latestFollowUps,
+  onSendFollowUp,
   className,
 }: MessageThreadProps) {
   const virtuosoRef = useRef<VirtuosoHandle>(null);
@@ -136,16 +142,25 @@ export function MessageThread({
           item.status === "cancelled" ||
           item.status === "streaming");
 
+      // Show follow-ups only on the latest completed assistant message when not streaming
+      const showFollowUps =
+        isLatestMessage &&
+        !isStreaming &&
+        item.role === "assistant" &&
+        item.status === "completed";
+
       return (
         <MessageBubble
           message={item}
           isLatest={isLatestMessage}
           canRetry={canRetry}
           onRetry={canRetry ? onRetry : undefined}
+          followUps={showFollowUps ? latestFollowUps : undefined}
+          onSendFollowUp={showFollowUps ? onSendFollowUp : undefined}
         />
       );
     },
-    [items, messages.length, isStreaming, streamingContent, statusText, onRetry]
+    [items, messages.length, isStreaming, streamingContent, statusText, onRetry, latestFollowUps, onSendFollowUp]
   );
 
   if (isLoadingMessages) {

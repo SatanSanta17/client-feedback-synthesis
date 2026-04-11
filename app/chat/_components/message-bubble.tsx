@@ -1,11 +1,11 @@
 "use client";
 
 // ---------------------------------------------------------------------------
-// MessageBubble — Single message rendering (PRD-020 Part 3, Increment 3.3/3.4)
+// MessageBubble — Single message rendering (PRD-020 Part 3, Increment 3.3–3.5)
 // ---------------------------------------------------------------------------
 // User messages: right-aligned, coloured background.
 // Assistant messages: left-aligned, neutral background, markdown rendered.
-// Shows status indicator for failed/cancelled messages with optional retry.
+// Shows citations, follow-up chips, and status indicator as appropriate.
 // ---------------------------------------------------------------------------
 
 import { memo } from "react";
@@ -14,6 +14,8 @@ import { cn } from "@/lib/utils";
 import { MemoizedMarkdown } from "./memoized-markdown";
 import { MessageActions } from "./message-actions";
 import { MessageStatusIndicator } from "./message-status-indicator";
+import { CitationChips } from "./citation-chips";
+import { FollowUpChips } from "./follow-up-chips";
 import type { Message } from "@/lib/types/chat";
 
 // ---------------------------------------------------------------------------
@@ -28,6 +30,10 @@ interface MessageBubbleProps {
   canRetry: boolean;
   /** Retry handler — re-sends the preceding user message. */
   onRetry?: () => void;
+  /** Follow-up questions (only set on the latest completed assistant message). */
+  followUps?: string[];
+  /** Called when a follow-up chip is clicked. */
+  onSendFollowUp?: (question: string) => void;
   className?: string;
 }
 
@@ -36,7 +42,15 @@ interface MessageBubbleProps {
 // ---------------------------------------------------------------------------
 
 export const MessageBubble = memo(function MessageBubble(props: MessageBubbleProps) {
-  const { message, isLatest, canRetry, onRetry, className } = props;
+  const {
+    message,
+    isLatest,
+    canRetry,
+    onRetry,
+    followUps,
+    onSendFollowUp,
+    className,
+  } = props;
   const isUser = message.role === "user";
   const showStatus =
     !isUser &&
@@ -44,6 +58,16 @@ export const MessageBubble = memo(function MessageBubble(props: MessageBubblePro
     (message.status === "failed" ||
       message.status === "cancelled" ||
       message.status === "streaming");
+
+  const hasSources =
+    !isUser && message.sources && message.sources.length > 0;
+  const showFollowUps =
+    !isUser &&
+    isLatest &&
+    message.status === "completed" &&
+    followUps &&
+    followUps.length > 0 &&
+    onSendFollowUp;
 
   return (
     <div
@@ -68,6 +92,17 @@ export const MessageBubble = memo(function MessageBubble(props: MessageBubblePro
           </p>
         ) : (
           <MemoizedMarkdown content={message.content} />
+        )}
+
+        {/* Citation chips — below assistant content when sources exist */}
+        {hasSources && <CitationChips sources={message.sources!} />}
+
+        {/* Follow-up chips — only on the latest completed assistant message */}
+        {showFollowUps && (
+          <FollowUpChips
+            questions={followUps!}
+            onSendFollowUp={onSendFollowUp!}
+          />
         )}
 
         {/* Status indicator for failed/cancelled messages */}

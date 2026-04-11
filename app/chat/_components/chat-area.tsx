@@ -1,18 +1,20 @@
 "use client";
 
 // ---------------------------------------------------------------------------
-// ChatArea — Main chat area (PRD-020 Part 3, Increment 3.3/3.4)
+// ChatArea — Main chat area (PRD-020 Part 3, Increment 3.3–3.5)
 // ---------------------------------------------------------------------------
-// Composes: ChatHeader, MessageThread, ChatInput.
+// Composes: ChatHeader, MessageThread, ChatInput, StarterQuestions.
 // Handles empty state, archived read-only state, and streaming wiring.
-// Placeholder zones remain for StarterQuestions (3.5) and ChatSearchBar (3.6).
+// Placeholder zone remains for ChatSearchBar (3.6).
 // ---------------------------------------------------------------------------
 
+import { useCallback } from "react";
 import { MessageSquare } from "lucide-react";
 
 import { ChatHeader } from "./chat-header";
 import { MessageThread } from "./message-thread";
 import { ChatInput } from "./chat-input";
+import { StarterQuestions } from "./starter-questions";
 import type {
   Conversation,
   Message,
@@ -69,6 +71,7 @@ export function ChatArea(props: ChatAreaProps) {
     streamState,
     streamingContent,
     statusText,
+    latestFollowUps,
     error,
     isSidebarCollapsed,
     onFetchMoreMessages,
@@ -78,11 +81,19 @@ export function ChatArea(props: ChatAreaProps) {
     onToggleSidebar,
     onOpenMobileSidebar,
   } = props;
-  // Props used by later increments: latestSources (3.5), latestFollowUps (3.5)
-  // — destructured when their UI components are added.
+  // Props used by later increments: latestSources (reserved for future use)
   const isArchived = activeConversation?.isArchived ?? false;
   const hasConversation = activeConversation !== null;
   const hasMessages = messages.length > 0 || streamState === "streaming";
+  const isStreaming = streamState === "streaming";
+
+  // Follow-up chip click → send as a new message
+  const handleSendFollowUp = useCallback(
+    (question: string) => {
+      onSendMessage(question);
+    },
+    [onSendMessage]
+  );
 
   return (
     <div className="flex flex-1 flex-col overflow-hidden">
@@ -107,7 +118,10 @@ export function ChatArea(props: ChatAreaProps) {
               Ask questions about your client feedback data
             </p>
           </div>
-          {/* StarterQuestions will be added in Increment 3.5 */}
+          <StarterQuestions
+            onSendMessage={onSendMessage}
+            disabled={isStreaming}
+          />
         </div>
       ) : (
         /* Message thread */
@@ -120,6 +134,8 @@ export function ChatArea(props: ChatAreaProps) {
           streamingContent={streamingContent}
           statusText={statusText}
           onRetry={onRetryLastMessage}
+          latestFollowUps={latestFollowUps}
+          onSendFollowUp={handleSendFollowUp}
           className="flex-1"
         />
       )}
