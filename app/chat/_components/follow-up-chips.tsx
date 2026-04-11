@@ -48,7 +48,7 @@ export function FollowUpChips({
             "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           )}
         >
-          <Sparkles className="size-3 shrink-0" />
+          <Sparkles className="size-3 shrink-0" aria-hidden="true" />
           <span className="text-left">{question}</span>
         </button>
       ))}

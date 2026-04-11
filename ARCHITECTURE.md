@@ -20,7 +20,7 @@ Synthesiser is a web application for teams to capture structured client session 
 
 ## Current State
 
-**Status:** PRD-002 through PRD-010 implemented. PRD-012 Parts 1–5 (Design Tokens and Typography + DRY Extraction + SRP Component Decomposition + API Route/Service Cleanup + Dependency Inversion) implemented. PRD-013 Parts 1–2 (File Upload Infrastructure + Persistence & Signal Extraction Integration) implemented. PRD-014 Parts 1–4 (Session Traceability & Staleness Data Model + View Prompt on Capture Page + Show Prompt Version in Past Sessions + Staleness Indicators & Re-extraction Warnings) implemented. PRD-015 Part 1 (Public Landing Page) implemented. PRD-019 Parts 1–4 (pgvector Setup & Embeddings Table + Chunking Logic + Embedding Pipeline + Retrieval Service) implemented. PRD-020 Parts 1–2 (Sidebar Navigation + Chat Data Model and Streaming Infrastructure) implemented. The app is a fully functional team-capable client feedback capture and synthesis platform with a public landing page, vector search infrastructure, Instagram-style hover-to-expand sidebar navigation, and full server-side RAG chat infrastructure (conversations, messages, tool-augmented streaming, LLM title generation). Google OAuth login (open to any Google account), working capture form with AI signal extraction and file attachment upload with server-side persistence, past sessions table with filters/inline editing/soft delete, master signal page with AI synthesis and PDF download, prompt editor with version history, team access with role-based permissions, automatic embedding generation on session save/extraction, and semantic retrieval service with adaptive query classification for downstream RAG and insights features.
+**Status:** PRD-002 through PRD-010 implemented. PRD-012 Parts 1–5 (Design Tokens and Typography + DRY Extraction + SRP Component Decomposition + API Route/Service Cleanup + Dependency Inversion) implemented. PRD-013 Parts 1–2 (File Upload Infrastructure + Persistence & Signal Extraction Integration) implemented. PRD-014 Parts 1–4 (Session Traceability & Staleness Data Model + View Prompt on Capture Page + Show Prompt Version in Past Sessions + Staleness Indicators & Re-extraction Warnings) implemented. PRD-015 Part 1 (Public Landing Page) implemented. PRD-019 Parts 1–4 (pgvector Setup & Embeddings Table + Chunking Logic + Embedding Pipeline + Retrieval Service) implemented. PRD-020 Parts 1–3 (Sidebar Navigation + Chat Data Model and Streaming Infrastructure + Chat UI Components) implemented. The app is a fully functional team-capable client feedback capture and synthesis platform with a public landing page, vector search infrastructure, Instagram-style hover-to-expand sidebar navigation, complete RAG chat interface (conversations sidebar, message thread with virtualized scrolling, streaming with markdown, citations, follow-ups, in-conversation search, archive read-only mode), and full server-side RAG chat infrastructure (conversations, messages, tool-augmented streaming, LLM title generation). Google OAuth login (open to any Google account), working capture form with AI signal extraction and file attachment upload with server-side persistence, past sessions table with filters/inline editing/soft delete, master signal page with AI synthesis and PDF download, prompt editor with version history, team access with role-based permissions, automatic embedding generation on session save/extraction, and semantic retrieval service with adaptive query classification for downstream RAG and insights features.
 
 **Core features live:**
 - Public landing page at `/` with hero, feature cards, how-it-works flow, and CTA (authenticated users auto-redirect to `/capture`)
@@ -33,6 +33,7 @@ Synthesiser is a web application for teams to capture structured client session 
 - Team-scoped sessions, clients, master signals, and prompts
 - Team management (members, roles, ownership transfer, rename, delete)
 - Data retention on member departure
+- RAG chat interface at `/chat` — conversation sidebar (search, pin, archive, rename, delete), virtualized message thread, markdown rendering with citations, follow-up suggestions, in-conversation search with match navigation, starter questions, archive read-only with unarchive
 
 **Database tables:** `clients`, `sessions`, `session_attachments`, `session_embeddings`, `master_signals`, `profiles`, `prompt_versions`, `teams`, `team_members`, `team_invitations`, `conversations`, `messages` — all with RLS.
 
@@ -63,6 +64,12 @@ synthesiser/
 │   │   │   └── generate-master-signal/
 │   │   │       └── route.ts     # POST — generate/regenerate master signal — delegates to generateOrUpdateMasterSignal() service
 │   │   ├── chat/
+│   │   │   ├── conversations/
+│   │   │   │   ├── route.ts     # GET — list conversations (active/archived, cursor-based pagination, search)
+│   │   │   │   └── [id]/
+│   │   │   │       ├── route.ts     # PATCH (rename/pin/archive/unarchive) and DELETE (soft-delete) conversation
+│   │   │   │       └── messages/
+│   │   │   │           └── route.ts # GET — list messages for a conversation (cursor-based, newest-first)
 │   │   │   └── send/
 │   │   │       └── route.ts     # POST — streaming chat route: auth, validation, conversation setup, delegates to chat-stream-service; returns SSE response
 │   │   ├── clients/
@@ -115,6 +122,29 @@ synthesiser/
 │   ├── auth/
 │   │   └── callback/
 │   │       └── route.ts         # OAuth callback — code exchange, pending invite auto-accept
+│   ├── chat/
+│   │   ├── page.tsx             # Chat tab — server component with metadata, renders ChatPageContent
+│   │   └── _components/
+│   │       ├── chat-area.tsx               # Main chat area — composes header, search bar, message thread, input, error banner; manages in-conversation search state
+│   │       ├── chat-header.tsx             # Conversation title bar — sidebar toggle, mobile menu, search toggle
+│   │       ├── chat-input.tsx              # Auto-expanding textarea (1–6 rows) with send/stop buttons, Enter/Shift+Enter, archived unarchive bar
+│   │       ├── chat-page-content.tsx       # Client coordinator — wires useConversations + useChat, manages active conversation, sidebar state
+│   │       ├── chat-search-bar.tsx         # In-conversation search — input, match count, prev/next navigation, keyboard shortcuts
+│   │       ├── citation-chips.tsx          # Pill-shaped citation chips with client name · date, opens CitationPreviewDialog
+│   │       ├── citation-preview-dialog.tsx # Dialog showing source chunk text, metadata, "View full session" link
+│   │       ├── conversation-context-menu.tsx # Right-click context menu — rename, pin, archive/unarchive, delete
+│   │       ├── conversation-item.tsx       # Single conversation row — title, date, pin/archive badges, context menu
+│   │       ├── conversation-sidebar.tsx    # Collapsible sidebar — search, active/archived lists, new chat button, desktop panel + mobile Sheet
+│   │       ├── follow-up-chips.tsx         # Clickable follow-up question pills with Sparkles icon
+│   │       ├── highlighted-text.tsx        # Search highlight — splits text by regex, wraps matches in <mark>; exports highlightChildren() recursive utility
+│   │       ├── memoized-markdown.tsx       # React.memo'd ReactMarkdown with remark-gfm, search highlighting via component overrides
+│   │       ├── message-actions.tsx         # Hover-visible copy/action buttons on messages
+│   │       ├── message-bubble.tsx          # Single message — user (right, coloured) or assistant (left, markdown), citations, follow-ups, status
+│   │       ├── message-status-indicator.tsx # Status badges for failed/cancelled/stale with retry button
+│   │       ├── message-thread.tsx          # Virtualized message list (react-virtuoso reverse mode) — infinite scroll, streaming sentinel, search scroll-to
+│   │       ├── rename-dialog.tsx           # Conversation rename dialog
+│   │       ├── starter-questions.tsx       # Empty state — 4 hardcoded starter question chips
+│   │       └── streaming-message.tsx       # Live streaming assistant response — spinner, status text, markdown, blinking cursor
 │   ├── capture/
 │   │   ├── page.tsx             # Capture tab — server component, renders CapturePageContent
 │   │   └── _components/
@@ -215,6 +245,8 @@ synthesiser/
 │   ├── cookies/
 │   │   └── active-team.ts       # Client-side active team cookie helpers (getActiveTeamId, setActiveTeamCookie, clearActiveTeamCookie)
 │   ├── hooks/
+│   │   ├── use-chat.ts          # Chat streaming hook — SSE parsing, AbortController cancellation, sendMessage/cancelStream/retryLastMessage/fetchMoreMessages (PRD-020 Part 2–3)
+│   │   ├── use-conversations.ts # Conversation list management — dual active/archived lists, optimistic CRUD, cursor-based pagination, search (PRD-020 Part 2–3)
 │   │   ├── use-signal-extraction.ts # Shared extraction state machine hook (ExtractionState, promptVersionId, getInput callback, re-extract confirm flow, forceConfirmOnReextract for server-side manual edit flag)
 │   │   └── use-theme.ts         # Theme hook — reads/writes theme cookie, returns { theme, setTheme }
 │   ├── types/

@@ -118,6 +118,13 @@ export function ChatPageContent() {
     setIsMobileSidebarOpen(false);
   }, []);
 
+  // Unarchive the active conversation from the chat area
+  const handleUnarchiveActive = useCallback(() => {
+    if (activeConversationId) {
+      conversationsHook.unarchiveConversation(activeConversationId);
+    }
+  }, [activeConversationId, conversationsHook.unarchiveConversation]);
+
   if (!user) {
     return null;
   }
@@ -162,6 +169,7 @@ export function ChatPageContent() {
         onSendMessage={chatHook.sendMessage}
         onCancelStream={chatHook.cancelStream}
         onRetryLastMessage={chatHook.retryLastMessage}
+        onUnarchive={handleUnarchiveActive}
         onToggleSidebar={handleToggleSidebar}
         onOpenMobileSidebar={handleOpenMobileSidebar}
       />

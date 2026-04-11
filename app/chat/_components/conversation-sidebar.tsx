@@ -171,9 +171,10 @@ export function ConversationSidebar({
             {searchQuery && (
               <button
                 onClick={() => onSetSearchQuery("")}
+                aria-label="Clear search"
                 className="absolute right-1.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
               >
-                <X className="size-3.5" />
+                <X className="size-3.5" aria-hidden="true" />
               </button>
             )}
           </div>

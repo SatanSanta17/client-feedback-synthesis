@@ -55,6 +55,7 @@ interface ChatAreaProps {
   onSendMessage: (content: string) => Promise<void>;
   onCancelStream: () => void;
   onRetryLastMessage: () => Promise<void>;
+  onUnarchive?: () => void;
   onToggleSidebar: () => void;
   onOpenMobileSidebar: () => void;
 }
@@ -79,6 +80,7 @@ export function ChatArea(props: ChatAreaProps) {
     onSendMessage,
     onCancelStream,
     onRetryLastMessage,
+    onUnarchive,
     onToggleSidebar,
     onOpenMobileSidebar,
   } = props;
@@ -259,6 +261,7 @@ export function ChatArea(props: ChatAreaProps) {
         isArchived={isArchived}
         onSendMessage={onSendMessage}
         onCancelStream={onCancelStream}
+        onUnarchive={isArchived ? onUnarchive : undefined}
       />
     </div>
   );

@@ -6,6 +6,19 @@ All notable changes to this project are documented here, grouped by PRD and part
 
 ## [Unreleased]
 
+### PRD-020 Part 3: Chat UI Components — 2026-04-11
+- Created `app/chat/page.tsx` — thin server component with metadata, renders ChatPageContent
+- Created conversation sidebar (`conversation-sidebar.tsx`, `conversation-item.tsx`, `conversation-context-menu.tsx`, `rename-dialog.tsx`) — collapsible desktop panel (280px ↔ 0) + mobile Sheet drawer, search, active/archived tabs, context menu with rename/pin/archive/delete
+- Created `chat-page-content.tsx` — client coordinator wiring `useConversations` + `useChat` hooks, manages active conversation ID, sidebar collapse/mobile state, conversation creation with prepend placeholder
+- Created chat area (`chat-area.tsx`, `chat-header.tsx`, `chat-input.tsx`) — header with sidebar/search toggles, auto-expanding textarea (1–6 rows) with Send/Stop buttons, archived unarchive bar
+- Created message rendering (`message-bubble.tsx`, `message-thread.tsx`, `message-actions.tsx`, `memoized-markdown.tsx`) — react-virtuoso reverse mode with sentinel pattern for streaming, React.memo'd ReactMarkdown with remark-gfm, hover-visible copy actions
+- Created streaming UI (`streaming-message.tsx`, `message-status-indicator.tsx`) — live markdown rendering with blinking cursor, status badges for failed/cancelled/stale with retry
+- Created citations and follow-ups (`citation-chips.tsx`, `citation-preview-dialog.tsx`, `follow-up-chips.tsx`, `starter-questions.tsx`) — pill-shaped citation chips opening preview dialog, clickable follow-up question chips, 4 starter questions in empty state
+- Created in-conversation search (`chat-search-bar.tsx`, `highlighted-text.tsx`) — Ctrl/Cmd+F keyboard shortcut, match count with prev/next navigation, recursive text highlighting in markdown via component overrides
+- Created `use-chat.ts` — custom SSE streaming hook with AbortController cancellation, streaming state machine (idle/streaming/error)
+- Created `use-conversations.ts` — dual active/archived list management with optimistic CRUD, compound cursor pagination, search filtering
+- **End-of-part audit:** a11y fixes (aria-labels on sidebar clear button, aria-hidden on decorative icons), verified no dead code/import violations, TypeScript check clean
+
 ### PRD-020 Part 2: Chat Data Model and Streaming Infrastructure — 2026-04-11
 - Created `conversations` and `messages` database tables with RLS (user-private conversations, derived access for messages), indexes, and auto-update triggers
 - Created `lib/types/chat.ts` — `MessageRole`, `MessageStatus`, `ChatSource`, `Message`, `Conversation`, `ConversationListOptions` types

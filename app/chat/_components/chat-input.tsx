@@ -11,7 +11,7 @@
 // ---------------------------------------------------------------------------
 
 import { useRef, useCallback, useEffect, useState } from "react";
-import { ArrowUp, Square } from "lucide-react";
+import { ArchiveRestore, ArrowUp, Square } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -38,6 +38,8 @@ interface ChatInputProps {
   onSendMessage: (content: string) => Promise<void>;
   /** Cancel the in-progress stream. */
   onCancelStream: () => void;
+  /** Unarchive the current conversation (shown when archived). */
+  onUnarchive?: () => void;
   className?: string;
 }
 
@@ -50,6 +52,7 @@ export function ChatInput({
   isArchived,
   onSendMessage,
   onCancelStream,
+  onUnarchive,
   className,
 }: ChatInputProps) {
   const [value, setValue] = useState("");
@@ -120,7 +123,18 @@ export function ChatInput({
           className
         )}
       >
-        This conversation is archived.
+        <span>This conversation is archived.</span>
+        {onUnarchive && (
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={onUnarchive}
+            className="gap-1.5 text-muted-foreground hover:text-foreground"
+          >
+            <ArchiveRestore className="size-4" aria-hidden="true" />
+            Unarchive
+          </Button>
+        )}
       </div>
     );
   }
