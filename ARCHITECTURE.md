@@ -20,7 +20,7 @@ Synthesiser is a web application for teams to capture structured client session 
 
 ## Current State
 
-**Status:** PRD-002 through PRD-010 implemented. PRD-012 Parts 1–5 (Design Tokens and Typography + DRY Extraction + SRP Component Decomposition + API Route/Service Cleanup + Dependency Inversion) implemented. PRD-013 Parts 1–2 (File Upload Infrastructure + Persistence & Signal Extraction Integration) implemented. PRD-014 Parts 1–4 (Session Traceability & Staleness Data Model + View Prompt on Capture Page + Show Prompt Version in Past Sessions + Staleness Indicators & Re-extraction Warnings) implemented. PRD-015 Part 1 (Public Landing Page) implemented. PRD-019 Parts 1–4 (pgvector Setup & Embeddings Table + Chunking Logic + Embedding Pipeline + Retrieval Service) implemented. PRD-020 Parts 1–3 (Sidebar Navigation + Chat Data Model and Streaming Infrastructure + Chat UI Components) implemented. The app is a fully functional team-capable client feedback capture and synthesis platform with a public landing page, vector search infrastructure, Instagram-style hover-to-expand sidebar navigation, complete RAG chat interface (conversations sidebar, message thread with virtualized scrolling, streaming with markdown, citations, follow-ups, in-conversation search, archive read-only mode), and full server-side RAG chat infrastructure (conversations, messages, tool-augmented streaming, LLM title generation). Google OAuth login (open to any Google account), working capture form with AI signal extraction and file attachment upload with server-side persistence, past sessions table with filters/inline editing/soft delete, master signal page with AI synthesis and PDF download, prompt editor with version history, team access with role-based permissions, automatic embedding generation on session save/extraction, and semantic retrieval service with adaptive query classification for downstream RAG and insights features.
+**Status:** PRD-002 through PRD-010 implemented. PRD-012 Parts 1–5 (Design Tokens and Typography + DRY Extraction + SRP Component Decomposition + API Route/Service Cleanup + Dependency Inversion) implemented. PRD-013 Parts 1–2 (File Upload Infrastructure + Persistence & Signal Extraction Integration) implemented. PRD-014 Parts 1–4 (Session Traceability & Staleness Data Model + View Prompt on Capture Page + Show Prompt Version in Past Sessions + Staleness Indicators & Re-extraction Warnings) implemented. PRD-015 Part 1 (Public Landing Page) implemented. PRD-019 Parts 1–4 (pgvector Setup & Embeddings Table + Chunking Logic + Embedding Pipeline + Retrieval Service) implemented. PRD-020 Parts 1–3 (Sidebar Navigation + Chat Data Model and Streaming Infrastructure + Chat UI Components) implemented. PRD-021 Part 1 (Theme Assignment at Extraction Time) implemented. The app is a fully functional team-capable client feedback capture and synthesis platform with a public landing page, vector search infrastructure, Instagram-style hover-to-expand sidebar navigation, complete RAG chat interface (conversations sidebar, message thread with virtualized scrolling, streaming with markdown, citations, follow-ups, in-conversation search, archive read-only mode), and full server-side RAG chat infrastructure (conversations, messages, tool-augmented streaming, LLM title generation). Google OAuth login (open to any Google account), working capture form with AI signal extraction and file attachment upload with server-side persistence, past sessions table with filters/inline editing/soft delete, master signal page with AI synthesis and PDF download, prompt editor with version history, team access with role-based permissions, automatic embedding generation on session save/extraction, and semantic retrieval service with adaptive query classification for downstream RAG and insights features.
 
 **Core features live:**
 - Public landing page at `/` with hero, feature cards, how-it-works flow, and CTA (authenticated users auto-redirect to `/capture`)
@@ -34,8 +34,9 @@ Synthesiser is a web application for teams to capture structured client session 
 - Team management (members, roles, ownership transfer, rename, delete)
 - Data retention on member departure
 - RAG chat interface at `/chat` — conversation sidebar (search, pin, archive, rename, delete), virtualized message thread, markdown rendering with citations, follow-up suggestions, in-conversation search with match navigation, starter questions, archive read-only with unarchive
+- AI-powered theme assignment — automatic topic-based classification of signal chunks during extraction, chained after embedding generation (fire-and-forget), workspace-scoped themes with many-to-many signal-theme junction, primary/secondary themes with confidence scores
 
-**Database tables:** `clients`, `sessions`, `session_attachments`, `session_embeddings`, `master_signals`, `profiles`, `prompt_versions`, `teams`, `team_members`, `team_invitations`, `conversations`, `messages` — all with RLS.
+**Database tables:** `clients`, `sessions`, `session_attachments`, `session_embeddings`, `themes`, `signal_themes`, `master_signals`, `profiles`, `prompt_versions`, `teams`, `team_members`, `team_invitations`, `conversations`, `messages` — all with RLS.
 
 ---
 
@@ -252,7 +253,8 @@ synthesiser/
 │   │   ├── chat.ts              # MessageRole, MessageStatus, ChatSource, Message, Conversation, ConversationListOptions — types for the chat system (PRD-020)
 │   │   ├── embedding-chunk.ts   # ChunkType, EmbeddingChunk, SessionMeta — types for the vector search chunking/embedding pipeline (PRD-019)
 │   │   ├── retrieval-result.ts  # QueryClassification, ClassificationResult, RetrievalOptions, RetrievalResult — types for the retrieval service (PRD-019)
-│   │   └── signal-session.ts    # SignalSession interface — shared between ai-service and master-signal-service
+│   │   ├── signal-session.ts    # SignalSession interface — shared between ai-service and master-signal-service
+│   │   └── theme.ts             # Theme, SignalTheme, LLMThemeAssignment, ThemeAssignmentResult — types for the theme assignment system (PRD-021)
 │   ├── utils.ts                 # cn() utility (clsx + tailwind-merge) + PROSE_CLASSES constant
 │   ├── email-templates/
 │   │   └── invite-email.ts      # HTML email template for team invitations
@@ -262,9 +264,11 @@ synthesiser/
 │   │   ├── generate-title.ts    # Lightweight title generation prompt (5-8 word summary); GENERATE_TITLE_MAX_TOKENS (PRD-020)
 │   │   ├── master-signal-synthesis.ts # System prompts (cold start + incremental) and user message builder
 │   │   ├── signal-extraction.ts # System prompt and user message template for signal extraction (used by prompt editor)
-│   │   └── structured-extraction.ts # System prompt and user message builder for generateObject() extraction (PRD-018)
+│   │   ├── structured-extraction.ts # System prompt and user message builder for generateObject() extraction (PRD-018)
+│   │   └── theme-assignment.ts    # Theme assignment system prompt, max tokens, and buildThemeAssignmentUserMessage() for generateObject() classification (PRD-021)
 │   ├── schemas/
-│   │   └── extraction-schema.ts   # Zod schema for structured extraction output — signalChunkSchema, extractionSchema, type exports
+│   │   ├── extraction-schema.ts   # Zod schema for structured extraction output — signalChunkSchema, extractionSchema, type exports
+│   │   └── theme-assignment-schema.ts # Zod schema for theme assignment LLM response — themeAssignmentResponseSchema, ThemeAssignmentResponse type (PRD-021)
 │   ├── repositories/
 │   │   ├── index.ts                    # Re-exports all repository interfaces and SessionNotFoundRepoError
 │   │   ├── attachment-repository.ts    # AttachmentRepository interface
@@ -272,6 +276,8 @@ synthesiser/
 │   │   ├── conversation-repository.ts  # ConversationRepository interface + ConversationInsert, ConversationUpdate types (PRD-020)
 │   │   ├── embedding-repository.ts    # EmbeddingRepository interface + EmbeddingRow, SearchOptions, SimilarityResult types (PRD-019)
 │   │   ├── invitation-repository.ts    # InvitationRepository interface
+│   │   ├── theme-repository.ts        # ThemeRepository interface + ThemeInsert, ThemeUpdate types (PRD-021)
+│   │   ├── signal-theme-repository.ts # SignalThemeRepository interface + SignalThemeInsert type (PRD-021)
 │   │   ├── master-signal-repository.ts # MasterSignalRepository interface
 │   │   ├── message-repository.ts       # MessageRepository interface + MessageInsert, MessageUpdate types (PRD-020)
 │   │   ├── profile-repository.ts       # ProfileRepository interface
@@ -285,6 +291,8 @@ synthesiser/
 │   │   │   ├── supabase-client-repository.ts      # Supabase adapter for ClientRepository
 │   │   │   ├── supabase-conversation-repository.ts # Supabase adapter for ConversationRepository — cursor pagination, pinned-first ordering (PRD-020)
 │   │   │   ├── supabase-embedding-repository.ts   # Supabase adapter for EmbeddingRepository — uses service-role client, similarity search via match_session_embeddings RPC with filter_user_id for personal workspace isolation (PRD-019)
+│   │   │   ├── supabase-theme-repository.ts       # Supabase adapter for ThemeRepository — workspace-scoped with scopeByTeam(), case-insensitive findByName via ilike (PRD-021)
+│   │   │   ├── supabase-signal-theme-repository.ts # Supabase adapter for SignalThemeRepository — bulk insert, query by embedding IDs or theme ID (PRD-021)
 │   │   │   ├── supabase-message-repository.ts     # Supabase adapter for MessageRepository — cursor pagination, newest-first (PRD-020)
 │   │   │   ├── supabase-invitation-repository.ts  # Supabase adapter for InvitationRepository
 │   │   │   ├── supabase-master-signal-repository.ts # Supabase adapter for MasterSignalRepository
@@ -295,13 +303,14 @@ synthesiser/
 │   │   └── mock/
 │   │       └── mock-session-repository.ts         # In-memory mock for SessionRepository (testing)
 │   ├── services/
-│   │   ├── ai-service.ts        # AI service — extractSignals() → ExtractionResult (generateObject), synthesiseMasterSignal() (generateText), generateConversationTitle() (fire-and-forget), provider-agnostic via Vercel AI SDK
+│   │   ├── ai-service.ts        # AI service — public generics callModelText() and callModelObject<T>() with retry; extractSignals(), synthesiseMasterSignal(), generateConversationTitle(); provider-agnostic via Vercel AI SDK
 │   │   ├── chat-service.ts      # Chat service — conversation CRUD, message CRUD, buildContextMessages() with 80K-token budget (PRD-020)
 │   │   ├── chat-stream-service.ts # Streaming orchestration — tool definitions (searchInsights, queryDatabase), streamText call, SSE event emission, message finalization (PRD-020)
 │   │   ├── chunking-service.ts  # Pure chunking functions — chunkStructuredSignals() and chunkRawNotes() — transforms extraction JSON into EmbeddingChunk arrays (PRD-019)
 │   │   ├── database-query-service.ts # Database query service — action map (7 actions) with parameterized Supabase queries, team-scoped (PRD-020)
 │   │   ├── embedding-service.ts # Provider-agnostic embedding service — embedTexts() with batching, retry, dimension validation (PRD-019)
-│   │   ├── embedding-orchestrator.ts # Coordination layer — generateSessionEmbeddings() ties chunking → embedding → persistence, fire-and-forget (PRD-019)
+│   │   ├── embedding-orchestrator.ts # Coordination layer — generateSessionEmbeddings() ties chunking → embedding → persistence, returns embedding IDs for downstream chaining, fire-and-forget (PRD-019, PRD-021)
+│   │   ├── theme-service.ts     # Theme assignment orchestrator — assignSessionThemes() fetches themes, calls LLM, resolves/creates themes, bulk inserts assignments; chained after embedding generation (PRD-021)
 │   │   ├── retrieval-service.ts # Retrieval service — retrieveRelevantChunks() with adaptive query classification, embedding, similarity search, deduplication (PRD-019)
 │   │   ├── attachment-service.ts # Attachment CRUD — accepts AttachmentRepository
 │   │   ├── client-service.ts    # Client search and creation — accepts ClientRepository
@@ -417,6 +426,41 @@ Stores vector embeddings of chunked session extraction data for semantic similar
 
 **Indexes:** `session_embeddings_embedding_hnsw_idx` — HNSW index on `embedding` using `vector_cosine_ops` for cosine similarity search. `session_embeddings_session_id_idx` — on `session_id` for cascade deletes and re-extraction cleanup. `session_embeddings_team_chunk_type_idx` — on `(team_id, chunk_type)` for filtered similarity searches.
 **RLS:** Personal: users SELECT/INSERT/UPDATE/DELETE embeddings for their own sessions. Team: members SELECT/INSERT/UPDATE/DELETE team embeddings via `is_team_member()`.
+
+### `themes`
+
+Workspace-scoped topic-based themes assigned to signal chunks by the AI during extraction. Themes describe *what* a signal is about (e.g., "Onboarding Friction", "API Performance"), not what type it is (chunk_type already captures that).
+
+| Column | Type | Notes |
+|--------|------|-------|
+| `id` | UUID (PK) | `gen_random_uuid()` |
+| `name` | TEXT | NOT NULL. Human-readable theme label (2-4 words, topic-based). |
+| `description` | TEXT | Nullable. One-sentence description of what the theme covers. |
+| `team_id` | UUID (FK → teams) | Nullable. NULL = personal workspace. |
+| `initiated_by` | UUID (FK → auth.users) | NOT NULL. The user whose action triggered theme creation. |
+| `origin` | TEXT | NOT NULL, default `'ai'`. Either `'ai'` (created during extraction) or `'user'` (future manual creation). |
+| `is_archived` | BOOLEAN | NOT NULL, default `false`. Archived themes are excluded from future assignments but preserved for historical data. |
+| `created_at` | TIMESTAMPTZ | Default `now()` |
+| `updated_at` | TIMESTAMPTZ | Default `now()` |
+
+**Indexes:** `themes_team_id_idx` — on `team_id` for workspace-scoped queries. Partial unique indexes: `themes_unique_name_team` — `UNIQUE (LOWER(name), team_id) WHERE team_id IS NOT NULL` for team dedup; `themes_unique_name_personal` — `UNIQUE (LOWER(name), initiated_by) WHERE team_id IS NULL` for personal workspace dedup.
+**RLS:** Personal: users SELECT/INSERT/UPDATE/DELETE their own themes. Team: members SELECT/INSERT/UPDATE/DELETE team themes via `is_team_member()`. Service-role client used for AI-driven writes during fire-and-forget extraction.
+
+### `signal_themes`
+
+Many-to-many junction table linking signal embeddings to themes. Each row represents one theme assignment for one signal chunk, with confidence score and attribution.
+
+| Column | Type | Notes |
+|--------|------|-------|
+| `id` | UUID (PK) | `gen_random_uuid()` |
+| `embedding_id` | UUID (FK → session_embeddings) | NOT NULL. ON DELETE CASCADE — assignments removed when embeddings are re-extracted. |
+| `theme_id` | UUID (FK → themes) | NOT NULL. ON DELETE CASCADE — assignments removed when theme is deleted. |
+| `assigned_by` | TEXT | NOT NULL, default `'ai'`. Either `'ai'` or `'user'` (future manual assignment). |
+| `confidence` | REAL | Nullable. AI confidence score (0.0–1.0). NULL for manual assignments. |
+| `created_at` | TIMESTAMPTZ | Default `now()` |
+
+**Indexes:** `signal_themes_embedding_id_idx` — on `embedding_id` for join queries from embeddings to themes. `signal_themes_theme_id_idx` — on `theme_id` for theme-centric queries (dashboard widgets). Unique index: `signal_themes_embedding_theme_unique` — `UNIQUE (embedding_id, theme_id)` prevents duplicate assignments.
+**RLS:** Inherits access from parent tables via FK joins. Personal: users SELECT/INSERT/DELETE assignments for their own embeddings. Team: members SELECT/INSERT/DELETE team assignments via `is_team_member()`. Service-role client used for AI-driven bulk inserts.
 
 ### `master_signals`
 
@@ -674,8 +718,8 @@ See `.env.example` for the full template.
 
 1. **Standalone app.** Separate deployment, separate auth, separate database. No shared components.
 2. **Supabase for auth and database.** Provides Google OAuth, PostgreSQL, RLS, and auto-generated types out of the box. Reduces infrastructure overhead.
-3. **Server-side AI calls only, provider-agnostic.** API keys never touch the browser. All AI operations go through Next.js API routes. The AI service uses the Vercel AI SDK (`generateText()` for master signal synthesis, `generateObject()` for structured signal extraction) and supports multiple providers (Anthropic, OpenAI, Google) via `AI_PROVIDER` and `AI_MODEL` env vars.
-4. **Manual theme tagging (not AI-driven).** Users explicitly link sessions to themes. Automatic theme extraction is deferred to backlog.
+3. **Server-side AI calls only, provider-agnostic.** API keys never touch the browser. All AI operations go through Next.js API routes. The AI service exposes two public generics — `callModelText()` and `callModelObject<T>()` — that wrap provider resolution, retry logic, and error classification. All non-streaming LLM calls (extraction, synthesis, title generation, theme assignment) use these generics. Streaming chat uses `streamText()` directly. Supports multiple providers (Anthropic, OpenAI, Google) via `AI_PROVIDER` and `AI_MODEL` env vars.
+4. **AI-driven theme assignment at extraction time.** Signal chunks are automatically classified into topic-based themes during extraction via a chained fire-and-forget LLM call (PRD-021). The LLM strongly prefers existing themes over creating new ones; the database enforces uniqueness via case-insensitive partial indexes. Each chunk can have multiple themes (primary + secondary) with confidence scores. Manual theme management is deferred to backlog.
 5. **Clients as a first-class entity.** Separate `clients` table (not derived from unique session values) to support future enrichment and enterprise features.
 6. **Architecture follows code, not the other way around.** This document is updated after implementation, never speculatively. If it's in this file, it exists in the codebase.
 7. **AI prompts are DB-first with hardcoded fallback.** Active prompts are read from `prompt_versions` at runtime. If the DB is unreachable, the AI service falls back to the hardcoded constants in `lib/prompts/`.

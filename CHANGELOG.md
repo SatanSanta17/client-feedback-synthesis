@@ -6,6 +6,28 @@ All notable changes to this project are documented here, grouped by PRD and part
 
 ## [Unreleased]
 
+### PRD-021 Part 1: Theme Assignment at Extraction Time — 2026-04-12
+
+**New tables:**
+- `themes` — workspace-scoped topic-based themes with `initiated_by`, `origin` (ai/user), `is_archived`, and case-insensitive partial unique indexes for name deduplication
+- `signal_themes` — many-to-many junction linking embeddings to themes, with `assigned_by` (ai/user), `confidence` score, and cascade deletes on both FKs
+
+**AI service refactor:**
+- Extracted two public generics: `callModelText()` and `callModelObject<T>()` — all non-streaming LLM calls now route through these with retry logic and error classification
+- Migrated `extractSignals()`, `synthesiseMasterSignal()`, and `generateConversationTitle()` to use the new generics
+- Fixed PRD-020 bug: `generateConversationTitle()` now gets 3 retries for transient failures (previously had zero)
+
+**Theme assignment pipeline:**
+- Created `theme-service.ts` with `assignSessionThemes()` — fetches workspace themes, calls LLM once per extraction, resolves/creates themes with concurrent-safe unique constraint handling, bulk inserts assignments
+- Created theme assignment prompt (`lib/prompts/theme-assignment.ts`) — topic-based classification with primary/secondary theme distinction and confidence ranges
+- Created Zod schema (`lib/schemas/theme-assignment-schema.ts`) for validated LLM response
+- Created `ThemeRepository` and `SignalThemeRepository` interfaces with Supabase adapters
+
+**Extraction flow wiring:**
+- Modified `generateSessionEmbeddings()` to return embedding IDs (`string[]` instead of `void`) and accept `preComputedChunks`
+- Wired `assignSessionThemes()` into both POST and PUT session routes, chained after embedding generation (fire-and-forget)
+- Replaced all silent `.catch(() => {})` calls with dev-aware catches that emit yellow ANSI warnings in development mode
+
 ### PRD-020 Post-Part 3 Bug Fixes — 2026-04-11
 
 **Critical: Data isolation fix**
