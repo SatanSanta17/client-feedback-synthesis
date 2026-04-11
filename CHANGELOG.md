@@ -6,6 +6,37 @@ All notable changes to this project are documented here, grouped by PRD and part
 
 ## [Unreleased]
 
+### PRD-021 Part 5: AI-Generated Headline Insights — 2026-04-12
+
+**Database:**
+- `dashboard_insights` table — `id` (UUID PK), `content` (text), `insight_type` (CHECK: trend/anomaly/milestone), `batch_id` (UUID), `team_id` (FK nullable), `created_by` (FK), `generated_at` (timestamptz); indexes on `(team_id, batch_id)` and `(team_id, generated_at DESC)`; RLS policies for team member reads, personal workspace reads, and authenticated inserts
+
+**New lib files:**
+- `lib/types/insight.ts` — `InsightType`, `DashboardInsight`, `InsightBatch` types
+- `lib/schemas/headline-insights-schema.ts` — Zod schema for LLM response (1–5 classified insight items), `HeadlineInsightsResponse` inferred type
+- `lib/prompts/headline-insights.ts` — system prompt (3–5 change-focused, classified, no-fabrication rules), `InsightAggregates` interface, `buildHeadlineInsightsUserMessage()` user message builder with previous batch comparison
+- `lib/repositories/insight-repository.ts` — `InsightRepository` interface (`getLatestBatch`, `getPreviousBatches`, `insertBatch`, `getLastGeneratedAt`) + `InsightInsert` type
+- `lib/repositories/supabase/supabase-insight-repository.ts` — Supabase adapter with `mapRow()`, `groupIntoBatches()`, inline team scoping
+- `lib/services/insight-service.ts` — `generateHeadlineInsights()` (5 aggregate queries in parallel via `executeQuery()` → previous batch fetch → `callModelObject()` → batch insert), `maybeRefreshInsights()` (staleness check via session count since last generation, fire-and-forget safe)
+
+**API routes:**
+- `POST /api/dashboard/insights` — auth check, service-role client, calls `generateHeadlineInsights()`, returns `{ insights }`
+- `insights_latest` and `insights_history` read actions added to `GET /api/dashboard` Zod enum and `database-query-service.ts` action map (now 17 actions)
+
+**New UI components:**
+- `use-insights.ts` — `useInsights()` hook: fetches latest batch on mount, `refresh()` POSTs for new generation, `loadPrevious()` lazy-loads history
+- `insight-cards-row.tsx` — horizontal scrollable card row with type-specific styling (trend=blue/info, anomaly=amber/warning, milestone=green/success), relative timestamp, "Refresh Insights" button with spinner, skeleton/error/empty states
+- `previous-insights.tsx` — collapsible `<details>/<summary>` with lazy load on first expand, compact batch list with type icons and formatted dates
+
+**Dashboard wiring:**
+- `dashboard-content.tsx` — `useInsights()` called in `DashboardInner`, `InsightCardsRow` + `PreviousInsights` rendered between FilterBar and widget grid
+
+**Auto-refresh wiring:**
+- `app/api/sessions/route.ts` POST — fire-and-forget chain extended: `generateEmbeddings() → assignThemes() → maybeRefreshInsights()`
+- `app/api/sessions/[id]/route.ts` PUT — same chain extension for re-extraction flow
+
+---
+
 ### PRD-021 Part 4: Qualitative Drill-Down — 2026-04-12
 
 **New components:**

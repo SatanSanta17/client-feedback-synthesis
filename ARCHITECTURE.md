@@ -20,7 +20,7 @@ Synthesiser is a web application for teams to capture structured client session 
 
 ## Current State
 
-**Status:** PRD-002 through PRD-010 implemented. PRD-012 Parts 1–5 (Design Tokens and Typography + DRY Extraction + SRP Component Decomposition + API Route/Service Cleanup + Dependency Inversion) implemented. PRD-013 Parts 1–2 (File Upload Infrastructure + Persistence & Signal Extraction Integration) implemented. PRD-014 Parts 1–4 (Session Traceability & Staleness Data Model + View Prompt on Capture Page + Show Prompt Version in Past Sessions + Staleness Indicators & Re-extraction Warnings) implemented. PRD-015 Part 1 (Public Landing Page) implemented. PRD-019 Parts 1–4 (pgvector Setup & Embeddings Table + Chunking Logic + Embedding Pipeline + Retrieval Service) implemented. PRD-020 Parts 1–3 (Sidebar Navigation + Chat Data Model and Streaming Infrastructure + Chat UI Components) implemented. PRD-021 Parts 1–4 (Theme Assignment at Extraction Time + Dashboard Layout, Navigation, and Direct Widgets + Derived Theme Widgets + Qualitative Drill-Down) implemented. The app is a fully functional team-capable client feedback capture and synthesis platform with a public landing page, vector search infrastructure, Instagram-style hover-to-expand sidebar navigation, complete RAG chat interface (conversations sidebar, message thread with virtualized scrolling, streaming with markdown, citations, follow-ups, in-conversation search, archive read-only mode), and full server-side RAG chat infrastructure (conversations, messages, tool-augmented streaming, LLM title generation). Google OAuth login (open to any Google account), working capture form with AI signal extraction and file attachment upload with server-side persistence, past sessions table with filters/inline editing/soft delete, master signal page with AI synthesis and PDF download, prompt editor with version history, team access with role-based permissions, automatic embedding generation on session save/extraction, and semantic retrieval service with adaptive query classification for downstream RAG and insights features.
+**Status:** PRD-002 through PRD-010 implemented. PRD-012 Parts 1–5 (Design Tokens and Typography + DRY Extraction + SRP Component Decomposition + API Route/Service Cleanup + Dependency Inversion) implemented. PRD-013 Parts 1–2 (File Upload Infrastructure + Persistence & Signal Extraction Integration) implemented. PRD-014 Parts 1–4 (Session Traceability & Staleness Data Model + View Prompt on Capture Page + Show Prompt Version in Past Sessions + Staleness Indicators & Re-extraction Warnings) implemented. PRD-015 Part 1 (Public Landing Page) implemented. PRD-019 Parts 1–4 (pgvector Setup & Embeddings Table + Chunking Logic + Embedding Pipeline + Retrieval Service) implemented. PRD-020 Parts 1–3 (Sidebar Navigation + Chat Data Model and Streaming Infrastructure + Chat UI Components) implemented. PRD-021 Parts 1–5 (Theme Assignment at Extraction Time + Dashboard Layout, Navigation, and Direct Widgets + Derived Theme Widgets + Qualitative Drill-Down + AI-Generated Headline Insights) implemented. The app is a fully functional team-capable client feedback capture and synthesis platform with a public landing page, vector search infrastructure, Instagram-style hover-to-expand sidebar navigation, complete RAG chat interface (conversations sidebar, message thread with virtualized scrolling, streaming with markdown, citations, follow-ups, in-conversation search, archive read-only mode), and full server-side RAG chat infrastructure (conversations, messages, tool-augmented streaming, LLM title generation). Google OAuth login (open to any Google account), working capture form with AI signal extraction and file attachment upload with server-side persistence, past sessions table with filters/inline editing/soft delete, master signal page with AI synthesis and PDF download, prompt editor with version history, team access with role-based permissions, automatic embedding generation on session save/extraction, and semantic retrieval service with adaptive query classification for downstream RAG and insights features.
 
 **Core features live:**
 - Public landing page at `/` with hero, feature cards, how-it-works flow, and CTA (authenticated users auto-redirect to `/capture`)
@@ -35,9 +35,9 @@ Synthesiser is a web application for teams to capture structured client session 
 - Data retention on member departure
 - RAG chat interface at `/chat` — conversation sidebar (search, pin, archive, rename, delete), virtualized message thread, markdown rendering with citations, follow-up suggestions, in-conversation search with match navigation, starter questions, archive read-only with unarchive
 - AI-powered theme assignment — automatic topic-based classification of signal chunks during extraction, chained after embedding generation (fire-and-forget), workspace-scoped themes with many-to-many signal-theme junction, primary/secondary themes with confidence scores
-- AI-powered insights dashboard at `/dashboard` — sentiment distribution (donut chart), urgency distribution (bar chart), session volume over time (area chart with week/month toggle), client health grid (scatter plot), competitive mentions (horizontal bar chart), top themes (horizontal bar chart with chunk-type breakdown tooltip), theme trends (multi-line chart with local theme selector and granularity toggle), theme-client matrix (heatmap grid with intensity-mapped cells); global filter bar (client multi-select, date range, severity, urgency) with URL-encoded state; `confidenceMin` available as URL param for theme query filtering; all widgets consume a shared `queryDatabase` service layer via `/api/dashboard` route; qualitative drill-down — clicking any widget data point opens a sliding Sheet panel showing actual signal texts grouped by client in collapsible accordion, with chunk-type/theme badges, session date, and "View Session" button that opens a Dialog with the full StructuredSignalView; two-layer architecture (DrillDownContent + DrillDownPanel) for swappable presentation shell
+- AI-powered insights dashboard at `/dashboard` — sentiment distribution (donut chart), urgency distribution (bar chart), session volume over time (area chart with week/month toggle), client health grid (scatter plot), competitive mentions (horizontal bar chart), top themes (horizontal bar chart with chunk-type breakdown tooltip), theme trends (multi-line chart with local theme selector and granularity toggle), theme-client matrix (heatmap grid with intensity-mapped cells); global filter bar (client multi-select, date range, severity, urgency) with URL-encoded state; `confidenceMin` available as URL param for theme query filtering; all widgets consume a shared `queryDatabase` service layer via `/api/dashboard` route; qualitative drill-down — clicking any widget data point opens a sliding Sheet panel showing actual signal texts grouped by client in collapsible accordion, with chunk-type/theme badges, session date, and "View Session" button that opens a Dialog with the full StructuredSignalView; two-layer architecture (DrillDownContent + DrillDownPanel) for swappable presentation shell; AI-generated headline insights — 3–5 classified insight cards (trend/anomaly/milestone) with type-specific colour accents displayed above the widget grid, manual "Refresh Insights" button, automatic generation after session extraction via fire-and-forget chain, collapsible "Previous Insights" section with lazy-loaded historical batches
 
-**Database tables:** `clients`, `sessions`, `session_attachments`, `session_embeddings`, `themes`, `signal_themes`, `master_signals`, `profiles`, `prompt_versions`, `teams`, `team_members`, `team_invitations`, `conversations`, `messages` — all with RLS. **RPC functions:** `match_session_embeddings` (vector similarity search), `sessions_over_time` (time-bucketed session counts by week/month for dashboard).
+**Database tables:** `clients`, `sessions`, `session_attachments`, `session_embeddings`, `themes`, `signal_themes`, `master_signals`, `profiles`, `prompt_versions`, `teams`, `team_members`, `team_invitations`, `conversations`, `messages`, `dashboard_insights` — all with RLS. **RPC functions:** `match_session_embeddings` (vector similarity search), `sessions_over_time` (time-bucketed session counts by week/month for dashboard).
 
 ---
 
@@ -122,7 +122,9 @@ synthesiser/
 │   │                   └── role/
 │   │                       └── route.ts # PATCH — change member role
 │   │   └── dashboard/
-│   │       └── route.ts         # GET — dashboard query route: Zod-validated action (11 actions incl. drill_down + session_detail) + filter params (including confidenceMin, drillDown, sessionId), delegates to executeQuery() via anon client (RLS-protected)
+│   │       ├── route.ts         # GET — dashboard query route: Zod-validated action (13 actions incl. drill_down, session_detail, insights_latest, insights_history) + filter params (including confidenceMin, drillDown, sessionId), delegates to executeQuery() via anon client (RLS-protected)
+│   │       └── insights/
+│   │           └── route.ts     # POST — generate headline insights: auth check, service-role client, calls generateHeadlineInsights(), returns new batch
 │   ├── auth/
 │   │   └── callback/
 │   │       └── route.ts         # OAuth callback — code exchange, pending invite auto-accept
@@ -155,11 +157,13 @@ synthesiser/
 │   │       ├── client-health-widget.tsx    # Client health grid — ScatterChart positioning clients by sentiment × urgency, custom tooltip, drill-down on click
 │   │       ├── competitive-mentions-widget.tsx # Competitive mentions — horizontal BarChart sorted by frequency, drill-down on click
 │   │       ├── dashboard-card.tsx          # Shared widget card — title, loading skeleton, error/retry, empty state, content slot
-│   │       ├── dashboard-content.tsx       # Client coordinator — FilterBar + responsive widget grid (8 widgets), drill-down state + DrillDownPanel, Suspense boundary
+│   │       ├── dashboard-content.tsx       # Client coordinator — FilterBar + InsightCardsRow + PreviousInsights + responsive widget grid (8 widgets), drill-down state + DrillDownPanel, Suspense boundary
 │   │       ├── drill-down-content.tsx      # Presentation-agnostic drill-down body — data fetching via useDashboardFetch, count header, filter label, client accordion (native details/summary), signal rows with badges, "View Session" button
 │   │       ├── drill-down-panel.tsx        # Thin Sheet shell wrapping DrillDownContent (swappable to Dialog in one file); owns SessionPreviewDialog
 │   │       ├── drill-down-types.ts         # DrillDownContext discriminated union (7 variants), DrillDownSignal, DrillDownClientGroup, DrillDownResult interfaces
 │   │       ├── filter-bar.tsx             # Global filter bar — client multi-select (Popover+Command), date range, severity, urgency dropdowns, URL search params
+│   │       ├── insight-cards-row.tsx      # Headline insight cards — horizontal scrollable row, type-specific styling (trend/anomaly/milestone), refresh button, skeleton/error/empty states
+│   │       ├── previous-insights.tsx      # Previous insight batches — collapsible details/summary, lazy-loaded on first expand, compact list with type icons
 │   │       ├── sentiment-widget.tsx        # Sentiment distribution — PieChart (donut) with clickable segments, drill-down on click
 │   │       ├── session-preview-dialog.tsx  # Session preview Dialog — fetches session_detail, renders StructuredSignalView with client name + date header
 │   │       ├── session-volume-widget.tsx   # Session volume over time — AreaChart with local week/month granularity toggle (no drill-down)
@@ -167,7 +171,8 @@ synthesiser/
 │   │       ├── theme-trends-widget.tsx    # Theme trends — LineChart with local week/month toggle, top-5 default with theme multi-select (Popover+Command), 8-colour palette, drill-down on activeDot click
 │   │       ├── top-themes-widget.tsx      # Top themes — horizontal BarChart, chunk-type breakdown tooltip, 15-theme default with show-all toggle, drill-down on click
 │   │       ├── urgency-widget.tsx          # Urgency distribution — BarChart with colour-coded bars, drill-down on click
-│   │       └── use-dashboard-fetch.ts     # Shared fetch hook — action + filter params from URL, loading/error/data lifecycle, re-fetch on filter change
+│   │       ├── use-dashboard-fetch.ts     # Shared fetch hook — action + filter params from URL, loading/error/data lifecycle, re-fetch on filter change
+│   │       └── use-insights.ts           # Insight data hook — fetches latest batch on mount, exposes refresh (POST), lazy-load previous batches
 │   ├── capture/
 │   │   ├── page.tsx             # Capture tab — server component, renders CapturePageContent
 │   │   └── _components/
@@ -277,7 +282,8 @@ synthesiser/
 │   │   ├── embedding-chunk.ts   # ChunkType, EmbeddingChunk, SessionMeta — types for the vector search chunking/embedding pipeline (PRD-019)
 │   │   ├── retrieval-result.ts  # QueryClassification, ClassificationResult, RetrievalOptions, RetrievalResult — types for the retrieval service (PRD-019)
 │   │   ├── signal-session.ts    # SignalSession interface — shared between ai-service and master-signal-service
-│   │   └── theme.ts             # Theme, SignalTheme, LLMThemeAssignment, ThemeAssignmentResult — types for the theme assignment system (PRD-021)
+│   │   ├── theme.ts             # Theme, SignalTheme, LLMThemeAssignment, ThemeAssignmentResult — types for the theme assignment system (PRD-021)
+│   │   └── insight.ts           # InsightType, DashboardInsight, InsightBatch — types for AI-generated headline insights (PRD-021 Part 5)
 │   ├── utils.ts                 # cn() utility (clsx + tailwind-merge) + PROSE_CLASSES constant
 │   ├── email-templates/
 │   │   └── invite-email.ts      # HTML email template for team invitations
@@ -288,10 +294,12 @@ synthesiser/
 │   │   ├── master-signal-synthesis.ts # System prompts (cold start + incremental) and user message builder
 │   │   ├── signal-extraction.ts # System prompt and user message template for signal extraction (used by prompt editor)
 │   │   ├── structured-extraction.ts # System prompt and user message builder for generateObject() extraction (PRD-018)
-│   │   └── theme-assignment.ts    # Theme assignment system prompt, max tokens, and buildThemeAssignmentUserMessage() for generateObject() classification (PRD-021)
+│   │   ├── theme-assignment.ts    # Theme assignment system prompt, max tokens, and buildThemeAssignmentUserMessage() for generateObject() classification (PRD-021)
+│   │   └── headline-insights.ts  # Headline insights system prompt, max tokens, InsightAggregates interface, buildHeadlineInsightsUserMessage() for generateObject() insight generation (PRD-021 Part 5)
 │   ├── schemas/
 │   │   ├── extraction-schema.ts   # Zod schema for structured extraction output — signalChunkSchema, extractionSchema, type exports
-│   │   └── theme-assignment-schema.ts # Zod schema for theme assignment LLM response — themeAssignmentResponseSchema, ThemeAssignmentResponse type (PRD-021)
+│   │   ├── theme-assignment-schema.ts # Zod schema for theme assignment LLM response — themeAssignmentResponseSchema, ThemeAssignmentResponse type (PRD-021)
+│   │   └── headline-insights-schema.ts # Zod schema for headline insights LLM response — headlineInsightsResponseSchema (1–5 items), HeadlineInsightsResponse type (PRD-021 Part 5)
 │   ├── repositories/
 │   │   ├── index.ts                    # Re-exports all repository interfaces and SessionNotFoundRepoError
 │   │   ├── attachment-repository.ts    # AttachmentRepository interface
@@ -301,6 +309,7 @@ synthesiser/
 │   │   ├── invitation-repository.ts    # InvitationRepository interface
 │   │   ├── theme-repository.ts        # ThemeRepository interface + ThemeInsert, ThemeUpdate types (PRD-021)
 │   │   ├── signal-theme-repository.ts # SignalThemeRepository interface + SignalThemeInsert type (PRD-021)
+│   │   ├── insight-repository.ts     # InsightRepository interface + InsightInsert type (PRD-021 Part 5)
 │   │   ├── master-signal-repository.ts # MasterSignalRepository interface
 │   │   ├── message-repository.ts       # MessageRepository interface + MessageInsert, MessageUpdate types (PRD-020)
 │   │   ├── profile-repository.ts       # ProfileRepository interface
@@ -316,6 +325,7 @@ synthesiser/
 │   │   │   ├── supabase-embedding-repository.ts   # Supabase adapter for EmbeddingRepository — uses service-role client, similarity search via match_session_embeddings RPC with filter_user_id for personal workspace isolation (PRD-019)
 │   │   │   ├── supabase-theme-repository.ts       # Supabase adapter for ThemeRepository — workspace-scoped with scopeByTeam(), case-insensitive findByName via ilike (PRD-021)
 │   │   │   ├── supabase-signal-theme-repository.ts # Supabase adapter for SignalThemeRepository — bulk insert, query by embedding IDs or theme ID (PRD-021)
+│   │   │   ├── supabase-insight-repository.ts    # Supabase adapter for InsightRepository — batch read/write, team-scoped, groupIntoBatches() helper (PRD-021 Part 5)
 │   │   │   ├── supabase-message-repository.ts     # Supabase adapter for MessageRepository — cursor pagination, newest-first (PRD-020)
 │   │   │   ├── supabase-invitation-repository.ts  # Supabase adapter for InvitationRepository
 │   │   │   ├── supabase-master-signal-repository.ts # Supabase adapter for MasterSignalRepository
@@ -330,10 +340,11 @@ synthesiser/
 │   │   ├── chat-service.ts      # Chat service — conversation CRUD, message CRUD, buildContextMessages() with 80K-token budget (PRD-020)
 │   │   ├── chat-stream-service.ts # Streaming orchestration — tool definitions (searchInsights, queryDatabase), streamText call, SSE event emission, message finalization (PRD-020)
 │   │   ├── chunking-service.ts  # Pure chunking functions — chunkStructuredSignals() and chunkRawNotes() — transforms extraction JSON into EmbeddingChunk arrays (PRD-019)
-│   │   ├── database-query-service.ts # Database query service — action map (15 actions: 7 chat + 3 dashboard + 3 theme widgets + drill_down + session_detail) with parameterized Supabase queries, team-scoped; extended filters (clientIds, severity, urgency, granularity, confidenceMin, drillDown, sessionId) for dashboard (PRD-020, PRD-021); shared theme helpers (fetchActiveThemeMap, fetchSignalThemeRows) for DRY multi-table joins; drill-down handler with Zod-validated discriminated union dispatch (7 strategies) and 100-signal cap
+│   │   ├── database-query-service.ts # Database query service — action map (17 actions: 7 chat + 3 dashboard + 3 theme widgets + drill_down + session_detail + insights_latest + insights_history) with parameterized Supabase queries, team-scoped; extended filters (clientIds, severity, urgency, granularity, confidenceMin, drillDown, sessionId) for dashboard (PRD-020, PRD-021); shared theme helpers (fetchActiveThemeMap, fetchSignalThemeRows) for DRY multi-table joins; drill-down handler with Zod-validated discriminated union dispatch (7 strategies) and 100-signal cap; insight handlers with batch grouping
 │   │   ├── embedding-service.ts # Provider-agnostic embedding service — embedTexts() with batching, retry, dimension validation (PRD-019)
 │   │   ├── embedding-orchestrator.ts # Coordination layer — generateSessionEmbeddings() ties chunking → embedding → persistence, returns embedding IDs for downstream chaining, fire-and-forget (PRD-019, PRD-021)
 │   │   ├── theme-service.ts     # Theme assignment orchestrator — assignSessionThemes() fetches themes, calls LLM, resolves/creates themes, bulk inserts assignments; chained after embedding generation (PRD-021)
+│   │   ├── insight-service.ts   # Headline insight generation — generateHeadlineInsights() (aggregates → LLM → batch insert), maybeRefreshInsights() (conditional fire-and-forget after extraction) (PRD-021 Part 5)
 │   │   ├── retrieval-service.ts # Retrieval service — retrieveRelevantChunks() with adaptive query classification, embedding, similarity search, deduplication (PRD-019)
 │   │   ├── attachment-service.ts # Attachment CRUD — accepts AttachmentRepository
 │   │   ├── client-service.ts    # Client search and creation — accepts ClientRepository
