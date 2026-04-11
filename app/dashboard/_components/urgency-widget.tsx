@@ -12,6 +12,7 @@ import {
 
 import { DashboardCard } from "./dashboard-card";
 import { useDashboardFetch } from "./use-dashboard-fetch";
+import { URGENCY_COLOURS } from "./chart-colours";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -29,17 +30,10 @@ interface UrgencyData {
 }
 
 // ---------------------------------------------------------------------------
-// Colour + ordering
+// Ordering
 // ---------------------------------------------------------------------------
 
 const URGENCY_KEYS = ["low", "medium", "high", "critical"] as const;
-
-const URGENCY_COLOURS: Record<string, string> = {
-  low: "#22c55e",      // green-500
-  medium: "#f59e0b",   // amber-500
-  high: "#f97316",     // orange-500
-  critical: "#ef4444", // red-500
-};
 
 // ---------------------------------------------------------------------------
 // UrgencyWidget

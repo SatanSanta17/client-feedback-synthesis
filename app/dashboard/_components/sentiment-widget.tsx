@@ -4,6 +4,7 @@ import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer, Legend } from "recha
 
 import { DashboardCard } from "./dashboard-card";
 import { useDashboardFetch } from "./use-dashboard-fetch";
+import { SENTIMENT_COLOURS } from "./chart-colours";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -19,17 +20,6 @@ interface SentimentData {
   neutral: number;
   mixed: number;
 }
-
-// ---------------------------------------------------------------------------
-// Colour map
-// ---------------------------------------------------------------------------
-
-const SENTIMENT_COLOURS: Record<string, string> = {
-  positive: "#22c55e", // green-500
-  neutral: "#94a3b8",  // slate-400
-  negative: "#ef4444", // red-500
-  mixed: "#f59e0b",    // amber-500
-};
 
 // ---------------------------------------------------------------------------
 // SentimentWidget

@@ -14,6 +14,7 @@ import {
 
 import { DashboardCard } from "./dashboard-card";
 import { useDashboardFetch } from "./use-dashboard-fetch";
+import { URGENCY_COLOURS } from "./chart-colours";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -74,13 +75,6 @@ const URGENCY_LABELS: Record<number, string> = {
   2: "Medium",
   3: "High",
   4: "Critical",
-};
-
-const URGENCY_COLOURS: Record<string, string> = {
-  low: "#22c55e",
-  medium: "#f59e0b",
-  high: "#f97316",
-  critical: "#ef4444",
 };
 
 // ---------------------------------------------------------------------------

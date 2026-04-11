@@ -6,6 +6,36 @@ All notable changes to this project are documented here, grouped by PRD and part
 
 ## [Unreleased]
 
+### PRD-021 Part 2: Dashboard Layout, Navigation, and Direct Widgets — 2026-04-12
+
+**New route and page:**
+- `/dashboard` page — server component with metadata, responsive widget grid (1→2→3 columns), global filter bar
+- `/api/dashboard` GET route — Zod-validated action + filter params, delegates to `executeQuery()` via RLS-protected anon client
+- Dashboard is now the first item in sidebar navigation (BarChart3 icon)
+
+**Global filter bar:**
+- Client multi-select (Popover + Command with search), date range (from/to), sentiment dropdown, urgency dropdown
+- All filter state encoded in URL search params (bookmarkable/shareable)
+- "Clear filters" button resets all params
+
+**Dashboard widgets (Recharts):**
+- Sentiment distribution — donut PieChart (positive=green, neutral=slate, negative=red, mixed=amber), clickable segments
+- Urgency distribution — BarChart (low=green, medium=amber, high=orange, critical=red), clickable bars
+- Session volume over time — AreaChart with local week/month granularity toggle, CartesianGrid
+- Client health grid — ScatterChart positioning clients by sentiment (X) × urgency (Y), colour-coded dots, custom tooltip
+- Competitive mentions — horizontal BarChart sorted by frequency, clickable bars
+
+**Database query service extensions:**
+- 3 new actions: `sessions_over_time` (via RPC), `client_health_grid`, `competitive_mention_frequency`
+- Extended `QueryFilters` with `clientIds`, `severity`, `urgency`, `granularity`
+- `handleClientList()` now returns `{ id, name }` objects (was just name strings)
+- `sessions_over_time` RPC function for time-bucketed GROUP BY queries
+
+**Shared infrastructure:**
+- `useDashboardFetch<T>` hook — shared fetch lifecycle across all widgets, reads URL search params for global filter reactivity, supports widget-local extra params
+- `DashboardCard` component — shared card chrome with loading skeleton, error/retry, empty state, content slot
+- `chart-colours.ts` — centralised sentiment and urgency hex colour maps (DRY extraction)
+
 ### PRD-021 Part 1: Theme Assignment at Extraction Time — 2026-04-12
 
 **New tables:**
