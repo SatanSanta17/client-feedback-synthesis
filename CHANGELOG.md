@@ -6,6 +6,20 @@ All notable changes to this project are documented here, grouped by PRD and part
 
 ## [Unreleased]
 
+### PRD-020 Part 2: Chat Data Model and Streaming Infrastructure — 2026-04-11
+- Created `conversations` and `messages` database tables with RLS (user-private conversations, derived access for messages), indexes, and auto-update triggers
+- Created `lib/types/chat.ts` — `MessageRole`, `MessageStatus`, `ChatSource`, `Message`, `Conversation`, `ConversationListOptions` types
+- Created `ConversationRepository` and `MessageRepository` interfaces with Supabase adapters — cursor-based pagination, pinned-first ordering for conversations, newest-first for messages
+- Created `lib/services/chat-service.ts` — conversation CRUD, message CRUD, `buildContextMessages()` with 80,000-token budget (char/4 approximation)
+- Created `lib/services/database-query-service.ts` — 7 predefined actions (`count_clients`, `count_sessions`, `sessions_per_client`, `sentiment_distribution`, `urgency_distribution`, `recent_sessions`, `client_list`) with team scoping via `scopeByTeam()` and shared query helpers (DRY extraction)
+- Created `lib/prompts/chat-prompt.ts` — chat system prompt with tool usage instructions, citation rules, follow-up generation as `<!--follow-ups:["..."]-->` HTML comment block
+- Created `lib/prompts/generate-title.ts` — lightweight 5-8 word title generation prompt
+- Added `generateConversationTitle()` to `lib/services/ai-service.ts` — fire-and-forget LLM title generation, returns null on failure
+- Created `lib/services/chat-stream-service.ts` — streaming orchestration: `searchInsights` and `queryDatabase` tool definitions (Vercel AI SDK v6 `tool()` + `inputSchema: zodSchema()`), `streamText()` with `stopWhen: stepCountIs(3)`, custom SSE events via `ReadableStream`, follow-up parsing, source deduplication, message finalization
+- Created `lib/utils/chat-helpers.ts` — pure utility functions: `sseEvent()`, `parseFollowUps()`, `toSource()`, `deduplicateSources()`
+- Created `app/api/chat/send/route.ts` — thin POST controller: auth, Zod validation, conversation create-or-resolve, message lifecycle, delegates streaming to `chat-stream-service`; returns SSE response with `X-Conversation-Id` header
+- **End-of-part audit:** SRP refactor (route → stream service → helpers), DRY extraction in database-query-service (shared `baseSessionQuery`/`baseClientQuery`/`aggregateJsonField`/`extractClientName` helpers), import order fixes, TypeScript check clean
+
 ### PRD-020 Part 1: Sidebar Navigation — 2026-04-11
 - Replaced top-bar header (`app-header.tsx`, `tab-nav.tsx`) with an Instagram-style hover-to-expand sidebar (`app-sidebar.tsx`) — icon-only (64px) at rest, overlay (240px) on hover, no content shift
 - Created `authenticated-layout.tsx` — auth-aware layout wrapper that renders sidebar + margin for authenticated routes and footer-only for public routes

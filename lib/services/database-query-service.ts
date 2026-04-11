@@ -40,6 +40,69 @@ export interface DatabaseQueryResult {
 }
 
 // ---------------------------------------------------------------------------
+// Shared query helpers (DRY)
+// ---------------------------------------------------------------------------
+
+/**
+ * Applies team scoping, soft-delete filtering, and optional date range to a
+ * query on the `sessions` table. Most handlers share this exact pattern.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- Supabase query builder types are loosely typed
+function baseSessionQuery(query: any, filters: QueryFilters): any {
+  let q = query.is("deleted_at", null);
+  q = scopeByTeam(q, filters.teamId);
+  if (filters.dateFrom) {
+    q = q.gte("session_date", filters.dateFrom);
+  }
+  if (filters.dateTo) {
+    q = q.lte("session_date", filters.dateTo);
+  }
+  return q;
+}
+
+/**
+ * Applies team scoping and soft-delete filtering to a query on the `clients`
+ * table.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- Supabase query builder types are loosely typed
+function baseClientQuery(query: any, filters: QueryFilters): any {
+  let q = query.is("deleted_at", null);
+  q = scopeByTeam(q, filters.teamId);
+  return q;
+}
+
+/**
+ * Extracts a string field from each row's `structured_json` column and
+ * aggregates into a distribution map. Used by sentiment and urgency handlers.
+ */
+function aggregateJsonField(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Supabase rows are loosely typed
+  rows: any[],
+  field: string,
+  buckets: Record<string, number>
+): Record<string, number> {
+  const distribution = { ...buckets };
+  for (const row of rows) {
+    const json = row.structured_json as Record<string, unknown> | null;
+    const value = json?.[field] as string | undefined;
+    if (value && value in distribution) {
+      distribution[value]++;
+    }
+  }
+  return distribution;
+}
+
+/**
+ * Casts a joined client row to extract the name.
+ * Supabase returns joined rows as { name: string } | null.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- Supabase join types are loosely typed
+function extractClientName(row: any): string {
+  const clientData = row.clients as { name: string } | null;
+  return clientData?.name ?? "Unknown";
+}
+
+// ---------------------------------------------------------------------------
 // Action handlers
 // ---------------------------------------------------------------------------
 
@@ -47,12 +110,10 @@ async function handleCountClients(
   supabase: SupabaseClient,
   filters: QueryFilters
 ): Promise<Record<string, unknown>> {
-  let query = supabase
-    .from("clients")
-    .select("id", { count: "exact", head: true })
-    .is("deleted_at", null);
-
-  query = scopeByTeam(query, filters.teamId);
+  const query = baseClientQuery(
+    supabase.from("clients").select("id", { count: "exact", head: true }),
+    filters
+  );
 
   const { count, error } = await query;
 
@@ -68,19 +129,10 @@ async function handleCountSessions(
   supabase: SupabaseClient,
   filters: QueryFilters
 ): Promise<Record<string, unknown>> {
-  let query = supabase
-    .from("sessions")
-    .select("id", { count: "exact", head: true })
-    .is("deleted_at", null);
-
-  query = scopeByTeam(query, filters.teamId);
-
-  if (filters.dateFrom) {
-    query = query.gte("session_date", filters.dateFrom);
-  }
-  if (filters.dateTo) {
-    query = query.lte("session_date", filters.dateTo);
-  }
+  const query = baseSessionQuery(
+    supabase.from("sessions").select("id", { count: "exact", head: true }),
+    filters
+  );
 
   const { count, error } = await query;
 
@@ -96,20 +148,10 @@ async function handleSessionsPerClient(
   supabase: SupabaseClient,
   filters: QueryFilters
 ): Promise<Record<string, unknown>> {
-  // Fetch sessions with client names, then group in JS
-  let query = supabase
-    .from("sessions")
-    .select("client_id, clients(name)")
-    .is("deleted_at", null);
-
-  query = scopeByTeam(query, filters.teamId);
-
-  if (filters.dateFrom) {
-    query = query.gte("session_date", filters.dateFrom);
-  }
-  if (filters.dateTo) {
-    query = query.lte("session_date", filters.dateTo);
-  }
+  const query = baseSessionQuery(
+    supabase.from("sessions").select("client_id, clients(name)"),
+    filters
+  );
 
   const { data, error } = await query;
 
@@ -121,8 +163,7 @@ async function handleSessionsPerClient(
   // Group by client name
   const countMap = new Map<string, number>();
   for (const row of data ?? []) {
-    const clientData = row.clients as unknown as { name: string } | null;
-    const name = clientData?.name ?? "Unknown";
+    const name = extractClientName(row);
     countMap.set(name, (countMap.get(name) ?? 0) + 1);
   }
 
@@ -137,22 +178,13 @@ async function handleSentimentDistribution(
   supabase: SupabaseClient,
   filters: QueryFilters
 ): Promise<Record<string, unknown>> {
-  // Fetch structured_json->sentiment for all sessions, aggregate in JS.
-  // Supabase JS client doesn't support jsonb grouping natively.
-  let query = supabase
-    .from("sessions")
-    .select("structured_json")
-    .is("deleted_at", null)
-    .not("structured_json", "is", null);
-
-  query = scopeByTeam(query, filters.teamId);
-
-  if (filters.dateFrom) {
-    query = query.gte("session_date", filters.dateFrom);
-  }
-  if (filters.dateTo) {
-    query = query.lte("session_date", filters.dateTo);
-  }
+  const query = baseSessionQuery(
+    supabase
+      .from("sessions")
+      .select("structured_json")
+      .not("structured_json", "is", null),
+    filters
+  );
 
   const { data, error } = await query;
 
@@ -161,42 +193,25 @@ async function handleSentimentDistribution(
     throw new Error("Failed to fetch sentiment distribution");
   }
 
-  const distribution: Record<string, number> = {
+  return aggregateJsonField(data ?? [], "sentiment", {
     positive: 0,
     negative: 0,
     neutral: 0,
     mixed: 0,
-  };
-
-  for (const row of data ?? []) {
-    const json = row.structured_json as Record<string, unknown> | null;
-    const sentiment = json?.sentiment as string | undefined;
-    if (sentiment && sentiment in distribution) {
-      distribution[sentiment]++;
-    }
-  }
-
-  return distribution;
+  });
 }
 
 async function handleUrgencyDistribution(
   supabase: SupabaseClient,
   filters: QueryFilters
 ): Promise<Record<string, unknown>> {
-  let query = supabase
-    .from("sessions")
-    .select("structured_json")
-    .is("deleted_at", null)
-    .not("structured_json", "is", null);
-
-  query = scopeByTeam(query, filters.teamId);
-
-  if (filters.dateFrom) {
-    query = query.gte("session_date", filters.dateFrom);
-  }
-  if (filters.dateTo) {
-    query = query.lte("session_date", filters.dateTo);
-  }
+  const query = baseSessionQuery(
+    supabase
+      .from("sessions")
+      .select("structured_json")
+      .not("structured_json", "is", null),
+    filters
+  );
 
   const { data, error } = await query;
 
@@ -205,47 +220,30 @@ async function handleUrgencyDistribution(
     throw new Error("Failed to fetch urgency distribution");
   }
 
-  const distribution: Record<string, number> = {
+  return aggregateJsonField(data ?? [], "urgency", {
     low: 0,
     medium: 0,
     high: 0,
     critical: 0,
-  };
-
-  for (const row of data ?? []) {
-    const json = row.structured_json as Record<string, unknown> | null;
-    const urgency = json?.urgency as string | undefined;
-    if (urgency && urgency in distribution) {
-      distribution[urgency]++;
-    }
-  }
-
-  return distribution;
+  });
 }
 
 async function handleRecentSessions(
   supabase: SupabaseClient,
   filters: QueryFilters
 ): Promise<Record<string, unknown>> {
-  let query = supabase
-    .from("sessions")
-    .select("id, session_date, structured_json, clients(name)")
-    .is("deleted_at", null)
-    .order("session_date", { ascending: false })
-    .order("created_at", { ascending: false })
-    .limit(20);
-
-  query = scopeByTeam(query, filters.teamId);
+  let query = baseSessionQuery(
+    supabase
+      .from("sessions")
+      .select("id, session_date, structured_json, clients(name)")
+      .order("session_date", { ascending: false })
+      .order("created_at", { ascending: false })
+      .limit(20),
+    filters
+  );
 
   if (filters.clientName) {
-    // Filter by client name via the clients join
     query = query.eq("clients.name", filters.clientName);
-  }
-  if (filters.dateFrom) {
-    query = query.gte("session_date", filters.dateFrom);
-  }
-  if (filters.dateTo) {
-    query = query.lte("session_date", filters.dateTo);
   }
 
   const { data, error } = await query;
@@ -255,11 +253,10 @@ async function handleRecentSessions(
     throw new Error("Failed to fetch recent sessions");
   }
 
-  const sessions = (data ?? []).map((row) => {
-    const clientData = row.clients as unknown as { name: string } | null;
+  const sessions = (data ?? []).map((row: Record<string, unknown>) => {
     const json = row.structured_json as Record<string, unknown> | null;
     return {
-      clientName: clientData?.name ?? "Unknown",
+      clientName: extractClientName(row),
       sessionDate: row.session_date,
       sentiment: (json?.sentiment as string) ?? "unknown",
     };
@@ -272,13 +269,10 @@ async function handleClientList(
   supabase: SupabaseClient,
   filters: QueryFilters
 ): Promise<Record<string, unknown>> {
-  let query = supabase
-    .from("clients")
-    .select("name")
-    .is("deleted_at", null)
-    .order("name", { ascending: true });
-
-  query = scopeByTeam(query, filters.teamId);
+  const query = baseClientQuery(
+    supabase.from("clients").select("name").order("name", { ascending: true }),
+    filters
+  );
 
   const { data, error } = await query;
 
@@ -287,7 +281,7 @@ async function handleClientList(
     throw new Error("Failed to fetch client list");
   }
 
-  const clients = (data ?? []).map((row) => row.name as string);
+  const clients = (data ?? []).map((row: Record<string, unknown>) => row.name as string);
 
   return { clients };
 }

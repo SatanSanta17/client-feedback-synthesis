@@ -20,7 +20,7 @@ Synthesiser is a web application for teams to capture structured client session 
 
 ## Current State
 
-**Status:** PRD-002 through PRD-010 implemented. PRD-012 Parts 1–5 (Design Tokens and Typography + DRY Extraction + SRP Component Decomposition + API Route/Service Cleanup + Dependency Inversion) implemented. PRD-013 Parts 1–2 (File Upload Infrastructure + Persistence & Signal Extraction Integration) implemented. PRD-014 Parts 1–4 (Session Traceability & Staleness Data Model + View Prompt on Capture Page + Show Prompt Version in Past Sessions + Staleness Indicators & Re-extraction Warnings) implemented. PRD-015 Part 1 (Public Landing Page) implemented. PRD-019 Parts 1–4 (pgvector Setup & Embeddings Table + Chunking Logic + Embedding Pipeline + Retrieval Service) implemented. PRD-020 Part 1 (Sidebar Navigation) implemented. The app is a fully functional team-capable client feedback capture and synthesis platform with a public landing page, vector search infrastructure, and Instagram-style hover-to-expand sidebar navigation. Google OAuth login (open to any Google account), working capture form with AI signal extraction and file attachment upload with server-side persistence, past sessions table with filters/inline editing/soft delete, master signal page with AI synthesis and PDF download, prompt editor with version history, team access with role-based permissions, automatic embedding generation on session save/extraction, and semantic retrieval service with adaptive query classification for downstream RAG and insights features.
+**Status:** PRD-002 through PRD-010 implemented. PRD-012 Parts 1–5 (Design Tokens and Typography + DRY Extraction + SRP Component Decomposition + API Route/Service Cleanup + Dependency Inversion) implemented. PRD-013 Parts 1–2 (File Upload Infrastructure + Persistence & Signal Extraction Integration) implemented. PRD-014 Parts 1–4 (Session Traceability & Staleness Data Model + View Prompt on Capture Page + Show Prompt Version in Past Sessions + Staleness Indicators & Re-extraction Warnings) implemented. PRD-015 Part 1 (Public Landing Page) implemented. PRD-019 Parts 1–4 (pgvector Setup & Embeddings Table + Chunking Logic + Embedding Pipeline + Retrieval Service) implemented. PRD-020 Parts 1–2 (Sidebar Navigation + Chat Data Model and Streaming Infrastructure) implemented. The app is a fully functional team-capable client feedback capture and synthesis platform with a public landing page, vector search infrastructure, Instagram-style hover-to-expand sidebar navigation, and full server-side RAG chat infrastructure (conversations, messages, tool-augmented streaming, LLM title generation). Google OAuth login (open to any Google account), working capture form with AI signal extraction and file attachment upload with server-side persistence, past sessions table with filters/inline editing/soft delete, master signal page with AI synthesis and PDF download, prompt editor with version history, team access with role-based permissions, automatic embedding generation on session save/extraction, and semantic retrieval service with adaptive query classification for downstream RAG and insights features.
 
 **Core features live:**
 - Public landing page at `/` with hero, feature cards, how-it-works flow, and CTA (authenticated users auto-redirect to `/capture`)
@@ -34,7 +34,7 @@ Synthesiser is a web application for teams to capture structured client session 
 - Team management (members, roles, ownership transfer, rename, delete)
 - Data retention on member departure
 
-**Database tables:** `clients`, `sessions`, `session_attachments`, `session_embeddings`, `master_signals`, `profiles`, `prompt_versions`, `teams`, `team_members`, `team_invitations` — all with RLS.
+**Database tables:** `clients`, `sessions`, `session_attachments`, `session_embeddings`, `master_signals`, `profiles`, `prompt_versions`, `teams`, `team_members`, `team_invitations`, `conversations`, `messages` — all with RLS.
 
 ---
 
@@ -62,6 +62,9 @@ synthesiser/
 │   │   │   │   └── route.ts     # POST — extract signals from raw notes via AI model
 │   │   │   └── generate-master-signal/
 │   │   │       └── route.ts     # POST — generate/regenerate master signal — delegates to generateOrUpdateMasterSignal() service
+│   │   ├── chat/
+│   │   │   └── send/
+│   │   │       └── route.ts     # POST — streaming chat route: auth, validation, conversation setup, delegates to chat-stream-service; returns SSE response
 │   │   ├── clients/
 │   │   │   └── route.ts         # GET (search, hasSession filter) and POST (create) — team-scoped
 │   │   ├── files/
@@ -215,6 +218,7 @@ synthesiser/
 │   │   ├── use-signal-extraction.ts # Shared extraction state machine hook (ExtractionState, promptVersionId, getInput callback, re-extract confirm flow, forceConfirmOnReextract for server-side manual edit flag)
 │   │   └── use-theme.ts         # Theme hook — reads/writes theme cookie, returns { theme, setTheme }
 │   ├── types/
+│   │   ├── chat.ts              # MessageRole, MessageStatus, ChatSource, Message, Conversation, ConversationListOptions — types for the chat system (PRD-020)
 │   │   ├── embedding-chunk.ts   # ChunkType, EmbeddingChunk, SessionMeta — types for the vector search chunking/embedding pipeline (PRD-019)
 │   │   ├── retrieval-result.ts  # QueryClassification, ClassificationResult, RetrievalOptions, RetrievalResult — types for the retrieval service (PRD-019)
 │   │   └── signal-session.ts    # SignalSession interface — shared between ai-service and master-signal-service
@@ -222,8 +226,10 @@ synthesiser/
 │   ├── email-templates/
 │   │   └── invite-email.ts      # HTML email template for team invitations
 │   ├── prompts/
-│   │   ├── master-signal-synthesis.ts # System prompts (cold start + incremental) and user message builder
+│   │   ├── chat-prompt.ts       # Chat system prompt — tool usage instructions, citation rules, follow-up generation format; CHAT_MAX_TOKENS (PRD-020)
 │   │   ├── classify-query.ts    # System prompt and max tokens for query classification — broad/specific/comparative (PRD-019)
+│   │   ├── generate-title.ts    # Lightweight title generation prompt (5-8 word summary); GENERATE_TITLE_MAX_TOKENS (PRD-020)
+│   │   ├── master-signal-synthesis.ts # System prompts (cold start + incremental) and user message builder
 │   │   ├── signal-extraction.ts # System prompt and user message template for signal extraction (used by prompt editor)
 │   │   └── structured-extraction.ts # System prompt and user message builder for generateObject() extraction (PRD-018)
 │   ├── schemas/
@@ -232,9 +238,11 @@ synthesiser/
 │   │   ├── index.ts                    # Re-exports all repository interfaces and SessionNotFoundRepoError
 │   │   ├── attachment-repository.ts    # AttachmentRepository interface
 │   │   ├── client-repository.ts        # ClientRepository interface
+│   │   ├── conversation-repository.ts  # ConversationRepository interface + ConversationInsert, ConversationUpdate types (PRD-020)
 │   │   ├── embedding-repository.ts    # EmbeddingRepository interface + EmbeddingRow, SearchOptions, SimilarityResult types (PRD-019)
 │   │   ├── invitation-repository.ts    # InvitationRepository interface
 │   │   ├── master-signal-repository.ts # MasterSignalRepository interface
+│   │   ├── message-repository.ts       # MessageRepository interface + MessageInsert, MessageUpdate types (PRD-020)
 │   │   ├── profile-repository.ts       # ProfileRepository interface
 │   │   ├── prompt-repository.ts        # PromptRepository interface
 │   │   ├── session-repository.ts       # SessionRepository interface + domain types + SessionNotFoundRepoError
@@ -244,7 +252,9 @@ synthesiser/
 │   │   │   ├── scope-by-team.ts                  # Shared helper — scopeByTeam(query, teamId) for workspace scoping
 │   │   │   ├── supabase-attachment-repository.ts  # Supabase adapter for AttachmentRepository
 │   │   │   ├── supabase-client-repository.ts      # Supabase adapter for ClientRepository
+│   │   │   ├── supabase-conversation-repository.ts # Supabase adapter for ConversationRepository — cursor pagination, pinned-first ordering (PRD-020)
 │   │   │   ├── supabase-embedding-repository.ts   # Supabase adapter for EmbeddingRepository — uses service-role client, similarity search via match_session_embeddings RPC (PRD-019)
+│   │   │   ├── supabase-message-repository.ts     # Supabase adapter for MessageRepository — cursor pagination, newest-first (PRD-020)
 │   │   │   ├── supabase-invitation-repository.ts  # Supabase adapter for InvitationRepository
 │   │   │   ├── supabase-master-signal-repository.ts # Supabase adapter for MasterSignalRepository
 │   │   │   ├── supabase-profile-repository.ts     # Supabase adapter for ProfileRepository
@@ -254,8 +264,11 @@ synthesiser/
 │   │   └── mock/
 │   │       └── mock-session-repository.ts         # In-memory mock for SessionRepository (testing)
 │   ├── services/
-│   │   ├── ai-service.ts        # AI service — extractSignals() → ExtractionResult (generateObject), synthesiseMasterSignal() (generateText), provider-agnostic via Vercel AI SDK
+│   │   ├── ai-service.ts        # AI service — extractSignals() → ExtractionResult (generateObject), synthesiseMasterSignal() (generateText), generateConversationTitle() (fire-and-forget), provider-agnostic via Vercel AI SDK
+│   │   ├── chat-service.ts      # Chat service — conversation CRUD, message CRUD, buildContextMessages() with 80K-token budget (PRD-020)
+│   │   ├── chat-stream-service.ts # Streaming orchestration — tool definitions (searchInsights, queryDatabase), streamText call, SSE event emission, message finalization (PRD-020)
 │   │   ├── chunking-service.ts  # Pure chunking functions — chunkStructuredSignals() and chunkRawNotes() — transforms extraction JSON into EmbeddingChunk arrays (PRD-019)
+│   │   ├── database-query-service.ts # Database query service — action map (7 actions) with parameterized Supabase queries, team-scoped (PRD-020)
 │   │   ├── embedding-service.ts # Provider-agnostic embedding service — embedTexts() with batching, retry, dimension validation (PRD-019)
 │   │   ├── embedding-orchestrator.ts # Coordination layer — generateSessionEmbeddings() ties chunking → embedding → persistence, fire-and-forget (PRD-019)
 │   │   ├── retrieval-service.ts # Retrieval service — retrieveRelevantChunks() with adaptive query classification, embedding, similarity search, deduplication (PRD-019)
@@ -270,6 +283,7 @@ synthesiser/
 │   │   ├── session-service.ts   # Session CRUD + checkSessionAccess() — accepts SessionRepository + ClientRepository + MasterSignalRepository
 │   │   └── team-service.ts      # Team CRUD + getTeamMembersWithProfiles(), getTeamsWithRolesForUser() — accepts TeamRepository
 │   ├── utils/
+│   │   ├── chat-helpers.ts        # Pure utilities — SSE encoding, follow-up parsing, source mapping and deduplication (PRD-020)
 │   │   ├── compose-ai-input.ts    # Composes raw notes + attachments into a single AI input string
 │   │   ├── format-file-size.ts    # File size formatting (bytes → "1.2 KB", "3.4 MB")
 │   │   ├── format-relative-time.ts # Relative time formatting ("just now", "5m ago", "3d ago")
@@ -475,9 +489,47 @@ Stores versioned AI system prompts per user or team workspace. Each save/reset/r
 **Indexes:** Partial unique index enforces one active per key per workspace scope.
 **RLS:** Users can SELECT/INSERT/UPDATE their own prompt versions. Team members can access team-scoped prompts.
 
+### `conversations`
+
+Stores chat conversation threads. User-private (not team-shared). Scoped by team context for data isolation.
+
+| Column | Type | Notes |
+|--------|------|-------|
+| `id` | UUID (PK) | `gen_random_uuid()` |
+| `title` | TEXT | NOT NULL. Placeholder (first 80 chars), then LLM-generated title. |
+| `created_by` | UUID (FK → auth.users) | NOT NULL. Owning user. |
+| `team_id` | UUID (FK → teams) | Nullable. NULL = personal workspace. ON DELETE SET NULL. |
+| `is_pinned` | BOOLEAN | NOT NULL, default `false`. |
+| `is_archived` | BOOLEAN | NOT NULL, default `false`. |
+| `created_at` | TIMESTAMPTZ | Default `now()` |
+| `updated_at` | TIMESTAMPTZ | Auto-updated via trigger + message insert trigger. |
+
+**Indexes:** `idx_conversations_user_list` on `(created_by, is_archived, is_pinned DESC, updated_at DESC)`.
+**RLS:** User-private — SELECT, INSERT, UPDATE, DELETE all require `created_by = auth.uid()`.
+
+### `messages`
+
+Stores individual messages within conversations. Access derived from conversation ownership.
+
+| Column | Type | Notes |
+|--------|------|-------|
+| `id` | UUID (PK) | `gen_random_uuid()` |
+| `conversation_id` | UUID (FK → conversations) | NOT NULL. ON DELETE CASCADE. |
+| `parent_message_id` | UUID (FK → messages) | Nullable. For future edit/retry branching. ON DELETE SET NULL. |
+| `role` | TEXT | NOT NULL, CHECK: `user`, `assistant`. |
+| `content` | TEXT | NOT NULL, default `''`. |
+| `sources` | JSONB | Nullable. Array of ChatSource objects (sessionId, clientName, sessionDate, chunkText, chunkType). |
+| `status` | TEXT | NOT NULL, default `completed`, CHECK: `completed`, `streaming`, `failed`, `cancelled`. |
+| `metadata` | JSONB | Nullable. Model label, tools called, etc. |
+| `created_at` | TIMESTAMPTZ | Default `now()` |
+
+**Indexes:** `idx_messages_conversation_created` on `(conversation_id, created_at ASC)`.
+**RLS:** Derived from conversation ownership — all operations require `EXISTS (SELECT 1 FROM conversations WHERE id = conversation_id AND created_by = auth.uid())`.
+
 ### Shared functions and triggers
 
-- `update_updated_at()` — BEFORE UPDATE trigger on `clients`, `sessions`, `profiles`, and `teams` tables, sets `updated_at = now()`.
+- `update_updated_at()` — BEFORE UPDATE trigger on `clients`, `sessions`, `profiles`, `teams`, and `conversations` tables, sets `updated_at = now()`.
+- `update_conversation_updated_at()` — AFTER INSERT trigger on `messages`, bumps `conversations.updated_at` to `now()` for the parent conversation.
 - `handle_new_user()` — SECURITY DEFINER function, triggered AFTER INSERT on `auth.users`, creates a `profiles` row.
 - `is_admin()` — SECURITY DEFINER function, returns `true` if the current user's profile has `is_admin = true`. Retained in database.
 - `is_team_member(team_uuid)` — SECURITY DEFINER function, returns `true` if the current user is an active member of the given team.

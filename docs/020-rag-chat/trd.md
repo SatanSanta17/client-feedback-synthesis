@@ -1,6 +1,6 @@
 # TRD-020: RAG Chat Interface
 
-> **Status:** Draft (Parts 1–2 detailed)
+> **Status:** Draft (Parts 1–2 detailed, Part 2 implemented)
 > **PRD:** `docs/020-rag-chat/prd.md` (approved)
 > **Mirrors:** PRD Parts 1–4. Each part is written and reviewed one at a time. Parts 3–4 will be added after their preceding parts are implemented.
 
@@ -263,11 +263,11 @@ Create the database tables for conversations and messages, build the chat servic
 
 1. **Repository pattern for conversations and messages.** Following the existing codebase convention (session-repository, team-repository, etc.), create `ConversationRepository` and `MessageRepository` interfaces with Supabase adapters. The chat service composes both repositories. This maintains the Dependency Inversion principle — the service depends on interfaces, not Supabase directly.
 
-2. **`streamText` with `maxSteps` for autonomous tool calling.** The Vercel AI SDK v6 `streamText()` function supports a `tools` parameter with Zod-typed tool definitions and a `maxSteps` parameter that lets the model call tools and then generate a final text response in a single streaming invocation. We set `maxSteps: 3` (tool calls + final generation). This avoids manual orchestration of tool calls — the SDK handles the tool call → result → continuation loop automatically. The streamed response includes both tool call events and text delta events.
+2. **`streamText` with `stopWhen: stepCountIs(3)` for autonomous tool calling.** The Vercel AI SDK v6 `streamText()` function supports a `tools` parameter with Zod-typed tool definitions and a `stopWhen` parameter (v6 renamed from v5's `maxSteps`) that lets the model call tools and then generate a final text response in a single streaming invocation. We set `stopWhen: stepCountIs(3)` (tool calls + final generation). This avoids manual orchestration of tool calls — the SDK handles the tool call → result → continuation loop automatically. The streamed response includes both tool call events and text delta events.
 
-3. **SSE via `toDataStreamResponse()`.** The Vercel AI SDK's `streamText()` result exposes `toDataStreamResponse()` which returns a standard `Response` with the AI SDK's data stream protocol. The client will use the `useChat` hook or manual `EventSource`/`fetch` with the AI SDK's stream parsing. Tool call events, text deltas, and finish events are all multiplexed over this single stream. Custom SSE events for status messages (e.g., "Searching across N sessions...") are sent via the `sendDataStreamEvent()` callback within tool execution handlers.
+3. **Custom SSE via `ReadableStream`.** The Vercel AI SDK v6 removed `toDataStreamResponse()`. Instead, we build a custom `ReadableStream` that emits typed SSE events (`status`, `delta`, `sources`, `follow_ups`, `done`, `error`). This gives full control over the event protocol — we can send custom status events during tool execution (e.g., "Searching across sessions...") and structured final events (sources, follow-ups) that the client parses directly. The streaming orchestration lives in `chat-stream-service.ts`, keeping the route handler thin.
 
-4. **Tool definitions as Zod schemas.** Both `searchInsights` and `queryDatabase` tools are defined as Zod-typed objects passed to `streamText({ tools })`. The SDK validates tool call arguments against the schema before invoking the `execute` function. This gives us type-safe tool parameters with zero manual parsing.
+4. **Tool definitions as `inputSchema: zodSchema(z.object(...))`.** Both `searchInsights` and `queryDatabase` tools are defined using the v6 `tool()` helper with `inputSchema: zodSchema(...)` (v6 renamed from v5's `parameters`). The SDK validates tool call arguments against the schema before invoking the `execute` function. This gives us type-safe tool parameters with zero manual parsing. `maxOutputTokens` (v6 renamed from v5's `maxTokens`) is set to `CHAT_MAX_TOKENS`.
 
 5. **`queryDatabase` uses an action map, not raw SQL.** The `DatabaseQueryService` maps action strings (e.g., `count_clients`, `sessions_per_client`) to pre-built parameterized Supabase queries. The LLM never sees or generates SQL. Adding a new action is a single function + map entry — no schema migration. All queries scope by `team_id` using the existing `scopeByTeam()` helper.
 
@@ -277,9 +277,11 @@ Create the database tables for conversations and messages, build the chat servic
 
 8. **Server-side generation resilience.** The route handler inserts the assistant message with `status: 'streaming'` before starting the LLM call. If the stream completes normally, it updates to `status: 'completed'` with full content and sources. If the stream errors, it updates to `status: 'failed'`. If the server is torn down mid-stream (deployment, timeout), the row remains as `status: 'streaming'` with whatever partial content was last flushed. Part 3's client handles reconnection by detecting `streaming` status messages on load.
 
-9. **Follow-up questions in the response.** The system prompt instructs the LLM to end its response with a JSON block containing 2-3 follow-up questions. The route's `onFinish` callback parses this block from the completed text, strips it from the stored content, and sends it as a separate data stream annotation. This avoids polluting the rendered message with raw JSON. If parsing fails (LLM didn't follow the format), no follow-ups are sent — graceful degradation.
+9. **Follow-up questions in the response.** The system prompt instructs the LLM to end its response with a JSON block containing 2-3 follow-up questions. After stream completion, the `chat-stream-service` parses this block from the accumulated text, strips it from the stored content, and sends it as a separate SSE event (`follow_ups`). This avoids polluting the rendered message with raw JSON. If parsing fails (LLM didn't follow the format), no follow-ups are sent — graceful degradation.
 
-10. **`sources` derived from `searchInsights` tool results.** When the `searchInsights` tool returns results, the route captures the citation data (sessionId, clientName, sessionDate, chunkText, chunkType). After stream completion, these are written to the assistant message's `sources` jsonb column and sent as a data stream annotation for the client to render as citation chips.
+10. **`sources` derived from `searchInsights` tool results.** When the `searchInsights` tool returns results, the stream service captures the citation data (sessionId, clientName, sessionDate, chunkText, chunkType). After stream completion, these are deduplicated, written to the assistant message's `sources` jsonb column, and sent as a `sources` SSE event for the client to render as citation chips.
+
+11. **SRP split: route → stream service → helpers.** The API route (`route.ts`) is a thin controller: auth, validation, conversation/message setup, and response formatting. Streaming orchestration (tool definitions, `streamText` call, event emission, message finalization) lives in `chat-stream-service.ts`. Pure utility functions (SSE encoding, follow-up parsing, source deduplication) live in `chat-helpers.ts`. This keeps each file focused on one concern.
 
 ### Database Migrations
 
@@ -431,7 +433,9 @@ CREATE TRIGGER messages_update_conversation
 | `lib/services/database-query-service.ts` | **Create** | Database query service — action map with parameterized Supabase queries |
 | `lib/prompts/chat-prompt.ts` | **Create** | Chat system prompt — tool usage instructions, citation rules, follow-up generation |
 | `lib/prompts/generate-title.ts` | **Create** | Lightweight title generation prompt (5-8 word summary) |
-| `app/api/chat/send/route.ts` | **Create** | POST — streaming chat route with tool calling, SSE via `toDataStreamResponse()` |
+| `lib/services/chat-stream-service.ts` | **Create** | Streaming orchestration — tool definitions, streamText call, SSE event emission, message finalization |
+| `lib/utils/chat-helpers.ts` | **Create** | Pure utilities — SSE encoding, follow-up parsing, source mapping and deduplication |
+| `app/api/chat/send/route.ts` | **Create** | POST — thin controller: auth, validation, conversation setup, delegates to chat-stream-service |
 | `lib/services/ai-service.ts` | **Edit** | Add `generateConversationTitle()` function |
 
 ### Type Definitions
@@ -687,94 +691,41 @@ const chatSendSchema = z.object({
 4. **Insert user message** — `role: 'user'`, `status: 'completed'`.
 5. **Insert placeholder assistant message** — `role: 'assistant'`, `status: 'streaming'`, `content: ''`.
 6. **Build context** — `chatService.buildContextMessages()` with 80,000-token budget.
-7. **Stream with tools** — call `streamText()`:
+7. **Delegate to chat-stream-service** — pass all dependencies:
 
 ```typescript
-import { streamText, tool } from "ai";
-import { z } from "zod";
+import { createChatStream } from "@/lib/services/chat-stream-service";
 
-const result = streamText({
-  model: resolveModel().model,
-  system: CHAT_SYSTEM_PROMPT,
-  messages: contextMessages,
-  tools: {
-    searchInsights: tool({
-      description: "Search client feedback sessions for qualitative insights",
-      parameters: z.object({
-        query: z.string().describe("Semantic search query"),
-        filters: z.object({
-          clientName: z.string().optional(),
-          dateFrom: z.string().optional(),
-          dateTo: z.string().optional(),
-          chunkTypes: z.array(z.string()).optional(),
-        }).optional(),
-      }),
-      execute: async ({ query, filters }) => {
-        // Send status event: "Searching across sessions..."
-        const results = await retrieveRelevantChunks(query, {
-          teamId,
-          clientName: filters?.clientName,
-          dateFrom: filters?.dateFrom,
-          dateTo: filters?.dateTo,
-          chunkTypes: filters?.chunkTypes as ChunkType[],
-        }, embeddingRepo);
-        // Capture results for sources
-        collectedSources.push(...results.map(toSource));
-        return results;
-      },
-    }),
-    queryDatabase: tool({
-      description: "Query the database for quantitative data about clients and sessions",
-      parameters: z.object({
-        action: z.enum([
-          "count_clients", "count_sessions", "sessions_per_client",
-          "sentiment_distribution", "urgency_distribution",
-          "recent_sessions", "client_list",
-        ]),
-        filters: z.object({
-          dateFrom: z.string().optional(),
-          dateTo: z.string().optional(),
-          clientName: z.string().optional(),
-        }).optional(),
-      }),
-      execute: async ({ action, filters }) => {
-        // Send status event: "Looking up your data..."
-        return executeQuery(serviceClient, action, {
-          teamId,
-          ...filters,
-        });
-      },
-    }),
-  },
-  maxSteps: 3,
-  maxTokens: CHAT_MAX_TOKENS,
-  onFinish: async ({ text, toolCalls }) => {
-    // Parse follow-up questions from the response
-    const { cleanContent, followUps } = parseFollowUps(text);
-    // Update assistant message: content, sources, status, metadata
-    await messageRepo.update(assistantMessageId, {
-      content: cleanContent,
-      sources: collectedSources.length > 0 ? collectedSources : null,
-      status: "completed",
-      metadata: {
-        model: modelLabel,
-        toolsCalled: toolCalls?.map(tc => tc.toolName) ?? [],
-      },
-    });
-  },
-  onError: async () => {
-    await messageRepo.update(assistantMessageId, { status: "failed" });
-  },
+const stream = createChatStream({
+  model,
+  modelLabel,
+  chatService,
+  embeddingRepo,
+  serviceClient,
+  teamId,
+  conversationId,
+  assistantMessageId: assistantMessage.id,
+  isNewConversation,
+  contextMessages,
 });
 
-return result.toDataStreamResponse();
+return new Response(stream, {
+  headers: {
+    "Content-Type": "text/event-stream",
+    "Cache-Control": "no-cache, no-transform",
+    Connection: "keep-alive",
+    "X-Conversation-Id": conversationId,
+  },
+});
 ```
 
-8. **Error handling:** Wrap the entire flow in try/catch. If an error occurs before streaming starts (e.g., conversation not found, message insert fails), return a standard JSON error response. Once streaming has started, errors are handled by the `onError` callback.
+The `chat-stream-service` internally uses `streamText()` with `tool()` + `inputSchema: zodSchema(...)` for tool definitions and `stopWhen: stepCountIs(3)` for max tool iterations. It consumes the `fullStream` async iterable, emitting SSE events via the `ReadableStream` controller, and finalizes the assistant message on completion or failure.
+
+8. **Error handling:** Wrap the entire flow in try/catch. If an error occurs before streaming starts (e.g., conversation not found, message insert fails), return a standard JSON error response (500). Once streaming has started, errors are caught inside the `ReadableStream.start()` callback in `chat-stream-service`, which marks the message as `failed` and emits an `error` SSE event.
 
 ### Forward Compatibility Notes
 
-- **Part 3 (Chat Page UI):** The client will consume the SSE stream from `/api/chat/send`. The data stream protocol from `toDataStreamResponse()` includes text deltas, tool call events, and annotations. Part 3 can use the Vercel AI SDK's `useChat` hook or manual stream parsing. The `follow_ups` and `sources` are sent as data stream annotations that Part 3 renders as chips.
+- **Part 3 (Chat Page UI):** The client will consume the SSE stream from `/api/chat/send`. The custom SSE protocol includes typed events: `status`, `delta`, `sources`, `follow_ups`, `done`, `error`. Part 3 uses manual `fetch` + `EventSource`-style parsing (not `useChat` — the custom event protocol requires manual handling). The `follow_ups` and `sources` events are rendered as chips below the assistant message.
 - **Part 4 (Master Signal Panel):** No impact on the chat API. The master signal panel is a separate UI component on the same page.
 - **Future `queryDatabase` actions:** Adding a new action requires: (1) add the action string to the `QueryAction` union, (2) write a handler function, (3) add it to `ACTION_MAP`, (4) add it to the Zod enum in the tool definition. No migration needed.
 - **`parent_message_id`:** The column exists but is always null in v1. Future edit/retry will set it to create message tree branches. The repository and type definitions already support it.
