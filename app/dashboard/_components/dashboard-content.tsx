@@ -1,9 +1,11 @@
 "use client";
 
+import { Suspense } from "react";
 import { useSearchParams } from "next/navigation";
 
 import { cn } from "@/lib/utils";
 import { DashboardCard } from "./dashboard-card";
+import { FilterBar } from "./filter-bar";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -14,7 +16,7 @@ interface DashboardContentProps {
 }
 
 // ---------------------------------------------------------------------------
-// Placeholder widget cards (replaced in Increments 2.3–2.6)
+// Placeholder widget cards (replaced in Increments 2.4–2.6)
 // ---------------------------------------------------------------------------
 
 function PlaceholderWidget({ title }: { title: string }) {
@@ -32,22 +34,18 @@ function PlaceholderWidget({ title }: { title: string }) {
 }
 
 // ---------------------------------------------------------------------------
-// DashboardContent
+// Inner content (reads useSearchParams — must be inside Suspense)
 // ---------------------------------------------------------------------------
 
-export function DashboardContent({ className }: DashboardContentProps) {
-  // Read search params so widgets can react to global filter changes
+function DashboardInner() {
+  // Widgets will consume searchParams to re-fetch on filter changes
   const searchParams = useSearchParams();
-
-  // Placeholder — filters will be wired in Increment 2.3
   void searchParams;
 
   return (
-    <div className={cn("flex flex-1 flex-col gap-6", className)}>
-      {/* Filter bar placeholder — Increment 2.3 */}
-      <div className="rounded-lg border border-dashed border-[var(--border-default)] px-4 py-3 text-sm text-[var(--text-tertiary)]">
-        Filters will appear here
-      </div>
+    <>
+      {/* Global filter bar */}
+      <FilterBar />
 
       {/* Responsive widget grid: 1 col mobile, 2 col md, 3 col lg */}
       <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">
@@ -57,6 +55,20 @@ export function DashboardContent({ className }: DashboardContentProps) {
         <PlaceholderWidget title="Client Health Grid" />
         <PlaceholderWidget title="Competitive Mentions" />
       </div>
+    </>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// DashboardContent
+// ---------------------------------------------------------------------------
+
+export function DashboardContent({ className }: DashboardContentProps) {
+  return (
+    <div className={cn("flex flex-1 flex-col gap-6", className)}>
+      <Suspense fallback={<div className="h-10 animate-pulse rounded-lg bg-[var(--surface-raised)]" />}>
+        <DashboardInner />
+      </Suspense>
     </div>
   );
 }
