@@ -1,18 +1,22 @@
 "use client";
 
+// ---------------------------------------------------------------------------
+// ChatPageContent — Client coordinator for /chat (PRD-020 Part 3)
+// ---------------------------------------------------------------------------
+// Composes ConversationSidebar and chat area placeholder.
+// Manages active conversation selection and wires core hooks together.
+// ---------------------------------------------------------------------------
+
 import { useState, useCallback } from "react";
+import { PanelLeft } from "lucide-react";
 
 import { useAuth } from "@/components/providers/auth-provider";
+import { Button } from "@/components/ui/button";
 import { useConversations } from "@/lib/hooks/use-conversations";
 import { useChat } from "@/lib/hooks/use-chat";
+import { ConversationSidebar } from "./conversation-sidebar";
+import type { Conversation } from "@/lib/types/chat";
 
-/**
- * Client coordinator for the /chat route.
- * Composes the conversation sidebar and chat area, managing the active
- * conversation selection and wiring the two core hooks together.
- *
- * Increment 3.1: renders placeholder divs — styled UI comes in later increments.
- */
 export function ChatPageContent() {
   const { user } = useAuth();
   const teamId = null; // TODO: wire active team from context when teams are implemented
@@ -22,6 +26,10 @@ export function ChatPageContent() {
     string | null
   >(null);
 
+  // Sidebar state
+  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
+  const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState(false);
+
   // Conversation list management
   const conversationsHook = useConversations({
     teamId,
@@ -29,14 +37,9 @@ export function ChatPageContent() {
   });
 
   // Handle new conversation creation from chat hook
-  const handleConversationCreated = useCallback(
-    (id: string) => {
-      setActiveConversationId(id);
-      // Refetch conversations to pick up the new one
-      // The useConversations hook will handle prepending
-    },
-    []
-  );
+  const handleConversationCreated = useCallback((id: string) => {
+    setActiveConversationId(id);
+  }, []);
 
   // Handle async title generation
   const { updateConversation } = conversationsHook;
@@ -55,22 +58,67 @@ export function ChatPageContent() {
     onTitleGenerated: handleTitleGenerated,
   });
 
+  // Sidebar callbacks
+  const handleSelectConversation = useCallback(
+    (conversation: Conversation) => {
+      setActiveConversationId(conversation.id);
+      setIsMobileSidebarOpen(false);
+    },
+    []
+  );
+
+  const handleNewChat = useCallback(() => {
+    setActiveConversationId(null);
+    setIsMobileSidebarOpen(false);
+  }, []);
+
+  const handleToggleSidebar = useCallback(() => {
+    setIsSidebarCollapsed((prev) => !prev);
+  }, []);
+
   if (!user) {
     return null;
   }
 
   return (
-    <div className="flex h-full w-full">
-      {/* Conversation Sidebar — placeholder for Increment 3.2 */}
-      <div className="w-[280px] shrink-0 border-r border-border bg-muted/30">
-        <div className="p-4 text-sm text-muted-foreground">
-          Conversations ({conversationsHook.conversations.length})
-          {conversationsHook.isLoading && " — Loading..."}
-        </div>
-      </div>
+    <div className="relative flex h-full w-full">
+      <ConversationSidebar
+        conversations={conversationsHook.conversations}
+        filteredConversations={conversationsHook.filteredConversations}
+        activeConversationId={activeConversationId}
+        isArchiveView={conversationsHook.isArchiveView}
+        isLoading={conversationsHook.isLoading}
+        hasMore={conversationsHook.hasMore}
+        searchQuery={conversationsHook.searchQuery}
+        isCollapsed={isSidebarCollapsed}
+        isMobileOpen={isMobileSidebarOpen}
+        onSelectConversation={handleSelectConversation}
+        onNewChat={handleNewChat}
+        onToggleArchiveView={conversationsHook.toggleArchiveView}
+        onFetchMore={conversationsHook.fetchMore}
+        onSetSearchQuery={conversationsHook.setSearchQuery}
+        onRename={conversationsHook.renameConversation}
+        onPin={conversationsHook.pinConversation}
+        onArchive={conversationsHook.archiveConversation}
+        onUnarchive={conversationsHook.unarchiveConversation}
+        onToggleCollapsed={handleToggleSidebar}
+        onMobileClose={() => setIsMobileSidebarOpen(false)}
+      />
 
       {/* Chat Area — placeholder for Increment 3.3 */}
       <div className="flex flex-1 flex-col">
+        {/* Mobile header with sidebar toggle */}
+        <div className="flex items-center gap-2 border-b border-border px-3 py-2 md:hidden">
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            onClick={() => setIsMobileSidebarOpen(true)}
+          >
+            <PanelLeft className="size-4" />
+          </Button>
+          <span className="text-sm font-medium">Chat</span>
+        </div>
+
         <div className="flex flex-1 items-center justify-center text-sm text-muted-foreground">
           {activeConversationId
             ? `Chat: ${activeConversationId.slice(0, 8)}…`
