@@ -1,8 +1,8 @@
 # TRD-021: AI-Powered Insights Dashboard
 
-> **Status:** Parts 1–3 implemented. Part 4 detailed. Parts 5–6 pending.
+> **Status:** Parts 1–4 implemented. Part 5 detailed. Part 6 pending.
 > **PRD:** `docs/021-insights-dashboard/prd.md` (approved)
-> **Mirrors:** PRD Parts 1–6. Each part is written and reviewed one at a time. Parts 5–6 will be added after their preceding parts are implemented.
+> **Mirrors:** PRD Parts 1–6. Each part is written and reviewed one at a time. Part 6 will be added after Part 5 is implemented.
 
 ---
 
@@ -1681,3 +1681,229 @@ All strategies apply global filters (team scoping, date range, client IDs) and g
 10. Update `CHANGELOG.md` with Part 4 deliverables.
 
 **Requirement coverage:** All P4.R1–P4.R6. End-of-part audit.
+
+---
+
+## Part 5: AI-Generated Headline Insights
+
+> Implements **P5.R1–P5.R8** from PRD-021.
+
+### Overview
+
+A new `dashboard_insights` table stores AI-generated headline insights, each classified as `trend`, `anomaly`, or `milestone`. A service function (`generateHeadlineInsights`) queries existing aggregate data from the database query service, fetches the previous insight batch for comparison, builds a prompt, calls the LLM via `callModelObject()`, and inserts the results. The dashboard renders the latest batch as styled alert cards above the widget grid, with a "Refresh Insights" button and a collapsible "Previous Insights" history section. Auto-refresh is triggered fire-and-forget after session extraction when new sessions have been added since the last insight generation.
+
+### Technical Decisions
+
+1. **`dashboard_insights` table with team-scoped RLS.** Schema follows the PRD exactly: `id`, `content`, `insight_type`, `batch_id`, `team_id`, `created_by`, `generated_at`. RLS mirrors the `sessions` table pattern — team members can read all insights for their workspace; personal workspace rows are restricted to `created_by = auth.uid()`. Inserts use the service-role client (bypasses RLS) because the generation service runs in a server-side context after extraction, where the user's cookie session may not be available.
+
+2. **Repository pattern for `dashboard_insights`.** Following the codebase convention (13 existing repository interfaces), create `InsightRepository` interface with `getLatestBatch()`, `getPreviousBatches(limit)`, `insertBatch(insights[])`, and `getLastGeneratedAt()` methods. Supabase adapter in `lib/repositories/supabase/`. The service depends on the interface, not Supabase directly.
+
+3. **Reuse `executeQuery()` for aggregate data — no duplicate queries.** The insight service needs the same aggregates that dashboard widgets already display (sentiment distribution, urgency distribution, top themes, competitive mentions, session count). Rather than writing parallel queries, the service calls `executeQuery()` with the appropriate actions (`sentiment_distribution`, `urgency_distribution`, `top_themes`, `competitive_mention_frequency`, `count_sessions`). This reuses the exact same team-scoped, parameterised queries the widgets use. The service passes a Supabase client and filters with `teamId` — no date or client filtering (insights span all time by default, so the LLM sees the full picture).
+
+4. **`callModelObject()` with a Zod schema for structured response.** The insight generation uses the existing `callModelObject<T>()` wrapper in `ai-service.ts`, which provides retry logic (3 retries with exponential backoff for transient 429/5xx errors), model resolution, and Zod validation. The response schema enforces an array of 3–5 insights with `content` (string) and `insightType` (`trend` | `anomaly` | `milestone`). This matches the `extractSignals()` and `assignSessionThemes()` patterns.
+
+5. **Prompt in `lib/prompts/headline-insights.ts`.** Following the convention (7 existing prompt files), the prompt is version-controlled with named exports: `HEADLINE_INSIGHTS_SYSTEM_PROMPT`, `HEADLINE_INSIGHTS_MAX_TOKENS`, and `buildHeadlineInsightsUserMessage()`. The user message builder accepts the current aggregates and the previous batch (if any) as typed arguments. The system prompt enforces the PRD rules: concise, specific, change-focused, classified, no fabrication.
+
+6. **Single API route: `POST /api/dashboard/insights`.** A dedicated POST route triggers insight generation. It authenticates via `getUser()`, resolves `teamId` from `getActiveTeamId()`, creates a service-role client for writes, calls `generateHeadlineInsights()`, and returns the new insights. GET is not needed — the latest + previous batches are fetched client-side via a new `insights_latest` action on the existing `/api/dashboard` GET route.
+
+7. **Two new read actions on the existing dashboard route: `insights_latest` and `insights_history`.** Rather than creating a separate GET endpoint, add two lightweight read actions to the `/api/dashboard` route:
+   - `insights_latest` — returns the most recent batch (by `generated_at` descending, grouped by `batch_id`).
+   - `insights_history` — returns up to 10 previous batches (excluding the latest), grouped by `batch_id`, sorted by `generated_at` descending.
+   These actions use the anon client (RLS-protected) for reads, matching all existing dashboard actions.
+
+8. **`useInsights()` custom hook for the insight cards.** A dedicated hook (not `useDashboardFetch`) because the insight lifecycle is different from widgets: it needs both the latest batch and a manual refresh trigger that calls POST. The hook manages `latestBatch`, `previousBatches`, `isLoading`, `isRefreshing`, `error`, and `refresh()`. It fetches `insights_latest` on mount and after each refresh. The `previousBatches` are fetched lazily (only when the "Previous Insights" section is expanded).
+
+9. **Insight cards as a separate component above the widget grid.** `InsightCardsRow` renders the latest batch as a horizontal row of styled alert cards. Each card shows: insight text, type icon (TrendingUp for `trend`, AlertTriangle for `anomaly`, Trophy for `milestone`), type-specific colour accent (blue/amber/green via CSS custom properties), and "Generated N ago" timestamp. The component sits between the FilterBar and the widget grid in `dashboard-content.tsx`.
+
+10. **Previous Insights section uses native `<details>/<summary>`.** Consistent with the drill-down accordion (Part 4 decision #7), the "Previous Insights" history section uses native HTML elements. Each batch is a collapsible group showing the generation date and the batch's insight cards. Lazy-fetched on first expand via the `useInsights` hook.
+
+11. **Auto-refresh: fire-and-forget after extraction chain.** The extraction flow in `app/api/sessions/route.ts` POST and `app/api/sessions/[id]/route.ts` PUT already has a fire-and-forget chain (embeddings → theme assignment). The insight refresh is appended as a third step in this chain: after theme assignment completes, call `maybeRefreshInsights()` which checks whether insights exist and whether any sessions have been added since the last `generated_at`. If stale, it calls `generateHeadlineInsights()`. This is fire-and-forget — failures are swallowed with dev-mode `console.warn`, matching the existing pattern. The refresh is chained after theme assignment (not parallel) because the insight service queries theme aggregates that need the latest assignments.
+
+12. **`maybeRefreshInsights()` staleness check.** To avoid unnecessary LLM calls, the function first queries `dashboard_insights` for the most recent `generated_at` timestamp. If no insights exist, or if any session has a `created_at` after that timestamp, insights are stale and regeneration proceeds. This is a lightweight check (two scalar queries) that runs before the expensive LLM call.
+
+13. **Graceful degradation (P5.R8).** If insight generation fails (LLM timeout, rate limit, malformed response), the API route returns the appropriate HTTP error. The client-side hook catches the error and preserves the previously loaded latest batch. The "Refresh Insights" button shows an error toast but doesn't clear existing cards. If no insights have ever been generated, the component renders an empty state CTA: "Click 'Refresh Insights' to generate your first headline insights."
+
+14. **`batch_id` is generated client-side (UUID v4).** The `generateHeadlineInsights()` function creates a single UUID for the batch before inserting rows. This avoids a database round-trip for sequence generation and matches the `gen_random_uuid()` pattern used elsewhere.
+
+### Forward Compatibility Notes
+
+- **Part 6 (Filters and Interactivity):** Insight cards do not respond to global filters — they always reflect the full workspace state. This is intentional: insights are a high-level summary, not a filtered view. Part 6 filter changes do not trigger insight re-fetch.
+- **Backlog (Anomaly Detection):** The `insight_type` column already supports `anomaly`. A future statistical anomaly detector could insert rows with `insight_type = 'anomaly'` and a different `created_by` (system user), and the same UI would display them.
+
+### Query Action Design
+
+#### `insights_latest`
+
+**Client-supplied filters:** none (insight reads are unfiltered)
+**Server-resolved context:** `teamId` (from `active_team_id` cookie)
+
+**Strategy:** Query `dashboard_insights` WHERE `team_id` matches (or IS NULL for personal), ORDER BY `generated_at` DESC, take the first row's `batch_id`, then fetch all rows with that `batch_id`.
+
+**Response shape:**
+```typescript
+{
+  batch: {
+    batchId: string;
+    generatedAt: string;
+    insights: Array<{
+      id: string;
+      content: string;
+      insightType: "trend" | "anomaly" | "milestone";
+    }>
+  } | null  // null when no insights exist
+}
+```
+
+#### `insights_history`
+
+**Client-supplied filters:** none
+**Server-resolved context:** `teamId`
+
+**Strategy:** Query `dashboard_insights` WHERE `team_id` matches, GROUP BY `batch_id`, ORDER BY MAX(`generated_at`) DESC, SKIP the first batch (that's the latest), LIMIT 10 batches.
+
+**Response shape:**
+```typescript
+{
+  batches: Array<{
+    batchId: string;
+    generatedAt: string;
+    insights: Array<{
+      id: string;
+      content: string;
+      insightType: "trend" | "anomaly" | "milestone";
+    }>
+  }>
+}
+```
+
+### Files Changed
+
+| File | Action | Purpose |
+|---|---|---|
+| `lib/repositories/insight-repository.ts` | **Create** | `InsightRepository` interface — `getLatestBatch()`, `getPreviousBatches(limit)`, `insertBatch()`, `getLastGeneratedAt()` |
+| `lib/repositories/supabase/supabase-insight-repository.ts` | **Create** | Supabase adapter implementing `InsightRepository` |
+| `lib/repositories/index.ts` | **Edit** | Add `createInsightRepository()` factory function |
+| `lib/types/insight.ts` | **Create** | `DashboardInsight` type (matching `dashboard_insights` table columns) |
+| `lib/prompts/headline-insights.ts` | **Create** | System prompt, max tokens, `buildHeadlineInsightsUserMessage()` builder |
+| `lib/services/insight-service.ts` | **Create** | `generateHeadlineInsights()` — aggregates → prompt → LLM → insert; `maybeRefreshInsights()` — staleness check + conditional regeneration |
+| `lib/services/database-query-service.ts` | **Edit** | Add `insights_latest` and `insights_history` actions to `QueryAction` and `ACTION_MAP` |
+| `app/api/dashboard/route.ts` | **Edit** | Add `insights_latest`, `insights_history` to Zod enum |
+| `app/api/dashboard/insights/route.ts` | **Create** | `POST /api/dashboard/insights` — authenticate, generate, return new batch |
+| `app/dashboard/_components/use-insights.ts` | **Create** | `useInsights()` hook — latest batch, previous batches (lazy), refresh trigger, loading/error states |
+| `app/dashboard/_components/insight-cards-row.tsx` | **Create** | Insight alert cards — type icon/colour, text, timestamp; empty state CTA; "Refresh Insights" button |
+| `app/dashboard/_components/previous-insights.tsx` | **Create** | Collapsible "Previous Insights" section — `<details>/<summary>`, batches grouped by date |
+| `app/dashboard/_components/dashboard-content.tsx` | **Edit** | Import and render `InsightCardsRow` + `PreviousInsights` above the widget grid |
+| `app/api/sessions/route.ts` | **Edit** | Append `maybeRefreshInsights()` to the fire-and-forget chain after theme assignment |
+| `app/api/sessions/[id]/route.ts` | **Edit** | Same — append `maybeRefreshInsights()` to the PUT extraction chain |
+
+### Implementation Increments
+
+#### Increment 5.1: Database Table, Types, and Repository
+
+**What:** Create the `dashboard_insights` table, RLS policies, TypeScript type, repository interface, and Supabase adapter.
+
+**Steps:**
+
+1. Write the SQL migration for `dashboard_insights` table: `id` (UUID PK, default `gen_random_uuid()`), `content` (text NOT NULL), `insight_type` (text NOT NULL CHECK in `trend`, `anomaly`, `milestone`), `batch_id` (UUID NOT NULL), `team_id` (UUID nullable FK to `teams`), `created_by` (UUID NOT NULL FK to `auth.users`), `generated_at` (timestamptz NOT NULL DEFAULT `now()`). Add indexes: `dashboard_insights_team_batch_idx` on `(team_id, batch_id)` for batch grouping queries; `dashboard_insights_generated_at_idx` on `(team_id, generated_at DESC)` for latest-first ordering.
+2. Write RLS policies: `SELECT` — team members can read where `team_id` matches their active team via `team_members`; personal workspace reads where `team_id IS NULL AND created_by = auth.uid()`. `INSERT` — authenticated users only (enforced at API layer, but RLS allows insert for auth users). Enable RLS.
+3. Create `lib/types/insight.ts` — export `DashboardInsight` interface matching the table columns.
+4. Create `lib/repositories/insight-repository.ts` — export `InsightRepository` interface with `getLatestBatch(teamId)`, `getPreviousBatches(teamId, limit)`, `insertBatch(insights[])`, `getLastGeneratedAt(teamId)`.
+5. Create `lib/repositories/supabase/supabase-insight-repository.ts` — Supabase adapter. `getLatestBatch` queries for the most recent `batch_id` then fetches all rows; `getPreviousBatches` groups by `batch_id`, skips the latest, limits to N; `insertBatch` inserts array with shared `batch_id`; `getLastGeneratedAt` returns the MAX `generated_at` or null.
+6. Edit `lib/repositories/index.ts` — add `createInsightRepository()` factory.
+7. Regenerate Supabase types: `supabase gen types typescript`.
+8. Verify: `npx tsc --noEmit`.
+
+**Requirement coverage:** P5.R1 (table), P5.R2 (RLS).
+
+#### Increment 5.2: Prompt and Insight Generation Service
+
+**What:** Create the headline insights prompt and the generation service.
+
+**Steps:**
+
+1. Create `lib/prompts/headline-insights.ts` — export `HEADLINE_INSIGHTS_SYSTEM_PROMPT` (rules: 3–5 concise insights, change-focused, classified, no fabrication, compare against previous batch), `HEADLINE_INSIGHTS_MAX_TOKENS` (1024), and `buildHeadlineInsightsUserMessage(aggregates, previousBatch)`.
+2. Define a Zod schema for the LLM response: array of `{ content: string, insightType: 'trend' | 'anomaly' | 'milestone' }` with `.min(3).max(5)`.
+3. Create `lib/services/insight-service.ts` — export `generateHeadlineInsights({ teamId, userId, insightRepo, supabase })`:
+   a. Call `executeQuery()` for 5 aggregate actions: `sentiment_distribution`, `urgency_distribution`, `top_themes`, `competitive_mention_frequency`, `count_sessions`. All with `teamId` only (no date/client filters).
+   b. Call `insightRepo.getLatestBatch(teamId)` for the previous batch.
+   c. Build the user message via `buildHeadlineInsightsUserMessage()`.
+   d. Call `callModelObject()` with the headline insights schema.
+   e. Generate a `batch_id` UUID.
+   f. Call `insightRepo.insertBatch()` with the LLM results + batch metadata.
+   g. Return the new insights.
+4. Export `maybeRefreshInsights({ teamId, userId, insightRepo, supabase })`:
+   a. Call `insightRepo.getLastGeneratedAt(teamId)`.
+   b. If null → generate (first time).
+   c. Query `sessions` for any row with `created_at > lastGeneratedAt` and matching `team_id`. If found → generate.
+   d. Otherwise → skip (not stale).
+5. Verify: `npx tsc --noEmit`.
+
+**Requirement coverage:** P5.R3 (generation service), P5.R4 (prompt), P5.R8 (graceful degradation — callModelObject handles retries; service returns error on failure).
+
+#### Increment 5.3: API Routes and Dashboard Read Actions
+
+**What:** Create the POST route for insight generation, and add the two read actions to the existing GET route.
+
+**Steps:**
+
+1. Create `app/api/dashboard/insights/route.ts` — POST handler: authenticate via `supabase.auth.getUser()`, resolve `teamId` via `getActiveTeamId()`, create service-role client, create insight repository, call `generateHeadlineInsights()`, return 200 with new batch. Handle errors: 401 if unauthenticated, 500 on generation failure with `{ message }`.
+2. Add `handleInsightsLatest()` to `database-query-service.ts` — queries `dashboard_insights` via `InsightRepository.getLatestBatch()`. But wait — the database query service uses raw Supabase queries, not repositories. For consistency with the service's pattern, implement these as direct Supabase queries within the handler (like all other actions). Query: fetch the most recent `generated_at` row to get its `batch_id`, then fetch all rows with that `batch_id`. Apply team scoping.
+3. Add `handleInsightsHistory()` — fetch all rows ordered by `generated_at DESC`, group by `batch_id` in TypeScript, skip the first batch, return up to 10 batches.
+4. Add `insights_latest` and `insights_history` to `QueryAction` union, `ACTION_MAP`, and the Zod enum in the API route.
+5. Verify: `npx tsc --noEmit`.
+
+**Requirement coverage:** P5.R5 (data available for cards), P5.R6 (manual refresh via POST).
+
+#### Increment 5.4: Insight UI Components
+
+**What:** Build the insight cards, previous insights section, and wire into the dashboard.
+
+**Steps:**
+
+1. Create `app/dashboard/_components/use-insights.ts` — `useInsights()` hook. On mount: fetch `insights_latest`. Expose `latestBatch`, `isLoading`, `error`. Expose `refresh()` that POSTs to `/api/dashboard/insights` and re-fetches latest. Expose `previousBatches`, `loadPrevious()` (lazy fetch of `insights_history`), `isPreviousLoading`.
+2. Create `app/dashboard/_components/insight-cards-row.tsx` — renders latest batch as a horizontal scrollable row of cards. Each card: type icon (TrendingUp/AlertTriangle/Trophy from lucide-react), type colour accent (blue for trend, amber for anomaly, green for milestone — using existing CSS custom properties), insight text, "Generated N ago" relative timestamp. "Refresh Insights" button at the end of the row (or top-right). Loading state: skeleton cards. Error state: inline message. Empty state: CTA card "Click 'Refresh Insights' to generate your first headline insights."
+3. Create `app/dashboard/_components/previous-insights.tsx` — `<details>/<summary>` with "Previous Insights" label. On first expand: calls `loadPrevious()`. Inside: batches listed by date, each with its insight cards (smaller variant). Loading: skeleton. Empty: "No previous insights."
+4. Edit `app/dashboard/_components/dashboard-content.tsx` — import `InsightCardsRow` and `PreviousInsights`, render above the widget grid (between `FilterBar` and the grid div). Pass the `useInsights()` hook state to both components.
+5. Verify: `npx tsc --noEmit`.
+
+**Requirement coverage:** P5.R5 (alert cards), P5.R6 (refresh button), P5.R7 (previous insights), P5.R8 (empty state, failure fallback).
+
+#### Increment 5.5: Auto-Refresh After Extraction
+
+**What:** Wire the `maybeRefreshInsights()` call into the session extraction fire-and-forget chain.
+
+**Steps:**
+
+1. Edit `app/api/sessions/route.ts` POST — after the theme assignment `.then()` block, chain a second `.then()` that calls `maybeRefreshInsights({ teamId, userId, insightRepo, supabase: serviceClient })`. Import `maybeRefreshInsights` from `insight-service.ts` and `createInsightRepository` from repositories. The chain becomes: `generateEmbeddings().then(assignThemes).then(maybeRefreshInsights).catch(devWarnCatch)`.
+2. Edit `app/api/sessions/[id]/route.ts` PUT — same change to the re-extraction chain.
+3. Verify: `npx tsc --noEmit`.
+
+**Requirement coverage:** P5.R6 (auto-refresh after extraction).
+
+#### Increment 5.6: Cleanup and Audit
+
+**What:** End-of-part audit across all files created/modified in Part 5.
+
+**Steps:**
+
+1. Run `npx tsc --noEmit` for a full type check.
+2. SRP check: prompt is isolated in `lib/prompts/`, service logic in `lib/services/`, repository in `lib/repositories/`, UI in `_components/`. Each component does one thing.
+3. DRY check: aggregate queries reuse `executeQuery()` (not duplicated). Insight card styling uses existing CSS custom properties. `<details>/<summary>` pattern matches Part 4.
+4. Logging check: `generateHeadlineInsights` logs entry (teamId, userId), aggregate query results, LLM call, insert, and errors. `maybeRefreshInsights` logs staleness check result (stale/fresh). POST route logs entry, success, errors.
+5. Dead code check: no unused imports.
+6. Convention check: naming, exports, import order, `'use client'` only on leaf components.
+7. Verify all PRD Part 5 acceptance criteria:
+   - `dashboard_insights` table exists with all specified columns and team-scoped RLS ✓
+   - Insight generation service produces 3-5 headline insights per call ✓
+   - Insights are classified as trend, anomaly, or milestone ✓
+   - Insights compare against previous batch for change detection ✓
+   - Alert cards display at the top of the dashboard with type-specific styling ✓
+   - "Refresh Insights" button triggers manual regeneration ✓
+   - Auto-refresh triggers after new session extraction ✓
+   - "Previous Insights" section shows historical batches ✓
+   - Generation failure falls back to most recent successful batch ✓
+   - Empty state displays when no insights have been generated ✓
+8. Update `ARCHITECTURE.md` — add new files to file map, update database-query-service description (17 actions), update dashboard feature description.
+9. Update `CHANGELOG.md` with Part 5 deliverables.
+
+**Requirement coverage:** All P5.R1–P5.R8. End-of-part audit.

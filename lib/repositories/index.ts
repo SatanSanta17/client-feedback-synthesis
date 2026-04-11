@@ -65,3 +65,7 @@ export type {
   SignalThemeRepository,
   SignalThemeInsert,
 } from "./signal-theme-repository";
+export type {
+  InsightRepository,
+  InsightInsert,
+} from "./insight-repository";
