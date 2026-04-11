@@ -1,0 +1,109 @@
+"use client";
+
+import {
+  BarChart,
+  Bar,
+  XAxis,
+  YAxis,
+  Tooltip,
+  ResponsiveContainer,
+  Cell,
+} from "recharts";
+
+import { DashboardCard } from "./dashboard-card";
+import { useDashboardFetch } from "./use-dashboard-fetch";
+
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
+
+interface UrgencyWidgetProps {
+  className?: string;
+}
+
+interface UrgencyData {
+  low: number;
+  medium: number;
+  high: number;
+  critical: number;
+}
+
+// ---------------------------------------------------------------------------
+// Colour + ordering
+// ---------------------------------------------------------------------------
+
+const URGENCY_KEYS = ["low", "medium", "high", "critical"] as const;
+
+const URGENCY_COLOURS: Record<string, string> = {
+  low: "#22c55e",      // green-500
+  medium: "#f59e0b",   // amber-500
+  high: "#f97316",     // orange-500
+  critical: "#ef4444", // red-500
+};
+
+// ---------------------------------------------------------------------------
+// UrgencyWidget
+// ---------------------------------------------------------------------------
+
+export function UrgencyWidget({ className }: UrgencyWidgetProps) {
+  const { data, isLoading, error, refetch } =
+    useDashboardFetch<UrgencyData>({ action: "urgency_distribution" });
+
+  const chartData = data
+    ? URGENCY_KEYS.map((key) => ({
+        name: key.charAt(0).toUpperCase() + key.slice(1),
+        value: data[key],
+        key,
+      }))
+    : [];
+
+  const isEmpty = !data || chartData.every((d) => d.value === 0);
+
+  return (
+    <DashboardCard
+      title="Urgency Distribution"
+      isLoading={isLoading}
+      error={error}
+      onRetry={refetch}
+      isEmpty={isEmpty}
+      emptyMessage="No urgency data for the selected filters"
+      className={className}
+    >
+      <ResponsiveContainer width="100%" height={220}>
+        <BarChart data={chartData} margin={{ top: 8, right: 8, bottom: 0, left: -16 }}>
+          <XAxis
+            dataKey="name"
+            tick={{ fontSize: 12 }}
+            axisLine={false}
+            tickLine={false}
+          />
+          <YAxis
+            allowDecimals={false}
+            tick={{ fontSize: 12 }}
+            axisLine={false}
+            tickLine={false}
+          />
+          <Tooltip
+            formatter={(value) => [value, "Sessions"]}
+          />
+          <Bar
+            dataKey="value"
+            radius={[4, 4, 0, 0]}
+            onClick={(entry) => {
+              // Drill-down wired in Part 4
+              console.log("[UrgencyWidget] clicked:", entry.key);
+            }}
+            style={{ cursor: "pointer" }}
+          >
+            {chartData.map((entry) => (
+              <Cell
+                key={entry.key}
+                fill={URGENCY_COLOURS[entry.key] ?? "#cbd5e1"}
+              />
+            ))}
+          </Bar>
+        </BarChart>
+      </ResponsiveContainer>
+    </DashboardCard>
+  );
+}

@@ -6,6 +6,8 @@ import { useSearchParams } from "next/navigation";
 import { cn } from "@/lib/utils";
 import { DashboardCard } from "./dashboard-card";
 import { FilterBar } from "./filter-bar";
+import { SentimentWidget } from "./sentiment-widget";
+import { UrgencyWidget } from "./urgency-widget";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -49,8 +51,8 @@ function DashboardInner() {
 
       {/* Responsive widget grid: 1 col mobile, 2 col md, 3 col lg */}
       <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">
-        <PlaceholderWidget title="Sentiment Distribution" />
-        <PlaceholderWidget title="Urgency Distribution" />
+        <SentimentWidget />
+        <UrgencyWidget />
         <PlaceholderWidget title="Session Volume Over Time" />
         <PlaceholderWidget title="Client Health Grid" />
         <PlaceholderWidget title="Competitive Mentions" />
