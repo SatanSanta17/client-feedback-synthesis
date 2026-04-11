@@ -1,6 +1,6 @@
 # TRD-020: RAG Chat Interface
 
-> **Status:** Draft (Parts 1–2 detailed, Part 2 implemented)
+> **Status:** Draft (Parts 1–3 detailed, Parts 1–2 implemented)
 > **PRD:** `docs/020-rag-chat/prd.md` (approved)
 > **Mirrors:** PRD Parts 1–4. Each part is written and reviewed one at a time. Parts 3–4 will be added after their preceding parts are implemented.
 
@@ -832,3 +832,352 @@ The `chat-stream-service` internally uses `streamText()` with `tool()` + `inputS
 10. Update `CHANGELOG.md` with Part 2 deliverables.
 
 **Requirement coverage:** All P2.R1–P2.R12. End-of-part audit.
+
+---
+
+## Part 3: Chat Page UI
+
+> Implements **P3.R1–P3.R23** from PRD-020.
+
+### Overview
+
+Build the `/chat` route with a two-panel layout: a conversation list sidebar on the left and the main chat area on the right. The page consumes the Part 2 streaming API via SSE, renders messages with `react-virtuoso` for virtualized infinite scroll, and manages conversation lifecycle (create, rename, pin, archive). No new database tables — Part 3 is a pure frontend implementation that calls the existing Part 2 services and API routes, plus new thin CRUD routes for conversation management.
+
+### Technical Decisions
+
+1. **`react-virtuoso` for the message thread.** The message list uses `react-virtuoso`'s `Virtuoso` component in reverse mode (`firstItemIndex` shifting pattern). When the user scrolls upward and hits the sentinel, the next 50 messages are fetched and prepended by decrementing `firstItemIndex`. Virtuoso handles scroll position preservation natively. Only visible items plus an overscan buffer (~5 messages) are rendered in the DOM. This performs well at any conversation length without manual `scrollHeight` calculations.
+
+2. **`react-markdown` + `remark-gfm` for assistant messages.** Already installed in the project. Wrap in a `<MemoizedMarkdown>` component that uses `React.memo` with a content equality check to avoid re-rendering the entire message tree on each streaming delta. During streaming, only the actively-streaming message re-renders — all completed messages above it are memoized.
+
+3. **Custom SSE client hook (`useChat`).** A custom hook in `lib/hooks/use-chat.ts` manages the SSE connection to `/api/chat/send`. It does NOT use the Vercel AI SDK's `useChat` hook because our Part 2 API returns a custom SSE protocol with typed events (`status`, `delta`, `sources`, `follow_ups`, `done`, `error`) that the SDK's hook doesn't understand. The custom hook uses `fetch` + `ReadableStream` reader to consume the SSE, dispatches events into React state, and exposes: `sendMessage()`, `cancelStream()`, `isStreaming`, `streamingContent`, `statusText`, `sources`, `followUps`, and `error`.
+
+4. **Conversation state management via `useConversations` hook.** A custom hook in `lib/hooks/use-conversations.ts` manages the conversation list, active conversation selection, and CRUD operations. It holds two separate lists: `activeConversations` and `archivedConversations`, each with their own pagination cursor. The archive toggle switches which list is displayed. All mutations (rename, pin, archive, unarchive) optimistically update the local list and roll back on API failure.
+
+5. **New CRUD API routes for conversation management.** Part 2 only created `/api/chat/send`. Part 3 adds:
+   - `GET /api/chat/conversations` — list conversations (paginated, filterable by archived/active, searchable by title)
+   - `PATCH /api/chat/conversations/[id]` — update title, is_pinned, is_archived
+   - `GET /api/chat/conversations/[id]/messages` — list messages (paginated)
+   These are thin route handlers: auth → validate → call chat-service → return JSON. No business logic in the routes.
+
+6. **Co-located `_components/` under `app/chat/`.** Following the capture page pattern, all chat-specific components live in `app/chat/_components/`. Shared components (if any emerge) are extracted to `components/`. The page file (`app/chat/page.tsx`) is a thin server component that renders `<ChatPageContent />`.
+
+7. **Conversation list sidebar as a collapsible panel.** On desktop, the conversation list is a fixed-width panel (280px) on the left of the chat area, collapsible via a toggle button to icon-only width (0px — fully hidden, the chat area takes full width). The collapse state is stored in a `useState` — not persisted. On mobile, the conversation list is hidden by default and opens as a Sheet overlay (reusing the existing shadcn Sheet component from Part 1).
+
+8. **Archive toggle with CSS transitions.** The archive toggle icon in the conversation list header swaps the displayed list between active and archived conversations. The transition uses a `opacity` + `transform: translateY` CSS animation on the list container: the current list fades down and out, then the new list fades up and in. A 150ms duration keeps it snappy. The toggle icon rotates or changes (e.g., `Archive` ↔ `ArchiveRestore` from lucide-react) to indicate the current view.
+
+9. **Streaming state machine.** The chat area's state is a discriminated union:
+   - `idle` — no active generation, input enabled, send button shown
+   - `streaming` — generation in progress, input editable (type-ahead), stop button shown, streaming content updating
+   - `error` — last generation failed, retry button shown on the message, input enabled
+   This is managed inside `useChat` as a single `streamState` variable, not multiple booleans.
+
+10. **Citation preview modal reuses `StructuredSignalView`.** Clicking a citation chip opens a `Dialog` that fetches the source session's structured JSON via the existing `GET /api/sessions/[id]` route and renders it using the existing `StructuredSignalView` component from `components/capture/structured-signal-view.tsx`. No new component needed for the signal rendering — just a dialog wrapper.
+
+11. **Copy to clipboard via `navigator.clipboard.writeText()`.** Each message has a copy button in a hover-visible actions bar. For assistant messages, copy the raw markdown (the `content` field, not the rendered HTML). For user messages, copy the plain text. Show a "Copied" toast via the existing `sonner` toast setup.
+
+12. **In-conversation search is client-side only.** A search bar in the chat header (triggered by a search icon or Cmd+F) filters and highlights matches across all loaded messages. Uses a simple `text.toLowerCase().includes(query)` check. Matching positions are highlighted with a `<mark>` wrapper injected during markdown rendering. Navigation arrows cycle through matches by scrolling to each one via `react-virtuoso`'s `scrollToIndex()`.
+
+13. **`AbortController` for stream cancellation.** The `useChat` hook creates an `AbortController` when starting a `fetch` to `/api/chat/send`. The Stop button calls `controller.abort()`, which closes the fetch and the SSE stream. The hook then sends a `PATCH` to update the assistant message status to `cancelled` with whatever partial content was accumulated. This is a clean cancellation — no orphaned server processes because the server's `ReadableStream` detects the closed connection and stops.
+
+### New API Routes
+
+#### `GET /api/chat/conversations`
+
+**File:** `app/api/chat/conversations/route.ts`
+
+Query parameters:
+- `archived` — boolean string (`"true"` or `"false"`), default `"false"`
+- `search` — optional title substring filter
+- `limit` — number, default 30
+- `cursor` — optional `updated_at` ISO string for pagination
+
+Returns: `{ conversations: Conversation[], hasMore: boolean }`
+
+#### `PATCH /api/chat/conversations/[id]`
+
+**File:** `app/api/chat/conversations/[id]/route.ts`
+
+Body (Zod-validated):
+```typescript
+const updateSchema = z.object({
+  title: z.string().min(1).max(200).optional(),
+  is_pinned: z.boolean().optional(),
+  is_archived: z.boolean().optional(),
+});
+```
+
+Returns: `{ conversation: Conversation }`
+
+#### `GET /api/chat/conversations/[id]/messages`
+
+**File:** `app/api/chat/conversations/[id]/messages/route.ts`
+
+Query parameters:
+- `limit` — number, default 50
+- `cursor` — optional `created_at` ISO string for pagination
+
+Returns: `{ messages: Message[], hasMore: boolean }`
+
+### Files Changed
+
+| File | Action | Purpose |
+|------|--------|---------|
+| `app/chat/page.tsx` | **Create** | Thin server component — metadata + `<ChatPageContent />` |
+| `app/chat/_components/chat-page-content.tsx` | **Create** | Client coordinator — composes conversation sidebar + chat area, manages active conversation |
+| `app/chat/_components/conversation-sidebar.tsx` | **Create** | Conversation list panel — header (new chat, search, archive toggle), list with infinite scroll, context menus |
+| `app/chat/_components/conversation-item.tsx` | **Create** | Single conversation row — title, timestamp, pin indicator, context menu trigger |
+| `app/chat/_components/conversation-context-menu.tsx` | **Create** | Right-click / overflow context menu — Rename, Pin/Unpin, Archive/Unarchive |
+| `app/chat/_components/rename-dialog.tsx` | **Create** | Controlled dialog for renaming a conversation title |
+| `app/chat/_components/chat-area.tsx` | **Create** | Main chat area — composes header, message thread, input; handles empty state and archived read-only state |
+| `app/chat/_components/chat-header.tsx` | **Create** | Chat area header — conversation title, search toggle, collapse toggle |
+| `app/chat/_components/message-thread.tsx` | **Create** | `react-virtuoso` Virtuoso wrapper — reverse mode, infinite scroll upward, auto-scroll on new messages |
+| `app/chat/_components/message-bubble.tsx` | **Create** | Single message rendering — user vs assistant styling, markdown for assistant, status indicators, actions bar |
+| `app/chat/_components/message-actions.tsx` | **Create** | Hover-visible actions bar — copy to clipboard button (+ future actions) |
+| `app/chat/_components/streaming-message.tsx` | **Create** | Active streaming message — status text display, incremental markdown, blinking cursor indicator |
+| `app/chat/_components/message-status-indicator.tsx` | **Create** | Status badges for failed/cancelled/incomplete messages with Retry button |
+| `app/chat/_components/citation-chips.tsx` | **Create** | Source citation pills below assistant messages — client name + date |
+| `app/chat/_components/citation-preview-dialog.tsx` | **Create** | Dialog wrapper around `StructuredSignalView` for viewing a source session |
+| `app/chat/_components/follow-up-chips.tsx` | **Create** | Suggested follow-up question pills — click-to-insert into textarea |
+| `app/chat/_components/starter-questions.tsx` | **Create** | Empty state — hardcoded global starter question chips |
+| `app/chat/_components/chat-input.tsx` | **Create** | Auto-expanding textarea with Send/Stop button, Enter/Shift+Enter handling |
+| `app/chat/_components/chat-search-bar.tsx` | **Create** | In-conversation text search with highlight and navigation arrows |
+| `app/chat/_components/memoized-markdown.tsx` | **Create** | `React.memo`-wrapped `react-markdown` + `remark-gfm` renderer |
+| `lib/hooks/use-chat.ts` | **Create** | Custom SSE hook — sendMessage, cancelStream, streaming state, status, sources, follow-ups |
+| `lib/hooks/use-conversations.ts` | **Create** | Conversation list management — CRUD, pagination, archive toggle, optimistic updates |
+| `app/api/chat/conversations/route.ts` | **Create** | GET — list conversations (paginated, filterable) |
+| `app/api/chat/conversations/[id]/route.ts` | **Create** | PATCH — update conversation (title, pin, archive) |
+| `app/api/chat/conversations/[id]/messages/route.ts` | **Create** | GET — list messages for a conversation (paginated) |
+
+### Component Hierarchy
+
+```
+ChatPageContent (client coordinator)
+├── ConversationSidebar
+│   ├── Header: NewChatButton + SearchInput + ArchiveToggle
+│   ├── ConversationItem[] (infinite scroll list)
+│   │   └── ConversationContextMenu (per item)
+│   └── RenameDialog (portal, controlled)
+├── ChatArea
+│   ├── ChatHeader (title, search toggle, sidebar collapse)
+│   ├── ChatSearchBar (conditional, in-conversation search)
+│   ├── StarterQuestions (empty state only)
+│   ├── MessageThread (react-virtuoso)
+│   │   ├── MessageBubble[] (completed messages)
+│   │   │   ├── MemoizedMarkdown (assistant only)
+│   │   │   ├── CitationChips (assistant only, if sources)
+│   │   │   ├── FollowUpChips (assistant only, if follow-ups, last message only)
+│   │   │   ├── MessageActions (copy button, hover-visible)
+│   │   │   └── MessageStatusIndicator (failed/cancelled/incomplete, with Retry)
+│   │   └── StreamingMessage (active streaming, if isStreaming)
+│   │       ├── StatusText (ephemeral: "Searching...", "Generating...")
+│   │       └── MemoizedMarkdown (incremental content)
+│   ├── ArchivedBar (if conversation is archived — "Unarchive to continue")
+│   └── ChatInput (if not archived)
+│       ├── Textarea (auto-expanding)
+│       └── SendButton | StopButton
+└── CitationPreviewDialog (portal, controlled)
+```
+
+### Hook Interfaces
+
+#### `lib/hooks/use-chat.ts`
+
+```typescript
+interface UseChatOptions {
+  conversationId: string | null;
+  teamId: string | null;
+  onConversationCreated?: (id: string, isNew: boolean) => void;
+  onTitleGenerated?: (id: string, title: string) => void;
+}
+
+interface UseChatReturn {
+  /** Send a message. If conversationId is null, creates a new conversation. */
+  sendMessage: (content: string) => Promise<void>;
+  /** Cancel the in-progress stream. */
+  cancelStream: () => void;
+  /** Retry the latest failed/stale assistant message. */
+  retryLastMessage: () => Promise<void>;
+  /** Current streaming state. */
+  streamState: "idle" | "streaming" | "error";
+  /** Streaming content being accumulated (empty when idle). */
+  streamingContent: string;
+  /** Ephemeral status text from tool execution ("Searching...", etc.). */
+  statusText: string | null;
+  /** Sources from the latest completed stream (cleared on new send). */
+  latestSources: ChatSource[] | null;
+  /** Follow-up questions from the latest completed stream. */
+  latestFollowUps: string[];
+  /** Error message if streamState is "error". */
+  error: string | null;
+}
+```
+
+#### `lib/hooks/use-conversations.ts`
+
+```typescript
+interface UseConversationsOptions {
+  teamId: string | null;
+  activeConversationId: string | null;
+}
+
+interface UseConversationsReturn {
+  /** Active (non-archived) conversations, paginated. */
+  conversations: Conversation[];
+  /** Archived conversations, paginated (loaded separately). */
+  archivedConversations: Conversation[];
+  /** Whether viewing archived or active list. */
+  isArchiveView: boolean;
+  /** Toggle between active and archived views. */
+  toggleArchiveView: () => void;
+  /** Loading state for initial fetch. */
+  isLoading: boolean;
+  /** Whether more conversations can be fetched. */
+  hasMore: boolean;
+  /** Fetch the next page of conversations (active or archived). */
+  fetchMore: () => Promise<void>;
+  /** Client-side title filter. */
+  searchQuery: string;
+  setSearchQuery: (q: string) => void;
+  /** Filtered conversations (applies searchQuery to current view). */
+  filteredConversations: Conversation[];
+  /** CRUD operations (optimistic). */
+  renameConversation: (id: string, title: string) => Promise<void>;
+  pinConversation: (id: string, pinned: boolean) => Promise<void>;
+  archiveConversation: (id: string) => Promise<void>;
+  unarchiveConversation: (id: string) => Promise<void>;
+  /** Add a newly created conversation to the top of the active list. */
+  prependConversation: (conversation: Conversation) => void;
+  /** Update a conversation in-place (e.g., title from async LLM generation). */
+  updateConversation: (id: string, updates: Partial<Conversation>) => void;
+}
+```
+
+### Forward Compatibility Notes
+
+- **Part 4 (Master Signal Panel):** The `ChatArea` component's layout accommodates a right-side sliding panel. The panel overlays the chat area (via `position: fixed` + z-index), so no layout changes are needed in Part 3 — Part 4 adds the panel component and a trigger button.
+- **Future branching/retry on past messages:** The `MessageBubble` component accepts a `canRetry` prop that is only `true` for the latest assistant message. Future branching changes this to `true` for any message, and the retry logic in `useChat` evolves to support `parent_message_id`.
+
+### Implementation
+
+#### Increment 3.1: Page Shell, API Routes, and Hooks
+
+**What:** Create the `/chat` route, the conversation CRUD API routes, and the two core hooks (`useConversations`, `useChat`). Install `react-virtuoso`. This increment produces the data layer and page skeleton — no styled UI components yet.
+
+**Steps:**
+
+1. Install `react-virtuoso` (`npm install react-virtuoso`).
+2. Create `app/chat/page.tsx` — thin server component with metadata, renders `<ChatPageContent />`.
+3. Create `app/chat/_components/chat-page-content.tsx` — client component shell with `useConversations` + `useChat` wiring. Renders placeholder divs for sidebar and chat area.
+4. Create `app/api/chat/conversations/route.ts` — GET handler: auth, parse query params, call `chatService.getConversations()`, return JSON with `hasMore` flag.
+5. Create `app/api/chat/conversations/[id]/route.ts` — PATCH handler: auth, Zod validate body, call `chatService.updateConversation()`, return updated conversation.
+6. Create `app/api/chat/conversations/[id]/messages/route.ts` — GET handler: auth, parse query params, call `chatService.getMessages()`, reverse for chronological order, return JSON with `hasMore` flag.
+7. Create `lib/hooks/use-conversations.ts` — conversation list management with dual-list (active/archived), pagination, search, optimistic CRUD.
+8. Create `lib/hooks/use-chat.ts` — SSE streaming hook with `fetch` + `ReadableStream` reader, `AbortController` for cancellation, streaming state machine, retry support.
+9. Verify: TypeScript check passes. `/chat` route loads without errors.
+
+**Requirement coverage:** P3.R1 (route exists), P3.R5 (conversation list loading — data layer), P3.R6 (message loading — data layer), P3.R14 (cancel via AbortController — data layer).
+
+#### Increment 3.2: Conversation Sidebar
+
+**What:** Build the conversation sidebar UI — list, search, new chat button, archive toggle, context menus, rename dialog.
+
+**Steps:**
+
+1. Create `app/chat/_components/conversation-sidebar.tsx` — panel layout with header and scrollable list. Collapsible on desktop (280px ↔ hidden), Sheet on mobile.
+2. Create `app/chat/_components/conversation-item.tsx` — single row: truncated title, `formatRelativeTime()` timestamp, pin icon, overflow menu trigger.
+3. Create `app/chat/_components/conversation-context-menu.tsx` — uses shadcn `DropdownMenu`. Items: Rename, Pin/Unpin, Archive/Unarchive. No Delete.
+4. Create `app/chat/_components/rename-dialog.tsx` — controlled Dialog with text input, save/cancel.
+5. Wire archive toggle icon in sidebar header — smooth list transition with CSS `opacity` + `translateY` animation (150ms).
+6. Wire conversation selection: clicking a conversation sets `activeConversationId` in `ChatPageContent`.
+7. Wire New Chat button: clears `activeConversationId` to null, chat area shows empty state.
+8. Wire search input: drives `useConversations.setSearchQuery()`.
+9. Verify: conversations load and display, context menu actions work, archive toggle switches views smoothly.
+
+**Requirement coverage:** P3.R2 (conversation list display), P3.R3 (sidebar actions), P3.R4 (collapsible sidebar, mobile drawer), P3.R5 (conversation list pagination — UI), P3.R19 (auto-title display), P3.R20 (pin/unpin), P3.R21 (archive/unarchive).
+
+#### Increment 3.3: Chat Area — Message Display and Virtualized Thread
+
+**What:** Build the main chat area with the `react-virtuoso` message thread, message bubbles, markdown rendering, and auto-scroll behaviour.
+
+**Steps:**
+
+1. Create `app/chat/_components/chat-area.tsx` — layout: header + thread + input. Handles empty state (no conversation selected or new conversation) and archived state (read-only).
+2. Create `app/chat/_components/chat-header.tsx` — shows conversation title, search icon toggle, sidebar collapse toggle.
+3. Create `app/chat/_components/memoized-markdown.tsx` — `React.memo`-wrapped `ReactMarkdown` with `remarkGfm`. Equality check on `content` string. Applies `prose` CSS classes from `PROSE_CLASSES` constant.
+4. Create `app/chat/_components/message-bubble.tsx` — user messages: right-aligned, coloured background. Assistant messages: left-aligned, neutral background, rendered with `MemoizedMarkdown`. Accepts `message`, `isLatest`, `canRetry` props.
+5. Create `app/chat/_components/message-thread.tsx` — `Virtuoso` component in reverse mode. Initial load: fetch 50 messages, set `firstItemIndex = 10000 - messages.length`. On scroll-up past sentinel: fetch next 50, decrement `firstItemIndex`, prepend to list. `followOutput="auto"` for auto-scroll on new messages, disabled when user scrolls up (use `atBottomStateChange` callback).
+6. Create `app/chat/_components/message-actions.tsx` — hover-visible bar with copy-to-clipboard button. Uses `navigator.clipboard.writeText()` + sonner toast.
+7. Wire message loading: selecting a conversation triggers `useChat` context switch and initial message fetch via `GET /api/chat/conversations/[id]/messages`.
+8. Verify: messages render correctly, virtualization works (check DOM node count), infinite scroll fetches older messages, auto-scroll follows streaming.
+
+**Requirement coverage:** P3.R6 (virtualized infinite scroll), P3.R7 (message display styling), P3.R8 (markdown rendering), P3.R9 (auto-scroll), P3.R16b (copy to clipboard).
+
+#### Increment 3.4: Streaming, Status Messages, and Stop/Retry
+
+**What:** Wire the SSE streaming into the message thread — status messages, streaming content, blinking cursor, stop button, and retry on failure.
+
+**Steps:**
+
+1. Create `app/chat/_components/streaming-message.tsx` — displays ephemeral status text (fades between statuses) and incrementally-growing markdown content. Shows a blinking cursor CSS animation while streaming.
+2. Create `app/chat/_components/message-status-indicator.tsx` — renders status badges for `failed`, `cancelled`, and stale `streaming` messages. Shows "Retry" button on the latest assistant message if it has a terminal/stale status.
+3. Create `app/chat/_components/chat-input.tsx` — auto-expanding `<textarea>` (rows=1, max-rows=6) with Send button (disabled during streaming) and Stop button (visible during streaming). Enter sends, Shift+Enter newlines. Disabled (with unarchive bar) when conversation is archived.
+4. Wire `useChat.sendMessage()` to `ChatInput`. On send: optimistically add user message to thread, call API, render `StreamingMessage` as the last item in the thread.
+5. Wire `useChat.cancelStream()` to Stop button. On cancel: abort fetch, update message to `cancelled`, switch to idle state.
+6. Wire `useChat.retryLastMessage()` to Retry button. On retry: re-send the preceding user message, create new assistant message.
+7. Wire `onConversationCreated` callback: when a new conversation is created (first message in empty state), prepend it to the conversation list and set it as active.
+8. Wire `onTitleGenerated` callback: when the async title arrives via periodic refetch or conversation list reload, update the sidebar entry.
+9. Verify: full streaming flow works end-to-end, stop cancels cleanly, retry regenerates, status messages display and fade.
+
+**Requirement coverage:** P3.R10 (ephemeral status messages), P3.R11 (streaming display), P3.R12 (reconnect/retry), P3.R13 (input behaviour), P3.R14 (stop button/cancel), P3.R22 (no delete).
+
+#### Increment 3.5: Citations, Follow-ups, and Starter Questions
+
+**What:** Add citation chips, follow-up suggestion chips, starter questions in empty state, and the citation preview modal.
+
+**Steps:**
+
+1. Create `app/chat/_components/citation-chips.tsx` — renders `sources` array as pill-shaped chips (client name — formatted date). Clickable: opens citation preview dialog.
+2. Create `app/chat/_components/citation-preview-dialog.tsx` — Dialog that takes a `sessionId`, fetches the session via `GET /api/sessions/[id]`, and renders `StructuredSignalView` inside the dialog body. Loading skeleton while fetching.
+3. Create `app/chat/_components/follow-up-chips.tsx` — renders follow-up questions as clickable pills below citations. On click: inserts the question text into the `ChatInput` textarea (via a callback prop or ref).
+4. Create `app/chat/_components/starter-questions.tsx` — empty-state component with 4 hardcoded question chips. On click: calls `sendMessage()` with the question text.
+5. Wire citations into `MessageBubble` — display below assistant content if `sources` is non-null.
+6. Wire follow-ups into `MessageBubble` — display below citations only on the latest assistant message (ephemeral, from `useChat.latestFollowUps`).
+7. Wire starter questions into `ChatArea` empty state.
+8. Verify: citations display, preview modal loads session data, follow-ups insert into textarea, starter questions send messages.
+
+**Requirement coverage:** P3.R15 (citation chips), P3.R16 (citation preview modal), P3.R17 (starter questions), P3.R18 (follow-up suggestions).
+
+#### Increment 3.6: In-Conversation Search
+
+**What:** Add the in-conversation search bar with text highlighting and match navigation.
+
+**Steps:**
+
+1. Create `app/chat/_components/chat-search-bar.tsx` — search input with match count display, up/down navigation arrows, close button. Triggered by search icon in `ChatHeader` or keyboard shortcut.
+2. Implement search logic in `ChatArea`: filter loaded messages for `query` matches, compute match indices, track `currentMatchIndex`.
+3. Highlight matches in `MemoizedMarkdown` — pass `searchQuery` prop; when active, wrap matching text spans in `<mark>` elements.
+4. Navigation: up/down arrows cycle through `currentMatchIndex`, calling `react-virtuoso`'s `scrollToIndex()` to jump to the message containing the current match.
+5. Close search: clear query, remove highlights, restore normal scroll position.
+6. Verify: search highlights work across multiple messages, navigation cycles correctly, closing clears state.
+
+**Requirement coverage:** P3.R23 (in-conversation search).
+
+#### Increment 3.7: Archive Read-Only, Polish, and Cleanup Audit
+
+**What:** Implement archived conversation read-only mode, UI polish, responsive design, and end-of-part audit.
+
+**Steps:**
+
+1. In `ChatArea`: when the active conversation's `isArchived === true`, replace `ChatInput` with an "Unarchive to continue this conversation" bar containing an Unarchive button. Wire button to `useConversations.unarchiveConversation()`.
+2. Polish: verify all transitions/animations are smooth (archive toggle, message fade-in, streaming cursor), consistent spacing and typography with design tokens, responsive layout on mobile.
+3. Mobile: verify conversation sidebar opens as Sheet overlay, chat area takes full width, input is usable on small screens.
+4. Run `npx tsc --noEmit` for full type check.
+5. SRP check: each component does one thing, no oversized components.
+6. DRY check: extract any duplicated patterns.
+7. Dead code check: no unused imports or components.
+8. Convention check: naming, exports, import order, TypeScript strictness, design token adherence.
+9. Verify all PRD Part 3 acceptance criteria are met (29 items).
+10. Update `ARCHITECTURE.md` — add new files, update Current State.
+11. Update `CHANGELOG.md` with Part 3 deliverables.
+
+**Requirement coverage:** All P3.R1–P3.R23. End-of-part audit.

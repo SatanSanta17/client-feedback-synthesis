@@ -188,15 +188,16 @@ The chat is user-private — each user's conversations are visible only to them,
 - **P3.R3** Conversation list sidebar actions:
   - **"New Chat" button** at the top — starts a new conversation (clears the chat area to the empty state).
   - **Search input** — filters conversations by title (client-side filter on loaded conversations, or server-side search if the list is large).
-  - **Context menu on each conversation** (right-click or overflow icon) with: Rename, Pin/Unpin, Archive, Delete. Delete shows a confirmation dialog.
+  - **Archive toggle icon** in the conversation list header — clicking it smoothly transitions the conversation list to show archived conversations (crossfade or slide animation). The icon state changes to indicate the user is viewing the archive. Clicking again transitions back to the active list. The toggle replaces any separate "Archived" filter.
+  - **Context menu on each conversation** (right-click or overflow icon) with: Rename, Pin/Unpin, Archive (or Unarchive when viewing the archived list). No delete option — conversations are never permanently deleted from the UI.
 
 - **P3.R4** The conversation list sidebar is collapsible on desktop (independent of the main navigation sidebar). On mobile, the conversation list is hidden by default and accessible via a toggle.
 
 #### Data Loading Strategy
 
-- **P3.R5** Conversation list loading: fetch the most recent 30 conversations on initial page load (pinned first, then by `updated_at` descending). Archived conversations are excluded from the default load. If the user scrolls to the bottom of the conversation list, fetch the next batch of 30 (cursor-based pagination using `updated_at` of the oldest loaded conversation). Archived conversations load only when the user activates the "Archived" filter.
+- **P3.R5** Conversation list loading: fetch the most recent 30 conversations on initial page load (pinned first, then by `updated_at` descending). Archived conversations are excluded from the default load. If the user scrolls to the bottom of the conversation list, fetch the next batch of 30 (cursor-based pagination using `updated_at` of the oldest loaded conversation). Archived conversations are loaded separately when the user activates the archive toggle icon — this fetches the archived list with the same pagination strategy.
 
-- **P3.R6** Message loading within a conversation: on opening a conversation, fetch the most recent 50 messages (ordered by `created_at` descending from the database, then reversed for chronological display in the UI). If the conversation has more than 50 messages, show a "Load earlier messages" button at the top of the thread. Clicking it fetches the next 50 (cursor-based pagination using `created_at` of the oldest currently loaded message). Not infinite scroll — an explicit button prevents scroll-position jank when prepending messages at the top. After loading earlier messages, the user's current viewport position is preserved so they don't lose their place.
+- **P3.R6** Message loading within a conversation: on opening a conversation, fetch the most recent 50 messages (ordered by `created_at` descending from the database, then reversed for chronological display in the UI). The message thread uses `react-virtuoso` in reverse mode for virtualized infinite scroll. As the user scrolls toward the top, the next 50 messages are fetched automatically (cursor-based pagination using `created_at` of the oldest currently loaded message). `react-virtuoso`'s `firstItemIndex` shifting handles scroll position preservation natively — no manual `scrollHeight` math. Only visible messages plus an overscan buffer are rendered in the DOM, ensuring performance at any conversation length. A small loading spinner appears at the top of the list while older messages are being fetched.
 
 #### Message Display
 
@@ -216,23 +217,31 @@ The chat is user-private — each user's conversations are visible only to them,
 
 - **P3.R11** Streaming display: as `delta` SSE events arrive, tokens are appended to the assistant message content in real-time. The markdown renderer re-renders incrementally as content grows. The message shows a subtle streaming indicator (e.g., a blinking cursor) until the `done` event is received.
 
-- **P3.R12** On reconnect after a page refresh during generation:
-  - If the assistant message has status `streaming` and content is empty: display "Generating your answer..." with a polling mechanism that checks the message status every 2-3 seconds until it changes to `completed` or `failed`.
-  - If the assistant message has status `streaming` and content is non-empty: display the partial content with a "This response may be incomplete" indicator.
+- **P3.R12** On reconnect after a page refresh during generation (stale `streaming` status — the server was torn down mid-stream, so there is nothing to reconnect to):
+  - If the assistant message has status `streaming` and content is empty: display "This response failed to generate" with a "Retry" button.
+  - If the assistant message has status `streaming` and content is non-empty: display the partial content with a "This response is incomplete" indicator and a "Retry" button.
   - If the assistant message has status `completed`: display normally.
   - If the assistant message has status `failed`: display an error message with a "Retry" button.
+  - If the assistant message has status `cancelled`: display partial content (if any) with a "This response was cancelled" indicator.
+  - **Retry behaviour:** Retry is only available on the **latest** assistant message in the conversation. Clicking Retry re-sends the preceding user message and creates a new assistant message (it does not modify the failed/stale one). No auto-reconnect, no polling — the user explicitly triggers a retry. Regenerating past completed messages is not supported in v1 (deferred to future branching feature via `parent_message_id`).
 
 #### Message Input
 
-- **P3.R13** The message input is an auto-expanding textarea fixed at the bottom of the chat area. Enter sends the message. Shift+Enter inserts a newline. The send button is disabled while a response is streaming (one generation at a time).
+- **P3.R13** The message input is an auto-expanding textarea fixed at the bottom of the chat area. Enter sends the message. Shift+Enter inserts a newline. The input **remains enabled** during generation so the user can type ahead and compose their next message while waiting. However, the **Send button is disabled** (greyed out, non-clickable) while a response is streaming — only one generation at a time.
 
-- **P3.R14** The input is disabled with a visual indicator while an assistant response is being generated. The user cannot send a new message until the current generation completes, fails, or is cancelled.
+- **P3.R14** While an assistant response is being generated:
+  - The Send button is replaced by a **Stop button** (square icon, similar to ChatGPT). Clicking Stop aborts the in-flight fetch, closes the stream, marks the assistant message as `cancelled`, and stores whatever partial content was received up to that point. After cancellation, the Send button reappears and the user can send a new message.
+  - The input textarea remains editable (type-ahead) but cannot dispatch a send action until the current generation completes, fails, or is cancelled.
 
 #### Citations
 
 - **P3.R15** After an assistant message completes, sources are displayed below the message content as clickable citation chips. Each chip shows: client name and session date (e.g., "Acme Corp — Mar 15, 2026"). Chips are visually distinct from message content (smaller font, muted colour, pill-shaped).
 
 - **P3.R16** Clicking a citation chip navigates to the source session in the Capture page with that session expanded/highlighted, or opens a preview modal showing the relevant structured notes for that session. The specific interaction (navigate vs. modal) should favour the least disruptive option — a modal that shows the session's structured signal view without leaving the chat.
+
+#### Message Actions
+
+- **P3.R16b** Every message (both user and assistant) has a **copy to clipboard** action. The copy icon appears on hover or as a persistent icon in a message actions bar. For assistant messages, it copies the raw markdown source. For user messages, it copies the plain text. A brief "Copied" toast notification confirms the action.
 
 #### Suggested Questions
 
@@ -251,9 +260,9 @@ The chat is user-private — each user's conversations are visible only to them,
 
 - **P3.R20** Pin/Unpin: toggling the pin on a conversation updates `is_pinned` and immediately reorders the conversation list (pinned float to top).
 
-- **P3.R21** Archive: archiving a conversation sets `is_archived = true` and removes it from the default list view. An "Archived" filter option in the conversation list reveals archived conversations. Archived conversations can be unarchived.
+- **P3.R21** Archive: archiving a conversation sets `is_archived = true` and removes it from the active list with a smooth exit animation. The archive toggle icon in the conversation list header switches to the archived view where the user can see and manage archived conversations. Archived conversations are **read-only** — the message thread displays normally but the input area is replaced with an "Unarchive to continue this conversation" bar with an Unarchive button. Unarchiving sets `is_archived = false` and moves the conversation back to the active list, re-enabling the input. If the user archives the currently active conversation, the chat area returns to the empty state.
 
-- **P3.R22** Delete: deleting a conversation permanently removes it and all its messages (cascade). A confirmation dialog is shown before deletion. If the deleted conversation is the currently active one, the chat area returns to the empty state.
+- **P3.R22** There is no delete option in the UI. Conversations are only archived, never permanently deleted by the user. The hard-delete capability exists in the repository layer for administrative or data-cleanup purposes but is not exposed in any user-facing interface.
 
 #### In-Conversation Search
 
@@ -264,18 +273,23 @@ The chat is user-private — each user's conversations are visible only to them,
 - [ ] `/chat` route exists and is accessible from the sidebar navigation
 - [ ] Conversation list sidebar displays conversations sorted by pinned-first then most recent
 - [ ] Conversation list loads initial 30 conversations with infinite scroll for more
-- [ ] Archived conversations load only when the Archived filter is active
-- [ ] New Chat, search, rename, pin/unpin, archive, and delete all function correctly
-- [ ] Messages load the most recent 50 on conversation open with "Load earlier messages" button for older messages
-- [ ] Loading earlier messages preserves the user's current scroll position
+- [ ] Archive toggle icon in conversation list header smoothly transitions between active and archived views
+- [ ] Archived conversations load only when the archive toggle is active
+- [ ] New Chat, search, rename, pin/unpin, and archive all function correctly
+- [ ] Messages load the most recent 50 on conversation open with `react-virtuoso` reverse-mode infinite scroll for older messages
+- [ ] Scrolling up in the message thread automatically fetches older messages with scroll position preserved
+- [ ] Only visible messages plus overscan buffer are rendered in the DOM (virtualization)
 - [ ] Message thread displays user and assistant messages with distinct styling
 - [ ] Assistant messages render markdown content correctly
 - [ ] Auto-scroll works during streaming, pauses when user scrolls up
 - [ ] Ephemeral status messages display during retrieval and generation phases
 - [ ] Streaming tokens render in real-time with a streaming indicator
-- [ ] Reconnect after refresh handles all status states (streaming, completed, failed)
+- [ ] Reconnect after refresh shows Retry button for stale `streaming`, `failed`, or `cancelled` messages (no polling, no auto-reconnect)
+- [ ] Retry on the latest assistant message re-sends the preceding user message and creates a new generation
 - [ ] Message input auto-expands, sends on Enter, newline on Shift+Enter
-- [ ] Input is disabled during active generation
+- [ ] Input textarea remains editable during generation (type-ahead) but Send is disabled
+- [ ] Stop button replaces Send during active generation; clicking it cancels the stream and stores partial content
+- [ ] Copy to clipboard action available on all messages (user and assistant) with "Copied" toast
 - [ ] Citations display as clickable chips with client name and date
 - [ ] Clicking a citation opens a session preview modal
 - [ ] In-conversation search highlights matching text and supports navigation between matches
@@ -283,8 +297,8 @@ The chat is user-private — each user's conversations are visible only to them,
 - [ ] Contextual follow-up suggestions display after each assistant response
 - [ ] Auto-title sets conversation title from first message
 - [ ] Pin/unpin reorders the conversation list
-- [ ] Archive hides conversation, with option to view and unarchive
-- [ ] Delete removes conversation with confirmation dialog
+- [ ] Archive removes conversation from active list; archived conversations are read-only with Unarchive action
+- [ ] No delete option exists in the user-facing interface
 
 ---
 
@@ -329,7 +343,8 @@ The chat is user-private — each user's conversations are visible only to them,
 
 - **Progressive DB writes during streaming** — write assistant message content to the database every N seconds during generation for true refresh resilience (v2 streaming)
 - **Supabase Realtime for stream delivery** — fully decouple generation from client connection using Supabase Realtime channels as the pub/sub layer (v2 streaming)
-- **Edit and retry messages** — tree structure is ready via `parent_message_id`. UI for editing a past user message and regenerating from that point, showing branching conversation paths
+- **Edit and retry messages** — tree structure is ready via `parent_message_id`. UI for editing a past user message and regenerating from that point, showing branching conversation paths. Includes regenerating past completed assistant messages (branch model with navigation arrows between branches)
+- **Conversation delete** — permanent deletion is not exposed in v1 (archive-only). May be added as a "Delete permanently" option within the archived list in a future iteration
 - **Conversation sharing** — share a conversation link with teammates (requires relaxing user-private RLS for shared conversations)
 - **Export conversation** — download a conversation as PDF or markdown
 - **Multi-modal chat** — attach files or images to chat messages for context-aware Q&A
