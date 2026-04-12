@@ -288,3 +288,70 @@ This part covers P2.R1 through P2.R4 from the PRD.
 | File | Action | Increment |
 |------|--------|-----------|
 | `app/settings/team/page.tsx` | Create | 1 |
+
+---
+
+## Part 3 — Dedicated Extraction Prompt Page (`/settings/prompts`)
+
+This part covers P3.R1 through P3.R5 from the PRD.
+
+---
+
+### Increment 1: Create Extraction Prompt Page
+
+**What:** Create the `/settings/prompts` route, showing only the extraction prompt editor and dropping the tabs UI and master signal prompts.
+
+**Files changed:**
+
+| File | Action |
+|------|--------|
+| `app/settings/prompts/page.tsx` | **Create** — new page route |
+| `app/settings/prompts/_components/extraction-prompt-client.tsx` | **Create** — client component for the editor |
+| `app/settings/prompts/_components/use-extraction-prompt.ts` | **Create** — specialized hook for single prompt |
+| `app/settings/_components/prompt-editor-page-content.tsx` | **Delete** — replaced by `extraction-prompt-client.tsx` |
+| `app/settings/_components/use-prompt-editor.ts` | **Delete** — replaced by `use-extraction-prompt.ts` |
+| `app/settings/_components/prompt-master-signal-notice.tsx` | **Delete** — no longer needed |
+| `app/settings/_components/prompt-unsaved-dialog.tsx` | **Delete** — no longer needed (tabs removed) |
+
+**Implementation details:**
+
+1. **Page Route & Access Control (`app/settings/prompts/page.tsx`):**
+   - Create a Server Component that resolves team context (similar to Team Management).
+   - Use the shared `PageHeader` component with the title "Extraction Prompt".
+   - If the user is in a personal workspace context, they get full edit access (`isAdmin = true`).
+   - If the user is in a team workspace context but is not an admin, pass `readOnly={true}` to the client component.
+
+2. **Simplified Hook (`use-extraction-prompt.ts`):**
+   - Create a new hook that only manages the state for `signal_extraction`.
+   - Remove all logic related to tabs, master signal selection, and un-saved tab switching dialogs.
+   - Retain fetch, save, revert, reset, and version history functions for the single prompt.
+
+3. **Client Component (`extraction-prompt-client.tsx`):**
+   - Re-use the existing `PromptEditor`, `VersionHistoryPanel`, and `VersionViewDialog` from `app/settings/_components`.
+   - Render the single editor layout without the `Tabs` UI.
+   - If `readOnly` is passed, show the Info banner ("Only team admins can edit prompts. You can view them here.") and disable saving/reverting.
+
+4. **Cleanup:**
+   - Delete the old tab-based components and hooks since they are no longer used anywhere.
+
+**Verify:**
+- `/settings/prompts` renders the single extraction prompt editor.
+- The shared `PageHeader` displays correctly.
+- Version history, reverting, saving, and reset-to-default functionality works as before.
+- Non-admin team members see a read-only view with the banner.
+- Personal workspace users have full edit access.
+- Dead code (tabs UI, master signal notices) is removed.
+
+---
+
+### Summary of all files touched in Part 3
+
+| File | Action | Increment |
+|------|--------|-----------|
+| `app/settings/prompts/page.tsx` | Create | 1 |
+| `app/settings/prompts/_components/extraction-prompt-client.tsx` | Create | 1 |
+| `app/settings/prompts/_components/use-extraction-prompt.ts` | Create | 1 |
+| `app/settings/_components/prompt-editor-page-content.tsx` | Delete | 1 |
+| `app/settings/_components/use-prompt-editor.ts` | Delete | 1 |
+| `app/settings/_components/prompt-master-signal-notice.tsx` | Delete | 1 |
+| `app/settings/_components/prompt-unsaved-dialog.tsx` | Delete | 1 |
