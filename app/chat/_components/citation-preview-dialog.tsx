@@ -8,7 +8,7 @@
 // to navigate to the full session detail page.
 // ---------------------------------------------------------------------------
 
-import Link from "next/link";
+import { useState } from "react";
 import { ExternalLink, FileText, Calendar, Tag } from "lucide-react";
 
 import { cn } from "@/lib/utils";
@@ -20,6 +20,7 @@ import {
   DialogDescription,
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
+import { SessionPreviewDialog } from "@/components/capture/session-preview-dialog";
 import type { ChatSource } from "@/lib/types/chat";
 
 // ---------------------------------------------------------------------------
@@ -65,9 +66,12 @@ export function CitationPreviewDialog({
   open,
   onOpenChange,
 }: CitationPreviewDialogProps) {
+  const [previewSessionId, setPreviewSessionId] = useState<string | null>(null);
+
   // Do NOT early-return when source is null — Dialog must remain mounted for
   // the close animation to complete. The `open` prop controls visibility.
   return (
+    <>
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-lg">
         {source && (
@@ -106,20 +110,24 @@ export function CitationPreviewDialog({
 
             {/* Footer with link to session */}
             <div className="mt-2 flex justify-end">
-              <Button variant="outline" size="sm" asChild>
-                <Link
-                  href={`/sessions/${source.sessionId}`}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                >
-                  <ExternalLink className="mr-1.5 size-3.5" aria-hidden="true" />
-                  View full session
-                </Link>
+              <Button 
+                variant="outline" 
+                size="sm" 
+                onClick={() => setPreviewSessionId(source.sessionId)}
+              >
+                <ExternalLink className="mr-1.5 size-3.5" aria-hidden="true" />
+                View full session
               </Button>
             </div>
           </>
         )}
       </DialogContent>
     </Dialog>
+
+    <SessionPreviewDialog
+      sessionId={previewSessionId}
+      onClose={() => setPreviewSessionId(null)}
+    />
+    </>
   );
 }

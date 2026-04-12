@@ -10,7 +10,7 @@ import {
   SheetDescription,
 } from "@/components/ui/sheet";
 import { DrillDownContent } from "./drill-down-content";
-import { SessionPreviewDialog } from "./session-preview-dialog";
+import { SessionPreviewDialog } from "@/components/capture/session-preview-dialog";
 import type { DrillDownContext } from "./drill-down-types";
 
 // ---------------------------------------------------------------------------
