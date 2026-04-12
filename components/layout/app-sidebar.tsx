@@ -8,6 +8,7 @@ import {
   Pencil,
   MessageSquare,
   Settings,
+  ChevronDown,
   MoreHorizontal,
   Menu,
   Sun,
@@ -60,11 +61,11 @@ const NAV_ITEMS: NavItem[] = [
     href: "/chat",
     icon: <MessageSquare className="size-5 shrink-0" />,
   },
-  {
-    label: "Settings",
-    href: "/settings",
-    icon: <Settings className="size-5 shrink-0" />,
-  },
+];
+
+const SETTINGS_ITEMS: { label: string; href: string }[] = [
+  { label: "Team Management", href: "/settings/team" },
+  { label: "Extraction Prompt", href: "/settings/prompts" },
 ];
 
 /* ------------------------------------------------------------------ */
@@ -76,6 +77,8 @@ interface SidebarContentProps {
   showLabels: boolean;
   pathname: string;
   theme: "light" | "dark";
+  settingsOpen: boolean;
+  onSettingsToggle: () => void;
   onThemeToggle: () => void;
   onDropdownOpenChange?: (open: boolean) => void;
   /** Called when a nav link is clicked (used by mobile drawer to close). */
@@ -86,12 +89,15 @@ function SidebarContent({
   showLabels,
   pathname,
   theme,
+  settingsOpen,
+  onSettingsToggle,
   onThemeToggle,
   onDropdownOpenChange,
   onNavigate,
 }: SidebarContentProps) {
   const isDark = theme === "dark";
   const ThemeIcon = isDark ? Sun : Moon;
+  const isSettingsRouteActive = pathname.startsWith("/settings");
 
   return (
     <>
@@ -140,6 +146,62 @@ function SidebarContent({
             </Link>
           );
         })}
+
+        {/* ---- Settings accordion ---- */}
+        <div className="mt-1">
+          <button
+            type="button"
+            onClick={onSettingsToggle}
+            title={!showLabels ? "Settings" : undefined}
+            className={cn(
+              "flex w-full cursor-pointer items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors",
+              isSettingsRouteActive
+                ? "bg-[var(--brand-primary-light)] text-[var(--brand-primary)]"
+                : "text-[var(--text-secondary)] hover:bg-[var(--surface-raised)] hover:text-[var(--text-primary)]"
+            )}
+          >
+            <Settings className="size-5 shrink-0" />
+            <span
+              className={cn(
+                "truncate transition-opacity duration-200",
+                showLabels ? "opacity-100" : "pointer-events-none w-0 overflow-hidden opacity-0"
+              )}
+            >
+              Settings
+            </span>
+            {showLabels && (
+              <ChevronDown
+                className={cn(
+                  "ml-auto size-4 transition-transform duration-200",
+                  settingsOpen && "rotate-180"
+                )}
+              />
+            )}
+          </button>
+
+          {settingsOpen && showLabels && (
+            <div className="mt-1 flex flex-col gap-0.5 pl-5">
+              {SETTINGS_ITEMS.map((item) => {
+                const isActive = pathname.startsWith(item.href);
+                return (
+                  <Link
+                    key={item.href}
+                    href={item.href}
+                    onClick={onNavigate}
+                    className={cn(
+                      "rounded-md px-3 py-1.5 text-sm transition-colors",
+                      isActive
+                        ? "bg-[var(--brand-primary-light)] font-medium text-[var(--brand-primary)]"
+                        : "text-[var(--text-secondary)] hover:bg-[var(--surface-raised)] hover:text-[var(--text-primary)]"
+                    )}
+                  >
+                    {item.label}
+                  </Link>
+                );
+              })}
+            </div>
+          )}
+        </div>
       </nav>
 
       {/* ---- Bottom section ---- */}
@@ -190,11 +252,16 @@ export function AppSidebar({ className }: AppSidebarProps) {
   const { theme, setTheme } = useTheme();
   const [expanded, setExpanded] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const openDropdownCount = useRef(0);
 
   const handleThemeToggle = useCallback(() => {
     setTheme(theme === "dark" ? "light" : "dark");
   }, [theme, setTheme]);
+
+  const handleSettingsToggle = useCallback(() => {
+    setSettingsOpen((prev) => !prev);
+  }, []);
 
   /** Track dropdown open/close so mouseleave doesn't collapse the sidebar
    *  while a portal-mounted dropdown is still visible. */
@@ -220,9 +287,10 @@ export function AppSidebar({ className }: AppSidebarProps) {
     setMobileOpen(false);
   }, []);
 
-  /* Close mobile drawer when pathname changes (e.g. programmatic navigation) */
+  /* Close mobile drawer and reset settings accordion when pathname changes */
   useEffect(() => {
     setMobileOpen(false);
+    setSettingsOpen(false);
   }, [pathname]);
 
   return (
@@ -243,6 +311,8 @@ export function AppSidebar({ className }: AppSidebarProps) {
           showLabels={expanded}
           pathname={pathname}
           theme={theme}
+          settingsOpen={settingsOpen}
+          onSettingsToggle={handleSettingsToggle}
           onThemeToggle={handleThemeToggle}
           onDropdownOpenChange={handleDropdownOpenChange}
         />
@@ -268,6 +338,8 @@ export function AppSidebar({ className }: AppSidebarProps) {
             showLabels
             pathname={pathname}
             theme={theme}
+            settingsOpen={settingsOpen}
+            onSettingsToggle={handleSettingsToggle}
             onThemeToggle={handleThemeToggle}
             onNavigate={handleMobileNavigate}
           />

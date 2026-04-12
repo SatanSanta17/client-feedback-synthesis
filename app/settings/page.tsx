@@ -1,9 +1,9 @@
-import { SettingsPageContent } from "./_components/settings-page-content";
+import { redirect } from "next/navigation";
 
 export const metadata = {
   title: "Settings — Synthesiser",
 };
 
 export default function SettingsPage() {
-  return <SettingsPageContent />;
+  redirect("/settings/team");
 }
