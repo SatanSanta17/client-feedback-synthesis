@@ -11,11 +11,11 @@
 - check how much tokens can be passed in different models
 - regular cleanup as the painpoints are resolved (cleanup Dashboard)
 - on switching context the chat needs to refresh and also we need to isolate chats based on workspace as well because discussion in one conversation wrt a particular workspace should not be referred to while in another workspace am i rigth?
-- there is a table team_members why do we need that table?
+- populate mock data
+- calling agent integration
+
 but it doesnt end here i am trying to build a platform that handles end to end product development life cycle which starts from client calls--> identifying requirements--> advise features--> design architecture--> develop a prototype--> get approval--> and deploy 
 and this cycle continues for modifications and maintainance 
 minimal human in the loop interaction 
-
 Beyond insight extraction, the platform is evolving into an end-to-end product development lifecycle solution. It aims to seamlessly transition from client interactions to requirement identification, feature recommendations, architectural design, and rapid prototyping.
-
 The system is designed to support iterative workflows—facilitating approvals, deployment, and continuous enhancements—while maintaining alignment with evolving client needs. With minimal human intervention, the goal is to create a streamlined, intelligent pipeline that accelerates development while preserving accuracy and consistency.
