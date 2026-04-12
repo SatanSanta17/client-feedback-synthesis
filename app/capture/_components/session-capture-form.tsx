@@ -188,9 +188,9 @@ export function SessionCaptureForm({ onSessionSaved }: SessionCaptureFormProps) 
   }
 
   return (
-    <div className="w-full max-w-2xl rounded-lg border border-border bg-card p-6">
+    <div className="w-full max-w-4xl rounded-lg border border-border bg-card p-6">
       <h2 className="mb-6 text-lg font-semibold text-foreground">
-        Capture Session
+        New Session
       </h2>
 
       <form onSubmit={handleSubmit(onSubmit)} className="flex flex-col gap-5">

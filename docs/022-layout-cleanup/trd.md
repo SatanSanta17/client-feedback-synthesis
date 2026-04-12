@@ -355,3 +355,74 @@ This part covers P3.R1 through P3.R5 from the PRD.
 | `app/settings/_components/use-prompt-editor.ts` | Delete | 1 |
 | `app/settings/_components/prompt-master-signal-notice.tsx` | Delete | 1 |
 | `app/settings/_components/prompt-unsaved-dialog.tsx` | Delete | 1 |
+
+---
+
+## Part 4 — Landing Page Refresh
+
+This part covers P4.R1 through P4.R5 from the PRD.
+
+---
+
+### Increment 1: Update Landing Page Copy and Features
+
+**What:** Remove all references to the deprecated "master signal" feature on the landing page, replacing them with highlights for the new Insights Dashboard and Chat features.
+
+**Files changed:**
+
+| File | Action |
+|------|--------|
+| `app/_components/landing-page.tsx` | **Modify** — update `FEATURES` and `STEPS` arrays, replace `Brain` icon |
+
+**Implementation details:**
+
+1. **Update Imports:**
+   - Remove `Brain` from `lucide-react` imports.
+   - Add `BarChart3` and `MessageSquareSearch` to `lucide-react` imports.
+
+2. **Update `FEATURES` Array:**
+   - Remove the "Cross-Client Synthesis" item.
+   - Insert "Insights Dashboard":
+     ```typescript
+     {
+       icon: BarChart3,
+       title: "Insights Dashboard",
+       description: "Sentiment shifts, urgency spikes, theme trends — your entire client landscape distilled into one interactive view. Spot what matters before it becomes a fire.",
+     }
+     ```
+   - Insert "Ask Your Data":
+     ```typescript
+     {
+       icon: MessageSquareSearch,
+       title: "Ask Your Data",
+       description: "Skip the spreadsheet safari. Ask a question in plain English and get answers grounded in every session your team has ever captured — with citations.",
+     }
+     ```
+   - Keep "Capture Everything", "AI Signal Extraction", and "Team Workspaces" as is.
+
+3. **Update `STEPS` Array:**
+   - Change Step 3 ("Synthesise") to "Understand":
+     ```typescript
+     {
+       number: "03",
+       title: "Understand",
+       description: "Your dashboard lights up with trends, and Chat answers any question across all your sessions — instantly.",
+     }
+     ```
+   - Keep Step 1 and Step 2 as is.
+
+4. **Hero Copy (`P4.R5`):**
+   - No changes needed to the main hero headline ("Turn every client conversation into a product signal").
+
+**Verify:**
+- Visiting the root `/` page when unauthenticated shows the updated features and steps.
+- No visual regressions on the layout.
+- The term "master signal" or "master document" is completely removed from the file.
+
+---
+
+### Summary of all files touched in Part 4
+
+| File | Action | Increment |
+|------|--------|-----------|
+| `app/_components/landing-page.tsx` | Modify | 1 |

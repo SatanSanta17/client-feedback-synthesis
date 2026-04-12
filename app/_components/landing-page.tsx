@@ -8,6 +8,7 @@ import {
   Users,
   ArrowRight,
   MessageSquareText,
+  BarChart3,
   Brain,
   Target,
   Mail,
@@ -39,10 +40,16 @@ const FEATURES = [
       "Your notes go in messy. They come out as clear signals — pain points, feature requests, praise, and priorities — all tagged and ready.",
   },
   {
-    icon: Brain,
-    title: "Cross-Client Synthesis",
+    icon: BarChart3,
+    title: "Insights Dashboard",
     description:
-      "One click generates a master signal document that surfaces recurring themes, rising urgency, and roadmap gaps across every client.",
+      "Sentiment shifts, urgency spikes, theme trends — your entire client landscape distilled into one interactive view. Spot what matters before it becomes a fire.",
+  },
+  {
+    icon: Brain,
+    title: "Ask Your Data",
+    description:
+      "Skip the spreadsheet safari. Ask a question in plain English and get answers grounded in every session your team has ever captured — with citations.",
   },
   {
     icon: Users,
@@ -65,8 +72,8 @@ const STEPS = [
   },
   {
     number: "03",
-    title: "Synthesise",
-    description: "A living master document shows cross-client patterns at a glance.",
+    title: "Understand",
+    description: "Your dashboard lights up with trends, and Chat answers any question across all your sessions — instantly.",
   },
 ] as const;
 

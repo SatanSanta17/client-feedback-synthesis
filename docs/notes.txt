@@ -13,6 +13,8 @@
 - on switching context the chat needs to refresh and also we need to isolate chats based on workspace as well because discussion in one conversation wrt a particular workspace should not be referred to while in another workspace am i rigth?
 - populate mock data
 - calling agent integration
+- make dashboard as the entry point of the app currently its the capture page
+- separate dev db with production db
 
 but it doesnt end here i am trying to build a platform that handles end to end product development life cycle which starts from client calls--> identifying requirements--> advise features--> design architecture--> develop a prototype--> get approval--> and deploy 
 and this cycle continues for modifications and maintainance 
