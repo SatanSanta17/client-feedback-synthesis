@@ -41,7 +41,7 @@ const FALLBACK_CLASSIFICATION: ClassificationResult = { type: "broad" };
 
 const classificationSchema = z.object({
   type: z.enum(["broad", "specific", "comparative"]),
-  entities: z.array(z.string()).optional(),
+  entities: z.array(z.string()).nullable(),
 });
 
 // ---------------------------------------------------------------------------

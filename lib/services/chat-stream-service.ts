@@ -107,7 +107,7 @@ export function createChatStream(deps: ChatStreamDeps): ReadableStream {
       try {
         const result = streamText({
           model,
-          system: CHAT_SYSTEM_PROMPT,
+          system: `${CHAT_SYSTEM_PROMPT}\n\nToday's date is ${new Date().toISOString().split('T')[0]}. Use this to resolve relative time references (e.g. "past month", "last week").`,
           messages: contextMessages.map((m) => ({
             role: m.role as "user" | "assistant",
             content: m.content,
@@ -304,15 +304,18 @@ function buildSearchInsightsTool(
           sseEvent("status", { text: "Searching across sessions..." })
         )
       );
-
       const results = await retrieveRelevantChunks(
         query,
         {
           teamId,
-          clientName: filters?.clientName,
-          dateFrom: filters?.dateFrom,
-          dateTo: filters?.dateTo,
-          chunkTypes: filters?.chunkTypes as ChunkType[] | undefined,
+          // Convert empty strings to undefined
+          clientName: filters?.clientName?.trim() || undefined,
+          dateFrom: filters?.dateFrom?.trim() || undefined,
+          dateTo: filters?.dateTo?.trim() || undefined,
+          // Convert empty arrays to undefined
+          chunkTypes: filters?.chunkTypes && filters.chunkTypes.length > 0
+            ? (filters.chunkTypes as ChunkType[])
+            : undefined,
         },
         embeddingRepo
       );
@@ -388,18 +391,16 @@ function buildQueryDatabaseTool(
           sseEvent("status", { text: "Looking up your data..." })
         )
       );
-
       const result = await executeQuery(
         supabaseClient,
         action as QueryAction,
         {
           teamId,
-          dateFrom: filters?.dateFrom,
-          dateTo: filters?.dateTo,
-          clientName: filters?.clientName,
+          dateFrom: filters?.dateFrom?.trim() || undefined,
+          dateTo: filters?.dateTo?.trim() || undefined,
+          clientName: filters?.clientName?.trim() || undefined,
         }
       );
-
       console.log(
         `${LOG_PREFIX} tool:queryDatabase — action: ${action} completed`
       );
