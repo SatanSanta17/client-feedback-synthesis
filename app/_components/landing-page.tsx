@@ -51,12 +51,12 @@ const FEATURES = [
     description:
       "Skip the spreadsheet safari. Ask a question in plain English and get answers grounded in every session your team has ever captured — with citations.",
   },
-  {
-    icon: Users,
-    title: "Team Workspaces",
-    description:
-      "Invite your sales and CS team. Everyone captures, AI synthesises across all sessions, and the whole team sees the same truth.",
-  },
+  // {
+  //   icon: Users,
+  //   title: "Team Workspaces",
+  //   description:
+  //     "Invite your sales and CS team. Everyone captures, AI synthesises across all sessions, and the whole team sees the same truth.",
+  // },
 ] as const;
 
 const STEPS = [
