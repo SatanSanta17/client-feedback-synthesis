@@ -148,14 +148,14 @@ export async function generateHeadlineInsights(
   });
 
   console.log(
-    `${LOG_PREFIX} generateHeadlineInsights — LLM returned ${llmResponse.length} insights`
+    `${LOG_PREFIX} generateHeadlineInsights — LLM returned ${llmResponse.insights.length} insights`
   );
 
   // 4. Insert batch
   const batchId = randomUUID();
   const now = new Date().toISOString();
 
-  const inserts: InsightInsert[] = llmResponse.map((item) => ({
+  const inserts: InsightInsert[] = llmResponse.insights.map((item) => ({
     content: item.content,
     insight_type: item.insightType,
     batch_id: batchId,

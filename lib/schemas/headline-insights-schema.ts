@@ -15,11 +15,14 @@ export const headlineInsightItemSchema = z.object({
     .describe("Classification: trend, anomaly, or milestone."),
 });
 
-/** Schema for the full LLM response: an array of 3–5 insights. */
-export const headlineInsightsResponseSchema = z
-  .array(headlineInsightItemSchema)
-  .min(1)
-  .max(5);
+/** Schema for the full LLM response: an object with a list of 3–5 insights. */
+export const headlineInsightsResponseSchema = z.object({
+  insights: z
+    .array(headlineInsightItemSchema)
+    .min(1)
+    .max(5)
+    .describe("List of 1 to 5 headline insights"),
+});
 
 export type HeadlineInsightsResponse = z.infer<
   typeof headlineInsightsResponseSchema
