@@ -29,7 +29,7 @@ export const themeAssignmentItemSchema = z.object({
         description: z
           .string()
           .max(200)
-          .optional()
+          .nullable()
           .describe("One-sentence description of what this theme covers (new themes only)"),
       })
     )
