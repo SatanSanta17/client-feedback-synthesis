@@ -217,20 +217,23 @@ synthesiser/
 │   │       ├── master-signal-status-banner.tsx # Presentational banner for tainted/stale/info states
 │   │       └── use-master-signal.ts           # Hook — fetch, generate, download PDF, all state + derived values
 │   └── settings/
-│       ├── page.tsx             # Settings page — renders SettingsPageContent
+│       ├── page.tsx             # Settings page — redirects to /settings/team
+│       ├── prompts/
+│       │   ├── page.tsx         # Extraction Prompt page
+│       │   └── _components/
+│       │       ├── extraction-prompt-client.tsx  # Client coordinator for extraction prompt
+│       │       └── use-extraction-prompt.ts      # Hook for extraction prompt state
+│       ├── team/
+│       │   ├── page.tsx         # Team Management page
+│       │   └── _components/
+│       │       └── team-management-client.tsx    # Client coordinator for team settings
 │       └── _components/
 │           ├── invite-bulk-dialog.tsx          # Bulk invite dialog (CSV/paste, max 20 emails)
 │           ├── invite-single-form.tsx          # Single email invite form
 │           ├── pending-invitations-table.tsx   # Table of pending invitations with revoke/resend
-│           ├── prompt-editor-page-content.tsx  # Coordinator — composes tabs, editor, notices, dialogs
 │           ├── prompt-editor.tsx               # Monospace textarea with loading skeleton
-│           ├── prompt-master-signal-notice.tsx # Contextual cold-start/incremental info box with toggle
-│           ├── prompt-unsaved-dialog.tsx       # Unsaved changes confirmation dialog
-│           ├── settings-page-content.tsx       # Orchestrator — tabs for Prompts + Team Settings
-│           ├── use-prompt-editor.ts           # Hook — fetch, save, reset, revert, dirty guard, tab state
 │           ├── team-danger-zone.tsx            # Rename + delete team (owner only)
 │           ├── team-members-table.tsx          # Members list with role change, remove, transfer, leave
-│           ├── team-settings.tsx               # Team settings orchestrator — members, invites, danger zone
 │           ├── version-history-panel.tsx       # Collapsible version history with view/revert
 │           └── version-view-dialog.tsx         # Read-only dialog for viewing past prompt versions
 ├── components/
@@ -250,6 +253,7 @@ synthesiser/
 │   │   ├── app-sidebar.tsx      # Instagram-style hover-to-expand sidebar — icon-only at rest, overlay on hover, mobile drawer via Sheet; nav links (Dashboard, Capture, Chat, Settings), workspace switcher, more menu, user menu
 │   │   ├── authenticated-layout.tsx # Auth-aware layout wrapper — sidebar + margin for authenticated routes, footer-only for public routes
 │   │   ├── create-team-dialog.tsx # Controlled team creation dialog (opened from workspace switcher)
+│   │   ├── page-header.tsx      # Shared header component with title and description
 │   │   ├── synthesiser-logo.tsx # SVG logo component — full (wordmark) and icon-only variants
 │   │   ├── theme-toggle.tsx     # Theme toggle button — Sun/Moon icon with label
 │   │   ├── user-menu.tsx        # Auth-aware user menu — avatar, email, sign-out dropdown; supports side/collapsed/onOpenChange props for sidebar integration

@@ -6,6 +6,29 @@ All notable changes to this project are documented here, grouped by PRD and part
 
 ## [Unreleased]
 
+### PRD-022 Layout Cleanup — 2026-04-12
+
+**Part 1 — Settings Accordion in Sidebar + Shared Page Header:**
+- Replaced the "Settings" nav link in `app-sidebar.tsx` with a collapsible Settings accordion containing "Team Management" and "Extraction Prompt" sub-links.
+- Created reusable `PageHeader` component (`components/layout/page-header.tsx`) and adopted it on Dashboard and Capture pages.
+- Replaced the tabbed settings page (`app/settings/page.tsx`) with a redirect to `/settings/team`.
+
+**Part 2 — Dedicated Team Management Page:**
+- Created dedicated team management page (`app/settings/team/page.tsx`) restricted to team admins.
+- Created `team-management-client.tsx` to group existing components into "Access" and "Manage Team" sections.
+- Safely deleted `app/settings/_components/team-settings.tsx`.
+
+**Part 3 — Dedicated Extraction Prompt Page:**
+- Created dedicated extraction prompt page (`app/settings/prompts/page.tsx`) with full edit access for personal/admins and read-only for non-admins.
+- Created `extraction-prompt-client.tsx` and `use-extraction-prompt.ts` focused solely on the single signal extraction prompt.
+- Removed tabs UI and master signal prompts; deleted dead code (`prompt-editor-page-content.tsx`, `prompt-master-signal-notice.tsx`, `prompt-unsaved-dialog.tsx`, `use-prompt-editor.ts`, `settings-page-content.tsx`).
+
+**Part 4 — Landing Page Refresh:**
+- Updated marketing copy on `/` to reflect the current product value (Insights Dashboard + Chat).
+- Swapped out "Cross-Client Synthesis" feature card for "Insights Dashboard" and "Ask Your Data".
+- Updated Step 3 in "How It Works" to "Understand" instead of "Synthesise".
+- Purged all mentions of the deprecated "master signal" from the landing page.
+
 ### PRD-021 Part 6: Filters and Interactivity — 2026-04-12
 
 **Cross-widget filtering (P6.R2):**
