@@ -209,3 +209,82 @@ This component housed the tabbed layout that combined prompts and team settings.
 | `components/layout/app-sidebar.tsx` | Modify | 2 |
 | `app/settings/page.tsx` | Modify | 3 |
 | `app/settings/_components/settings-page-content.tsx` | Delete | 3 |
+
+---
+
+## Part 2 — Dedicated Team Management Page (`/settings/team`)
+
+This part covers P2.R1 through P2.R4 from the PRD.
+
+---
+
+### Increment 1: Create Team Management Page
+
+**What:** Create the `/settings/team` route with the shared `PageHeader` and migrate the existing team management components into distinct "Access" and "Manage Team" sections.
+
+**Files changed:**
+
+| File | Action |
+|------|--------|
+| `app/settings/team/page.tsx` | **Create** — new page route |
+
+**Implementation details:**
+
+1. **Context Resolution & Access Control:**
+   - Create a Server Component `TeamManagementPage` at `app/settings/team/page.tsx`.
+   - Retrieve the current session and workspace context (preserving logic from the old `SettingsPageContent` or existing context resolvers).
+   - **Personal Workspace:** If the user is in a personal workspace context, show a message stating that team management is not available in personal workspaces.
+   - **Team Workspace (Non-Admin):** If the user is a team member without admin permissions, render a read-only view of the members.
+
+2. **PageHeader:**
+   - Import the shared `PageHeader` component.
+   - Render it at the top of the page content:
+     ```tsx
+     <PageHeader 
+       title="Team Management" 
+       description={`Manage members, invitations, and settings for ${teamName}.`} 
+     />
+     ```
+
+3. **Sections Layout:**
+   - Import existing components: `TeamMembersTable`, `InviteSingleForm`, `InviteBulkDialog`, `PendingInvitationsTable`, and `TeamDangerZone`.
+   - Organize the layout into two clearly labelled sections:
+   
+   **Section 1: Access**
+   ```tsx
+   <section className="mt-8 space-y-6">
+     <h2 className="text-lg font-semibold text-[var(--text-primary)]">Access</h2>
+     {/* Wrapper for invite forms */}
+     <div className="flex flex-col sm:flex-row gap-4 justify-between items-start sm:items-center">
+       <InviteSingleForm teamId={teamId} />
+       <InviteBulkDialog teamId={teamId} />
+     </div>
+     <PendingInvitationsTable teamId={teamId} />
+     <TeamMembersTable teamId={teamId} />
+   </section>
+   ```
+
+   **Section 2: Manage Team**
+   ```tsx
+   <section className="mt-12 space-y-6 border-t border-[var(--border-subtle)] pt-8">
+     <h2 className="text-lg font-semibold text-[var(--text-primary)]">Manage Team</h2>
+     <TeamDangerZone teamId={teamId} />
+   </section>
+   ```
+   *(Note: The exact props like `teamId` will depend on how the existing components expect their data, but the components themselves will not be rewritten.)*
+
+**Verify:**
+- `/settings/team` renders correctly for admin users in a team workspace.
+- The shared `PageHeader` displays the correct title and description (including the dynamically populated team name).
+- The "Access" section is present and correctly displays all invitation and member management components.
+- The "Manage Team" section is present and displays the rename and delete functionality.
+- Existing functionality (inviting, revoking, changing roles, renaming, deleting) works as it did previously.
+- Non-admins and personal workspace users see the correct restricted/empty states.
+
+---
+
+### Summary of all files touched in Part 2
+
+| File | Action | Increment |
+|------|--------|-----------|
+| `app/settings/team/page.tsx` | Create | 1 |
