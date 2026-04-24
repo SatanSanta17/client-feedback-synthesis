@@ -31,7 +31,7 @@ interface SessionTableRowProps {
   canEdit: boolean
   onRowClick: () => void
   onDirtyChange: (dirty: boolean) => void
-  onSave: () => void
+  onSave: (updated: SessionRow) => void
   onCancel: () => void
   onDelete: () => void
   saveRef: React.MutableRefObject<(() => Promise<boolean>) | null>

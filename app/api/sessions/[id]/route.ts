@@ -126,7 +126,7 @@ export async function PUT(
       promptVersionId: parsed.data.promptVersionId,
       isExtraction: parsed.data.isExtraction,
       inputChanged: parsed.data.inputChanged,
-    }, user.id);
+    }, user.id, teamId);
 
     console.log("[api/sessions/[id]] PUT — updated:", session.id);
 

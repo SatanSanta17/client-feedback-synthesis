@@ -43,7 +43,7 @@ export interface SessionRow {
 export interface ExpandedSessionRowProps {
   session: SessionRow
   canEdit: boolean
-  onSave: () => void
+  onSave: (updated: SessionRow) => void
   onCancel: () => void
   onDelete: () => void
   onDirtyChange: (dirty: boolean) => void
@@ -213,12 +213,39 @@ export function ExpandedSessionRow({
         return false
       }
 
+      const { session: updatedFromServer } = (await response.json()) as {
+        session: Omit<SessionRow, "attachment_count">
+      }
+
       if (pendingAttachments.length > 0) {
         await uploadAttachmentsToSession(session.id, pendingAttachments)
       }
 
+      // Row stays expanded after save — reset attachment state to reflect the new server truth
+      setPendingAttachments([])
+      setDeletedAttachmentIds(new Set())
+      let refreshedAttachments: SessionAttachment[] = savedAttachments
+      try {
+        const attachmentsRes = await fetch(`/api/sessions/${session.id}/attachments`)
+        const attachmentsData = attachmentsRes.ok
+          ? await attachmentsRes.json()
+          : { attachments: [] }
+        refreshedAttachments = attachmentsData.attachments ?? []
+        setSavedAttachments(refreshedAttachments)
+      } catch {
+        // keep existing list on refresh failure
+      }
+
+      // Build the enriched row to hand back to the parent. The PUT response
+      // already includes client_name + creator/updater emails; override
+      // attachment_count because attachments were uploaded after the PUT.
+      const merged: SessionRow = {
+        ...updatedFromServer,
+        attachment_count: refreshedAttachments.length,
+      }
+
       toast.success("Session updated")
-      onSave()
+      onSave(merged)
       return true
     } catch (err) {
       console.error(

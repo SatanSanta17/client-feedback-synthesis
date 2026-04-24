@@ -194,7 +194,7 @@ export function createSessionRepository(
         .update(updatePayload)
         .eq("id", id)
         .is("deleted_at", null)
-        .select("id, client_id, session_date, raw_notes, structured_notes, structured_json, created_by, created_at, prompt_version_id, extraction_stale, structured_notes_edited, updated_by")
+        .select("id, client_id, session_date, raw_notes, structured_notes, structured_json, created_by, created_at, prompt_version_id, extraction_stale, structured_notes_edited, updated_by, clients(name)")
         .single();
 
       if (error) {
@@ -207,6 +207,8 @@ export function createSessionRepository(
         throw new Error("Failed to update session");
       }
 
+      const clientData = data.clients as unknown as { name: string } | null;
+
       console.log("[supabase-session-repo] update success:", data.id);
 
       return {
@@ -218,7 +220,7 @@ export function createSessionRepository(
         structured_json: (data.structured_json as Record<string, unknown>) ?? null,
         created_by: data.created_by,
         created_at: data.created_at,
-        client_name: "", // Not available from update; caller can enrich if needed
+        client_name: clientData?.name ?? "Unknown",
         prompt_version_id: data.prompt_version_id ?? null,
         extraction_stale: data.extraction_stale ?? false,
         structured_notes_edited: data.structured_notes_edited ?? false,

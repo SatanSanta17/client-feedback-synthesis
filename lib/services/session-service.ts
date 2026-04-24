@@ -243,8 +243,9 @@ export async function updateSession(
   clientRepo: ClientRepository,
   id: string,
   input: UpdateSessionInput,
-  userId: string
-): Promise<Session> {
+  userId: string,
+  teamId: string | null
+): Promise<SessionWithClient> {
   const {
     clientId, clientName, sessionDate, rawNotes,
     structuredNotes, structuredJson, promptVersionId, isExtraction, inputChanged,
@@ -305,7 +306,31 @@ export async function updateSession(
     });
 
     console.log("[session-service] updateSession success:", row.id);
-    return mapRowToSession(row);
+
+    // Enrich the updated row so the PUT response mirrors the GET list shape.
+    // The client can replace the row directly without a refetch.
+    let createdByEmail: string | undefined;
+    let updatedByEmail: string | undefined;
+    if (teamId) {
+      const uniqueUserIds = [...new Set(
+        [row.created_by, row.updated_by].filter((v): v is string => !!v)
+      )];
+      const emailByUserId = await sessionRepo.getCreatorEmails(uniqueUserIds);
+      createdByEmail = emailByUserId.get(row.created_by);
+      updatedByEmail = row.updated_by
+        ? emailByUserId.get(row.updated_by)
+        : undefined;
+    }
+
+    const attachmentCounts = await sessionRepo.getAttachmentCounts([row.id]);
+
+    return {
+      ...mapRowToSession(row),
+      client_name: row.client_name,
+      created_by_email: createdByEmail,
+      updated_by_email: updatedByEmail,
+      attachment_count: attachmentCounts.get(row.id) ?? 0,
+    };
   } catch (err) {
     if (err instanceof SessionNotFoundRepoError) {
       console.warn("[session-service] updateSession not found:", id);

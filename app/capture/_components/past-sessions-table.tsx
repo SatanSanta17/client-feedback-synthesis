@@ -164,12 +164,12 @@ export function PastSessionsTable({
     isDirtyRef.current = dirty
   }, [])
 
-  const handleExpandedSave = useCallback(() => {
-    setExpandedSessionId(null)
+  const handleExpandedSave = useCallback((updated: SessionRow) => {
     isDirtyRef.current = false
-    setOffset(0)
-    fetchSessions(0, false)
-  }, [fetchSessions])
+    setSessions((prev) =>
+      prev.map((s) => (s.id === updated.id ? updated : s))
+    )
+  }, [])
 
   const handleExpandedCancel = useCallback(() => {
     setExpandedSessionId(null)
@@ -197,11 +197,9 @@ export function PastSessionsTable({
 
     setShowUnsavedDialog(false)
     isDirtyRef.current = false
-    setOffset(0)
-    await fetchSessions(0, false)
     setExpandedSessionId(pendingExpandId)
     setPendingExpandId(null)
-  }, [pendingExpandId, fetchSessions])
+  }, [pendingExpandId])
 
   const handleUnsavedDiscard = useCallback(() => {
     setShowUnsavedDialog(false)
