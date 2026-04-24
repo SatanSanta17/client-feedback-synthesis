@@ -3,6 +3,7 @@
 import { useEffect, useState, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
+import { DEFAULT_AUTH_ROUTE } from "@/lib/constants";
 import {
   Sparkles,
   Users,
@@ -133,7 +134,7 @@ export function LandingPage() {
   /* Auth redirect */
   useEffect(() => {
     if (!isLoading && isAuthenticated) {
-      router.replace("/capture");
+      router.replace(DEFAULT_AUTH_ROUTE);
     }
   }, [isAuthenticated, isLoading, router]);
 

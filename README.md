@@ -10,18 +10,18 @@ The result: your team always knows what clients are asking for, what's blocking 
 
 **Capture** — Paste raw session notes or upload files (TXT, PDF, CSV, DOCX, JSON). AI extracts structured signals: pain points, must-haves, competitive mentions, blockers, urgency, sentiment, and more. WhatsApp and Slack chat exports are auto-detected and restructured. Review, tweak if needed, save. Done in under a minute.
 
-**Synthesise** — Every captured session feeds into a master signal document. AI merges signals across all clients, surfaces cross-client patterns, and generates strategic takeaways. Incrementally updates as new sessions come in — no need to rebuild from scratch.
+**Dashboard** — Sentiment trends, urgency spikes, theme distributions, client health, and competitive mentions — all in one interactive view with global filters and drill-down into the underlying signals.
 
-**Download & Share** — Export the master signal as a clean PDF. Hand it to product, leadership, or anyone who needs the big picture without reading 50 session transcripts.
+**Chat** — Ask questions in plain English and get answers grounded in every session your team has captured, with citations back to the source.
 
 **Collaborate** — Create teams, invite members via email, and manage roles (owner, admin, sales). Team workspaces share sessions, signals, and the master document across all members with role-based access control.
 
 ## Why it matters
 
-- **Hours → seconds.** Manual synthesis across 20+ client sessions takes a full day. This does it in one API call.
+- **Hours → seconds.** Manual synthesis across 20+ client sessions takes a full day. This does it instantly.
 - **Nothing falls through the cracks.** Every signal is categorised and attributed. If three clients mentioned the same blocker, you'll know.
-- **Always current.** The master signal updates incrementally. No stale quarterly reports.
-- **Prompts are yours.** Admins can edit the AI prompts directly in the app. Tune the extraction and synthesis to match your team's language and priorities.
+- **Always current.** The dashboard updates automatically as new sessions come in. No stale quarterly reports.
+- **Prompts are yours.** Admins can edit the AI extraction prompt directly in the app. Tune it to match your team's language and priorities.
 - **File uploads.** Attach raw transcripts, chat exports, or meeting notes directly — supports drag-and-drop, concurrent uploads, and a combined 50k character limit across notes and attachments.
 
 ## Tech stack
@@ -82,8 +82,9 @@ See `.env.example` for the full template.
 ```
 app/
 ├── capture/           # Session capture form + past sessions table
-├── m-signals/         # Master signal view + PDF export
-├── settings/          # Prompt editor with version history
+├── dashboard/         # Insights dashboard with widgets and drill-down
+├── chat/              # RAG chat interface
+├── settings/          # Prompt editor + team management
 ├── login/             # Email/password + Google OAuth sign-in
 ├── signup/            # New account registration
 ├── forgot-password/   # Password reset flow

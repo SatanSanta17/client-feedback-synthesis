@@ -5,6 +5,7 @@ import {
   acceptInvitation,
 } from "@/lib/services/invitation-service";
 import { createInvitationRepository } from "@/lib/repositories/supabase/supabase-invitation-repository";
+import { DEFAULT_AUTH_ROUTE, ONBOARDING_ROUTE } from "@/lib/constants";
 
 export async function GET(request: Request) {
   const { searchParams, origin } = new URL(request.url);
@@ -30,8 +31,16 @@ export async function GET(request: Request) {
     return NextResponse.redirect(`${origin}/reset-password`);
   }
 
+  // Redirect returning users (with sessions) to the dashboard; new users to capture
+  const { count: sessionCount } = await supabase
+    .from("sessions")
+    .select("id", { count: "exact", head: true })
+    .is("deleted_at", null)
+    .limit(1);
+  const postAuthPath = (sessionCount ?? 0) > 0 ? DEFAULT_AUTH_ROUTE : ONBOARDING_ROUTE;
+
   const pendingToken = getCookie(request, "pending_invite_token");
-  const response = NextResponse.redirect(`${origin}/capture`);
+  const response = NextResponse.redirect(`${origin}${postAuthPath}`);
 
   // Always clear the invite cookie regardless of outcome
   if (pendingToken) {

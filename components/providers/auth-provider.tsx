@@ -97,6 +97,7 @@ export function AuthProvider({ children }: AuthProviderProps) {
 
   const signOut = useCallback(async () => {
     await supabase.auth.signOut();
+    clearActiveTeamCookie();
     setUser(null);
     setCanCreateTeam(false);
     setActiveTeamId(null);

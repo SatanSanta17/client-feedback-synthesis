@@ -50,12 +50,18 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ message }, { status: 400 });
   }
 
-  const supabase = await createClient();
-  const teamId = await getActiveTeamId();
-  const serviceClient = createServiceRoleClient();
-  const sessionRepo = createSessionRepository(supabase, serviceClient, teamId);
-
   try {
+    const supabase = await createClient();
+    const teamId = await getActiveTeamId();
+    const serviceClient = createServiceRoleClient();
+
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) {
+      return NextResponse.json({ message: "Unauthorized" }, { status: 401 });
+    }
+
+    const sessionRepo = createSessionRepository(supabase, serviceClient, teamId);
+
     const result = await getSessions(sessionRepo, {
       clientId: parsed.data.clientId,
       dateFrom: parsed.data.dateFrom,
@@ -142,13 +148,19 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ message }, { status: 400 });
   }
 
-  const supabase = await createClient();
-  const teamId = await getActiveTeamId();
-  const serviceClient = createServiceRoleClient();
-  const sessionRepo = createSessionRepository(supabase, serviceClient, teamId);
-  const clientRepo = createClientRepository(supabase, teamId);
-
   try {
+    const supabase = await createClient();
+    const teamId = await getActiveTeamId();
+    const serviceClient = createServiceRoleClient();
+
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) {
+      return NextResponse.json({ message: "Unauthorized" }, { status: 401 });
+    }
+
+    const sessionRepo = createSessionRepository(supabase, serviceClient, teamId);
+    const clientRepo = createClientRepository(supabase, teamId);
+
     const session = await createSession(sessionRepo, clientRepo, {
       clientId: parsed.data.clientId,
       clientName: parsed.data.clientName,
@@ -161,9 +173,7 @@ export async function POST(request: NextRequest) {
 
     console.log("[api/sessions] POST — created session:", session.id);
 
-    // Resolve user ID for theme initiated_by
-    const { data: { user } } = await supabase.auth.getUser();
-    const userId = user?.id ?? "unknown";
+    const userId = user.id;
 
     // Pre-compute chunks once — shared by embedding orchestrator and theme service
     const sessionMeta: SessionMeta = {

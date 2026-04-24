@@ -22,7 +22,7 @@ const PAGE_SIZE = 20
 export function PastSessionsTable({
   refreshKey,
 }: PastSessionsTableProps) {
-  const { user, activeTeamId } = useAuth()
+  const { user, isLoading: isAuthLoading, activeTeamId } = useAuth()
   const [sessions, setSessions] = useState<SessionRow[]>([])
   const [total, setTotal] = useState(0)
   const [offset, setOffset] = useState(0)
@@ -90,7 +90,13 @@ export function PastSessionsTable({
 
         const response = await fetch(`/api/sessions?${params.toString()}`)
         if (!response.ok) {
-          console.error("[PastSessionsTable] fetch failed:", response.status)
+          console.error("[PastSessionsTable] fetch failed:", response.status, response.url)
+          return
+        }
+
+        const contentType = response.headers.get("content-type") ?? ""
+        if (!contentType.includes("application/json")) {
+          console.error("[PastSessionsTable] unexpected content-type:", contentType, "url:", response.url, "status:", response.status)
           return
         }
 
@@ -117,9 +123,10 @@ export function PastSessionsTable({
   )
 
   useEffect(() => {
+    if (isAuthLoading || !user) return
     setOffset(0)
     fetchSessions(0, false)
-  }, [filters, refreshKey, fetchSessions, activeTeamId])
+  }, [filters, refreshKey, fetchSessions, activeTeamId, isAuthLoading, user])
 
   const handleLoadMore = () => {
     const newOffset = offset + PAGE_SIZE

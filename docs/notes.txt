@@ -10,13 +10,28 @@
 - a lot of states need to be handled on client side first and then hit server for example when the session is stale and i hit re-extract the staleness indicator should disappear without even saving it if i save then it goes permanantly if not then it doesnt go permanantly basically trying to make it optimistic update something like that i dont know if that makes sense we need to discuss more on this
 - check how much tokens can be passed in different models
 - regular cleanup as the painpoints are resolved (cleanup Dashboard)
-- on switching context the chat needs to refresh and also we need to isolate chats based on workspace as well because discussion in one conversation wrt a particular workspace should not be referred to while in another workspace am i rigth?
-- populate mock data
 - calling agent integration
 - make dashboard as the entry point of the app currently its the capture page
 - separate dev db with production db
 - customer care email sync
 - get client info from just clinet name
+- why are we hardcoding chunk_types
+- email with the new domain name
+- rebrand with development catalyst
+- report generator in chat
+- market analysis wrt to the industry
+- audio video upload which extracts the transcript and upload that
+- MCP that can be connected to cursor and other editors
+- auto cleanup on development 
+- auto task generator 
+- let every user to create a team in this beta testing version
+- email service migration to resend
+- extract signals and assign themes and save in vector db while after the session is saved 
+
+
+
+Mental model:
+feedback --> insights fetched --> code context --> creats a feature spec (editable) --> MCP of my platform can be used to conect with IDE like cursor and development can be done based on the spec provided --> after implementation all the insights related to that spec should be cleared from the platform 
 
 but it doesnt end here i am trying to build a platform that handles end to end product development life cycle which starts from client calls--> identifying requirements--> advise features--> design architecture--> develop a prototype--> get approval--> and deploy 
 and this cycle continues for modifications and maintainance 

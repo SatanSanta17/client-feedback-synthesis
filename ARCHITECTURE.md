@@ -23,9 +23,8 @@ Synthesiser is a web application for teams to capture structured client session 
 **Status:** PRD-002 through PRD-010 implemented. PRD-012 Parts 1–5 (Design Tokens and Typography + DRY Extraction + SRP Component Decomposition + API Route/Service Cleanup + Dependency Inversion) implemented. PRD-013 Parts 1–2 (File Upload Infrastructure + Persistence & Signal Extraction Integration) implemented. PRD-014 Parts 1–4 (Session Traceability & Staleness Data Model + View Prompt on Capture Page + Show Prompt Version in Past Sessions + Staleness Indicators & Re-extraction Warnings) implemented. PRD-015 Part 1 (Public Landing Page) implemented. PRD-019 Parts 1–4 (pgvector Setup & Embeddings Table + Chunking Logic + Embedding Pipeline + Retrieval Service) implemented. PRD-020 Parts 1–3 (Sidebar Navigation + Chat Data Model and Streaming Infrastructure + Chat UI Components) implemented. PRD-021 Parts 1–6 (Theme Assignment at Extraction Time + Dashboard Layout, Navigation, and Direct Widgets + Derived Theme Widgets + Qualitative Drill-Down + AI-Generated Headline Insights + Filters and Interactivity) implemented. The app is a fully functional team-capable client feedback capture and synthesis platform with a public landing page, vector search infrastructure, Instagram-style hover-to-expand sidebar navigation, complete RAG chat interface (conversations sidebar, message thread with virtualized scrolling, streaming with markdown, citations, follow-ups, in-conversation search, archive read-only mode), and full server-side RAG chat infrastructure (conversations, messages, tool-augmented streaming, LLM title generation). Google OAuth login (open to any Google account), working capture form with AI signal extraction and file attachment upload with server-side persistence, past sessions table with filters/inline editing/soft delete, master signal page with AI synthesis and PDF download, prompt editor with version history, team access with role-based permissions, automatic embedding generation on session save/extraction, and semantic retrieval service with adaptive query classification for downstream RAG and insights features.
 
 **Core features live:**
-- Public landing page at `/` with hero, feature cards, how-it-works flow, and CTA (authenticated users auto-redirect to `/capture`)
+- Public landing page at `/` with hero, feature cards, how-it-works flow, and CTA (authenticated users auto-redirect to `/dashboard`; new accounts with no sessions redirect to `/capture`)
 - Session capture with AI signal extraction (Vercel AI SDK, multi-provider) and file attachment upload (TXT, PDF, CSV, DOCX, JSON) with server-side parsing and chat format detection (WhatsApp, Slack)
-- Master signal synthesis (cold start + incremental, tainted flag on deletion)
 - Per-user prompt editor with version history and revert
 - Team workspaces with role-based access (owner, admin, sales)
 - Email invitations via provider-agnostic email service (Resend)
@@ -207,15 +206,6 @@ synthesiser/
 │   │           └── invite-page-content.tsx # Client component — validate token, accept/sign-in flow
 │   ├── login/
 │   │   └── page.tsx             # Login page with "Sign in with Google" button
-│   ├── m-signals/
-│   │   ├── page.tsx             # Master Signals tab — server component
-│   │   └── _components/
-│   │       ├── master-signal-content.tsx       # Rendered markdown content + metadata bar
-│   │       ├── master-signal-empty-state.tsx   # Empty/loading/generating state displays
-│   │       ├── master-signal-page-content.tsx  # Coordinator — composes header, banners, empty states, content
-│   │       ├── master-signal-pdf.ts            # Client-side PDF generation via pdf-lib
-│   │       ├── master-signal-status-banner.tsx # Presentational banner for tainted/stale/info states
-│   │       └── use-master-signal.ts           # Hook — fetch, generate, download PDF, all state + derived values
 │   └── settings/
 │       ├── page.tsx             # Settings page — redirects to /settings/team
 │       ├── prompts/

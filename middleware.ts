@@ -1,6 +1,10 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { createServerClient } from "@supabase/ssr";
 
+// Keep in sync with DEFAULT_AUTH_ROUTE in lib/constants.ts
+// Inlined here to avoid Edge Runtime import issues with path aliases
+const DEFAULT_AUTH_ROUTE = "/dashboard";
+
 export async function middleware(request: NextRequest) {
   let supabaseResponse = NextResponse.next({ request });
 
@@ -56,9 +60,9 @@ export async function middleware(request: NextRequest) {
       pathname === "/signup" ||
       pathname === "/forgot-password")
   ) {
-    const captureUrl = request.nextUrl.clone();
-    captureUrl.pathname = "/capture";
-    return NextResponse.redirect(captureUrl);
+    const authUrl = request.nextUrl.clone();
+    authUrl.pathname = DEFAULT_AUTH_ROUTE;
+    return NextResponse.redirect(authUrl);
   }
 
   // Validate active_team_id cookie — clear if user was removed from the team
