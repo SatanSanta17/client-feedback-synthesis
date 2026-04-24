@@ -15,7 +15,6 @@
 - audio video upload which extracts the transcript and upload that
 - MCP that can be connected to cursor and other editors
 - auto task generator 
-- let every user to create a team in this beta testing version
 - email service migration to resend for all emails even the supabase auth ones
 - migrate data to dedicated supabase db 
 - make the auth flow decoupled from supabase
