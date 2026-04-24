@@ -18,7 +18,7 @@
 **File:** `app/api/sessions/route.ts` (POST), `app/api/sessions/[id]/route.ts` (PUT)
 **Priority: Critical**
 
-The `generateSessionEmbeddings().then(assignSessionThemes).then(maybeRefreshInsights).catch()` chain is started before `return NextResponse.json()`. On Vercel's serverless runtime, once the response is sent the execution context can be frozen or terminated — background microtasks are not guaranteed to complete. The failure mode is invisible: the session saves correctly but has no embeddings, no themes, and stale dashboard/chat data.
+The `generateSessionEmbeddings().then(assignSessionThemes).then(maybeRefreshDashboardInsights).catch()` chain is started before `return NextResponse.json()`. On Vercel's serverless runtime, once the response is sent the execution context can be frozen or terminated — background microtasks are not guaranteed to complete. The failure mode is invisible: the session saves correctly but has no embeddings, no themes, and stale dashboard/chat data.
 
 Vercel exposes `waitUntil()` from `@vercel/functions` for exactly this use case.
 

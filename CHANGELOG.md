@@ -78,7 +78,7 @@ All notable changes to this project are documented here, grouped by PRD and part
 - `lib/prompts/headline-insights.ts` — system prompt (3–5 change-focused, classified, no-fabrication rules), `InsightAggregates` interface, `buildHeadlineInsightsUserMessage()` user message builder with previous batch comparison
 - `lib/repositories/insight-repository.ts` — `InsightRepository` interface (`getLatestBatch`, `getPreviousBatches`, `insertBatch`, `getLastGeneratedAt`) + `InsightInsert` type
 - `lib/repositories/supabase/supabase-insight-repository.ts` — Supabase adapter with `mapRow()`, `groupIntoBatches()`, inline team scoping
-- `lib/services/insight-service.ts` — `generateHeadlineInsights()` (5 aggregate queries in parallel via `executeQuery()` → previous batch fetch → `callModelObject()` → batch insert), `maybeRefreshInsights()` (staleness check via session count since last generation, fire-and-forget safe)
+- `lib/services/insight-service.ts` — `generateHeadlineInsights()` (5 aggregate queries in parallel via `executeQuery()` → previous batch fetch → `callModelObject()` → batch insert), `maybeRefreshDashboardInsights()` (staleness check via session count since last generation, fire-and-forget safe)
 
 **API routes:**
 - `POST /api/dashboard/insights` — auth check, service-role client, calls `generateHeadlineInsights()`, returns `{ insights }`
@@ -93,7 +93,7 @@ All notable changes to this project are documented here, grouped by PRD and part
 - `dashboard-content.tsx` — `useInsights()` called in `DashboardInner`, `InsightCardsRow` + `PreviousInsights` rendered between FilterBar and widget grid
 
 **Auto-refresh wiring:**
-- `app/api/sessions/route.ts` POST — fire-and-forget chain extended: `generateEmbeddings() → assignThemes() → maybeRefreshInsights()`
+- `app/api/sessions/route.ts` POST — fire-and-forget chain extended: `generateEmbeddings() → assignThemes() → maybeRefreshDashboardInsights()`
 - `app/api/sessions/[id]/route.ts` PUT — same chain extension for re-extraction flow
 
 ---

@@ -4,7 +4,7 @@
  * Generates AI-powered headline insights from dashboard aggregates.
  * Exposes two functions:
  *   - generateHeadlineInsights() — runs the full generation pipeline
- *   - maybeRefreshInsights() — conditional generation (only if new data exists)
+ *   - maybeRefreshDashboardInsights() — conditional generation (only if new data exists)
  */
 
 import { type SupabaseClient } from "@supabase/supabase-js";
@@ -175,7 +175,7 @@ export async function generateHeadlineInsights(
 }
 
 // ---------------------------------------------------------------------------
-// Public: maybeRefreshInsights
+// Public: maybeRefreshDashboardInsights
 // ---------------------------------------------------------------------------
 
 /**
@@ -186,14 +186,14 @@ export async function generateHeadlineInsights(
  * Designed to be called in a fire-and-forget chain after session extraction.
  * Errors are logged but never thrown (caller should catch anyway).
  */
-export async function maybeRefreshInsights(
+export async function maybeRefreshDashboardInsights(
   params: GenerateInsightsParams
 ): Promise<void> {
   const { teamId, userId, insightRepo, supabase } = params;
 
   try {
     console.log(
-      `${LOG_PREFIX} maybeRefreshInsights — teamId: ${teamId ?? "personal"}`
+      `${LOG_PREFIX} maybeRefreshDashboardInsights — teamId: ${teamId ?? "personal"}`
     );
 
     // 1. Check when insights were last generated
@@ -201,7 +201,7 @@ export async function maybeRefreshInsights(
 
     if (!lastGeneratedAt) {
       // First time — generate
-      console.log(`${LOG_PREFIX} maybeRefreshInsights — no previous insights, generating`);
+      console.log(`${LOG_PREFIX} maybeRefreshDashboardInsights — no previous insights, generating`);
       await generateHeadlineInsights(params);
       return;
     }
@@ -220,7 +220,7 @@ export async function maybeRefreshInsights(
 
     if (error) {
       console.error(
-        `${LOG_PREFIX} maybeRefreshInsights — error checking staleness:`,
+        `${LOG_PREFIX} maybeRefreshDashboardInsights — error checking staleness:`,
         error.message
       );
       return;
@@ -228,17 +228,17 @@ export async function maybeRefreshInsights(
 
     if ((count ?? 0) > 0) {
       console.log(
-        `${LOG_PREFIX} maybeRefreshInsights — ${count} new sessions since ${lastGeneratedAt}, generating`
+        `${LOG_PREFIX} maybeRefreshDashboardInsights — ${count} new sessions since ${lastGeneratedAt}, generating`
       );
       await generateHeadlineInsights(params);
     } else {
       console.log(
-        `${LOG_PREFIX} maybeRefreshInsights — no new sessions since ${lastGeneratedAt}, skipping`
+        `${LOG_PREFIX} maybeRefreshDashboardInsights — no new sessions since ${lastGeneratedAt}, skipping`
       );
     }
   } catch (err) {
     console.error(
-      `${LOG_PREFIX} maybeRefreshInsights — unhandled error:`,
+      `${LOG_PREFIX} maybeRefreshDashboardInsights — unhandled error:`,
       err instanceof Error ? err.message : err
     );
     // Swallow — fire-and-forget

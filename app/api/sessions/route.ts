@@ -9,7 +9,7 @@ import { createEmbeddingRepository } from "@/lib/repositories/supabase/supabase-
 import { createThemeRepository } from "@/lib/repositories/supabase/supabase-theme-repository";
 import { createSignalThemeRepository } from "@/lib/repositories/supabase/supabase-signal-theme-repository";
 import { createInsightRepository } from "@/lib/repositories/supabase/supabase-insight-repository";
-import { maybeRefreshInsights } from "@/lib/services/insight-service";
+import { maybeRefreshDashboardInsights } from "@/lib/services/insight-service";
 import {
   getSessions,
   createSession,
@@ -213,7 +213,7 @@ export async function POST(request: NextRequest) {
       })
       .then(async () => {
         const insightRepo = createInsightRepository(serviceClient);
-        await maybeRefreshInsights({
+        await maybeRefreshDashboardInsights({
           teamId,
           userId,
           insightRepo,

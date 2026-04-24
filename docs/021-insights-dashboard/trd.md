@@ -1717,9 +1717,9 @@ A new `dashboard_insights` table stores AI-generated headline insights, each cla
 
 10. **Previous Insights section uses native `<details>/<summary>`.** Consistent with the drill-down accordion (Part 4 decision #7), the "Previous Insights" history section uses native HTML elements. Each batch is a collapsible group showing the generation date and the batch's insight cards. Lazy-fetched on first expand via the `useInsights` hook.
 
-11. **Auto-refresh: fire-and-forget after extraction chain.** The extraction flow in `app/api/sessions/route.ts` POST and `app/api/sessions/[id]/route.ts` PUT already has a fire-and-forget chain (embeddings → theme assignment). The insight refresh is appended as a third step in this chain: after theme assignment completes, call `maybeRefreshInsights()` which checks whether insights exist and whether any sessions have been added since the last `generated_at`. If stale, it calls `generateHeadlineInsights()`. This is fire-and-forget — failures are swallowed with dev-mode `console.warn`, matching the existing pattern. The refresh is chained after theme assignment (not parallel) because the insight service queries theme aggregates that need the latest assignments.
+11. **Auto-refresh: fire-and-forget after extraction chain.** The extraction flow in `app/api/sessions/route.ts` POST and `app/api/sessions/[id]/route.ts` PUT already has a fire-and-forget chain (embeddings → theme assignment). The insight refresh is appended as a third step in this chain: after theme assignment completes, call `maybeRefreshDashboardInsights()` which checks whether insights exist and whether any sessions have been added since the last `generated_at`. If stale, it calls `generateHeadlineInsights()`. This is fire-and-forget — failures are swallowed with dev-mode `console.warn`, matching the existing pattern. The refresh is chained after theme assignment (not parallel) because the insight service queries theme aggregates that need the latest assignments.
 
-12. **`maybeRefreshInsights()` staleness check.** To avoid unnecessary LLM calls, the function first queries `dashboard_insights` for the most recent `generated_at` timestamp. If no insights exist, or if any session has a `created_at` after that timestamp, insights are stale and regeneration proceeds. This is a lightweight check (two scalar queries) that runs before the expensive LLM call.
+12. **`maybeRefreshDashboardInsights()` staleness check.** To avoid unnecessary LLM calls, the function first queries `dashboard_insights` for the most recent `generated_at` timestamp. If no insights exist, or if any session has a `created_at` after that timestamp, insights are stale and regeneration proceeds. This is a lightweight check (two scalar queries) that runs before the expensive LLM call.
 
 13. **Graceful degradation (P5.R8).** If insight generation fails (LLM timeout, rate limit, malformed response), the API route returns the appropriate HTTP error. The client-side hook catches the error and preserves the previously loaded latest batch. The "Refresh Insights" button shows an error toast but doesn't clear existing cards. If no insights have ever been generated, the component renders an empty state CTA: "Click 'Refresh Insights' to generate your first headline insights."
 
@@ -1785,7 +1785,7 @@ A new `dashboard_insights` table stores AI-generated headline insights, each cla
 | `lib/repositories/index.ts` | **Edit** | Add `createInsightRepository()` factory function |
 | `lib/types/insight.ts` | **Create** | `DashboardInsight` type (matching `dashboard_insights` table columns) |
 | `lib/prompts/headline-insights.ts` | **Create** | System prompt, max tokens, `buildHeadlineInsightsUserMessage()` builder |
-| `lib/services/insight-service.ts` | **Create** | `generateHeadlineInsights()` — aggregates → prompt → LLM → insert; `maybeRefreshInsights()` — staleness check + conditional regeneration |
+| `lib/services/insight-service.ts` | **Create** | `generateHeadlineInsights()` — aggregates → prompt → LLM → insert; `maybeRefreshDashboardInsights()` — staleness check + conditional regeneration |
 | `lib/services/database-query-service.ts` | **Edit** | Add `insights_latest` and `insights_history` actions to `QueryAction` and `ACTION_MAP` |
 | `app/api/dashboard/route.ts` | **Edit** | Add `insights_latest`, `insights_history` to Zod enum |
 | `app/api/dashboard/insights/route.ts` | **Create** | `POST /api/dashboard/insights` — authenticate, generate, return new batch |
@@ -1793,8 +1793,8 @@ A new `dashboard_insights` table stores AI-generated headline insights, each cla
 | `app/dashboard/_components/insight-cards-row.tsx` | **Create** | Insight alert cards — type icon/colour, text, timestamp; empty state CTA; "Refresh Insights" button |
 | `app/dashboard/_components/previous-insights.tsx` | **Create** | Collapsible "Previous Insights" section — `<details>/<summary>`, batches grouped by date |
 | `app/dashboard/_components/dashboard-content.tsx` | **Edit** | Import and render `InsightCardsRow` + `PreviousInsights` above the widget grid |
-| `app/api/sessions/route.ts` | **Edit** | Append `maybeRefreshInsights()` to the fire-and-forget chain after theme assignment |
-| `app/api/sessions/[id]/route.ts` | **Edit** | Same — append `maybeRefreshInsights()` to the PUT extraction chain |
+| `app/api/sessions/route.ts` | **Edit** | Append `maybeRefreshDashboardInsights()` to the fire-and-forget chain after theme assignment |
+| `app/api/sessions/[id]/route.ts` | **Edit** | Same — append `maybeRefreshDashboardInsights()` to the PUT extraction chain |
 
 ### Implementation Increments
 
@@ -1831,7 +1831,7 @@ A new `dashboard_insights` table stores AI-generated headline insights, each cla
    e. Generate a `batch_id` UUID.
    f. Call `insightRepo.insertBatch()` with the LLM results + batch metadata.
    g. Return the new insights.
-4. Export `maybeRefreshInsights({ teamId, userId, insightRepo, supabase })`:
+4. Export `maybeRefreshDashboardInsights({ teamId, userId, insightRepo, supabase })`:
    a. Call `insightRepo.getLastGeneratedAt(teamId)`.
    b. If null → generate (first time).
    c. Query `sessions` for any row with `created_at > lastGeneratedAt` and matching `team_id`. If found → generate.
@@ -1870,11 +1870,11 @@ A new `dashboard_insights` table stores AI-generated headline insights, each cla
 
 #### Increment 5.5: Auto-Refresh After Extraction
 
-**What:** Wire the `maybeRefreshInsights()` call into the session extraction fire-and-forget chain.
+**What:** Wire the `maybeRefreshDashboardInsights()` call into the session extraction fire-and-forget chain.
 
 **Steps:**
 
-1. Edit `app/api/sessions/route.ts` POST — after the theme assignment `.then()` block, chain a second `.then()` that calls `maybeRefreshInsights({ teamId, userId, insightRepo, supabase: serviceClient })`. Import `maybeRefreshInsights` from `insight-service.ts` and `createInsightRepository` from repositories. The chain becomes: `generateEmbeddings().then(assignThemes).then(maybeRefreshInsights).catch(devWarnCatch)`.
+1. Edit `app/api/sessions/route.ts` POST — after the theme assignment `.then()` block, chain a second `.then()` that calls `maybeRefreshDashboardInsights({ teamId, userId, insightRepo, supabase: serviceClient })`. Import `maybeRefreshDashboardInsights` from `insight-service.ts` and `createInsightRepository` from repositories. The chain becomes: `generateEmbeddings().then(assignThemes).then(maybeRefreshDashboardInsights).catch(devWarnCatch)`.
 2. Edit `app/api/sessions/[id]/route.ts` PUT — same change to the re-extraction chain.
 3. Verify: `npx tsc --noEmit`.
 
@@ -1889,7 +1889,7 @@ A new `dashboard_insights` table stores AI-generated headline insights, each cla
 1. Run `npx tsc --noEmit` for a full type check.
 2. SRP check: prompt is isolated in `lib/prompts/`, service logic in `lib/services/`, repository in `lib/repositories/`, UI in `_components/`. Each component does one thing.
 3. DRY check: aggregate queries reuse `executeQuery()` (not duplicated). Insight card styling uses existing CSS custom properties. `<details>/<summary>` pattern matches Part 4.
-4. Logging check: `generateHeadlineInsights` logs entry (teamId, userId), aggregate query results, LLM call, insert, and errors. `maybeRefreshInsights` logs staleness check result (stale/fresh). POST route logs entry, success, errors.
+4. Logging check: `generateHeadlineInsights` logs entry (teamId, userId), aggregate query results, LLM call, insert, and errors. `maybeRefreshDashboardInsights` logs staleness check result (stale/fresh). POST route logs entry, success, errors.
 5. Dead code check: no unused imports.
 6. Convention check: naming, exports, import order, `'use client'` only on leaf components.
 7. Verify all PRD Part 5 acceptance criteria:
