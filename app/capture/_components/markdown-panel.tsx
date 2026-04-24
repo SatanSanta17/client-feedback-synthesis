@@ -13,15 +13,24 @@ export interface MarkdownPanelProps {
   content: string
   onChange?: (value: string) => void
   readOnly?: boolean
+  /**
+   * When true, renders the textarea editor directly and hides the internal
+   * Edit/Preview toggle. For callers that own the edit mode externally.
+   * Ignored when `readOnly` is true.
+   */
+  forceEdit?: boolean
   className?: string
 }
 
-export function MarkdownPanel({ content, onChange, readOnly, className }: MarkdownPanelProps) {
+export function MarkdownPanel({ content, onChange, readOnly, forceEdit, className }: MarkdownPanelProps) {
   const [isEditing, setIsEditing] = useState(false)
+
+  const showEditor = !readOnly && (forceEdit || isEditing)
+  const showToggle = !readOnly && !forceEdit
 
   return (
     <div className={cn("rounded-lg border border-border bg-card", className)}>
-      {!readOnly && (
+      {showToggle && (
         <div className="flex items-center justify-end border-b border-border px-4 py-2">
           <Button
             type="button"
@@ -47,7 +56,7 @@ export function MarkdownPanel({ content, onChange, readOnly, className }: Markdo
 
       {/* Content area */}
       <div className="p-4">
-        {isEditing && !readOnly ? (
+        {showEditor ? (
           <Textarea
             value={content}
             onChange={(e) => onChange?.(e.target.value)}

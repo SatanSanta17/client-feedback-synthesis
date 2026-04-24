@@ -93,6 +93,7 @@ export function StructuredNotesPanel({
           content={structuredNotes ?? ""}
           onChange={readOnly ? undefined : (v) => onChange(v)}
           readOnly={readOnly}
+          forceEdit={hasJson && isEditing}
         />
       )}
     </div>
