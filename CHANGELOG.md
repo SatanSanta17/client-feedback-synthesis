@@ -6,6 +6,14 @@ All notable changes to this project are documented here, grouped by PRD and part
 
 ## [Unreleased]
 
+### Gap P5 — Shared filter persistence — 2026-04-25
+
+- Added `lib/hooks/use-filter-storage.ts` — sessionStorage-backed filter persistence primitive keyed by `filters:<surface>:<userId>:<workspaceId|personal>`. Narrow `{ key, read, write }` API so each surface owns its own sync policy.
+- Wired dashboard `filter-bar.tsx` to the hook — restores filters from storage on mount/workspace-change when the URL has no filter params; mirrors URL → storage on every filter change.
+- Wired capture `past-sessions-table.tsx` to the hook — hydrates React filter state from storage on mount/workspace-change; persists state → storage on every filter update.
+- `setActiveTeam()` in `auth-provider.tsx` now calls `router.replace(pathname)` on workspace switch to strip URL query params, per the P5 contract ("workspace switch is a fresh context").
+- No cleanup on signOut needed — `userId` in the storage key makes stale entries from a prior user inert, and tab close clears `sessionStorage`.
+
 ### PRD-022 Layout Cleanup — 2026-04-12
 
 **Part 1 — Settings Accordion in Sidebar + Shared Page Header:**

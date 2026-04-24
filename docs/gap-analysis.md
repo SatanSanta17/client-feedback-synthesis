@@ -150,19 +150,34 @@ Directly related to E4. The `queryDatabase` tool exposes only 7 actions. Users a
 
 ---
 
-### P5 — Dashboard filters reset on every visit
-**File:** `app/dashboard/_components/filter-bar.tsx`
-**Priority: Medium**
+### P5 — No shared filter-persistence pattern across surfaces ✅ Fixed
+**Files:** `app/dashboard/_components/filter-bar.tsx`, `app/capture/_components/past-sessions-table.tsx`, `lib/hooks/use-filter-storage.ts`, `components/providers/auth-provider.tsx`
 
-Filter state is URL-encoded (good for sharing) but navigating away and returning wipes the filters. Users with consistent analysis habits must re-apply on every session.
+Filter state is URL-encoded per surface (good for sharing) but navigating away and returning wipes it. Every filtered surface re-implements its own filter shape and loses state on unmount. Users with consistent analysis habits must re-apply on every navigation.
 
----
+**Fix applied (2026-04-25) — scoped sessionStorage mirror with user+workspace keying.** Introduce a shared filter-persistence utility that every filtered surface (dashboard, capture past-sessions table, future filtered views) plugs into. The URL remains the source of truth for rendering and sharing; `sessionStorage` is a rehydration layer keyed by `filters:<surface>:<userId>:<workspaceId ?? "personal">`.
 
-### P6 — Chat conversations ignore workspace switches
-**Files:** `app/chat/_components/chat-page-content.tsx`, `lib/hooks/use-conversations.ts`
-**Priority: Medium**
+Contract:
 
-Conversations are user-private (`created_by` only), not scoped by active workspace. The conversation list is identical regardless of which workspace is active, but the underlying RAG retrieval respects `teamId`. No visual cue distinguishes which workspace a conversation's data was built from.
+| Trigger | Action |
+|---|---|
+| Filter change on a surface | Write params to URL (source of truth) + mirror to `sessionStorage[filters:<surface>:<userId>:<workspace>]` |
+| Surface mounts with no URL filter params | If the key has a value, `router.replace()` to the URL with those params |
+| Workspace switch | `router.replace(pathname)` to strip URL filter params (sessionStorage untouched — per-workspace keys keep each workspace's filters isolated) |
+| Sign out | No filter-specific cleanup needed — the `userId` segment in the key isolates users on shared tabs |
+| Tab close | Browser auto-clears `sessionStorage` |
+
+Why the combined `userId + workspaceId` key:
+- **`userId`** isolates users on a shared tab — User B reading their own key never sees User A's filters (different userId segment).
+- **`workspaceId`** gives per-workspace memory — switching between workspaces restores each workspace's last filter state.
+- **`"personal"`** sentinel for `null` workspaceId is safe because `userId` already disambiguates personal-workspace-of-A from personal-workspace-of-B.
+
+Residual caveat: stale keys from logged-out users remain in `sessionStorage` (visible only in devtools) until tab close. Filter values are low-sensitivity; accepted tradeoff for zero cleanup code.
+
+Implementation sketch:
+- One shared `useFilterStorage(surface)` hook in `lib/hooks/` that derives the key from `useAuth()` and reads/writes `sessionStorage`, synchronised with `useRouter` / `useSearchParams`.
+- `setActiveTeam()` in `components/providers/auth-provider.tsx` adds a `router.replace(pathname)` call to strip stale URL filter params on workspace switch.
+- No changes required in `signOut()` — existing `clearActiveTeamCookie()` cleanup is sufficient.
 
 ---
 

@@ -5,6 +5,7 @@ import { Loader2 } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
 import { useAuth } from "@/components/providers/auth-provider"
+import { useFilterStorage } from "@/lib/hooks/use-filter-storage"
 import {
   SessionFilters,
   type SessionFiltersState,
@@ -18,22 +19,31 @@ export interface PastSessionsTableProps {
 }
 
 const PAGE_SIZE = 20
+const DEFAULT_FILTERS: SessionFiltersState = { dateFrom: "", dateTo: "" }
 
 export function PastSessionsTable({
   refreshKey,
 }: PastSessionsTableProps) {
   const { user, isLoading: isAuthLoading, activeTeamId } = useAuth()
+  const filterStorage = useFilterStorage<SessionFiltersState>("capture-sessions")
   const [sessions, setSessions] = useState<SessionRow[]>([])
   const [total, setTotal] = useState(0)
   const [offset, setOffset] = useState(0)
   const [isLoading, setIsLoading] = useState(false)
   const [isLoadingMore, setIsLoadingMore] = useState(false)
-  const [filters, setFilters] = useState<SessionFiltersState>({
-    dateFrom: "",
-    dateTo: "",
-  })
+  const [filters, setFilters] = useState<SessionFiltersState>(DEFAULT_FILTERS)
   const [teamRole, setTeamRole] = useState<string | null>(null)
   const isTeamContext = !!activeTeamId
+
+  // Filter persistence (P5) — hydrate from sessionStorage whenever the
+  // user+workspace key changes (mount, workspace switch). Defaults apply
+  // when storage is empty, giving workspace switches a clean slate if the
+  // user has never set filters in the destination workspace.
+  useEffect(() => {
+    if (!filterStorage.key) return
+    const stored = filterStorage.read()
+    setFilters(stored ?? DEFAULT_FILTERS)
+  }, [filterStorage])
 
   useEffect(() => {
     if (!activeTeamId) {
@@ -136,6 +146,7 @@ export function PastSessionsTable({
 
   const handleFiltersChange = (newFilters: SessionFiltersState) => {
     setFilters(newFilters)
+    filterStorage.write(newFilters)
   }
 
   // --- Row expand logic ---

@@ -1,10 +1,11 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Camera, Check, ChevronsUpDown, Loader2, X } from "lucide-react";
 
 import { cn } from "@/lib/utils";
+import { useFilterStorage } from "@/lib/hooks/use-filter-storage";
 import { Button } from "@/components/ui/button";
 import {
   Popover,
@@ -44,6 +45,15 @@ interface ClientOption {
 
 const SEVERITY_OPTIONS = ["positive", "negative", "neutral", "mixed"] as const;
 const URGENCY_OPTIONS = ["low", "medium", "high", "critical"] as const;
+const FILTER_PARAM_KEYS = [
+  "clients",
+  "dateFrom",
+  "dateTo",
+  "severity",
+  "urgency",
+] as const;
+
+type DashboardFilters = Partial<Record<(typeof FILTER_PARAM_KEYS)[number], string>>;
 
 // ---------------------------------------------------------------------------
 // FilterBar
@@ -52,6 +62,8 @@ const URGENCY_OPTIONS = ["low", "medium", "high", "critical"] as const;
 export function FilterBar({ className, onExport, isExporting }: FilterBarProps) {
   const router = useRouter();
   const searchParams = useSearchParams();
+  const filterStorage = useFilterStorage<DashboardFilters>("dashboard");
+  const hydratedKeyRef = useRef<string | null>(null);
 
   // Client multi-select state
   const [clients, setClients] = useState<ClientOption[]>([]);
@@ -71,6 +83,43 @@ export function FilterBar({ className, onExport, isExporting }: FilterBarProps) 
     dateTo.length > 0 ||
     severity.length > 0 ||
     urgency.length > 0;
+
+  // -------------------------------------------------------------------------
+  // Filter persistence (P5) — writes are user-action-driven (inside
+  // updateParam / clearAllFilters) so they never race with workspace
+  // switching. This effect only hydrates from storage when the key changes.
+  //
+  // First key seen (mount): respect URL if it already has filters
+  // (honours shared deep-links); otherwise restore from storage.
+  // Subsequent key changes (workspace switch): force URL to match storage
+  // — don't trust the URL mid-transition, storage is authoritative.
+  // -------------------------------------------------------------------------
+
+  useEffect(() => {
+    if (!filterStorage.key) return;
+    if (hydratedKeyRef.current === filterStorage.key) return;
+
+    const isFirstKey = hydratedKeyRef.current === null;
+    hydratedKeyRef.current = filterStorage.key;
+
+    if (isFirstKey) {
+      const urlHasFilters = FILTER_PARAM_KEYS.some((k) => searchParams.has(k));
+      if (urlHasFilters) return;
+    }
+
+    const stored = filterStorage.read();
+    const params = new URLSearchParams();
+    if (stored) {
+      FILTER_PARAM_KEYS.forEach((k) => {
+        const v = stored[k];
+        if (v) params.set(k, v);
+      });
+    }
+    const query = params.toString();
+    router.replace(query ? `/dashboard?${query}` : "/dashboard", {
+      scroll: false,
+    });
+  }, [filterStorage, router, searchParams]);
 
   // Fetch client list on mount
   useEffect(() => {
@@ -100,13 +149,21 @@ export function FilterBar({ className, onExport, isExporting }: FilterBarProps) 
         params.delete(key);
       }
       router.replace(`/dashboard?${params.toString()}`, { scroll: false });
+
+      const snapshot: DashboardFilters = {};
+      FILTER_PARAM_KEYS.forEach((k) => {
+        const v = params.get(k);
+        if (v) snapshot[k] = v;
+      });
+      filterStorage.write(snapshot);
     },
-    [router, searchParams]
+    [router, searchParams, filterStorage]
   );
 
   const clearAllFilters = useCallback(() => {
     router.replace("/dashboard", { scroll: false });
-  }, [router]);
+    filterStorage.write({});
+  }, [router, filterStorage]);
 
   // ---------------------------------------------------------------------------
   // Client multi-select toggle

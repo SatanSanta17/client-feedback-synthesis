@@ -7,7 +7,7 @@ import {
   useEffect,
   useState,
 } from "react";
-import { useRouter } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import type { User } from "@supabase/supabase-js";
 import { createClient } from "@/lib/supabase/client";
 import {
@@ -56,6 +56,7 @@ export function AuthProvider({ children }: AuthProviderProps) {
     () => getActiveTeamId()
   );
   const router = useRouter();
+  const pathname = usePathname();
   const supabase = createClient();
 
   useEffect(() => {
@@ -93,10 +94,13 @@ export function AuthProvider({ children }: AuthProviderProps) {
       clearActiveTeamCookie();
     }
     setActiveTeamId(teamId);
+    // Strip URL query params so workspace A's filters don't apply to
+    // workspace B's refetched data — per the P5 filter-persistence contract.
+    router.replace(pathname);
     // Re-runs server components (e.g. /settings pages) so they read the new cookie.
     // Client-side fetch effects must include activeTeamId in their deps separately.
     router.refresh();
-  }, [router]);
+  }, [router, pathname]);
 
   const signOut = useCallback(async () => {
     await supabase.auth.signOut();
