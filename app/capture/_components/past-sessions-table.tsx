@@ -126,7 +126,7 @@ export function PastSessionsTable({
     if (isAuthLoading || !user) return
     setOffset(0)
     fetchSessions(0, false)
-  }, [filters, refreshKey, fetchSessions, activeTeamId, isAuthLoading, user])
+  }, [filters, refreshKey, fetchSessions, activeTeamId, isAuthLoading, user?.id])
 
   const handleLoadMore = () => {
     const newOffset = offset + PAGE_SIZE

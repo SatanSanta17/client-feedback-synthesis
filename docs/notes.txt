@@ -1,35 +1,29 @@
 - cookies are retained on logout
-- project based notes, for service based company who caters to multiple clients we segregate the notes as per the clients but is this taken care by team scoped data
 - bring your own key
 - restrict max height of input section of capture and output of insights 
 - increase width of extract form and the table 
 - show the loader after the dialog has opened not on button click
 - dont make the allert version look like golden and like the AI magic theme
-- the confirmation dialog has a re-extract button which is purple
+- the confirmation dialog has a re-extract button which is purple: should be ai variant
 - dont close row on clicking save 
 - a lot of states need to be handled on client side first and then hit server for example when the session is stale and i hit re-extract the staleness indicator should disappear without even saving it if i save then it goes permanantly if not then it doesnt go permanantly basically trying to make it optimistic update something like that i dont know if that makes sense we need to discuss more on this
-- check how much tokens can be passed in different models
 - regular cleanup as the painpoints are resolved (cleanup Dashboard)
-- calling agent integration
-- make dashboard as the entry point of the app currently its the capture page
 - separate dev db with production db
-- customer care email sync
-- get client info from just clinet name
+- customer care email sync every product complaint email should be captured here
+- get client info from just clinet name some LLM tool that websearches the client with that name
 - why are we hardcoding chunk_types
 - email with the new domain name
 - rebrand with development catalyst
 - report generator in chat
-- market analysis wrt to the industry
 - audio video upload which extracts the transcript and upload that
 - MCP that can be connected to cursor and other editors
-- auto cleanup on development 
 - auto task generator 
 - let every user to create a team in this beta testing version
-- email service migration to resend
-- extract signals and assign themes and save in vector db while after the session is saved 
+- email service migration to resend for all emails even the supabase auth ones
 - migrate data to dedicated supabase db 
 - make the auth flow decoupled from supabase
-
+- migration to a more reliable infrastructure
+- page re-render on workspace switch
 
 
 Mental model:
