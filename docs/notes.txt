@@ -27,6 +27,8 @@
 - let every user to create a team in this beta testing version
 - email service migration to resend
 - extract signals and assign themes and save in vector db while after the session is saved 
+- migrate data to dedicated supabase db 
+- make the auth flow decoupled from supabase
 
 
 

@@ -20,12 +20,13 @@ Synthesiser is a web application for teams to capture structured client session 
 
 ## Current State
 
-**Status:** PRD-002 through PRD-010 implemented. PRD-012 Parts 1–5 (Design Tokens and Typography + DRY Extraction + SRP Component Decomposition + API Route/Service Cleanup + Dependency Inversion) implemented. PRD-013 Parts 1–2 (File Upload Infrastructure + Persistence & Signal Extraction Integration) implemented. PRD-014 Parts 1–4 (Session Traceability & Staleness Data Model + View Prompt on Capture Page + Show Prompt Version in Past Sessions + Staleness Indicators & Re-extraction Warnings) implemented. PRD-015 Part 1 (Public Landing Page) implemented. PRD-019 Parts 1–4 (pgvector Setup & Embeddings Table + Chunking Logic + Embedding Pipeline + Retrieval Service) implemented. PRD-020 Parts 1–3 (Sidebar Navigation + Chat Data Model and Streaming Infrastructure + Chat UI Components) implemented. PRD-021 Parts 1–6 (Theme Assignment at Extraction Time + Dashboard Layout, Navigation, and Direct Widgets + Derived Theme Widgets + Qualitative Drill-Down + AI-Generated Headline Insights + Filters and Interactivity) implemented. The app is a fully functional team-capable client feedback capture and synthesis platform with a public landing page, vector search infrastructure, Instagram-style hover-to-expand sidebar navigation, complete RAG chat interface (conversations sidebar, message thread with virtualized scrolling, streaming with markdown, citations, follow-ups, in-conversation search, archive read-only mode), and full server-side RAG chat infrastructure (conversations, messages, tool-augmented streaming, LLM title generation). Google OAuth login (open to any Google account), working capture form with AI signal extraction and file attachment upload with server-side persistence, past sessions table with filters/inline editing/soft delete, master signal page with AI synthesis and PDF download, prompt editor with version history, team access with role-based permissions, automatic embedding generation on session save/extraction, and semantic retrieval service with adaptive query classification for downstream RAG and insights features.
+**Status:** PRD-002 through PRD-010 implemented. PRD-011 (Email + Password Auth, Parts 1–4) implemented. PRD-012 Parts 1–5 (Design Tokens and Typography + DRY Extraction + SRP Component Decomposition + API Route/Service Cleanup + Dependency Inversion) implemented. PRD-013 Parts 1–4 (File Upload Infrastructure + Persistence & Signal Extraction Integration + Past Sessions Attachment Management + Edge Cases & Limits) implemented. PRD-014 Parts 1–4 (Session Traceability & Staleness Data Model + View Prompt on Capture Page + Show Prompt Version in Past Sessions + Staleness Indicators & Re-extraction Warnings) implemented. PRD-015 Part 1 (Public Landing Page) implemented. PRD-016 (Dark Mode) and PRD-017 (Bulk Re-extraction) implemented. PRD-018 Parts 1–2 (Structured Output Migration + Render UI from JSON) implemented. PRD-019 Parts 1–4 (pgvector Setup & Embeddings Table + Chunking Logic + Embedding Pipeline + Retrieval Service) implemented. PRD-020 Parts 1–3 (Sidebar Navigation + Chat Data Model and Streaming Infrastructure + Chat UI Components) implemented. PRD-021 Parts 1–6 (Theme Assignment at Extraction Time + Dashboard Layout, Navigation, and Direct Widgets + Derived Theme Widgets + Qualitative Drill-Down + AI-Generated Headline Insights + Filters and Interactivity) implemented. PRD-022 Parts 1–4 (Settings Accordion + Team Management Page + Extraction Prompt Page + Landing Page Refresh) implemented. The app is a fully functional team-capable client feedback capture and synthesis platform with a public landing page, vector search infrastructure, Instagram-style hover-to-expand sidebar navigation, complete RAG chat interface (conversations sidebar, message thread with virtualized scrolling, streaming with markdown, citations, follow-ups, in-conversation search, archive read-only mode), and full server-side RAG chat infrastructure (conversations, messages, tool-augmented streaming, LLM title generation). Dual authentication (Google OAuth and email/password with recovery flow), working capture form with AI signal extraction and file attachment upload with server-side persistence, past sessions table with filters/inline editing/soft delete, prompt editor with version history (at `/settings/prompts`), dedicated team management (at `/settings/team`), role-based team access, automatic embedding generation on session save/extraction, and semantic retrieval service with adaptive query classification for downstream RAG and insights features. **Note:** the master-signal backend (API route, service, repository, prompt, `master_signals` table) remains wired but the `/m-signals` UI page has been retired — see "Master Signal (retained backend, retired UI)" below.
 
 **Core features live:**
 - Public landing page at `/` with hero, feature cards, how-it-works flow, and CTA (authenticated users auto-redirect to `/dashboard`; new accounts with no sessions redirect to `/capture`)
+- Dual authentication: Google OAuth and email + password (sign-up, sign-in, forgot-password, reset-password) via Supabase Auth; invite acceptance supports both paths
 - Session capture with AI signal extraction (Vercel AI SDK, multi-provider) and file attachment upload (TXT, PDF, CSV, DOCX, JSON) with server-side parsing and chat format detection (WhatsApp, Slack)
-- Per-user prompt editor with version history and revert
+- Per-user/per-team prompt editor with version history and revert, accessed at `/settings/prompts`
 - Team workspaces with role-based access (owner, admin, sales)
 - Email invitations via provider-agnostic email service (Resend)
 - Workspace switcher (personal ↔ team contexts)
@@ -54,7 +55,7 @@ synthesiser/
 ├── app/
 │   ├── globals.css              # Global CSS tokens (brand colours, status colours, AI action colours, typography, surfaces, sidebar width tokens)
 │   ├── layout.tsx               # Root layout — AuthProvider + AuthenticatedLayout + Toaster
-│   ├── page.tsx                 # Landing page (public) — authenticated users redirect to /capture
+│   ├── page.tsx                 # Landing page (public) — authenticated users redirect to /dashboard (or /capture if the account has no sessions)
 │   ├── _components/
 │   │   └── landing-page.tsx     # Client component — auth-aware landing page (hero, features, how-it-works, CTA)
 │   ├── favicon.ico
@@ -167,7 +168,6 @@ synthesiser/
 │   │       ├── insight-cards-row.tsx      # Headline insight cards — horizontal scrollable row, type-specific styling (trend/anomaly/milestone), refresh button, skeleton/error/empty states
 │   │       ├── previous-insights.tsx      # Previous insight batches — collapsible details/summary, lazy-loaded on first expand, compact list with type icons
 │   │       ├── sentiment-widget.tsx        # Sentiment distribution — PieChart (donut) with clickable segments, drill-down on click, shift+click cross-filter (severity)
-│   │       ├── session-preview-dialog.tsx  # Session preview Dialog — fetches session_detail, renders StructuredSignalView with client name + date header
 │   │       ├── session-volume-widget.tsx   # Session volume over time — AreaChart with local week/month granularity toggle (no drill-down)
 │   │       ├── theme-client-matrix-widget.tsx # Theme-client matrix — HTML heatmap grid, opacity-mapped cells, sticky headers, custom tooltip, drill-down on click
 │   │       ├── theme-trends-widget.tsx    # Theme trends — LineChart with local week/month toggle, top-5 default with theme multi-select (Popover+Command), 8-colour palette, drill-down on activeDot click
@@ -193,6 +193,7 @@ synthesiser/
 │   │       ├── prompt-version-badge.tsx   # Clickable badge in expanded row — fetches prompt version on click, opens ViewPromptDialog
 │   │       ├── past-sessions-table.tsx    # Past sessions table with expand/collapse, inline edit, delete, "Captured by" column
 │   │       ├── prompt-version-filter.tsx  # Prompt version filter dropdown — fetches distinct versions, "Default prompt" for null
+│   │       ├── saved-attachment-list.tsx  # Displays persisted attachments with download, delete (with confirmation when signals exist), and view parsed content toggle
 │   │       ├── session-capture-form.tsx   # Coordinator — react-hook-form, submit, extract; composes attachment/notes subcomponents
 │   │       ├── session-filters.tsx        # Filter bar — client combobox + date range + prompt version filter with auto-sync
 │   │       ├── session-table-row.tsx      # Single table row — formatDate, truncateNotes, formatEmail helpers
@@ -203,9 +204,30 @@ synthesiser/
 │   │   └── [token]/
 │   │       ├── page.tsx                   # Invite acceptance page — server component
 │   │       └── _components/
-│   │           └── invite-page-content.tsx # Client component — validate token, accept/sign-in flow
+│   │           ├── invite-page-content.tsx    # Client coordinator — validates token, routes between invite states (PRD-011 Part 3)
+│   │           ├── invite-shell.tsx           # Shared centered card shell for all invite states, with status icon
+│   │           ├── invite-status-card.tsx     # Status cards for invalid/expired/already-accepted states
+│   │           ├── invite-accept-card.tsx     # Authenticated + email-match state — shows team/role + accept button
+│   │           ├── invite-mismatch-card.tsx   # Authenticated + email-mismatch state — warning + sign-out option
+│   │           ├── invite-sign-in-form.tsx    # Unauthenticated + existing user — email/password sign-in with pre-filled email
+│   │           ├── invite-sign-up-form.tsx    # Unauthenticated + new user — sign-up with pre-filled email
+│   │           └── invite-helpers.ts          # Shared helpers for invite state resolution
 │   ├── login/
-│   │   └── page.tsx             # Login page with "Sign in with Google" button
+│   │   ├── page.tsx             # Login page — server component with metadata
+│   │   └── _components/
+│   │       └── login-form.tsx   # Email/password form + Google OAuth button (PRD-011 Part 1)
+│   ├── signup/
+│   │   ├── page.tsx             # Sign-up page — server component with metadata
+│   │   └── _components/
+│   │       └── signup-form.tsx  # Email/password sign-up (Zod validation) + Google OAuth + email-confirmation panel (PRD-011 Part 1)
+│   ├── forgot-password/
+│   │   ├── page.tsx             # Forgot-password page — server component with metadata
+│   │   └── _components/
+│   │       └── forgot-password-form.tsx # Triggers supabase.auth.resetPasswordForEmail with type=recovery redirect (PRD-011 Part 2)
+│   ├── reset-password/
+│   │   ├── page.tsx             # Reset-password page — server component with metadata (requires authenticated recovery session)
+│   │   └── _components/
+│   │       └── reset-password-form.tsx  # New password + confirm, calls supabase.auth.updateUser (PRD-011 Part 2)
 │   └── settings/
 │       ├── page.tsx             # Settings page — redirects to /settings/team
 │       ├── prompts/
@@ -232,6 +254,7 @@ synthesiser/
 │   │   └── email-confirmation-panel.tsx # Shared "Check your email" success panel (children, linkText, linkHref)
 │   ├── capture/
 │   │   ├── reextract-confirm-dialog.tsx # Shared re-extract confirmation dialog (show, hasManualEdits, onConfirm, onCancel)
+│   │   ├── session-preview-dialog.tsx   # Session preview Dialog — fetches session_detail via dashboard API, renders StructuredSignalView with client name + date header (used by drill-down + chat citations)
 │   │   └── structured-signal-view.tsx   # Renders ExtractedSignals JSON as typed UI — sections, severity/priority/sentiment badges, quotes (PRD-018 P2)
 │   ├── providers/
 │   │   └── auth-provider.tsx    # AuthProvider context — user, isAuthenticated, isLoading, canCreateTeam, activeTeamId, setActiveTeam, signOut
@@ -255,8 +278,10 @@ synthesiser/
 │       ├── command.tsx
 │       ├── dialog.tsx
 │       ├── dropdown-menu.tsx
+│       ├── google-icon.tsx      # Shared Google "G" icon component used by Google OAuth buttons (PRD-011)
 │       ├── input.tsx
 │       ├── label.tsx
+│       ├── password-input.tsx   # Email/password input with show/hide toggle (PRD-011)
 │       ├── popover.tsx
 │       ├── select.tsx
 │       ├── sheet.tsx            # Slide-out drawer (left/right/top/bottom) built on Radix Dialog primitives
@@ -295,6 +320,7 @@ synthesiser/
 │   │   └── headline-insights.ts  # Headline insights system prompt, max tokens, InsightAggregates interface, buildHeadlineInsightsUserMessage() for generateObject() insight generation (PRD-021 Part 5)
 │   ├── schemas/
 │   │   ├── extraction-schema.ts   # Zod schema for structured extraction output — signalChunkSchema, extractionSchema, type exports
+│   │   ├── password-schema.ts     # Shared `passwordField` Zod schema (8+ chars, 1 digit, 1 special char) used by signup/reset forms (PRD-011)
 │   │   ├── theme-assignment-schema.ts # Zod schema for theme assignment LLM response — themeAssignmentResponseSchema, ThemeAssignmentResponse type (PRD-021)
 │   │   └── headline-insights-schema.ts # Zod schema for headline insights LLM response — headlineInsightsResponseSchema (1–5 items), HeadlineInsightsResponse type (PRD-021 Part 5)
 │   ├── repositories/
@@ -632,6 +658,23 @@ Stores individual messages within conversations. Access derived from conversatio
 **Indexes:** `idx_messages_conversation_created` on `(conversation_id, created_at ASC)`.
 **RLS:** Derived from conversation ownership — all operations require `EXISTS (SELECT 1 FROM conversations WHERE id = conversation_id AND created_by = auth.uid())`.
 
+### `dashboard_insights`
+
+Stores AI-generated headline insight cards displayed above the dashboard widget grid. Rows are written in batches (3–5 insights per batch) keyed by `batch_id`.
+
+| Column | Type | Notes |
+|--------|------|-------|
+| `id` | UUID (PK) | `gen_random_uuid()` |
+| `content` | TEXT | NOT NULL. The insight text rendered in the card. |
+| `insight_type` | TEXT | NOT NULL, CHECK: `trend`, `anomaly`, `milestone`. Drives card styling (blue/info, amber/warning, green/success). |
+| `batch_id` | UUID | NOT NULL. Groups the 3–5 insights produced by a single generation call. |
+| `team_id` | UUID (FK → teams) | Nullable. NULL = personal workspace. |
+| `created_by` | UUID (FK → auth.users) | NOT NULL. The user whose action triggered the batch. |
+| `generated_at` | TIMESTAMPTZ | NOT NULL, default `now()`. |
+
+**Indexes:** `(team_id, batch_id)` for batch lookups; `(team_id, generated_at DESC)` for latest-first queries.
+**RLS:** Personal: users SELECT/INSERT their own insights. Team: members SELECT team insights via `is_team_member()`. Service-role client used for AI-driven batch inserts during fire-and-forget `maybeRefreshInsights()`.
+
 ### Shared functions and triggers
 
 - `update_updated_at()` — BEFORE UPDATE trigger on `clients`, `sessions`, `profiles`, `teams`, and `conversations` tables, sets `updated_at = now()`.
@@ -646,25 +689,38 @@ Stores individual messages within conversations. Access derived from conversatio
 
 ## Authentication Flow
 
-**Provider:** Google OAuth via Supabase Auth. Open to any Google account.
+**Providers:** Supabase Auth with two paths — Google OAuth and email + password. Open to any account (no domain allowlist). Email confirmation is required for new email/password sign-ups.
 
-**Standard flow:**
+**Middleware** (`middleware.ts`) runs on every request. It refreshes the Supabase session via `getUser()`, redirects unauthenticated users to `/login`, and validates the `active_team_id` cookie (clears if user is no longer a member). Public routes (`/`, `/login`, `/signup`, `/forgot-password`, `/auth/callback`, `/invite/*`) are excluded. Authenticated users who hit `/login`, `/signup`, or `/forgot-password` are bounced to `DEFAULT_AUTH_ROUTE` (`/dashboard`). `/reset-password` is not public — users arrive there via the recovery link which establishes a session first.
 
-1. **Middleware** (`middleware.ts`) runs on every request. It refreshes the Supabase session via `getUser()`, redirects unauthenticated users to `/login`, and validates the `active_team_id` cookie (clears if user is no longer a member). Public routes (`/`, `/login`, `/auth/callback`, `/invite`) are excluded.
-2. User visits `/login` and clicks "Sign in with Google."
-3. `supabase.auth.signInWithOAuth({ provider: 'google' })` redirects to Google consent screen.
-4. Google redirects back to `/auth/callback?code=...`.
-5. The callback route handler exchanges the code for a session via `supabase.auth.exchangeCodeForSession(code)`.
-6. On success: redirect to `/capture`. On failure: redirect to `/login?error=exchange_failed`.
-7. **AuthProvider** (`components/providers/auth-provider.tsx`) wraps the app in `layout.tsx`. It reads the initial session on mount and subscribes to `onAuthStateChange`. Exposes `user`, `isAuthenticated`, `isLoading`, `canCreateTeam`, `activeTeamId`, `setActiveTeam`, and `signOut` via React context.
-8. **UserMenu** consumes the auth context. Shows a loading skeleton while `isLoading`, a "Sign in" link when unauthenticated, and the user's Google avatar + email with a sign-out dropdown when authenticated.
+**Google OAuth flow:**
+
+1. User visits `/login` or `/signup` and clicks "Continue with Google."
+2. `supabase.auth.signInWithOAuth({ provider: 'google' })` redirects to the Google consent screen.
+3. Google redirects back to `/auth/callback?code=...`.
+4. The callback route handler exchanges the code for a session via `supabase.auth.exchangeCodeForSession(code)`.
+5. On success: the callback checks `sessions` count for the user — redirects to `DEFAULT_AUTH_ROUTE` (`/dashboard`) for returning users and `ONBOARDING_ROUTE` (`/capture`) for accounts with no sessions. Both constants live in `lib/constants.ts`. On failure: redirect to `/login?error=exchange_failed`.
+
+**Email + password flow:**
+
+1. **Sign-up** (`/signup`): user submits email + password (`passwordField` Zod schema: 8+ chars, 1 digit, 1 special char). Supabase sends a confirmation email; UI shows `EmailConfirmationPanel` until confirmed.
+2. **Sign-in** (`/login`): same page hosts email/password and Google OAuth. Email/password sign-in establishes a session directly; the form then calls `router.push(DEFAULT_AUTH_ROUTE)` (or `ONBOARDING_ROUTE` for first-run accounts).
+3. **Forgot password** (`/forgot-password`): `supabase.auth.resetPasswordForEmail()` with `redirectTo=...?type=recovery`. Email triggers the recovery link.
+4. **Reset password** (`/reset-password`): the auth callback recognises `type=recovery` and redirects here; the form calls `supabase.auth.updateUser({ password })` to commit the new password.
+
+**Shared auth context:**
+
+- **AuthProvider** (`components/providers/auth-provider.tsx`) wraps the app in `layout.tsx`. It reads the initial session on mount, subscribes to `onAuthStateChange`, and exposes `user`, `isAuthenticated`, `isLoading`, `canCreateTeam`, `activeTeamId`, `setActiveTeam`, and `signOut` via React context. `signOut()` calls `supabase.auth.signOut()` and then `clearActiveTeamCookie()` so workspace context doesn't leak to the next session on the same machine.
+- **UserMenu** consumes the auth context. Shows a loading skeleton while `isLoading`, a "Sign in" link when unauthenticated, and the user's avatar + email with a sign-out dropdown when authenticated.
 
 **Invite acceptance flow:**
 
 1. User receives an email with a link to `/invite/[token]`.
-2. If authenticated: page shows team name, role, and "Accept & Join Team" button. Accepting calls `POST /api/invite/[token]/accept`, which creates a `team_members` entry and sets `active_team_id` cookie.
-3. If unauthenticated: page shows "Sign in with Google to join" button. A `pending_invite_token` cookie is set before redirecting to OAuth.
-4. After OAuth callback, if `pending_invite_token` exists, the callback auto-accepts the invitation, sets `active_team_id`, and clears the pending token cookie.
+2. If authenticated and email matches the invitation: `InviteAcceptCard` shows team name, role, and "Accept & Join Team" button. Accepting calls `POST /api/invite/[token]/accept`, which creates a `team_members` entry and sets `active_team_id` cookie.
+3. If authenticated but email does NOT match: `InviteMismatchCard` warns the user and offers a sign-out option.
+4. If unauthenticated + account already exists for the invited email: `InviteSignInForm` — email is pre-filled; password or Google OAuth completes sign-in. A `pending_invite_token` cookie is set before any OAuth redirect.
+5. If unauthenticated + no account exists: `InviteSignUpForm` — email is pre-filled; completing sign-up flows through confirmation.
+6. After OAuth callback, if `pending_invite_token` exists and the signed-in email matches the invitation email, the callback auto-accepts the invitation, sets `active_team_id`, and clears the pending token cookie. On email mismatch the callback redirects to `/invite/[token]?error=email_mismatch`.
 
 **Workspace context:**
 
@@ -718,6 +774,23 @@ Stores individual messages within conversations. Access derived from conversatio
 | POST | `/api/teams/[teamId]/invitations/[invitationId]/resend` | Resend invitation email. Admin+ only. | Yes |
 | POST | `/api/invite/[token]/accept` | Accept invitation. Creates team_members entry. | Yes |
 
+### Chat
+
+| Method | Route | Purpose | Auth |
+|--------|-------|---------|------|
+| GET | `/api/chat/conversations?cursor=&search=&archived=` | List user's conversations (active or archived) with cursor-based pagination and optional search. User-private. | Yes (RLS) |
+| PATCH | `/api/chat/conversations/[id]` | Update conversation — rename, pin/unpin, archive/unarchive. | Yes (RLS) |
+| DELETE | `/api/chat/conversations/[id]` | Soft-delete conversation. | Yes (RLS) |
+| GET | `/api/chat/conversations/[id]/messages?cursor=` | List messages for a conversation (cursor-based, newest-first). | Yes (RLS) |
+| POST | `/api/chat/send` | Streaming chat endpoint. Validates input, resolves/creates conversation, delegates to `chat-stream-service`, returns SSE response with `X-Conversation-Id` header. `teamId` is always read from the `active_team_id` cookie — never from the request body. | Yes |
+
+### Dashboard
+
+| Method | Route | Purpose | Auth |
+|--------|-------|---------|------|
+| GET | `/api/dashboard?action=...&dateFrom=&dateTo=&clients=&severity=&urgency=&granularity=&confidenceMin=&drillDown=&sessionId=` | Dashboard query endpoint. Zod-validated `action` (13 values: sentiment/urgency/sessions-over-time/client-health/competitive-mention/client-list, top-themes/theme-trends/theme-client-matrix, drill-down, session-detail, insights-latest, insights-history) and filter params. Delegates to `executeQuery()` via RLS-protected anon client. | Yes (RLS) |
+| POST | `/api/dashboard/insights` | Generate a new headline-insights batch via service-role client and `generateHeadlineInsights()`. Returns the new batch. | Yes |
+
 ---
 
 ## Environment Variables
@@ -762,3 +835,5 @@ See `.env.example` for the full template.
 13. **Dependency Inversion via repository pattern.** All 8 data-access services accept injected repository interfaces instead of importing Supabase directly. Repository interfaces live in `lib/repositories/`, Supabase adapters in `lib/repositories/supabase/`, and an in-memory mock in `lib/repositories/mock/`. Route handlers create Supabase clients, instantiate repositories via factory functions (`createSessionRepository`, etc.), and pass them to services. Services have zero coupling to Supabase — the `lib/services/` directory contains no `@/lib/supabase/server` imports. Workspace scoping (`team_id` filtering) is centralised in a shared `scopeByTeam()` helper within the adapter layer.
 14. **Chat data isolation: anon client for reads, service-role for embeddings.** The RAG chat system uses two Supabase clients: the RLS-protected anon client for all data reads (via the `queryDatabase` tool), ensuring row-level security enforces both team scoping and personal workspace isolation (`created_by = auth.uid()`); and the service-role client only for the embedding repository (similarity search RPC). The embedding RPC adds explicit `filter_user_id` scoping for personal workspace queries. `teamId` is always resolved server-side from the `active_team_id` cookie — never accepted from the client request body.
 15. **Dashboard widgets are self-contained client components.** Each widget owns its own fetch lifecycle via the shared `useDashboardFetch` hook, reading global filter state from URL search params (bookmarkable/shareable). The `/api/dashboard` route validates action + filter params with Zod and delegates to `executeQuery()` using the anon Supabase client (RLS-protected). Chart colours and chunk-type labels are centralised in `chart-colours.ts` to avoid duplication. Recharts is the charting library for most widgets; the theme-client matrix uses an HTML grid for heatmap rendering (PRD-021 Parts 2–3). Theme query handlers share `fetchActiveThemeMap()` and `fetchSignalThemeRows()` to DRY the multi-table join chain (`signal_themes` → `session_embeddings` → `sessions`). The `confidenceMin` URL param filters theme assignments by confidence score (forward-compatible for Part 6 UI slider). Qualitative drill-down (PRD-021 Part 4) uses a two-layer architecture: `DrillDownContent` is a presentation-agnostic `<div>` owning data fetching, client accordion, and signal rows; `DrillDownPanel` is a thin `Sheet` shell (swappable to `Dialog` in one file change). All 7 clickable widgets pass a `DrillDownContext` discriminated union via `onDrillDown` callback to the coordinator (`dashboard-content.tsx`). The drill-down API action uses Zod validation on the JSON payload and dispatches to 7 internal query strategies (3 direct + 1 competitor + 3 theme), capping results at 100 signals. A separate `session_detail` action fetches a single session for the `SessionPreviewDialog`.
+16. **AI-generated headline insights as a chained extraction side-effect.** Three to five classified insight cards (`trend`/`anomaly`/`milestone`) sit above the dashboard widget grid. Generation aggregates five dashboard queries in parallel via `executeQuery()`, fetches the previous batch for change-focused framing, and calls `callModelObject()` with `headlineInsightsResponseSchema`. Writes are batched (one `batch_id` per generation) to `dashboard_insights` via the service-role client. Two trigger paths: manual "Refresh Insights" button (`POST /api/dashboard/insights`) and the post-extraction fire-and-forget chain (`generateSessionEmbeddings → assignSessionThemes → maybeRefreshInsights`), which uses a staleness check (new-session count since last generation) to avoid regenerating on every save. Previous batches are lazy-loaded via `PreviousInsights`.
+17. **Master Signal (retained backend, retired UI).** The master-signal page (`/m-signals`) has been removed from the navigation and deleted from the codebase, but the full backend remains wired: `master_signals` table, `master-signal-service.ts` (`generateOrUpdateMasterSignal`, cold-start vs incremental), `master-signal-repository.ts` (+ Supabase adapter), `master-signal-synthesis.ts` prompt, `GET /api/master-signal`, `POST /api/ai/generate-master-signal`, `is_tainted` taint propagation on session delete, and prompt variants under `prompt_versions.prompt_key` (`master_signal_cold_start`, `master_signal_incremental`). Rationale: the feature is deprecated in the UX direction (dashboards + chat replaced it), but the backend is retained as an optional re-entry point and to preserve historical data. Do not reference it in user-facing copy; do not delete it without a cleanup PRD that also migrates/archives the table.

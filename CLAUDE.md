@@ -160,14 +160,20 @@ These rules apply to every file under `app/`, `components/`, and `lib/`.
 
 ---
 
-## Authentication — Google OAuth via Supabase Auth
+## Authentication — Supabase Auth (Google OAuth + Email/Password)
 
-- **Supabase Auth handles the OAuth flow.** No custom OAuth implementation. Use `supabase.auth.signInWithOAuth({ provider: 'google' })` on the client and Supabase's built-in session management.
-- **Open authentication.** Any Google account can sign in. There is no email domain restriction. The OAuth callback exchanges the code for a session and redirects to `/capture`.
-- **Auth state is provided via a React context.** A single `AuthProvider` wraps the app and exposes `user`, `isAuthenticated`, `isLoading`, and `signOut`. Components read auth state from context.
-- **Middleware protects all routes.** Next.js middleware checks for a valid Supabase session on every request. Unauthenticated users are redirected to the sign-in page.
+- **Two first-class auth paths, same backend.** Supabase Auth handles both Google OAuth (`supabase.auth.signInWithOAuth({ provider: 'google' })`) and email/password (`signInWithPassword`, `signUp`, `resetPasswordForEmail`, `updateUser`). Both paths produce the same session and flow through the same `AuthProvider`. Do not add a third custom provider without a PRD.
+- **Email/password rules.** Sign-up requires email confirmation before the user can sign in. Password strength is enforced by the shared `passwordField` Zod schema in `lib/schemas/password-schema.ts` (8+ chars, ≥1 digit, ≥1 special char) — reuse it; don't redefine inline. Use `PasswordInput` (`components/ui/password-input.tsx`) for all password fields so the show/hide toggle behaviour is consistent. Use `GoogleIcon` (`components/ui/google-icon.tsx`) for OAuth buttons.
+- **Shared form chrome.** Auth pages compose `AuthFormShell` (`components/auth/auth-form-shell.tsx`) for the centered card layout and `EmailConfirmationPanel` (`components/auth/email-confirmation-panel.tsx`) for post-submit "check your email" states. Don't re-implement these — they exist because the signup/forgot-password/invite flows all need the same shell.
+- **Password recovery is a callback-driven redirect.** The forgot-password form calls `resetPasswordForEmail` with `redirectTo=...?type=recovery`. The shared `/auth/callback` route recognises `type=recovery` and routes the (now-authenticated) user to `/reset-password`. Never special-case recovery in the form itself.
+- **Open authentication.** Any account can sign in via either path. There is no email domain restriction.
+- **Post-auth redirect is centralised.** `DEFAULT_AUTH_ROUTE` (`/dashboard`) and `ONBOARDING_ROUTE` (`/capture`) are exported from `lib/constants.ts` and duplicated in `middleware.ts` (Edge runtime cannot import path aliases — this is intentional and both must be kept in sync). The auth callback picks between them based on whether the user has any sessions. Don't hardcode `/dashboard` or `/capture` in form components — use the constant.
+- **Public routes.** `/`, `/login`, `/signup`, `/forgot-password`, `/auth/callback`, and `/invite/*` are middleware-excluded. `/reset-password` is authenticated (the recovery link establishes the session first). Keep this list in sync in `middleware.ts` when adding new auth pages.
+- **Auth state is provided via a React context.** A single `AuthProvider` wraps the app and exposes `user`, `isAuthenticated`, `isLoading`, `canCreateTeam`, `activeTeamId`, `setActiveTeam`, and `signOut`. Components read auth state from context. Never call `supabase.auth.getUser()` from a component — go through context.
+- **Middleware protects all routes.** Next.js middleware checks for a valid Supabase session on every request. Unauthenticated users visiting a non-public route are redirected to `/login`. Authenticated users visiting `/login`, `/signup`, or `/forgot-password` are bounced to `DEFAULT_AUTH_ROUTE`.
 - **Session persistence.** Supabase Auth handles session refresh via cookies. The user is not forced to re-authenticate on every visit.
-- **Sign-out clears the session.** `supabase.auth.signOut()` clears cookies and redirects to the sign-in page.
+- **Sign-out clears both auth and workspace state.** `signOut()` in the auth provider calls `supabase.auth.signOut()` **and** `clearActiveTeamCookie()` — the workspace cookie must not survive into the next session on the same machine.
+- **Invite acceptance bridges both auth paths.** `/invite/[token]` renders one of five states (accept, email-mismatch warning, sign-in for existing users, sign-up for new users, invalid/expired) via components in `app/invite/[token]/_components/`. Pre-fill email from the invitation. The auth callback auto-accepts an invitation when `pending_invite_token` cookie is present **and** signed-in email matches the invitation.
 
 ---
 

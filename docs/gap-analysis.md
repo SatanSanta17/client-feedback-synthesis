@@ -59,11 +59,16 @@ Attachments are hard-deleted from storage when explicitly removed via the UI. Bu
 
 ---
 
-### E7 — `MAX_COMBINED_CHARS = 400_000` is model-agnostic
-**File:** `lib/constants.ts`
+### E7 — `MAX_COMBINED_CHARS` is a single static value for every model
+**File:** `lib/constants.ts` (value: `MAX_COMBINED_CHARS = 50_000`, enforced in the capture form and `POST /api/ai/extract-signals`)
 **Priority: Medium-High**
 
-400,000 chars ≈ 100,000 tokens. The limit is applied uniformly regardless of `AI_MODEL`. GPT-4o performs worse beyond ~64K tokens. No per-model context window validation exists at extraction time — large inputs with GPT-4o may produce silently degraded output.
+The combined-input limit is currently a single constant applied uniformly regardless of `AI_PROVIDER`/`AI_MODEL`. This is a correctness and quality problem in both directions:
+
+- **Under-utilising capable models.** Frontier models (Claude Sonnet/Opus, GPT-4o, Gemini 2.0) handle much larger inputs comfortably. Capping at 50K chars forces users with long transcripts to truncate or split unnecessarily when the active model could have handled the full corpus in one extraction.
+- **Over-feeding weaker models.** Smaller/cheaper models (Haiku-class, Flash-class, mini-class) degrade well before their advertised context window — not from hitting the limit, but from attention dilution on long inputs. A single 50K limit doesn't protect these models either.
+
+The fix is to make the limit model-aware. Define a per-model "best-performance input budget" (in characters or tokens) and select it at runtime from `AI_MODEL`, with a sensible default when the model is unknown. This should drive the character counter on the capture UI, the Zod `.max()` on the extraction endpoint, and the chunking/context-budget logic in chat (`buildContextMessages`). Source the budgets from measured extraction quality, not advertised context windows — the two diverge sharply for most models.
 
 ---
 
@@ -115,9 +120,11 @@ No error tracking (Sentry or equivalent), no structured log aggregation, no upti
 
 ## Product Gaps
 
-### P1 — Master Signals page (`/m-signals`) is a zombie ✅ Fixed
+### P1 — Master Signals page (`/m-signals`) is a zombie ✅ UI retired; backend intentionally retained
 
-`/m-signals` folder deleted. ARCHITECTURE.md and README.md cleaned of references.
+`/m-signals` folder deleted and the nav link removed. The marketing surface (landing page, README prose) has been cleaned of master-signal references.
+
+**Backend is intentionally retained** as of this audit: `master_signals` table, `master-signal-service.ts` (`generateOrUpdateMasterSignal` with cold-start vs incremental variants and `is_tainted` propagation on session delete), `master-signal-repository.ts` + Supabase adapter, `master-signal-synthesis.ts` prompt, `GET /api/master-signal`, `POST /api/ai/generate-master-signal`, and the two `prompt_versions.prompt_key` values (`master_signal_cold_start`, `master_signal_incremental`) all remain wired. Rationale: dashboards + chat are the replacement UX, but the backend is kept as an optional re-entry point and to preserve historical data. See ARCHITECTURE.md "Key Design Decisions → Master Signal (retained backend, retired UI)." A future cleanup PRD should either bring back a minimal UI or remove the backend end-to-end (including a data migration for `master_signals`); the current in-between state is deliberate but not indefinite.
 
 ---
 
