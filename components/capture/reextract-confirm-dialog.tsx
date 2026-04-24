@@ -31,7 +31,7 @@ export function ReextractConfirmDialog({
           <Button type="button" variant="outline" size="sm" onClick={onCancel}>
             Cancel
           </Button>
-          <Button type="button" size="sm" onClick={onConfirm}>
+          <Button type="button" variant="ai" size="sm" onClick={onConfirm}>
             Re-extract
           </Button>
         </div>
