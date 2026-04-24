@@ -30,6 +30,12 @@ interface ViewPromptDialogProps {
    * Used by Part 3 to pass a specific prompt version's content.
    */
   content?: string | null
+  /**
+   * When true, the dialog shows its loading state regardless of `content`.
+   * Used when the caller is fetching `content` externally and wants the
+   * loader to appear inside the already-opened dialog.
+   */
+  isFetching?: boolean
   /** If true, shows the "Edit in Settings" link in the footer (P2.R3). */
   showEditLink?: boolean
   className?: string
@@ -43,6 +49,7 @@ export function ViewPromptDialog({
   title = "Active Extraction Prompt",
   description,
   content: externalContent,
+  isFetching = false,
   showEditLink = false,
 }: ViewPromptDialogProps) {
   const [fetchState, setFetchState] = useState<FetchState>("idle")
@@ -59,9 +66,14 @@ export function ViewPromptDialog({
       return
     }
 
-    if (externalContent !== undefined) {
-      // External content provided — skip fetch
-      setPromptContent(externalContent)
+    // Caller manages content externally (provided prop, or fetching in flight)
+    if (externalContent !== undefined || isFetching) {
+      if (isFetching) {
+        setPromptContent(null)
+        setFetchState("loading")
+        return
+      }
+      setPromptContent(externalContent ?? null)
       setFetchState(externalContent ? "success" : "error")
       return
     }
@@ -88,7 +100,7 @@ export function ViewPromptDialog({
       })
 
     return () => { cancelled = true }
-  }, [open, externalContent])
+  }, [open, externalContent, isFetching])
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>

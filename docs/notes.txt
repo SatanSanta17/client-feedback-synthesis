@@ -2,7 +2,6 @@
 - bring your own key
 - restrict max height of input section of capture and output of insights 
 - increase width of extract form and the table 
-- show the loader after the dialog has opened not on button click
 - dont make the allert version look like golden and like the AI magic theme
 - the confirmation dialog has a re-extract button which is purple: should be ai variant
 - dont close row on clicking save 

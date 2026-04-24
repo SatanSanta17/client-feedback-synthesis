@@ -1,7 +1,6 @@
 "use client"
 
 import { useState, useCallback } from "react"
-import { Loader2 } from "lucide-react"
 import { toast } from "sonner"
 
 import { Badge } from "@/components/ui/badge"
@@ -22,34 +21,32 @@ export function PromptVersionBadge({
   const [promptContent, setPromptContent] = useState<string | null>(null)
   const [dialogTitle, setDialogTitle] = useState("Extraction Prompt Used")
 
-  const handleClick = useCallback(async () => {
-    if (fetchState === "loading") return
+  const handleClick = useCallback(() => {
+    // Open the dialog immediately so the loader renders inside it
+    setShowDialog(true)
 
-    // If already fetched, just re-open the dialog
-    if (fetchState === "success" && promptContent) {
-      setShowDialog(true)
-      return
-    }
+    // Re-open without re-fetching when content is already cached
+    if (fetchState === "success" && promptContent) return
+    if (fetchState === "loading") return
 
     setFetchState("loading")
 
-    try {
-      const res = await fetch(`/api/prompts/${promptVersionId}`)
-      if (!res.ok) throw new Error("Failed to fetch prompt version")
-
-      const data = await res.json()
-      setPromptContent(data.version.content)
-      setDialogTitle(
-        data.versionNumber
-          ? `Extraction Prompt — Version ${data.versionNumber}`
-          : "Extraction Prompt Used"
-      )
-      setFetchState("success")
-      setShowDialog(true)
-    } catch {
-      setFetchState("error")
-      toast.error("Could not load prompt version")
-    }
+    fetch(`/api/prompts/${promptVersionId}`)
+      .then(async (res) => {
+        if (!res.ok) throw new Error("Failed to fetch prompt version")
+        const data = await res.json()
+        setPromptContent(data.version.content)
+        setDialogTitle(
+          data.versionNumber
+            ? `Extraction Prompt — Version ${data.versionNumber}`
+            : "Extraction Prompt Used"
+        )
+        setFetchState("success")
+      })
+      .catch(() => {
+        setFetchState("error")
+        toast.error("Could not load prompt version")
+      })
   }, [promptVersionId, fetchState, promptContent])
 
   return (
@@ -59,11 +56,7 @@ export function PromptVersionBadge({
         className="cursor-pointer text-[10px] px-1.5 py-0 text-muted-foreground hover:text-foreground transition-colors"
         onClick={handleClick}
       >
-        {fetchState === "loading" ? (
-          <Loader2 className="size-3 animate-spin" />
-        ) : (
-          "View prompt used"
-        )}
+        View prompt used
       </Badge>
 
       <ViewPromptDialog
@@ -71,6 +64,7 @@ export function PromptVersionBadge({
         onOpenChange={setShowDialog}
         title={dialogTitle}
         content={promptContent}
+        isFetching={fetchState === "loading"}
       />
     </>
   )
