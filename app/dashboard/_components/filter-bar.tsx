@@ -5,6 +5,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { Camera, Check, ChevronsUpDown, Loader2, X } from "lucide-react";
 
 import { cn } from "@/lib/utils";
+import { useAuth } from "@/components/providers/auth-provider";
 import { useFilterStorage } from "@/lib/hooks/use-filter-storage";
 import { Button } from "@/components/ui/button";
 import {
@@ -62,6 +63,7 @@ type DashboardFilters = Partial<Record<(typeof FILTER_PARAM_KEYS)[number], strin
 export function FilterBar({ className, onExport, isExporting }: FilterBarProps) {
   const router = useRouter();
   const searchParams = useSearchParams();
+  const { activeTeamId } = useAuth();
   const filterStorage = useFilterStorage<DashboardFilters>("dashboard");
   const hydratedKeyRef = useRef<string | null>(null);
 
@@ -121,9 +123,11 @@ export function FilterBar({ className, onExport, isExporting }: FilterBarProps) 
     });
   }, [filterStorage, router, searchParams]);
 
-  // Fetch client list on mount
+  // Fetch client list for the active workspace. Re-fetches on workspace
+  // switch — matches the convention in useDashboardFetch.
   useEffect(() => {
     setClientsLoading(true);
+    setClients([]);
     fetch("/api/dashboard?action=client_list")
       .then((res) => res.json())
       .then((result) => {
@@ -134,7 +138,7 @@ export function FilterBar({ className, onExport, isExporting }: FilterBarProps) 
         console.error("[FilterBar] Failed to fetch clients:", err);
       })
       .finally(() => setClientsLoading(false));
-  }, []);
+  }, [activeTeamId]);
 
   // ---------------------------------------------------------------------------
   // URL update helper — merges params without full reload
