@@ -70,16 +70,18 @@ export function TeamManagementClient({
         />
       </section>
 
-      <section className="mt-12 space-y-6 border-t border-[var(--border-subtle)] pt-8">
-        <h2 className="text-lg font-semibold text-[var(--text-primary)]">Manage Team</h2>
-        <TeamDangerZone
-          teamId={teamId}
-          teamName={teamName}
-          isOwner={isOwner}
-          onTeamRenamed={setTeamName}
-          onTeamDeleted={handleChange}
-        />
-      </section>
+      {isOwner && (
+        <section className="mt-12 space-y-6 border-t border-[var(--border-subtle)] pt-8">
+          <h2 className="text-lg font-semibold text-[var(--text-primary)]">Manage Team</h2>
+          <TeamDangerZone
+            teamId={teamId}
+            teamName={teamName}
+            isOwner={isOwner}
+            onTeamRenamed={setTeamName}
+            onTeamDeleted={handleChange}
+          />
+        </section>
+      )}
     </>
   );
 }
