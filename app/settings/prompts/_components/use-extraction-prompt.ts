@@ -5,10 +5,12 @@ import { toast } from "sonner"
 
 import { SIGNAL_EXTRACTION_SYSTEM_PROMPT } from "@/lib/prompts/signal-extraction"
 import type { PromptVersion } from "@/lib/services/prompt-service"
+import { useAuth } from "@/components/providers/auth-provider"
 
 export function useExtractionPrompt() {
   const effectiveKey = "signal_extraction"
   const defaultContent = SIGNAL_EXTRACTION_SYSTEM_PROMPT
+  const { activeTeamId } = useAuth()
 
   const [originalContent, setOriginalContent] = useState("")
   const [currentContent, setCurrentContent] = useState("")
@@ -43,7 +45,9 @@ export function useExtractionPrompt() {
     } finally {
       setIsLoading(false)
     }
-  }, [defaultContent, effectiveKey])
+    // activeTeamId is a dep so switching workspace re-fetches the active prompt.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [defaultContent, effectiveKey, activeTeamId])
 
   useEffect(() => {
     fetchPrompt()

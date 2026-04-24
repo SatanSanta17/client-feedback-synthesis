@@ -93,7 +93,10 @@ export function AuthProvider({ children }: AuthProviderProps) {
       clearActiveTeamCookie();
     }
     setActiveTeamId(teamId);
-  }, []);
+    // Re-runs server components (e.g. /settings pages) so they read the new cookie.
+    // Client-side fetch effects must include activeTeamId in their deps separately.
+    router.refresh();
+  }, [router]);
 
   const signOut = useCallback(async () => {
     await supabase.auth.signOut();

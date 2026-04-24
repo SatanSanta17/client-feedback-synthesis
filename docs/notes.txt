@@ -20,7 +20,6 @@
 - migrate data to dedicated supabase db 
 - make the auth flow decoupled from supabase
 - migration to a more reliable infrastructure
-- page re-render on workspace switch
 
 
 Mental model:

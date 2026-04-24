@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { useSearchParams } from "next/navigation";
 
+import { useAuth } from "@/components/providers/auth-provider";
 import { useFreshnessContext } from "./freshness-context";
 
 // ---------------------------------------------------------------------------
@@ -28,6 +29,7 @@ export function useDashboardFetch<T>(
 ): UseDashboardFetchResult<T> {
   const { action, extraParams } = options;
   const searchParams = useSearchParams();
+  const { activeTeamId } = useAuth();
   const { onFetchComplete } = useFreshnessContext();
 
   const [data, setData] = useState<T | null>(null);
@@ -65,7 +67,7 @@ export function useDashboardFetch<T>(
       )
       .finally(() => setIsLoading(false));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [action, searchParams, extraKey]);
+  }, [action, searchParams, extraKey, activeTeamId]);
 
   useEffect(() => {
     fetchData();
