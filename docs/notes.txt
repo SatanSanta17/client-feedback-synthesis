@@ -17,7 +17,6 @@
 - auto task generator 
 - migrate data to dedicated supabase db 
 - make the auth flow decoupled from supabase
-- migration to a more reliable infrastructure
 
 
 Mental model:

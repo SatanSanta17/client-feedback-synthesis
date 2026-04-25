@@ -49,7 +49,7 @@ export function createMessageRepository(
   return {
     async create(data: MessageInsert): Promise<Message> {
       console.log(
-        `${LOG_PREFIX} create — conversationId: ${data.conversation_id}, role: ${data.role}, status: ${data.status ?? "completed"}`
+        `${LOG_PREFIX} create — conversationId: ${data.conversation_id}, role: ${data.role}, status: ${data.status ?? "completed"}, providedId: ${data.id ?? "(default)"}`
       );
 
       const insertPayload: Record<string, unknown> = {
@@ -58,6 +58,9 @@ export function createMessageRepository(
         content: data.content,
       };
 
+      if (data.id !== undefined) {
+        insertPayload.id = data.id;
+      }
       if (data.parent_message_id !== undefined) {
         insertPayload.parent_message_id = data.parent_message_id;
       }
@@ -78,8 +81,10 @@ export function createMessageRepository(
         .single();
 
       if (error) {
+        // Propagate the raw Postgres error so the service layer can detect
+        // unique-violation (code 23505) and map to MessageDuplicateError.
         console.error(`${LOG_PREFIX} create error:`, error);
-        throw new Error("Failed to create message");
+        throw error;
       }
 
       console.log(`${LOG_PREFIX} created — id: ${row.id}, conversationId: ${row.conversation_id}`);

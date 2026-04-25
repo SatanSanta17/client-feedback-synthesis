@@ -20,10 +20,13 @@ export function ChatPageContent() {
   const { user, activeTeamId } = useAuth();
   const teamId = activeTeamId ?? null;
 
-  // Active conversation selection
-  const [activeConversationId, setActiveConversationId] = useState<
-    string | null
-  >(null);
+  // Active conversation UUID — client-generated end-to-end (gap E15). Always
+  // a real UUID. The DB row is created idempotently on the first POST using
+  // this UUID; up until that first send the conversation only exists
+  // client-side.
+  const [activeConversationId, setActiveConversationId] = useState<string>(() =>
+    crypto.randomUUID()
+  );
 
   // Sidebar state
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
@@ -35,27 +38,7 @@ export function ChatPageContent() {
     activeConversationId,
   });
 
-  // Handle new conversation creation from chat hook
   const { prependConversation } = conversationsHook;
-  const handleConversationCreated = useCallback(
-    (id: string) => {
-      setActiveConversationId(id);
-      // Add a placeholder conversation to the sidebar so it appears immediately.
-      // The title will be updated asynchronously by the fire-and-forget title
-      // generation via handleTitleGenerated / conversation list refetch.
-      prependConversation({
-        id,
-        title: "New conversation",
-        createdBy: user?.id ?? "",
-        teamId,
-        isPinned: false,
-        isArchived: false,
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-      });
-    },
-    [prependConversation, user?.id, teamId]
-  );
 
   // Handle async title generation
   const { updateConversation } = conversationsHook;
@@ -66,30 +49,85 @@ export function ChatPageContent() {
     [updateConversation]
   );
 
+  // True when the active conversationId is a freshly-generated local UUID
+  // not yet present in either sidebar list — i.e. the DB row doesn't exist
+  // yet. Used by useChat to skip the load-messages fetch (which would 404).
+  // Flips to false the moment `handleSendMessage` prepends to the list.
+  const isFresh = useMemo(
+    () =>
+      !(
+        conversationsHook.conversations.some(
+          (c) => c.id === activeConversationId
+        ) ||
+        conversationsHook.archivedConversations.some(
+          (c) => c.id === activeConversationId
+        )
+      ),
+    [
+      activeConversationId,
+      conversationsHook.conversations,
+      conversationsHook.archivedConversations,
+    ]
+  );
+
   // Chat streaming
   const chatHook = useChat({
     conversationId: activeConversationId,
-    onConversationCreated: handleConversationCreated,
+    isFresh,
     onTitleGenerated: handleTitleGenerated,
   });
 
-  // Derive active conversation object from the list
-  const activeConversation = useMemo(() => {
-    if (!activeConversationId) return null;
-    return (
+  // Derive active conversation object from the list. Returns null when the
+  // active UUID isn't in either list — i.e. a fresh local chat that hasn't
+  // been sent yet (no DB row exists yet under E15's idempotent contract).
+  const activeConversation = useMemo(
+    () =>
       conversationsHook.conversations.find(
         (c) => c.id === activeConversationId
       ) ??
       conversationsHook.archivedConversations.find(
         (c) => c.id === activeConversationId
       ) ??
-      null
-    );
-  }, [
-    activeConversationId,
-    conversationsHook.conversations,
-    conversationsHook.archivedConversations,
-  ]);
+      null,
+    [
+      activeConversationId,
+      conversationsHook.conversations,
+      conversationsHook.archivedConversations,
+    ]
+  );
+
+  // First-send sidebar prepend (gap E15). When the conversation is fresh
+  // (UUID not yet in either sidebar list), optimistically add it to the
+  // sidebar before the underlying sendMessage POST. The server creates the
+  // DB row idempotently on this same POST. Once prepended, `isFresh` flips
+  // to false on the next render and useChat's load-messages effect treats
+  // the conversation as persisted.
+  const { sendMessage: rawSendMessage } = chatHook;
+  const handleSendMessage = useCallback(
+    async (content: string) => {
+      if (isFresh) {
+        prependConversation({
+          id: activeConversationId,
+          title: "New conversation",
+          createdBy: user?.id ?? "",
+          teamId,
+          isPinned: false,
+          isArchived: false,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        });
+      }
+      return rawSendMessage(content);
+    },
+    [
+      activeConversationId,
+      isFresh,
+      prependConversation,
+      rawSendMessage,
+      teamId,
+      user?.id,
+    ]
+  );
 
   // Sidebar callbacks
   const handleSelectConversation = useCallback(
@@ -101,7 +139,9 @@ export function ChatPageContent() {
   );
 
   const handleNewChat = useCallback(() => {
-    setActiveConversationId(null);
+    // Generate a fresh UUID for the new chat — the DB row gets created on
+    // first send via the server's idempotent get-or-create (gap E15).
+    setActiveConversationId(crypto.randomUUID());
     setIsMobileSidebarOpen(false);
   }, []);
 
@@ -165,7 +205,7 @@ export function ChatPageContent() {
         error={chatHook.error}
         isSidebarCollapsed={isSidebarCollapsed}
         onFetchMoreMessages={chatHook.fetchMoreMessages}
-        onSendMessage={chatHook.sendMessage}
+        onSendMessage={handleSendMessage}
         onCancelStream={chatHook.cancelStream}
         onRetryLastMessage={chatHook.retryLastMessage}
         onUnarchive={handleUnarchiveActive}

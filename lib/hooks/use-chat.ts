@@ -37,8 +37,20 @@ function stripFollowUpBlock(text: string): string {
 }
 
 interface UseChatOptions {
-  conversationId: string | null;
-  onConversationCreated?: (id: string) => void;
+  /**
+   * Active conversation UUID. Always a string after E15 — the parent
+   * generates one via `crypto.randomUUID()` on mount and on "New chat",
+   * so the conversation has a stable identifier from the first render.
+   * The server idempotently creates the row on first POST.
+   */
+  conversationId: string;
+  /**
+   * True when the conversationId is a freshly-generated local UUID that
+   * has no DB row yet (i.e. not present in the parent's conversations
+   * sidebar list). The load-messages effect uses this to skip the fetch
+   * — there are no messages to load until the first send.
+   */
+  isFresh: boolean;
   onTitleGenerated?: (id: string, title: string) => void;
 }
 
@@ -130,7 +142,7 @@ export function useChat(options: UseChatOptions): UseChatReturn {
   // Note: onTitleGenerated is accepted for forward compatibility but not yet
   // wired — titles arrive via fire-and-forget server generation and the client
   // discovers them through conversation list refetch in useConversations.
-  const { conversationId, onConversationCreated } = options;
+  const { conversationId, isFresh } = options;
 
   // Message state
   const [messages, setMessages] = useState<Message[]>([]);
@@ -150,8 +162,17 @@ export function useChat(options: UseChatOptions): UseChatReturn {
   // Refs for cancellation and stable callbacks
   const abortControllerRef = useRef<AbortController | null>(null);
   const conversationIdRef = useRef(conversationId);
-  const onConversationCreatedRef = useRef(onConversationCreated);
   const streamingContentRef = useRef(streamingContent);
+  // Mirrors the latest `isFresh` prop so the load-messages effect can read
+  // it without including it in deps (gap E15). isFresh changes when the
+  // wrapper prepends a fresh chat to the sidebar list mid-send — that
+  // transition shouldn't trigger a re-fetch of messages we already have.
+  const isFreshRef = useRef(isFresh);
+  // Holds the in-flight stream's assistant message UUID — populated from the
+  // `X-Assistant-Message-Id` response header at fetch-response time, used by
+  // both the success path and the cancel path so the persisted DB row and
+  // the client-side message bubble share the same identifier (gap E14).
+  const assistantMessageIdRef = useRef<string | null>(null);
 
   // Keep refs in sync
   useEffect(() => {
@@ -159,8 +180,8 @@ export function useChat(options: UseChatOptions): UseChatReturn {
   }, [conversationId]);
 
   useEffect(() => {
-    onConversationCreatedRef.current = onConversationCreated;
-  }, [onConversationCreated]);
+    isFreshRef.current = isFresh;
+  }, [isFresh]);
 
   useEffect(() => {
     streamingContentRef.current = streamingContent;
@@ -171,7 +192,13 @@ export function useChat(options: UseChatOptions): UseChatReturn {
   // -------------------------------------------------------------------------
 
   useEffect(() => {
-    if (!conversationId) {
+    // Fresh local UUID: parent generated the conversationId via
+    // crypto.randomUUID() and the row doesn't exist on the server yet.
+    // Skip the fetch (it would 404) and reset message state — the next
+    // sendMessage will populate optimistically. Read from a ref so a
+    // mid-send isFresh→false transition doesn't retrigger this effect
+    // (the fetched messages would be the same ones already in state).
+    if (isFreshRef.current) {
       setMessages([]);
       setHasMoreMessages(false);
       return;
@@ -257,6 +284,11 @@ export function useChat(options: UseChatOptions): UseChatReturn {
     async (content: string) => {
       console.log(`${LOG_PREFIX} sendMessage — content length: ${content.length}`);
 
+      // Client-owned UUID for the user message (gap E14). Same ID used for
+      // the optimistic bubble, the POST body, and (after persistence) the
+      // DB row. No temp-ID swap needed.
+      const userMessageId = crypto.randomUUID();
+
       // Reset streaming state
       setStreamState("streaming");
       setStreamingContent("");
@@ -264,11 +296,12 @@ export function useChat(options: UseChatOptions): UseChatReturn {
       setLatestSources(null);
       setLatestFollowUps([]);
       setError(null);
+      assistantMessageIdRef.current = null;
 
       // Optimistically add user message
       const optimisticUserMessage: Message = {
-        id: `temp-user-${Date.now()}`,
-        conversationId: conversationIdRef.current ?? "",
+        id: userMessageId,
+        conversationId: conversationIdRef.current,
         parentMessageId: null,
         role: "user",
         content,
@@ -290,6 +323,7 @@ export function useChat(options: UseChatOptions): UseChatReturn {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             conversationId: conversationIdRef.current,
+            userMessageId,
             message: content,
           }),
           signal: controller.signal,
@@ -300,14 +334,14 @@ export function useChat(options: UseChatOptions): UseChatReturn {
           throw new Error(body.message || `HTTP ${res.status}`);
         }
 
-        // Check if a new conversation was created
-        const newConversationId = res.headers.get("X-Conversation-Id");
-        if (
-          newConversationId &&
-          !conversationIdRef.current &&
-          onConversationCreatedRef.current
-        ) {
-          onConversationCreatedRef.current(newConversationId);
+        // X-Conversation-Id header still arrives but is now informational —
+        // the client already knows the conversation UUID (it generated it).
+        // Capture the assistant placeholder's UUID from the response header
+        // so the cancel path can attach the real ID to a cancelled bubble
+        // (instead of a temp-cancelled-… ID with no DB counterpart).
+        const headerAssistantId = res.headers.get("X-Assistant-Message-Id");
+        if (headerAssistantId) {
+          assistantMessageIdRef.current = headerAssistantId;
         }
 
         // Read SSE stream
@@ -383,11 +417,17 @@ export function useChat(options: UseChatOptions): UseChatReturn {
         // may have emitted inline so it never appears in the rendered message.
         const { cleanContent } = parseFollowUps(accumulatedContent);
 
-        // Add the final assistant message to the list
+        // Add the final assistant message to the list. Header-supplied UUID
+        // is the authoritative source; the `done` event's messageId is kept
+        // as a paranoid fallback in case the header was missing for some
+        // reason. The temp-assistant-… fallback should never fire in
+        // practice.
         const completedMessage: Message = {
-          id: assistantMessageId ?? `temp-assistant-${Date.now()}`,
-          conversationId:
-            newConversationId ?? conversationIdRef.current ?? "",
+          id:
+            assistantMessageIdRef.current ??
+            assistantMessageId ??
+            `temp-assistant-${Date.now()}`,
+          conversationId: conversationIdRef.current,
           parentMessageId: null,
           role: "assistant",
           content: cleanContent,
@@ -438,9 +478,16 @@ export function useChat(options: UseChatOptions): UseChatReturn {
     // Store partial content as a cancelled message (read from ref to avoid stale closure)
     const partialContent = streamingContentRef.current;
     if (partialContent) {
+      // Use the assistant placeholder's real UUID (captured from the
+      // response header at fetch-response time) so the client-side bubble
+      // and the server-side cancelled row share the same identifier
+      // (gap E14). Fallback to a temp ID only if the header wasn't read
+      // — shouldn't happen in practice, kept for defensive completeness.
       const cancelledMessage: Message = {
-        id: `temp-cancelled-${Date.now()}`,
-        conversationId: conversationIdRef.current ?? "",
+        id:
+          assistantMessageIdRef.current ??
+          `temp-cancelled-${Date.now()}`,
+        conversationId: conversationIdRef.current,
         parentMessageId: null,
         role: "assistant",
         content: partialContent,

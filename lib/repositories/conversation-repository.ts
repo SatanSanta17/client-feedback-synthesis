@@ -8,6 +8,15 @@ import type { Conversation, ConversationListOptions } from "@/lib/types/chat";
  * Data required to insert a new conversation row.
  */
 export interface ConversationInsert {
+  /**
+   * Optional client-supplied UUID. When provided, overrides the column
+   * default `gen_random_uuid()`. Used for client-owned conversation IDs
+   * (gap E15) so the chat surface has a stable identifier from the
+   * moment a new chat is started — no `null → just-created` transition.
+   * Insert with a duplicate id surfaces as Postgres unique-violation
+   * (code 23505) which the service layer maps via `getOrCreateConversation`.
+   */
+  id?: string;
   title: string;
   created_by: string;
   team_id: string | null;

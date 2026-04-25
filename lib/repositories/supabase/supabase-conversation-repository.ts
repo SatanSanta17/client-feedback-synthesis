@@ -46,21 +46,31 @@ export function createConversationRepository(
 ): ConversationRepository {
   return {
     async create(data: ConversationInsert): Promise<Conversation> {
-      console.log(`${LOG_PREFIX} create — title: "${data.title.slice(0, 40)}…", teamId: ${data.team_id ?? "personal"}`);
+      console.log(
+        `${LOG_PREFIX} create — title: "${data.title.slice(0, 40)}…", teamId: ${data.team_id ?? "personal"}, providedId: ${data.id ?? "(default)"}`
+      );
+
+      const insertPayload: Record<string, unknown> = {
+        title: data.title,
+        created_by: data.created_by,
+        team_id: data.team_id,
+      };
+      if (data.id !== undefined) {
+        insertPayload.id = data.id;
+      }
 
       const { data: row, error } = await supabase
         .from("conversations")
-        .insert({
-          title: data.title,
-          created_by: data.created_by,
-          team_id: data.team_id,
-        })
+        .insert(insertPayload)
         .select(COLUMNS)
         .single();
 
       if (error) {
+        // Propagate the raw Postgres error so the service layer can detect
+        // unique-violation (code 23505) and fall back to a fetch — supporting
+        // idempotent "create or get" for client-owned UUIDs (gap E15).
         console.error(`${LOG_PREFIX} create error:`, error);
-        throw new Error("Failed to create conversation");
+        throw error;
       }
 
       console.log(`${LOG_PREFIX} created — id: ${row.id}`);

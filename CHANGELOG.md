@@ -6,6 +6,22 @@ All notable changes to this project are documented here, grouped by PRD and part
 
 ## [Unreleased]
 
+### Gap E15 — Client-generated conversation UUIDs — 2026-04-25
+
+- `ChatPageContent` initialises `activeConversationId` lazily via `crypto.randomUUID()` and regenerates it on "New chat". Conversation UUID is sent in the POST body alongside `userMessageId`.
+- Server-side `getOrCreateConversation` (in `chat-service.ts`) handles the idempotency: tries INSERT with the client-supplied UUID, falls back to fetch-by-id on Postgres unique-violation (code 23505). Cross-user UUID collisions (RLS hides the row) surface as `ConversationNotAccessibleError` → 404. `ConversationInsert` accepts an optional `id`; the Supabase repo passes it through and propagates the raw Postgres error so the service can detect the code.
+- `lib/hooks/use-chat.ts` cleanup: `conversationId` prop narrowed to `string` (no longer nullable); `onConversationCreated` callback + `onConversationCreatedRef` removed; `prevConversationIdRef` flicker patch removed (the `null → just-created` transition no longer exists). New `isFresh` prop (mirrored to `isFreshRef`) tells the load-messages effect to skip fetching for freshly-generated local UUIDs that don't have a DB row yet.
+- `ChatPageContent` derives `isFresh` from sidebar list-membership and wraps `chatHook.sendMessage` to optimistically prepend fresh conversations to the sidebar before the first POST. Existing `handleConversationCreated` callback removed — the prepend logic moved into the wrapper.
+- `X-Conversation-Id` response header is now informational only; the client already knows the conversation UUID.
+
+### Gap E14 — Chat message ID ownership + orphan row cleanup — 2026-04-25
+
+- **Client-generated UUIDs for user messages.** `useChat.sendMessage` now uses `crypto.randomUUID()` for the optimistic message ID, sends it in the POST body as `userMessageId`, and the server inserts with that explicit primary key. End-to-end identifier stability — same UUID in optimistic React state, network payload, and DB row. No more `temp-user-…` swap step.
+- **Server-generated UUID for assistant messages, surfaced via response header.** Added `X-Assistant-Message-Id` to the `/api/chat/send` SSE response. Client reads it at fetch-response time and stores in `assistantMessageIdRef`. Used as the authoritative ID for both the success-path completed message and the cancel-path cancelled message; the `done` SSE event's `messageId` is now a paranoid fallback.
+- **Stream finalization aligned across success / error / abort.** `chat-stream-service.ts` lifts `fullText` to outer scope so the catch block preserves partial content. Outer catch now differentiates `isAbort` (via `request.signal.aborted` or `AbortError`) from genuine errors and updates the placeholder row to `status: "cancelled"` or `"failed"` with the partial content. `request.signal` plumbed through `route.ts` → `createChatStream` → `streamText({ abortSignal })` so client cancels also cancel the upstream provider call.
+- **Idempotent retries via DB primary key.** Repository `messages.create()` now propagates the raw Postgres error (was wrapping in a generic Error and losing the code). Service layer catches code `23505` and throws the new `MessageDuplicateError`. Route maps it to a 409 `{ message: "Message already received" }` response.
+- Resolves the E14 user-visible symptoms: orphan placeholder rows stuck at `status: "streaming"`, lost partial content on errors, and unreferenceable user messages within an active session.
+
 ### Gap E4 — Chat `queryDatabase` registry + dashboard-equivalent expressivity — 2026-04-25
 
 - Added `ACTION_METADATA` registry in `lib/services/database-query-service.ts` — single source of truth for which `QueryAction` values are exposed to the LLM via the chat `queryDatabase` tool, with per-action descriptions surfaced to the model.

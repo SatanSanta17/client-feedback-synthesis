@@ -253,6 +253,197 @@ _Fix not yet defined in gap file. TRD pending._
 
 ---
 
+### E14 — Chat message IDs: client uses temp IDs; cancel/error paths leak orphan rows ✅ Fixed
+
+**Scope.** Align client and server lifecycles for chat messages. Three changes that together close the gap:
+1. **Client-generated UUIDs for user messages** — sent in the POST body, used as the optimistic message ID, persisted as the DB primary key. No more `temp-user-…`.
+2. **Server-generated UUID for assistant messages, surfaced via response header** — `X-Assistant-Message-Id` available at fetch-response time so the client has it during streaming, not just at completion. No more `temp-cancelled-…`.
+3. **Stream finalization fixes server-side** — propagate `request.signal` into `streamText()`; differentiate abort from error in the outer catch; in both paths update the placeholder row with the accumulated partial content. No more orphan rows stuck at `status: "streaming"`.
+
+The userMessageId is **required** in the POST body (not optional with server fallback) — single-tenant internal beta, brief deploy-window blip is acceptable, code stays clean.
+
+**Approach.**
+
+- **Identifier ownership.** User messages: client owns. Assistant messages: server owns but surfaces via header. Conversation IDs: out of scope here — see E15.
+- **Idempotency via DB constraint.** Postgres primary key rejects duplicate `messages.id` inserts. Server catches the unique-violation, returns 409 — signals "request was already accepted, this is a retry," client can safely ignore the duplicate. No application-level dedup logic needed.
+- **Abort propagation.** The Vercel AI SDK's `streamText()` accepts an `abortSignal` option. Wiring `request.signal` to it: (a) cancels the upstream AI provider call when the user aborts (saves cost/compute), (b) makes the for-await loop throw an `AbortError` we can catch and handle distinctly from a stream error.
+- **Symmetry of completion / error / abort.** All three terminal states update the same placeholder row with the same fields (`content`, `status`, optionally `sources`/`metadata`). Consistent contract simplifies the client's load-messages flow on next refetch.
+
+**Files changed.**
+
+- **Modified:** `app/api/chat/send/route.ts`
+  - Zod schema: add `userMessageId: z.string().uuid()` (required).
+  - Pass `id: userMessageId` to `chatService.createMessage` for the user message insert.
+  - Catch unique-violation on user message insert → return 409 `{ message: "Already received" }`.
+  - Add `X-Assistant-Message-Id: assistantMessage.id` to the SSE response headers.
+  - Pass `request.signal` through to `createChatStream`.
+
+- **Modified:** `lib/services/chat-stream-service.ts`
+  - Accept `abortSignal: AbortSignal` in `ChatStreamDeps`.
+  - Pass `abortSignal` to the `streamText({ ... })` call.
+  - Restructure the outer `try/catch` so `fullText` is in the catch's scope.
+  - In the catch: if `err instanceof DOMException && err.name === "AbortError"` → update placeholder to `status: "cancelled", content: fullText`; else → update placeholder to `status: "failed", content: fullText` (currently doesn't preserve `fullText`).
+  - The inline `error` part-type handler stays as-is (already preserves partial content).
+
+- **Modified:** `lib/services/chat-service.ts` and the underlying `MessageRepository`
+  - `createMessage()` accepts an optional `id?: string`; when provided, the INSERT uses it explicitly (overrides the column default `gen_random_uuid()`).
+  - Surface unique-violation errors as a typed error class (e.g. `MessageDuplicateError`) so the route handler can map it to 409 cleanly.
+
+- **Modified:** `lib/hooks/use-chat.ts`
+  - In `sendMessage`: `const userMessageId = crypto.randomUUID();` — use as the optimistic message ID and in the POST body.
+  - Read `X-Assistant-Message-Id` from the response headers; store in a local closure variable accessible to both the success path and the cancel path.
+  - In `cancelStream`: when constructing the cancelled message, use the header-supplied assistant UUID instead of `temp-cancelled-${Date.now()}`. To make it accessible from the cancel callback, lift the variable into a ref (`assistantMessageIdRef`) populated when headers arrive.
+  - The `done` SSE event still emits `assistantMessageId`. Keep reading it as a fallback (paranoid defense), but the header is the authoritative source going forward.
+
+**No DB schema change.** The `messages.id` column already accepts UUIDs and has `gen_random_uuid()` as the default — providing an explicit value just overrides the default.
+
+**No API contract breakage for existing flows beyond the deploy-window blip:** clients refresh, get the new bundle, send `userMessageId` in subsequent requests. Server returns 400 (Zod validation) for any in-flight request from a stale tab. Acceptable for an internal beta.
+
+**Implementation increments.**
+
+**Increment 1 — Server-side orphan cleanup (independently deployable, fixes the data integrity issue first).**
+- Add `abortSignal` plumbing through `route.ts` → `createChatStream` → `streamText`.
+- Restructure the outer catch in `chat-stream-service.ts` to differentiate abort vs error, save partial `fullText` in both.
+- Smoke-verify: cancel a stream mid-flight; check the DB row shows `status: "cancelled"` with the partial content.
+- Smoke-verify: force an error (break AI key); check the DB row shows `status: "failed"` with the partial content.
+
+**Increment 2 — Server emits X-Assistant-Message-Id header.**
+- Purely additive; client doesn't read it yet.
+- One-line change in the response constructor.
+
+**Increment 3 — Server accepts client-supplied userMessageId.**
+- Update Zod schema (required).
+- Update repository's `createMessage` signature to accept optional `id`.
+- Map unique-violation to 409 via typed error.
+- Smoke-verify with a curl/Postman call sending `userMessageId`.
+
+**Increment 4 — Client uses crypto.randomUUID() and reads the assistant header.**
+- `sendMessage`: generate UUID; use as optimistic ID + POST body.
+- Read `X-Assistant-Message-Id`; store in `assistantMessageIdRef`.
+- `cancelStream`: use the ref's value for the cancelled message ID.
+- Smoke-verify: send a message — DB user-message row's id matches the optimistic message id from React DevTools. Cancel mid-stream — DB row updated to `cancelled`, client list shows the same UUID.
+
+**End-of-part audit.**
+- **SRP.** Route validates and delegates; service handles streaming + finalization; client hook handles UI/optimistic state. No new responsibilities crossed.
+- **DRY.** Single placeholder-update pattern across success/error/abort. Inline `error` part-type handler unchanged because it's a different scope (mid-stream provider error vs outer-catch network/abort error); confirm they don't double-update the same row (they won't — the inline handler `return`s after writing).
+- **Logging.** Add entry/exit logs for the abort and error catch branches with the elapsed stream time and accumulated content length.
+- **Dead code.** Remove the `temp-cancelled-${Date.now()}` codepath. The `temp-assistant-${Date.now()}` fallback in `use-chat.ts:404` can stay as a paranoid fallback for now (header missing) or be removed once we trust the header.
+- **Convention compliance.** UUID provided to repository as a method argument, not a magic property. Typed error class for the unique-violation case.
+
+**Verification.**
+- `npx tsc --noEmit` passes.
+- Manual smoke (in order):
+  1. Send a fresh message → user bubble shows the real UUID end-to-end (DevTools React tree, server logs, DB row all match).
+  2. Cancel mid-stream → cancelled bubble has the assistant UUID from headers; DB row at `status: "cancelled"` with partial content matching the bubble.
+  3. Force an error (e.g. throw inside a tool) → streaming bubble flips to error UI; DB row at `status: "failed"` with whatever partial content accumulated.
+  4. Replay the same POST twice (manually via curl with the same `userMessageId`) → second response is 409, no duplicate row.
+  5. Reload the page after each scenario → message list matches the DB exactly (no ghosts).
+
+**Documentation updates after the fix.**
+- `gap-analysis.md` — mark E14 ✅ Fixed.
+- `gap-analysis-trd.md` — flip "TRD locked" to "✅ Fixed".
+- `ARCHITECTURE.md` — Key Design Decision #14 (chat data isolation) gets one extra sentence noting the identifier ownership contract: client owns user message + conversation UUIDs (after E15); server owns assistant message UUID, surfaced via response header.
+- `CHANGELOG.md` — entry under `[Unreleased]`: "Chat: client-generated UUIDs for user messages, server-generated UUIDs for assistant messages surfaced via `X-Assistant-Message-Id` header. Stream cancellation and errors now correctly update the assistant placeholder row with partial content + final status, eliminating orphan `streaming`-status rows."
+
+---
+
+### E15 — Conversation ID is server-generated, forcing a brittle null→just-created lifecycle ✅ Fixed
+
+**Scope.** Move conversation UUID generation to the client. Eliminate the `null → just-created` transition (and the `prevConversationIdRef` defensive patch sitting on top of it). The conversation has its real ID from the first render of any new chat session. Server creates the conversations row idempotently on first POST using the client-provided UUID.
+
+**Depends on E14** for ergonomic reasons (parallel pattern: client owns user IDs and conversation IDs symmetrically) but technically independent — could ship in either order. Recommended order: E14 first (smaller blast radius), E15 second.
+
+**Approach.**
+
+- **Conversation UUID generation point.** When the user clicks "New chat" (or the page mounts with no active conversation), `ChatPageContent` generates a UUID via `crypto.randomUUID()` and sets it as `activeConversationId`. The conversation has its identity from that moment. The DB row is *not* created yet — creation happens server-side on the first `sendMessage` POST.
+- **Distinguishing fresh-local from persisted.** Today, `activeConversationId === null` is the UI signal for "fresh chat / no DB row yet / show starter questions." After the change, every `activeConversationId` is a real UUID, so we need another signal. Two options:
+  - **Option A — list-membership check.** A conversation is "persisted" iff its UUID appears in `conversationsHook.conversations` or `conversationsHook.archivedConversations`. The load-messages effect uses this to decide whether to fetch.
+  - **Option B — local set of fresh IDs.** `ChatPageContent` keeps a `freshConversationIds: Set<string>` populated when "New chat" is clicked, drained when the first POST succeeds (after which the conversation IS persisted). The hook reads this set.
+  - **Recommendation: Option A.** Reuses existing state, no new ref/state to manage, naturally self-healing (once the sidebar refetches, the conversation appears in the list).
+
+- **Server-side idempotency.** The POST handler always checks "does conversation with this UUID exist?" If yes, use it. If no, INSERT with the client-supplied UUID. Catch unique-violation → 409 with the existing row reused (same idempotency contract as user messages in E14).
+
+- **Header cleanup.** `X-Conversation-Id` header becomes informational. Could be dropped, but harmless to leave for backward-compatibility / debugging. Recommendation: leave it; remove only if it bothers code review later.
+
+- **`prevConversationIdRef` cleanup.** With the `null → just-created` transition gone, the ref is vestigial. Remove it as part of this fix to keep the hook small. (If we leave it, it harms nothing but adds a comment-explained chunk of unused logic.)
+
+**Files changed.**
+
+- **Modified:** `app/api/chat/send/route.ts`
+  - Zod schema: change `conversationId: z.string().uuid().nullable()` → `conversationId: z.string().uuid()` (required).
+  - Conversation-resolve logic: query for the conversation by ID. If found, use it. If not found, INSERT with the supplied ID + placeholder title. Catch unique-violation → race-safe re-fetch.
+  - Header `X-Conversation-Id` stays (informational only).
+
+- **Modified:** `lib/services/chat-service.ts` and `ConversationRepository`
+  - `createConversation()` accepts an optional `id?: string` argument; when provided, the INSERT uses it explicitly.
+  - Add a typed error for conversation unique-violation (parallel to `MessageDuplicateError` from E14).
+
+- **Modified:** `app/chat/_components/chat-page-content.tsx`
+  - On mount: `useState<string>(() => crypto.randomUUID())` for `activeConversationId` (instead of `null`).
+  - `handleNewChat`: `setActiveConversationId(crypto.randomUUID())` (instead of `null`).
+  - `handleSelectConversation`: unchanged — sets to the chosen conversation's UUID.
+  - The `handleConversationCreated` callback is no longer needed for ID purposes (the client already knows the ID); only used to prepend to sidebar. Rename to `handleFirstMessageSent` or similar, or fold the prepend into the send flow.
+
+- **Modified:** `lib/hooks/use-chat.ts`
+  - `conversationId: string` (no longer nullable).
+  - `sendMessage`: send `conversationId` directly in body (not via ref unless still needed for stale-closure protection).
+  - Drop `onConversationCreated` callback and the supporting `onConversationCreatedRef`.
+  - Drop `prevConversationIdRef` and the load-messages effect's null-transition guard.
+  - The load-messages effect changes its predicate: instead of "conversationId became non-null," the effect needs to know "is this conversation persisted (worth fetching) or fresh-local (skip fetch)." Consume the conversations list (or a `isFresh: boolean` prop from the parent) to decide.
+
+- **Modified:** `lib/types/chat.ts` (likely)
+  - `Message.conversationId` already typed as string. No change.
+
+**No DB schema change.** The `conversations.id` column already accepts UUIDs and has `gen_random_uuid()` as the default.
+
+**Implementation increments.**
+
+**Increment 1 — Server accepts client-supplied conversationId.**
+- Update Zod schema (required UUID).
+- Update repository's `createConversation` signature to accept optional `id`.
+- Idempotent insert with unique-violation → re-fetch fallback.
+- Smoke-verify with curl: POST with a fresh UUID — conversation created. POST again with the same UUID — same conversation reused, no duplicate.
+
+**Increment 2 — Client generates conversation UUID on mount and on "New chat".**
+- `ChatPageContent`: initialize `activeConversationId` lazily with a UUID; same in `handleNewChat`.
+- Pass it down to `useChat` (now strictly `string`).
+- Send in POST body.
+- Internally still works because the server is idempotent.
+- Smoke-verify: type a message into a fresh chat → user bubble appears with conversation UUID shown in DevTools React tree. POST body in network panel includes the conversationId.
+
+**Increment 3 — Drop the null-transition flicker patch and onConversationCreated callback.**
+- Remove `prevConversationIdRef` and its guard in the load-messages effect.
+- Remove `onConversationCreated` and `onConversationCreatedRef`.
+- Replace the parent's "prepend to sidebar on conversation created" logic with "prepend to sidebar on first message sent" using the locally-known conversationId.
+- Update the load-messages effect's predicate: only fetch when the conversationId appears in the conversations sidebar list (or via an `isFresh` flag from the parent).
+- Smoke-verify: send first message in a fresh chat → no flicker, no wipe-and-reload, no extra fetch in the network panel.
+
+**Increment 4 — End-of-part audit + manual smokes.**
+- Send first message in fresh chat → no flicker, real UUID, sidebar entry appears.
+- Click between conversations → messages load correctly for each.
+- Hard reload the page on a conversation → loads correctly.
+- Click "New chat" twice without sending → no DB rows created, both fresh chats have distinct UUIDs.
+- Send a message in chat A, switch to B mid-stream, switch back → stream state handling unchanged (out of scope; just verify no regression).
+
+**End-of-part audit.**
+- **SRP.** Conversation ID generation is a one-liner in the parent. Server is the idempotent persistence layer. Hook is purely UI state.
+- **DRY.** Same pattern as E14: client-generated UUID + server idempotency on unique-violation. The two fixes share the same shape; consider whether the server-side helper should be extracted to a shared `createOrGetById` utility.
+- **Dead code.** `prevConversationIdRef`, `onConversationCreated*` machinery removed.
+- **Convention compliance.** Lazy `useState` initializer for the UUID; UUID props strictly typed as `string`.
+
+**Verification.**
+- `npx tsc --noEmit` passes.
+- Smoke matrix above all green.
+- Hot path: in-flight conversation while user clicks "New chat" — old chat's stream completes correctly; new chat starts cleanly with its own UUID. (Streaming bubble doesn't "follow" the user across conversations.)
+
+**Documentation updates after the fix.**
+- `gap-analysis.md` — mark E15 ✅ Fixed.
+- `gap-analysis-trd.md` — flip "TRD locked" to "✅ Fixed".
+- `ARCHITECTURE.md` — Key Design Decision #14 sentence (added in E14) becomes "client owns conversation + user message UUIDs; server owns assistant message UUID, surfaced via response header. Server is idempotent on duplicate inserts; conflict returns 409 (messages) or reuses the existing row (conversations)."
+- `CHANGELOG.md` — entry under `[Unreleased]`: "Chat: conversation UUIDs are now client-generated. Eliminates the null→just-created transition and the defensive `prevConversationIdRef` patch in `useChat`. New chats have their real ID from the first render."
+
+---
+
 ## Product Fixes
 
 ### P1 — Master Signals page — UI retired; backend intentionally retained ✅ Decided

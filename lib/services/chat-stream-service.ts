@@ -61,6 +61,13 @@ export interface ChatStreamDeps {
   assistantMessageId: string;
   isNewConversation: boolean;
   contextMessages: ContextMessage[];
+  /**
+   * Request abort signal — propagated to `streamText()` so a client-side
+   * cancel cancels the upstream provider call AND throws inside the
+   * for-await loop. The outer catch differentiates abort from error and
+   * updates the placeholder accordingly. (Gap E14)
+   */
+  abortSignal: AbortSignal;
 }
 
 // ---------------------------------------------------------------------------
@@ -91,6 +98,7 @@ export function createChatStream(deps: ChatStreamDeps): ReadableStream {
     assistantMessageId,
     isNewConversation,
     contextMessages,
+    abortSignal,
   } = deps;
 
   const encoder = new TextEncoder();
@@ -98,6 +106,11 @@ export function createChatStream(deps: ChatStreamDeps): ReadableStream {
 
   return new ReadableStream({
     async start(controller) {
+      // Lifted to outer scope so the catch can preserve partial content when
+      // the stream is aborted or errors mid-flight (gap E14).
+      let fullText = "";
+      const toolsCalled: string[] = [];
+
       try {
         const result = streamText({
           model,
@@ -123,16 +136,13 @@ export function createChatStream(deps: ChatStreamDeps): ReadableStream {
           },
           stopWhen: stepCountIs(3),
           maxOutputTokens: CHAT_MAX_TOKENS,
+          abortSignal,
         });
 
         // Send "generating" status
         controller.enqueue(
           encoder.encode(sseEvent("status", { text: "Generating answer..." }))
         );
-
-        // Consume the full stream
-        let fullText = "";
-        const toolsCalled: string[] = [];
 
         for await (const part of result.fullStream) {
           switch (part.type) {
@@ -211,13 +221,31 @@ export function createChatStream(deps: ChatStreamDeps): ReadableStream {
 
         controller.close();
       } catch (err) {
+        // Differentiate client-abort from genuine errors so the placeholder
+        // row reflects reality and any partial content the user already saw
+        // is preserved (gap E14).
+        const isAbort =
+          abortSignal.aborted ||
+          (err instanceof Error && err.name === "AbortError");
         const errMsg = err instanceof Error ? err.message : "Unknown error";
-        console.error(`${LOG_PREFIX} stream fatal error: ${errMsg}`);
 
-        // Attempt to mark message as failed
+        if (isAbort) {
+          console.log(
+            `${LOG_PREFIX} stream aborted by client — preserving ${fullText.length} chars of partial content`
+          );
+        } else {
+          console.error(
+            `${LOG_PREFIX} stream fatal error: ${errMsg} — preserving ${fullText.length} chars of partial content`
+          );
+        }
+
+        // Update the placeholder row with the terminal status and whatever
+        // partial content accumulated. Keeps client (which sees the partial
+        // text up to the abort/error) and server in agreement.
         try {
           await chatService.updateMessage(assistantMessageId, {
-            status: "failed",
+            status: isAbort ? "cancelled" : "failed",
+            content: fullText || "",
           });
         } catch (updateErr) {
           const updateMsg =
@@ -227,15 +255,25 @@ export function createChatStream(deps: ChatStreamDeps): ReadableStream {
           );
         }
 
+        // On abort the client already knows it cancelled — no error event
+        // needed (and the controller is likely already torn down). On error,
+        // emit so the client renders error UI.
+        if (!isAbort) {
+          try {
+            controller.enqueue(
+              encoder.encode(
+                sseEvent("error", {
+                  message:
+                    "An error occurred while generating the response.",
+                })
+              )
+            );
+          } catch {
+            // Controller may already be closed
+          }
+        }
+
         try {
-          controller.enqueue(
-            encoder.encode(
-              sseEvent("error", {
-                message:
-                  "An error occurred while generating the response.",
-              })
-            )
-          );
           controller.close();
         } catch {
           // Controller may already be closed

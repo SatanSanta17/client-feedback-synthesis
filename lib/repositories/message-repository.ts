@@ -8,6 +8,14 @@ import type { Message, MessageStatus, ChatSource } from "@/lib/types/chat";
  * Data required to insert a new message row.
  */
 export interface MessageInsert {
+  /**
+   * Optional client-supplied UUID. When provided, overrides the column
+   * default `gen_random_uuid()`. Used for client-owned message IDs (E14)
+   * so the optimistic UI never holds a temp ID. Insert with a duplicate
+   * id surfaces as Postgres unique-violation (code 23505) which the
+   * service layer maps to `MessageDuplicateError`.
+   */
+  id?: string;
   conversation_id: string;
   parent_message_id?: string | null;
   role: "user" | "assistant";

@@ -151,6 +151,38 @@ No error tracking (Sentry or equivalent), no structured log aggregation, no upti
 
 ---
 
+### E14 — Chat message IDs: client uses temp IDs; cancel/error paths leak orphan rows ✅ Fixed
+**Files:** `app/api/chat/send/route.ts`, `lib/services/chat-stream-service.ts`, `lib/hooks/use-chat.ts`
+**Priority: High**
+
+Three coupled symptoms of the same root cause — server is sole UUID generator and the client/server lifecycles for messages aren't aligned.
+
+1. **Optimistic user messages have temp IDs (`temp-user-${Date.now()}`).** The server inserts the user message with its own UUID; the client never receives that UUID until the next conversation reload. Within the active session, the client cannot reference a specific user message — blocking any future feature that targets a turn (edit, delete, branch, `parent_message_id` threading already in the schema, reaction, citation back-link). Today's retry sidesteps this by re-sending content rather than referencing IDs.
+
+2. **Cancelled streams produce a `temp-cancelled-${Date.now()}` message in the client list with no DB counterpart.** The cancelled bubble shows the partial content the user saw, but the placeholder assistant row in `messages` table stays at `status: "streaming"` with empty content. Different IDs, different states, no reconciliation. Reload the page → the cancelled bubble disappears, the orphan placeholder reappears as a never-completing streaming bubble.
+
+3. **Failed streams (network error, AI provider error) leave the placeholder row at `status: "failed"` with no content saved.** The outer `try/catch` in `chat-stream-service.ts:213-243` updates `status: "failed"` but doesn't preserve the partial `fullText` accumulated before the error. The inline `error` part-type handler (line 150-165) does save partial content, but the outer fatal-error path drops it.
+
+The unifying fix is **identifier ownership symmetry**: client owns the user message UUID end-to-end (no temp), server owns the assistant message UUID and surfaces it via response header so the client has it before/during the stream (not just at completion), and the server's stream finalization paths (success / error / abort) all update the placeholder row consistently with status + partial content. Plumbing `request.signal` into `streamText()` makes user-aborts visible to the server so the placeholder gets flipped to `cancelled` instead of left as `streaming`.
+
+This also delivers idempotent retries on transient network failures: the DB primary-key constraint blocks duplicate user-message inserts, and the server returns 409 instead of creating a duplicate row.
+
+---
+
+### E15 — Conversation ID is server-generated, forcing a brittle null→just-created lifecycle ✅ Fixed
+**Files:** `app/api/chat/send/route.ts`, `app/chat/_components/chat-page-content.tsx`, `lib/hooks/use-chat.ts`
+**Priority: High**
+
+The new-conversation handshake today: client sends with `conversationId: null` → server creates the conversations row → server returns the new ID via `X-Conversation-Id` response header → client calls `setActiveConversationId(newId)` → re-renders → `useChat` re-runs with the new prop → the load-messages effect fires because `conversationId` changed → it would normally `setMessages([])` and refetch, wiping the just-streamed messages → producing a visible "wipe and reload" flicker.
+
+We patched the flicker symptom in `lib/hooks/use-chat.ts:155-159` with `prevConversationIdRef`, which detects the `null → just-created` transition and skips one fetch. That patch works, but it's defensive plumbing on top of an underlying contract that's structurally fragile. Any future addition to the conversation lifecycle (URL deep-linking to a conversation, parallel "new chat" tabs, conversation pre-warming, server-driven conversation suggestion) re-introduces ambiguity about who owns the ID and when.
+
+The cleaner contract: **client generates the conversation UUID** at the moment a new chat is started, sends it in the POST body, and the server uses it (creating the conversations row only on first POST, idempotently — if a row with that UUID already exists, reuse it). This eliminates the `null → just-created` transition entirely. The conversation has its real ID from the first render. The `X-Conversation-Id` header becomes informational and could be dropped. The `prevConversationIdRef` patch becomes vestigial (and can be removed in this fix or a follow-up).
+
+A subtle UX consideration the fix has to handle: today, `activeConversationId === null` is the UI signal for "fresh chat / show empty state." Switching to client-generated UUIDs needs a different signal for "fresh chat with a UUID assigned but no messages and no DB row yet." The cleanest design: the conversations row is created server-side only on the first `sendMessage` (using the client-provided UUID), and the client-side fresh-chat state is detected by the activeConversationId not being present in the conversations sidebar list (or by a local `freshConversationIds` set). Either is straightforward; details land in the TRD.
+
+---
+
 ## Product Gaps
 
 ### P1 — Master Signals page (`/m-signals`) is a zombie ✅ UI retired; backend intentionally retained
