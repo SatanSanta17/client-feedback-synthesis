@@ -588,7 +588,7 @@ Browser back/forward via `popstate`. 404 UI for inaccessible UUIDs retained with
   - Three navigation primitives using `window.history` API (NOT `router.push`/`<Link>`):
     - `navigateToConversation(id)` — `history.pushState(null, '', `/chat/${id}`)` + `chatHook.clearMessages()` + `setActiveConversationId(id)`.
     - `navigateToFreshChat()` — `history.pushState(null, '', '/chat')` + `chatHook.clearMessages()` + `setActiveConversationId(null)`.
-    - `silentlyAssignConversationId(id)` — `history.replaceState(null, '', `/chat/${id}`)` + `setActiveConversationId(id)`.
+    - `silentlyAssignConversationId(id)` — `history.pushState(null, '', `/chat/${id}`)` + `setActiveConversationId(id)`. (Originally specified `replaceState`; corrected to `pushState` so back from `/chat/<id>` lands on `/chat` rather than skipping it. The history chain becomes the natural `..., /chat, /chat/<id>`.)
   - `handleSelectConversation` → `navigateToConversation(conversation.id)`.
   - `handleNewChat` → `navigateToFreshChat()`.
   - `handleConversationCreated(id)` → `silentlyAssignConversationId(id)` + `prependConversation({...})`.
@@ -686,7 +686,7 @@ This is what makes the chat shell stay mounted across all in-app navigation. URL
   - Three navigation primitives:
     - `navigateToConversation(id: string)` — `window.history.pushState(null, '', `/chat/${id}`)` + `chatHook.clearMessages()` + `setActiveConversationId(id)`.
     - `navigateToFreshChat()` — `window.history.pushState(null, '', '/chat')` + `chatHook.clearMessages()` + `setActiveConversationId(null)`.
-    - `silentlyAssignConversationId(id: string)` — `window.history.replaceState(null, '', `/chat/${id}`)` + `setActiveConversationId(id)`. **No** `clearMessages` (messages are already populated by streaming; clearing would clobber them).
+    - `silentlyAssignConversationId(id: string)` — `window.history.pushState(null, '', `/chat/${id}`)` + `setActiveConversationId(id)`. **No** `clearMessages` (messages are already populated by streaming; clearing would clobber them). Uses `pushState` (not `replaceState`) so the natural history chain is preserved: `..., /chat (the entry), /chat/<id> (after first send)`. Back from `/chat/<id>` lands on `/chat` (empty fresh chat) before exiting the chat surface.
   - Wire `handleSelectConversation(conversation)` → `navigateToConversation(conversation.id)`.
   - Wire `handleNewChat()` → `navigateToFreshChat()`.
   - Wire `handleConversationCreated(id)` → `silentlyAssignConversationId(id)` then `prependConversation({...})`. Order: state+URL first, sidebar prepend after.
@@ -701,7 +701,7 @@ This is what makes the chat shell stay mounted across all in-app navigation. URL
 - Click sidebar conversation A → URL becomes `/chat/<A>` via pushState; messages load; no remount (use React DevTools to confirm `ChatPageContent` instance keeps its key/identity).
 - Click another conversation B → URL `/chat/<B>`; messages swap; no shell remount.
 - Click "New chat" → URL becomes `/chat`; empty panel.
-- Send first message in fresh chat → URL silently updates to `/chat/<new-uuid>` (replace, not push, so back doesn't return to `/chat`); sidebar prepends; response streams in.
+- Send first message in fresh chat → URL silently updates to `/chat/<new-uuid>` (pushState — back returns to `/chat` empty before exiting); sidebar prepends; response streams in.
 - Browser back / forward — navigates between conversations and the empty `/chat` correctly; no flash of stale messages.
 - Mid-stream reload at `/chat/<uuid>` → conversation persists (URL was updated on headers, before stream completion).
 
@@ -714,7 +714,7 @@ This is what makes the chat shell stay mounted across all in-app navigation. URL
   - Load-messages effect: detect `res.status === 404` specifically (before the generic `!res.ok` throw); set the flag and return early. Reset to `false` at the start of every load attempt and on the `conversationId === null` early-return.
   - `clearMessages` also resets the flag.
 - **Modify:** `app/chat/_components/chat-area.tsx`
-  - Add `isConversationNotFound: boolean` and `onStartNewChat: () => void` props.
+  - Add `isConversationNotFound: boolean`, `activeConversationId: string | null`, and `onStartNewChat: () => void` props. Empty-state branch is gated on `activeConversationId === null` (raw id from parent), NOT `activeConversation === null` (looked-up object). The lookup briefly returns null during the conversations-list fetch window after a fresh mount (e.g. forward-navigation into `/chat/<id>` from a different page); using the raw id avoids flashing the "Start a new conversation" starter panel while messages and conversations lists are still loading. (Gap P9)
   - Add icon import: `FileQuestion` from `lucide-react`.
   - Branch the main content area: when `isConversationNotFound`, render a centered panel with the message "This chat doesn't exist or you don't have access to it." and a `<button onClick={onStartNewChat}>Start a new chat</button>`. (Plain `<button>` styled with shadcn `<Button variant="outline" size="sm">`, since this is a standalone CTA with no nesting concerns — no Link.) Hide `ChatInput` in this state.
 - **Modify:** `app/chat/_components/chat-page-content.tsx`
