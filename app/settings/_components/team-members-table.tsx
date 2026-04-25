@@ -155,6 +155,10 @@ export function TeamMembersTable({
       );
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
+        if (res.status === 409) {
+          toast.warning(body.message ?? "Role unchanged");
+          return;
+        }
         throw new Error(body.message ?? "Failed to change role");
       }
       toast.success(`Changed ${member.email} to ${newRole}`);

@@ -5,7 +5,7 @@ import { useMemo, useState } from "react";
 import { cn } from "@/lib/utils";
 import { DashboardCard } from "./dashboard-card";
 import { useDashboardFetch } from "./use-dashboard-fetch";
-import { BRAND_PRIMARY_RGB } from "./chart-colours";
+import { BRAND_PRIMARY_RGB, CHART_HIGH_CONTRAST_TEXT_HEX } from "./chart-colours";
 import type { DrillDownContext } from "./drill-down-types";
 
 // ---------------------------------------------------------------------------
@@ -236,7 +236,7 @@ export function ThemeClientMatrixWidget({
                           color:
                             count > 0
                               ? opacity > 0.5
-                                ? "#fff"
+                                ? CHART_HIGH_CONTRAST_TEXT_HEX
                                 : `rgb(${BRAND_PRIMARY_RGB})`
                               : "var(--text-tertiary)",
                         }}

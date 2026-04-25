@@ -1,5 +1,7 @@
-import { Badge } from "@/components/ui/badge";
 import { AlertCircle, Clock, CheckCircle2, Users } from "lucide-react";
+
+import { cn } from "@/lib/utils";
+import { Badge } from "@/components/ui/badge";
 
 export function InviteShell({ children }: { children: React.ReactNode }) {
   return (
@@ -67,9 +69,12 @@ export function StatusIcon({
 
   return (
     <div
-      className={`mb-4 flex h-12 w-12 items-center justify-center rounded-full ${config.bg}`}
+      className={cn(
+        "mb-4 flex h-12 w-12 items-center justify-center rounded-full",
+        config.bg
+      )}
     >
-      <Icon className={`size-6 ${config.text}`} />
+      <Icon className={cn("size-6", config.text)} />
     </div>
   );
 }

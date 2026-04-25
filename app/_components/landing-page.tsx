@@ -1,12 +1,11 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { DEFAULT_AUTH_ROUTE } from "@/lib/constants";
 import {
   Sparkles,
-  Users,
   ArrowRight,
   MessageSquareText,
   BarChart3,
@@ -15,12 +14,10 @@ import {
   Mail,
   Github,
   Linkedin,
-  Sun,
-  Moon,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { useAuth } from "@/components/providers/auth-provider";
-import { useTheme } from "@/lib/hooks/use-theme";
+import { ThemeToggle } from "@/components/layout/theme-toggle";
 import { Button } from "@/components/ui/button";
 
 /* ------------------------------------------------------------------ */
@@ -118,7 +115,6 @@ function useScrollReveal() {
 
 export function LandingPage() {
   const { isAuthenticated, isLoading } = useAuth();
-  const { theme, setTheme } = useTheme();
   const router = useRouter();
   const [scrolled, setScrolled] = useState(false);
 
@@ -365,14 +361,7 @@ export function LandingPage() {
                 <Icon className="size-4" />
               </Link>
             ))}
-            <button
-              type="button"
-              onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
-              className="cursor-pointer text-[var(--text-muted)] transition-colors hover:text-[var(--text-primary)]"
-              aria-label={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
-            >
-              {theme === "dark" ? <Sun className="size-4" /> : <Moon className="size-4" />}
-            </button>
+            <ThemeToggle className="text-[var(--text-muted)] hover:text-[var(--text-primary)]" />
           </div>
         </div>
       </footer>

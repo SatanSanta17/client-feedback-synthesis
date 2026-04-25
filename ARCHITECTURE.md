@@ -268,7 +268,7 @@ synthesiser/
 │   │   ├── create-team-dialog.tsx # Controlled team creation dialog (opened from workspace switcher)
 │   │   ├── page-header.tsx      # Shared header component with title and description
 │   │   ├── synthesiser-logo.tsx # SVG logo component — full (wordmark) and icon-only variants
-│   │   ├── theme-toggle.tsx     # Theme toggle button — Sun/Moon icon with label
+│   │   ├── theme-toggle.tsx     # Shared icon-only theme toggle — Sun/Moon icon, aria-labelled; consumes `useTheme().toggleTheme`
 │   │   ├── user-menu.tsx        # Auth-aware user menu — avatar, email, sign-out dropdown; supports side/collapsed/onOpenChange props for sidebar integration
 │   │   └── workspace-switcher.tsx # Always-visible workspace dropdown — switch, create team, CTA; supports collapsed/onOpenChange props for sidebar integration
 │   └── ui/                      # shadcn/ui primitives (do not modify) + shared dialogs

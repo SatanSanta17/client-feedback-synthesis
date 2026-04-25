@@ -12,6 +12,7 @@ import {
 } from "recharts";
 
 import { cn } from "@/lib/utils";
+import { BRAND_PRIMARY_HEX } from "./chart-colours";
 import { DashboardCard } from "./dashboard-card";
 import { useDashboardFetch } from "./use-dashboard-fetch";
 
@@ -117,8 +118,8 @@ export function SessionVolumeWidget({ className }: SessionVolumeWidgetProps) {
           <Area
             type="monotone"
             dataKey="count"
-            stroke="#6366f1"
-            fill="#6366f1"
+            stroke={BRAND_PRIMARY_HEX}
+            fill={BRAND_PRIMARY_HEX}
             fillOpacity={0.15}
             strokeWidth={2}
           />

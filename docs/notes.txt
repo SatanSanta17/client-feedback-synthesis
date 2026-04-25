@@ -17,7 +17,7 @@
 - auto task generator 
 - migrate data to dedicated supabase db 
 - make the auth flow decoupled from supabase
-
+- clean db from burhanuddin and rest test accounts
 
 Mental model:
 feedback --> insights fetched --> code context --> creats a feature spec (editable) --> MCP of my platform can be used to conect with IDE like cursor and development can be done based on the spec provided --> after implementation all the insights related to that spec should be cleared from the platform 

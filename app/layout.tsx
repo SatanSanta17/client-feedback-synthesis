@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { cookies } from "next/headers";
 import { Geist, Geist_Mono } from "next/font/google";
 import { Toaster } from "sonner";
+import { cn } from "@/lib/utils";
 import { AuthenticatedLayout } from "@/components/layout/authenticated-layout";
 import { AuthProvider } from "@/components/providers/auth-provider";
 import "./globals.css";
@@ -38,7 +39,12 @@ export default async function RootLayout({
     <html
       lang="en"
       suppressHydrationWarning
-      className={`${geistSans.variable} ${geistMono.variable} h-full antialiased${isDark ? " dark" : ""}`}
+      className={cn(
+        geistSans.variable,
+        geistMono.variable,
+        "h-full antialiased",
+        isDark && "dark"
+      )}
     >
       <body className="flex min-h-full flex-col bg-[var(--surface-page)] text-[var(--text-primary)]">
         <AuthProvider>

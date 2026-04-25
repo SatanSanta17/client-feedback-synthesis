@@ -12,6 +12,7 @@
 import { useRef, useCallback, useState, useMemo, useEffect } from "react";
 import { Virtuoso, type VirtuosoHandle } from "react-virtuoso";
 
+import { cn } from "@/lib/utils";
 import { MessageBubble } from "./message-bubble";
 import { StreamingMessage } from "./streaming-message";
 import type { Message, StreamState } from "@/lib/types/chat";
@@ -202,9 +203,10 @@ export function MessageThread({
         {Array.from({ length: 4 }).map((_, i) => (
           <div
             key={i}
-            className={`h-16 animate-pulse rounded-2xl bg-muted/50 ${
+            className={cn(
+              "h-16 animate-pulse rounded-2xl bg-muted/50",
               i % 2 === 0 ? "ml-auto w-3/5" : "mr-auto w-4/5"
-            }`}
+            )}
           />
         ))}
       </div>

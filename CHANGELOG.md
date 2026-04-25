@@ -6,6 +6,20 @@ All notable changes to this project are documented here, grouped by PRD and part
 
 ## [Unreleased]
 
+### PRD-023 Part 1 — Codebase Cleanup: Quick Wins — 2026-04-26
+
+Six independent, low-risk fixes shipped together. Each is verified individually; no behavioral change for end users.
+
+- **Increment 1 — Dead file removal.** Deleted the 0-byte `app/api/sessions/_helpers.ts` (no imports referenced it).
+- **Increment 2 — Theme toggle consolidated.** Added `toggleTheme` to `lib/hooks/use-theme.ts` so the dark↔light inversion lives in exactly one place. `components/layout/theme-toggle.tsx` now consumes it. Sidebar's "More" dropdown menu item and the public landing-page footer (`app/_components/landing-page.tsx`) both call `toggleTheme` directly — sidebar via `useTheme()` for the icon/label, landing page via `<ThemeToggle />`. Zero `setTheme(theme === "dark" ? "light" : "dark")` patterns remain in the codebase outside the hook.
+- **Increment 3 — Role-update no-op returns 409.** `PATCH /api/teams/[teamId]/members/[userId]/role` now returns `409 { message: "Member already has role 'admin'" }` (with the actual current role interpolated) when the requested role matches the current role, replacing the previous misleading implicit `200 { message: "Role unchanged" }`. Server logs the no-op branch for observability. Frontend (`team-members-table.tsx#handleRoleChange`) branches on `res.status === 409` and surfaces a `toast.warning` instead of a misleading success or generic error toast. Note: the UI's role `<Select>` doesn't fire `onValueChange` on no-op selections (Radix behaviour), so this path is mostly defensive — it covers direct API callers and rare admin-edit race conditions.
+- **Increment 4 — `cn()` migration.** Replaced template-literal `className` strings with `cn()` calls in 5 files: `app/layout.tsx`, `app/capture/_components/prompt-version-filter.tsx`, `app/capture/_components/session-table-row.tsx`, `app/chat/_components/message-thread.tsx`, `app/invite/[token]/_components/invite-shell.tsx`. Repo-wide grep for `className={\`` returns zero hits.
+- **Increment 5 — Chart hex centralization.** Added `CHART_HIGH_CONTRAST_TEXT_HEX` to `app/dashboard/_components/chart-colours.ts`. `session-volume-widget.tsx` now references the existing `BRAND_PRIMARY_HEX` constant; `theme-client-matrix-widget.tsx` references `CHART_HIGH_CONTRAST_TEXT_HEX`. No raw hex codes remain in dashboard widget files (the white background in `export-dashboard.ts` is intentional and out of chart scope).
+- **Increment 6 — `any` annotation audit.** Verified that every `: any` in `app/`, `components/`, and `lib/` has a preceding `// eslint-disable-next-line @typescript-eslint/no-explicit-any -- <reason>` comment. All 10 occurrences are justified; convention is fully observed. `database-query-service.ts` `any`s are explicitly deferred to PRD-023 Part 5 (where the file gets rewritten).
+- **Audit cleanups.** Removed unused imports surfaced during the end-of-part audit: `useCallback` and `Users` from `landing-page.tsx`. Reordered imports in `app/layout.tsx`, `invite-shell.tsx`, and `app-sidebar.tsx` to match CLAUDE.md's stated order (utils → components → services/hooks).
+
+**Out of scope, flagged for follow-up:** pre-existing ESLint findings remain in `theme-client-matrix-widget.tsx` (memoization deps), `app-sidebar.tsx`/`use-theme.ts` (set-state-in-effect), and `landing-page.tsx` (refs-during-render). These predate Part 1 and belong to the larger decompositions tracked in PRD-023 Parts 5/6/7.
+
 ### Gap P9 — ChatGPT-style conversation routing — 2026-04-26
 
 - Created `app/chat/[id]/page.tsx` — server component, validates UUID with regex, calls `notFound()` for malformed paths, renders `<ChatPageContent initialConversationId={id} />`. Both route files now seed initial state from the URL on first arrival, hard refresh, deep-link, or share; from then on, all in-session URL updates use raw `window.history` API and the chat shell never remounts.

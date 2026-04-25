@@ -2,6 +2,7 @@
 
 import { Sparkles, Paperclip, AlertTriangle } from "lucide-react"
 
+import { cn } from "@/lib/utils"
 import { ExpandedSessionRow, type SessionRow } from "./expanded-session-row"
 
 function formatDate(dateStr: string): string {
@@ -55,9 +56,10 @@ export function SessionTableRow({
     <>
       <tr
         onClick={onRowClick}
-        className={`cursor-pointer border-b last:border-b-0 transition-colors hover:bg-muted/30 ${
-          isExpanded ? "bg-muted/40" : ""
-        }`}
+        className={cn(
+          "cursor-pointer border-b last:border-b-0 transition-colors hover:bg-muted/30",
+          isExpanded && "bg-muted/40"
+        )}
       >
         <td className="px-4 py-2.5 font-medium">
           {session.client_name}

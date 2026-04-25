@@ -15,7 +15,6 @@ import {
   Moon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { useTheme } from "@/lib/hooks/use-theme";
 import { SynthesiserLogo } from "@/components/layout/synthesiser-logo";
 import { WorkspaceSwitcher } from "@/components/layout/workspace-switcher";
 import { UserMenu } from "@/components/layout/user-menu";
@@ -26,6 +25,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Sheet, SheetContent } from "@/components/ui/sheet";
+import { useTheme } from "@/lib/hooks/use-theme";
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -76,10 +76,8 @@ interface SidebarContentProps {
   /** Whether text labels are visible (true = expanded, false = icon-only). */
   showLabels: boolean;
   pathname: string;
-  theme: "light" | "dark";
   settingsOpen: boolean;
   onSettingsToggle: () => void;
-  onThemeToggle: () => void;
   onDropdownOpenChange?: (open: boolean) => void;
   /** Called when a nav link is clicked (used by mobile drawer to close). */
   onNavigate?: () => void;
@@ -88,13 +86,12 @@ interface SidebarContentProps {
 function SidebarContent({
   showLabels,
   pathname,
-  theme,
   settingsOpen,
   onSettingsToggle,
-  onThemeToggle,
   onDropdownOpenChange,
   onNavigate,
 }: SidebarContentProps) {
+  const { theme, toggleTheme } = useTheme();
   const isDark = theme === "dark";
   const ThemeIcon = isDark ? Sun : Moon;
   const isSettingsRouteActive = pathname.startsWith("/settings");
@@ -206,7 +203,7 @@ function SidebarContent({
 
       {/* ---- Bottom section ---- */}
       <div className="flex flex-col gap-1 border-t border-[var(--border-default)] px-3 py-3">
-        {/* More menu */}
+        {/* More menu — currently houses the theme toggle */}
         <DropdownMenu onOpenChange={onDropdownOpenChange}>
           <DropdownMenuTrigger asChild>
             <button
@@ -227,7 +224,7 @@ function SidebarContent({
           </DropdownMenuTrigger>
           <DropdownMenuContent side="top" align="start" className="w-48">
             <DropdownMenuItem
-              onClick={onThemeToggle}
+              onClick={toggleTheme}
               className="cursor-pointer"
             >
               <ThemeIcon className="mr-2 size-4" />
@@ -249,15 +246,10 @@ function SidebarContent({
 
 export function AppSidebar({ className }: AppSidebarProps) {
   const pathname = usePathname();
-  const { theme, setTheme } = useTheme();
   const [expanded, setExpanded] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const openDropdownCount = useRef(0);
-
-  const handleThemeToggle = useCallback(() => {
-    setTheme(theme === "dark" ? "light" : "dark");
-  }, [theme, setTheme]);
 
   const handleSettingsToggle = useCallback(() => {
     setSettingsOpen((prev) => !prev);
@@ -310,10 +302,8 @@ export function AppSidebar({ className }: AppSidebarProps) {
         <SidebarContent
           showLabels={expanded}
           pathname={pathname}
-          theme={theme}
           settingsOpen={settingsOpen}
           onSettingsToggle={handleSettingsToggle}
-          onThemeToggle={handleThemeToggle}
           onDropdownOpenChange={handleDropdownOpenChange}
         />
       </aside>
@@ -337,10 +327,8 @@ export function AppSidebar({ className }: AppSidebarProps) {
           <SidebarContent
             showLabels
             pathname={pathname}
-            theme={theme}
             settingsOpen={settingsOpen}
             onSettingsToggle={handleSettingsToggle}
-            onThemeToggle={handleThemeToggle}
             onNavigate={handleMobileNavigate}
           />
         </SheetContent>

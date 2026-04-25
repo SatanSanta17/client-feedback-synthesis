@@ -7,6 +7,9 @@
 export const BRAND_PRIMARY_HEX = "#6366f1";
 /** Brand primary in RGB triplet — for rgba() opacity mapping. */
 export const BRAND_PRIMARY_RGB = "99, 102, 241";
+/** Foreground colour for chart cells with high background opacity.
+ *  White ensures readable contrast against brand-primary fills at opacity > 0.5. */
+export const CHART_HIGH_CONTRAST_TEXT_HEX = "#ffffff";
 
 export const SENTIMENT_COLOURS: Record<string, string> = {
   positive: "#22c55e", // green-500

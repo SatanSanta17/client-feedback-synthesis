@@ -91,7 +91,13 @@ export async function PATCH(request: NextRequest, context: RouteContext) {
   }
 
   if (targetMember.role === parsed.data.role) {
-    return NextResponse.json({ message: "Role unchanged" });
+    console.log(
+      `[api/teams/[teamId]/members/[userId]/role] PATCH — no-op: target already has role '${targetMember.role}'`
+    );
+    return NextResponse.json(
+      { message: `Member already has role '${targetMember.role}'` },
+      { status: 409 }
+    );
   }
 
   try {

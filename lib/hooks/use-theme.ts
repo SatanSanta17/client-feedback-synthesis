@@ -11,6 +11,8 @@ type Theme = "light" | "dark";
 interface UseThemeReturn {
   theme: Theme;
   setTheme: (theme: Theme) => void;
+  /** Flips the current theme — single source of truth for the inversion. */
+  toggleTheme: () => void;
 }
 
 /* ------------------------------------------------------------------ */
@@ -62,7 +64,15 @@ export function useTheme(): UseThemeReturn {
     setThemeCookie(next);
   }, []);
 
-  return { theme, setTheme };
+  const toggleTheme = useCallback(() => {
+    setThemeState((prev) => {
+      const next: Theme = prev === "dark" ? "light" : "dark";
+      setThemeCookie(next);
+      return next;
+    });
+  }, []);
+
+  return { theme, setTheme, toggleTheme };
 }
 
 export type { Theme };
