@@ -19,3 +19,9 @@ export const ACCEPTED_FILE_TYPES: Record<string, string[]> = {
 };
 
 export const ACCEPTED_EXTENSIONS = [".txt", ".pdf", ".csv", ".docx", ".json"];
+
+// Vercel function `maxDuration` (seconds) for session create/update routes.
+// Sized to give the post-response embedding+theme+insights chain (run via
+// `after()`) headroom on the Hobby tier, whose ceiling is 60s. See
+// ARCHITECTURE.md Key Design Decision #19.
+export const SESSION_CHAIN_MAX_DURATION_SECONDS = 60;

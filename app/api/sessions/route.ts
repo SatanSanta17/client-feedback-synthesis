@@ -1,6 +1,6 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextRequest, NextResponse, after } from "next/server";
 import { z } from "zod";
-import { MAX_COMBINED_CHARS } from "@/lib/constants";
+import { MAX_COMBINED_CHARS, SESSION_CHAIN_MAX_DURATION_SECONDS } from "@/lib/constants";
 import { EXTRACTION_SCHEMA_VERSION } from "@/lib/schemas/extraction-schema";
 import { createClient, createServiceRoleClient, getActiveTeamId } from "@/lib/supabase/server";
 import { createSessionRepository } from "@/lib/repositories/supabase/supabase-session-repository";
@@ -23,6 +23,10 @@ import {
 } from "@/lib/services/chunking-service";
 import type { ExtractedSignals } from "@/lib/schemas/extraction-schema";
 import type { SessionMeta } from "@/lib/types/embedding-chunk";
+
+// Allow the post-response embedding+theme+insights chain (run via `after()`)
+// up to SESSION_CHAIN_MAX_DURATION_SECONDS to complete before Vercel terminates the function instance.
+export const maxDuration = SESSION_CHAIN_MAX_DURATION_SECONDS;
 
 // --- GET /api/sessions?clientId=&dateFrom=&dateTo=&offset=&limit= ---
 
@@ -188,46 +192,65 @@ export async function POST(request: NextRequest) {
       ? chunkStructuredSignals(structuredJson, sessionMeta)
       : chunkRawNotes(parsed.data.rawNotes, sessionMeta);
 
-    // Fire-and-forget: embeddings → theme assignment (chained, P1.R7)
+    // Post-response chain: embeddings → theme assignment → insights refresh.
+    // `after()` keeps the function instance alive past the response so the
+    // chain isn't frozen mid-flight on Vercel's serverless runtime (gap E2).
     const embeddingRepo = createEmbeddingRepository(serviceClient, teamId);
     const themeRepo = createThemeRepository(serviceClient, teamId);
     const signalThemeRepo = createSignalThemeRepository(serviceClient);
 
-    generateSessionEmbeddings({
-      sessionMeta,
-      structuredJson,
-      rawNotes: parsed.data.rawNotes,
-      embeddingRepo,
-      preComputedChunks: chunks,
-    })
-      .then(async (embeddingIds) => {
-        if (!embeddingIds || embeddingIds.length === 0) return;
-        await assignSessionThemes({
-          chunks,
-          embeddingIds,
-          teamId,
-          userId,
-          themeRepo,
-          signalThemeRepo,
-        });
+    const chainStart = Date.now();
+    after(
+      generateSessionEmbeddings({
+        sessionMeta,
+        structuredJson,
+        rawNotes: parsed.data.rawNotes,
+        embeddingRepo,
+        preComputedChunks: chunks,
       })
-      .then(async () => {
-        const insightRepo = createInsightRepository(serviceClient);
-        await maybeRefreshDashboardInsights({
-          teamId,
-          userId,
-          insightRepo,
-          supabase: serviceClient,
-        });
-      })
-      .catch((err) => {
-        if (process.env.NODE_ENV === "development") {
-          console.warn(
-            "\x1b[33m⚠ [POST /api/sessions] EMBEDDING+THEME+INSIGHTS CHAIN FAILED:\x1b[0m",
-            err instanceof Error ? err.message : err
+        .then(async (embeddingIds) => {
+          console.log(
+            `[POST /api/sessions] chain timing — embeddings: ${Date.now() - chainStart}ms — sessionId: ${session.id}`
           );
-        }
-      });
+          if (!embeddingIds || embeddingIds.length === 0) return;
+          const themeStart = Date.now();
+          await assignSessionThemes({
+            chunks,
+            embeddingIds,
+            teamId,
+            userId,
+            themeRepo,
+            signalThemeRepo,
+          });
+          console.log(
+            `[POST /api/sessions] chain timing — themes: ${Date.now() - themeStart}ms — sessionId: ${session.id}`
+          );
+        })
+        .then(async () => {
+          const insightStart = Date.now();
+          const insightRepo = createInsightRepository(serviceClient);
+          await maybeRefreshDashboardInsights({
+            teamId,
+            userId,
+            insightRepo,
+            supabase: serviceClient,
+          });
+          console.log(
+            `[POST /api/sessions] chain timing — insights: ${Date.now() - insightStart}ms; total: ${Date.now() - chainStart}ms — sessionId: ${session.id}`
+          );
+        })
+        .catch((err) => {
+          console.error(
+            "[POST /api/sessions] EMBEDDING+THEME+INSIGHTS CHAIN FAILED — sessionId:",
+            session.id,
+            "elapsedMs:",
+            Date.now() - chainStart,
+            "error:",
+            err instanceof Error ? err.message : err,
+            err instanceof Error ? err.stack : undefined
+          );
+        })
+    );
 
     return NextResponse.json({ session }, { status: 201 });
   } catch (err) {

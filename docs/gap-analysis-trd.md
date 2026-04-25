@@ -11,8 +11,48 @@
 ### E1 — `signOut()` doesn't clear `active_team_id` cookie ✅ Fixed
 Implemented. `components/providers/auth-provider.tsx` — `signOut()` calls `clearActiveTeamCookie()` before resolving.
 
-### E2 — Fire-and-forget chain is unsafe on Vercel free tier
-_Fix not yet defined in gap file. TRD pending._
+### E2 — Fire-and-forget chain is unsafe on Vercel free tier ✅ Fixed (phase 1)
+
+**Scope.** Stop the embeddings → themes → insights chain from being silently truncated when Vercel freezes the function instance after the response. Out of scope (deferred): moving the chain to a real queue with retries/replay.
+
+**Approach.** Use Next.js's native `after()` from `next/server` instead of installing `@vercel/functions`. `after()` is the framework-canonical wrapper; on Vercel it delegates to `waitUntil()`, locally it runs the callback after the response stream closes. Same semantics, one fewer dependency.
+
+Combine with `export const maxDuration = 60` to raise the Hobby-tier hard ceiling from 10s default to the 60s plan maximum. `after()` alone cannot exceed the function's `maxDuration` — the runtime still terminates at the ceiling. The two changes are paired; neither alone is enough.
+
+**Files changed.**
+- `app/api/sessions/route.ts` (POST) — import `after`, add `export const maxDuration = 60`, wrap the chain expression in `after(...)`, add per-stage timing logs and unconditional error log.
+- `app/api/sessions/[id]/route.ts` (PUT) — same changes. The `maxDuration` export applies to PUT and DELETE both; DELETE is fast, so the higher ceiling is harmless.
+
+**No database changes. No API contract changes. No prompt changes. No new dependencies.**
+
+**Implementation notes.**
+- `after()` accepts either a callback or a promise. We pass the chain promise directly so it kicks off synchronously (same timing as before) and Vercel waits on it.
+- Timing logs use a single `chainStart = Date.now()` captured before `after()`, then per-stage `Date.now() - stageStart` deltas. Format: `[POST /api/sessions] chain timing — embeddings: 4321ms — sessionId: …`. The final stage log also reports total chain time.
+- Error log uses `console.error` (not `console.warn`) and includes `sessionId`, `elapsedMs`, message, and stack. The previous `NODE_ENV === "development"` gate is removed.
+- The `embeddingIds.length === 0` short-circuit is preserved — an empty embedding result still skips theme assignment and falls through to the insights step (where `maybeRefreshDashboardInsights` does its own staleness check).
+
+**End-of-part audit.**
+- **SRP.** Routes still validate + delegate; the chain remains composed of the same three service calls.
+- **DRY.** The two route files have intentionally parallel chain blocks (POST creates, PUT re-embeds). Not extracted to a helper because the call signatures diverge (`isReExtraction`, `userId` source) and a wrapper would need both as params — net code is similar. Revisit if a third caller emerges.
+- **Logging.** Per-stage entry/exit logs and full-stack error log added — satisfies the "log entry, exit, errors" rule for the chain. Existing route handler logs untouched.
+- **Dead code.** No removals.
+- **Convention compliance.** `maxDuration` is a Next.js route segment config export (correct location: top of route file, not inside the handler).
+
+**Verification.**
+- `npx tsc --noEmit` passes.
+- Manual smoke (dev): create a session → confirm `chain timing — embeddings/themes/insights` lines appear in server logs and total chain time is reported.
+- Manual smoke (dev): force the chain to throw (e.g. break Voyage API key) → confirm the error log fires with sessionId and stack.
+- Production observation (post-deploy): tail Vercel function logs for `chain timing — insights; total: …` and `EMBEDDING+THEME+INSIGHTS CHAIN FAILED` to gather p95 and failure rate over a representative session volume.
+
+**Documentation updates (this fix):**
+- `ARCHITECTURE.md` — Key Design Decision #19 added describing the `after()` + `maxDuration = 60` pattern and the migration trigger.
+- `gap-analysis.md` — E2 marked ✅ Fixed with the deferred-follow-up note.
+- `CHANGELOG.md` — entry under `[Unreleased]`: "Sessions create/re-embed: post-response embedding+theme+insights chain now runs under `after()` with `maxDuration = 60`; per-stage timing logs and unconditional error logging emitted in production."
+
+**Deferred follow-up — queue migration.**
+_Trigger:_ p95 of the `total: <ms>` log line approaches 60s, or the chain failure rate (failures / extractions) exceeds ~1% over a rolling week. Either signal indicates `after()` is no longer sufficient.
+
+_Approach when triggered:_ move `generateSessionEmbeddings → assignSessionThemes → maybeRefreshDashboardInsights` into a queue worker. Candidates: Inngest (HTTP-trigger from the route, Vercel-native), QStash (Upstash, simple HTTP-cron + delayed jobs), or Supabase Queues (keeps everything in-Postgres). The route's only responsibility becomes enqueueing a job referencing the new `session.id`. The worker handles retries with exponential backoff, replay on failure, and execution time independent of Vercel function limits. This is a separate PRD with its own data model considerations (job dedup, idempotency on the per-stage operations, observability dashboard).
 
 ### E3 — No rate limiting on AI endpoints
 _Fix not yet defined in gap file. TRD pending._

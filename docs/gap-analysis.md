@@ -14,7 +14,7 @@
 
 ---
 
-### E2 — Fire-and-forget chain is unsafe on Vercel free tier
+### E2 — Fire-and-forget chain is unsafe on Vercel free tier ✅ Fixed
 **File:** `app/api/sessions/route.ts` (POST), `app/api/sessions/[id]/route.ts` (PUT)
 **Priority: Critical**
 
@@ -23,6 +23,10 @@ The `generateSessionEmbeddings().then(assignSessionThemes).then(maybeRefreshDash
 Vercel exposes `waitUntil()` from `@vercel/functions` for exactly this use case.
 
 Additionally, the `catch` block emits a console warning only in `NODE_ENV === 'development'`. In production, total chain failures are silently swallowed.
+
+**Fix applied (2026-04-25).** Wrapped the chain in `after()` from `next/server` (Next.js 16 native — same effect as `@vercel/functions` `waitUntil()` without the extra dependency) and set `export const maxDuration = 60` on both routes, raising the Hobby-tier ceiling from the 10s default. Per-stage timing logs (`chain timing — embeddings/themes/insights`) and an unconditional error log (with sessionId + elapsed ms + stack) now run in every environment, so production failures and slow chains are visible in Vercel function logs. The user-perceived latency is unchanged — the response is still sent right after the DB insert.
+
+**Deferred follow-up.** The 60s ceiling is a floor, not a final answer. When p95 chain duration (visible in the new timing logs) approaches 60s — or any stage's failure rate becomes non-trivial — move the chain off the request lifecycle into a queue worker (Inngest / QStash / Supabase queues) for retries, replay, and unbounded execution time. Tracked in ARCHITECTURE.md Key Design Decision #19 and as a deferred section in `gap-analysis-trd.md` E2.
 
 ---
 
@@ -189,8 +193,8 @@ Implementation sketch:
 
 ---
 
-### P8 — Master Signal cold-start corpus is unbounded
+### P8 — Master Signal cold-start corpus is unbounded ⏸ Not currently active
 **File:** `lib/services/master-signal-service.ts`
-**Priority: Low-Medium**
+**Priority: Deferred** — depends on Master Signal UI being reinstated (see P1). With the UI retired, cold-start synthesis is not user-triggered, so the unbounded-prompt risk is dormant. Revisit if/when a future PRD brings back the master-signal surface or removes the backend.
 
 `getAllSignalSessions()` fetches every non-deleted session. As the corpus grows, cold-start synthesis sends an increasingly large prompt. A `is_tainted` flag or manual "regenerate all" forces cold-start regardless of corpus size.
