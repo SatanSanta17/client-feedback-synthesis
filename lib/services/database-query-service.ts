@@ -65,6 +65,181 @@ export interface DatabaseQueryResult {
 }
 
 // ---------------------------------------------------------------------------
+// Action registry — single source of truth for which actions the LLM can
+// invoke via the chat `queryDatabase` tool, plus per-action descriptions
+// surfaced to the model. Adding a new entry to QueryAction produces a
+// TypeScript error in ACTION_METADATA until classified — drift is structurally
+// prevented.
+//
+// `llmToolExposed: false` means the action is reachable via direct API or UI
+// fetch but is NOT offered to the LLM as a tool choice. Notably,
+// `session_detail` remains used by the chat citation dialog (a client-side
+// fetch from `SessionPreviewDialog`) — the flag governs LLM tool exposure
+// only; UI-driven and direct-API callers are unaffected. (Gap E4)
+// ---------------------------------------------------------------------------
+
+export interface ActionMeta {
+  llmToolExposed: boolean;
+  description: string;
+}
+
+export const ACTION_METADATA: Record<QueryAction, ActionMeta> = {
+  count_clients: {
+    llmToolExposed: true,
+    description: "Total number of clients in the workspace.",
+  },
+  count_sessions: {
+    llmToolExposed: true,
+    description:
+      "Total number of sessions in the workspace. Honors `severity` (counts only sessions with at least one chunk of that severity).",
+  },
+  sessions_per_client: {
+    llmToolExposed: true,
+    description:
+      "Session count grouped by client. Honors `severity` (counts only sessions with at least one chunk of that severity).",
+  },
+  sentiment_distribution: {
+    llmToolExposed: true,
+    description:
+      "Count of signals by sentiment (positive / neutral / negative). Honors `severity` (restricts to sessions with at least one chunk of that severity before aggregating).",
+  },
+  urgency_distribution: {
+    llmToolExposed: true,
+    description:
+      "Count of signals by urgency tier. Honors `severity` (restricts to sessions with at least one chunk of that severity before aggregating).",
+  },
+  recent_sessions: {
+    llmToolExposed: true,
+    description:
+      "Most recent sessions, newest first. Honors `severity` (filters to sessions with at least one chunk of that severity).",
+  },
+  client_list: {
+    llmToolExposed: true,
+    description: "List of clients with metadata.",
+  },
+  sessions_over_time: {
+    llmToolExposed: true,
+    description:
+      "Session volume over time, bucketed by `granularity`. Does NOT honor `severity` (RPC-based aggregation; deferred — see gap-analysis-trd.md E4).",
+  },
+  client_health_grid: {
+    llmToolExposed: true,
+    description:
+      "Per-client health metrics for scatter-plot rendering. Honors `severity` and `urgency` post-filters.",
+  },
+  competitive_mention_frequency: {
+    llmToolExposed: true,
+    description:
+      "How often each competitor is mentioned across signals. Does NOT honor `severity` (competitive mentions don't carry severity).",
+  },
+  top_themes: {
+    llmToolExposed: true,
+    description:
+      "Most-common signal themes ranked by mention count. Honors `confidenceMin`, `severity` (restricts to sessions with at least one chunk of that severity).",
+  },
+  theme_trends: {
+    llmToolExposed: true,
+    description:
+      "Theme mention counts over time. Honors `granularity`, `confidenceMin`, `severity`.",
+  },
+  theme_client_matrix: {
+    llmToolExposed: true,
+    description:
+      "Theme × client cross-tabulation. Honors `confidenceMin`, `clientIds`, `severity`.",
+  },
+  drill_down: {
+    llmToolExposed: false,
+    description:
+      "(not exposed — payload-driven; used by dashboard widget clicks)",
+  },
+  session_detail: {
+    llmToolExposed: false,
+    description:
+      "(not exposed — used by chat citation dialog and dashboard 'View Session' via direct API fetch with sessionId)",
+  },
+  insights_latest: {
+    llmToolExposed: true,
+    description: "Most recent batch of AI-generated dashboard insight cards.",
+  },
+  insights_history: {
+    llmToolExposed: true,
+    description:
+      "Historical batches of AI-generated insight cards (paginated by `batch_id`).",
+  },
+};
+
+// Const-asserted tuple of actions exposed to the LLM. Used as the runtime
+// source for the chat tool's Zod enum. Type-and-runtime parity with
+// ACTION_METADATA is verified at module load by assertChatToolActionsInSync().
+const CHAT_TOOL_ACTIONS_TUPLE = [
+  "count_clients",
+  "count_sessions",
+  "sessions_per_client",
+  "sentiment_distribution",
+  "urgency_distribution",
+  "recent_sessions",
+  "client_list",
+  "sessions_over_time",
+  "client_health_grid",
+  "competitive_mention_frequency",
+  "top_themes",
+  "theme_trends",
+  "theme_client_matrix",
+  "insights_latest",
+  "insights_history",
+] as const satisfies readonly QueryAction[];
+
+export type ChatToolAction = (typeof CHAT_TOOL_ACTIONS_TUPLE)[number];
+// Exported with the literal tuple type preserved (no widening) so consumers
+// like `z.enum(CHAT_TOOL_ACTIONS)` get a valid non-empty tuple type.
+export const CHAT_TOOL_ACTIONS = CHAT_TOOL_ACTIONS_TUPLE;
+
+// Dev-time sanity: the static tuple must match the runtime filter of the
+// registry. Catches the case where someone flips an `llmToolExposed` flag in
+// ACTION_METADATA without updating the tuple (or vice versa). Throws on
+// module load in non-production builds; never trips in production paths.
+function assertChatToolActionsInSync() {
+  const fromRegistry = (
+    Object.entries(ACTION_METADATA) as [QueryAction, ActionMeta][]
+  )
+    .filter(([, meta]) => meta.llmToolExposed)
+    .map(([action]) => action)
+    .sort();
+  const fromTuple = [...CHAT_TOOL_ACTIONS_TUPLE].sort();
+  if (
+    fromRegistry.length !== fromTuple.length ||
+    fromRegistry.some((a, i) => a !== fromTuple[i])
+  ) {
+    throw new Error(
+      `${LOG_PREFIX} CHAT_TOOL_ACTIONS_TUPLE is out of sync with ACTION_METADATA.\n` +
+        `From registry (llmToolExposed=true): ${fromRegistry.join(", ")}\n` +
+        `From tuple: ${fromTuple.join(", ")}`
+    );
+  }
+}
+
+if (process.env.NODE_ENV !== "production") {
+  assertChatToolActionsInSync();
+}
+
+/**
+ * Builds the `description` string surfaced to the LLM as the `queryDatabase`
+ * tool description. Composes the preamble with a bulleted list of LLM-exposed
+ * actions and their descriptions, sourced from ACTION_METADATA.
+ */
+export function buildChatToolDescription(): string {
+  const lines = CHAT_TOOL_ACTIONS.map(
+    (action) => `- ${action}: ${ACTION_METADATA[action].description}`
+  );
+  return [
+    "Query the database for quantitative data about clients, sessions, themes, competitive mentions, and dashboard insights. Use when the question involves counts, lists, distributions, or factual lookups.",
+    "",
+    "Available actions:",
+    ...lines,
+  ].join("\n");
+}
+
+// ---------------------------------------------------------------------------
 // Shared query helpers (DRY)
 // ---------------------------------------------------------------------------
 
@@ -119,6 +294,98 @@ function aggregateJsonField(
     }
   }
   return distribution;
+}
+
+/**
+ * Returns true if the session's `structured_json` contains at least one
+ * signal chunk whose `severity` matches the requested value. Severity is a
+ * per-chunk field (not session-level), so this scans the chunk arrays:
+ * painPoints, requirements, aspirations, blockers, and custom.signals.
+ */
+function sessionHasSignalWithSeverity(
+  json: Record<string, unknown> | null,
+  severity: string
+): boolean {
+  if (!json) return false;
+
+  const arrayKeys = [
+    "painPoints",
+    "requirements",
+    "aspirations",
+    "blockers",
+  ] as const;
+  for (const key of arrayKeys) {
+    const arr = json[key] as Array<{ severity?: string }> | undefined;
+    if (arr?.some((s) => s.severity === severity)) return true;
+  }
+
+  const custom = json.custom as
+    | Array<{ signals?: Array<{ severity?: string }> }>
+    | undefined;
+  if (
+    custom?.some((c) => c.signals?.some((s) => s.severity === severity))
+  ) {
+    return true;
+  }
+
+  return false;
+}
+
+/**
+ * Inline post-filter for handler rows that already include `structured_json`.
+ * Returns the input untouched when no severity filter is set.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- Supabase rows are loosely typed
+function applySeverityRowFilter(rows: any[], severity: string | undefined): any[] {
+  if (!severity) return rows;
+  return rows.filter((r) =>
+    sessionHasSignalWithSeverity(
+      r.structured_json as Record<string, unknown> | null,
+      severity
+    )
+  );
+}
+
+/**
+ * Pre-filter helper for handlers that don't fetch `structured_json` directly
+ * (e.g. count handlers, theme join handlers). Returns the set of session IDs
+ * within team/date scope that have at least one signal chunk matching the
+ * requested severity. Returns null when no severity filter is set so callers
+ * can skip the extra query and the in-clause cleanly.
+ */
+async function fetchSessionIdsMatchingSeverity(
+  supabase: SupabaseClient,
+  filters: QueryFilters
+): Promise<Set<string> | null> {
+  if (!filters.severity) return null;
+
+  const query = baseSessionQuery(
+    supabase
+      .from("sessions")
+      .select("id, structured_json")
+      .not("structured_json", "is", null),
+    filters
+  );
+
+  const { data, error } = await query;
+  if (error) {
+    console.error(
+      `${LOG_PREFIX} fetchSessionIdsMatchingSeverity error:`,
+      error
+    );
+    throw new Error("Failed to filter sessions by severity");
+  }
+
+  const matching = new Set<string>();
+  for (const row of (data ?? []) as Array<{
+    id: string;
+    structured_json: Record<string, unknown> | null;
+  }>) {
+    if (sessionHasSignalWithSeverity(row.structured_json, filters.severity)) {
+      matching.add(row.id);
+    }
+  }
+  return matching;
 }
 
 /**
@@ -192,6 +459,18 @@ async function fetchSignalThemeRows(
   supabase: SupabaseClient,
   filters: QueryFilters
 ): Promise<SignalThemeJoinRow[]> {
+  // Severity is per-chunk in `structured_json` and not joinable via SQL.
+  // Pre-resolve the matching session IDs and constrain the join to them.
+  // When severity is set but no sessions match, short-circuit with an empty
+  // result so the join doesn't broaden into "no filter at all".
+  const severitySessionIds = await fetchSessionIdsMatchingSeverity(
+    supabase,
+    filters
+  );
+  if (severitySessionIds && severitySessionIds.size === 0) {
+    return [];
+  }
+
   let query = supabase
     .from("signal_themes")
     .select(
@@ -241,6 +520,15 @@ async function fetchSignalThemeRows(
     );
   }
 
+  // Severity filter — restrict to pre-resolved session IDs that have at
+  // least one signal chunk with the requested severity.
+  if (severitySessionIds) {
+    query = query.in(
+      "session_embeddings.session_id",
+      Array.from(severitySessionIds)
+    );
+  }
+
   // Confidence threshold on signal_themes
   if (filters.confidenceMin !== undefined) {
     query = query.gte("confidence", filters.confidenceMin);
@@ -283,6 +571,26 @@ async function handleCountSessions(
   supabase: SupabaseClient,
   filters: QueryFilters
 ): Promise<Record<string, unknown>> {
+  // Server-side count is fine when there's no severity filter. With severity
+  // we have to fetch structured_json and post-filter (severity is per-chunk,
+  // not session-level), so the count is derived from the filtered rows.
+  if (filters.severity) {
+    const query = baseSessionQuery(
+      supabase
+        .from("sessions")
+        .select("structured_json")
+        .not("structured_json", "is", null),
+      filters
+    );
+    const { data, error } = await query;
+    if (error) {
+      console.error(`${LOG_PREFIX} count_sessions (severity path) error:`, error);
+      throw new Error("Failed to count sessions");
+    }
+    const filtered = applySeverityRowFilter(data ?? [], filters.severity);
+    return { count: filtered.length };
+  }
+
   const query = baseSessionQuery(
     supabase.from("sessions").select("id", { count: "exact", head: true }),
     filters
@@ -302,10 +610,19 @@ async function handleSessionsPerClient(
   supabase: SupabaseClient,
   filters: QueryFilters
 ): Promise<Record<string, unknown>> {
-  const query = baseSessionQuery(
-    supabase.from("sessions").select("client_id, clients(name)"),
+  // When severity is set we need structured_json for the post-filter; the
+  // wider select is harmless and keeps the code single-path.
+  const selection = filters.severity
+    ? "client_id, structured_json, clients(name)"
+    : "client_id, clients(name)";
+
+  let query = baseSessionQuery(
+    supabase.from("sessions").select(selection),
     filters
   );
+  if (filters.severity) {
+    query = query.not("structured_json", "is", null);
+  }
 
   const { data, error } = await query;
 
@@ -314,9 +631,11 @@ async function handleSessionsPerClient(
     throw new Error("Failed to fetch sessions per client");
   }
 
+  const rows = applySeverityRowFilter(data ?? [], filters.severity);
+
   // Group by client name
   const countMap = new Map<string, number>();
-  for (const row of data ?? []) {
+  for (const row of rows) {
     const name = extractClientName(row);
     countMap.set(name, (countMap.get(name) ?? 0) + 1);
   }
@@ -347,7 +666,9 @@ async function handleSentimentDistribution(
     throw new Error("Failed to fetch sentiment distribution");
   }
 
-  return aggregateJsonField(data ?? [], "sentiment", {
+  const rows = applySeverityRowFilter(data ?? [], filters.severity);
+
+  return aggregateJsonField(rows, "sentiment", {
     positive: 0,
     negative: 0,
     neutral: 0,
@@ -374,7 +695,9 @@ async function handleUrgencyDistribution(
     throw new Error("Failed to fetch urgency distribution");
   }
 
-  return aggregateJsonField(data ?? [], "urgency", {
+  const rows = applySeverityRowFilter(data ?? [], filters.severity);
+
+  return aggregateJsonField(rows, "urgency", {
     low: 0,
     medium: 0,
     high: 0,
@@ -407,7 +730,9 @@ async function handleRecentSessions(
     throw new Error("Failed to fetch recent sessions");
   }
 
-  const sessions = (data ?? []).map((row: Record<string, unknown>) => {
+  const rows = applySeverityRowFilter(data ?? [], filters.severity);
+
+  const sessions = rows.map((row: Record<string, unknown>) => {
     const json = row.structured_json as Record<string, unknown> | null;
     return {
       clientName: extractClientName(row),
@@ -503,6 +828,15 @@ async function handleClientHealthGrid(
 
       // Apply severity/urgency post-filters if provided
       if (filters.urgency && urgency !== filters.urgency) return null;
+      if (
+        filters.severity &&
+        !sessionHasSignalWithSeverity(
+          row.structured_json as Record<string, unknown> | null,
+          filters.severity
+        )
+      ) {
+        return null;
+      }
 
       return {
         clientId: row.client_id,

@@ -38,13 +38,42 @@ Both routes have auth checks but no per-user or per-team rate limits. A client-s
 
 ---
 
-### E4 — `queryDatabase` chat tool frozen at 7 actions; service has 17
+### E4 — `queryDatabase` chat tool frozen at 7 actions; service has 17 ✅ Fixed
 **Files:** `lib/services/chat-stream-service.ts`, `lib/services/database-query-service.ts`
 **Priority: High**
 
 `QUERY_ACTIONS` in `chat-stream-service.ts` is a separate hardcoded constant, not derived from `database-query-service.ts`. The service has grown to 17 actions (themes, competitive mentions, client health, drill-downs, insights); the chat tool still exposes only the original 7. These lists will continue drifting with every new dashboard feature.
 
 The fix is to derive the tool's action enum from the `QueryAction` union type already defined in the service.
+
+**Fix (planned, 2026-04-25; scope expanded same-day) — single source of truth + dashboard-equivalent expressivity in chat + severity made real across surfaces.**
+
+Goal: when this ships, a user asking the chat "what are our top themes for Acme this quarter, only high-confidence high-severity assignments?" gets a real answer (not a hallucination or an unfiltered result). Theme, competitive-mention, client-health, sessions-over-time, and insight-history questions all become answerable. This also resolves P3 ("Chat can't answer theme or competitive questions") — that gap is the user-visible symptom of E4.
+
+Approach:
+
+1. **Single registry in `database-query-service.ts`.** Add `ACTION_METADATA: Record<QueryAction, { llmToolExposed: boolean; description: string }>`. Every existing action (and every future one) gets one entry. From this registry, export a derived `CHAT_TOOL_ACTIONS` tuple and the matching `ChatToolAction` type. New actions added to `QueryAction` will produce a TypeScript error in `ACTION_METADATA` until classified — drift is structurally prevented.
+
+2. **Drop the parallel list in `chat-stream-service.ts`.** Replace the hardcoded `QUERY_ACTIONS` array with the derived `CHAT_TOOL_ACTIONS`. The chat tool's Zod enum is built from this, and the LLM-facing tool description string is generated from the registry's per-action `description` field.
+
+3. **Expand the chat tool's `filters` input schema** from the current 3 fields (`dateFrom`, `dateTo`, `clientName`) to the full chat-relevant subset of `QueryFilters` — adds `clientIds[]`, `severity`, `urgency`, `granularity`, and `confidenceMin`. The service's `executeQuery` already accepts these; this just exposes them to the LLM.
+
+4. **Make `severity` a real filter (scope expansion).** Pre-fix, `severity` was accepted by the API/service signature but never consumed by any handler — both dashboard and chat treated it as a silent no-op. Implement actual severity filtering in every handler where it makes semantic sense, with per-action descriptions in the registry that honestly state which actions honor it. Pattern: severity is per-chunk in `structured_json` (painPoints, requirements, aspirations, blockers, custom.signals), so filtering is a post-filter on session JSON via `sessionHasSignalWithSeverity()`. Theme handlers pre-resolve matching session IDs and add an `IN (...)` clause to the join. Honor matrix:
+
+  | Action | Severity honored? | Mechanism |
+  |---|---|---|
+  | `count_sessions`, `sessions_per_client` | ✅ | path-switch when `severity` set: fetch+filter |
+  | `sentiment_distribution`, `urgency_distribution`, `recent_sessions` | ✅ | inline post-filter on already-fetched `structured_json` |
+  | `client_health_grid` | ✅ | adds severity check next to existing urgency check |
+  | `top_themes`, `theme_trends`, `theme_client_matrix` | ✅ | pre-resolve session IDs in `fetchSignalThemeRows` and constrain join |
+  | `sessions_over_time` | ❌ deferred | RPC-based; needs RPC change. Registry description states this. |
+  | `count_clients`, `client_list`, `competitive_mention_frequency`, `insights_*` | ❌ N/A | severity isn't meaningful at these levels |
+
+  Side effect: the dashboard URL `severity=` param starts working too — same handlers, same call path. The dashboard never advertised severity as no-op, so this is a quiet upgrade for dashboard users.
+
+Two actions stay LLM-unexposed (`llmToolExposed: false`):
+- `drill_down` — requires a structured `DrillDownContext` payload the LLM can't construct from a user question; only used by dashboard widget click handlers.
+- `session_detail` — needs a specific `sessionId`. Critically, **this action remains actively used by the chat citation dialog** (`SessionPreviewDialog` fetches `/api/dashboard?action=session_detail&sessionId=...` when the user clicks "View full session" on a citation chip). The flag only governs LLM tool exposure — UI-driven and direct-API uses are unaffected.
 
 ---
 
@@ -138,11 +167,13 @@ Added `DEFAULT_AUTH_ROUTE = "/dashboard"` and `ONBOARDING_ROUTE = "/capture"` co
 
 ---
 
-### P3 — Chat can't answer theme or competitive questions
+### P3 — Chat can't answer theme or competitive questions ✅ Fixed (resolved by E4)
 **File:** `lib/services/chat-stream-service.ts`
 **Priority: High**
 
 Directly related to E4. The `queryDatabase` tool exposes only 7 actions. Users asking "what are our top themes?" or "which competitors come up most?" get either a hallucinated answer or an admission of ignorance.
+
+**Resolved by E4 (2026-04-25).** The chat tool now exposes 15 actions (including `top_themes`, `theme_trends`, `theme_client_matrix`, `competitive_mention_frequency`, `client_health_grid`, and the dashboard insight history) plus the dashboard's full filter dimensions. Theme and competitive questions are now answerable. See E4 above for the full fix.
 
 ---
 

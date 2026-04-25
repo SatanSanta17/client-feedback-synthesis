@@ -6,6 +6,16 @@ All notable changes to this project are documented here, grouped by PRD and part
 
 ## [Unreleased]
 
+### Gap E4 — Chat `queryDatabase` registry + dashboard-equivalent expressivity — 2026-04-25
+
+- Added `ACTION_METADATA` registry in `lib/services/database-query-service.ts` — single source of truth for which `QueryAction` values are exposed to the LLM via the chat `queryDatabase` tool, with per-action descriptions surfaced to the model.
+- Derived `CHAT_TOOL_ACTIONS` tuple, `ChatToolAction` type, and `buildChatToolDescription()` helper from the registry. Added a dev-time module-load assertion that catches drift between the static tuple and the registry's `llmToolExposed` flag.
+- `chat-stream-service.ts` — deleted hardcoded `QUERY_ACTIONS` array; chat tool's Zod enum and description now derived from the registry. New `QueryAction` entries produce a TypeScript error in `ACTION_METADATA` until classified — drift is structurally prevented.
+- Chat tool now exposes 15 actions to the LLM (up from 7) — adds `sessions_over_time`, `client_health_grid`, `competitive_mention_frequency`, `top_themes`, `theme_trends`, `theme_client_matrix`, `insights_latest`, `insights_history`. `drill_down` and `session_detail` remain reachable via direct API/UI fetches but unexposed to LLM tool selection.
+- Filter input expanded from 3 fields to 8: added `clientIds[]`, `severity`, `urgency`, `granularity`, `confidenceMin` to match dashboard filter dimensions.
+- `severity` made a real filter end-to-end (was previously a silent no-op everywhere). Implemented post-filter on `structured_json` (per-chunk `severity` across `painPoints`/`requirements`/`aspirations`/`blockers`/`custom.signals`) in `count_sessions`, `sessions_per_client`, `sentiment_distribution`, `urgency_distribution`, `recent_sessions`, `client_health_grid`. Theme handlers (`top_themes`, `theme_trends`, `theme_client_matrix`) pre-resolve matching session IDs and constrain the join. Quiet upgrade for the dashboard URL `severity=` param, which now actually filters too. `sessions_over_time` is the one deferred handler — RPC-based aggregation needs RPC change; flagged in registry description and TRD.
+- Resolves P3 ("Chat can't answer theme or competitive questions") — was the user-visible symptom of E4.
+
 ### Gap P5 — Shared filter persistence — 2026-04-25
 
 - Added `lib/hooks/use-filter-storage.ts` — sessionStorage-backed filter persistence primitive keyed by `filters:<surface>:<userId>:<workspaceId|personal>`. Narrow `{ key, read, write }` API so each surface owns its own sync policy.

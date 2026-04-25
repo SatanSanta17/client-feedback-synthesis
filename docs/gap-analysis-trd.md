@@ -57,8 +57,172 @@ _Approach when triggered:_ move `generateSessionEmbeddings → assignSessionThem
 ### E3 — No rate limiting on AI endpoints
 _Fix not yet defined in gap file. TRD pending._
 
-### E4 — `queryDatabase` chat tool frozen at 7 actions; service has 17
-_Fix not yet defined in gap file. TRD pending._
+### E4 — `queryDatabase` chat tool frozen at 7 actions; service has 17 ✅ Fixed
+
+**Scope.** Eliminate the parallel `QUERY_ACTIONS` array in `chat-stream-service.ts`. Replace it with a single registry in `database-query-service.ts` that drives the chat tool's action enum, the LLM-facing tool description, and the expanded filter input schema. Reach dashboard-equivalent expressivity in chat for every LLM-invocable action.
+
+**Scope expanded same-day** to also implement actual `severity` filtering. Pre-expansion, `severity` was accepted in the API/service signature but no handler consumed it — both dashboard and chat treated it as a silent no-op. Exposing severity to the LLM as a no-op would have been worse than not exposing it (the LLM would narrate "showing high-severity feedback…" while returning unfiltered data), so we implement severity end-to-end in this fix.
+
+This fix also resolves **P3 — "Chat can't answer theme or competitive questions"** (P3 is the user-visible symptom of E4; sharing a `QueryAction` source of truth was P3's stated unblocker).
+
+**Approach.**
+
+- **Registry-driven, not enum-derived.** A simple `Pick`-style derivation off `QueryAction` would only give us the action set; it can't carry per-action descriptions or the `llmToolExposed` flag. Use a typed record `Record<QueryAction, ActionMeta>` so adding a new action to `QueryAction` triggers a TypeScript error until it's classified — making drift structurally impossible.
+- **`llmToolExposed`, not `chatSuitable`.** Naming matters here: `session_detail` *is* used in chat (the citation `SessionPreviewDialog` fetches it directly), but it is *not* an action the LLM should pick from a tool menu. The flag governs LLM tool exposure only; UI-side and API-side callers of `executeQuery` are unaffected. The TRD must call this out explicitly so a future reader doesn't strip out `session_detail` thinking it's chat-unused.
+- **Filter schema expansion is not optional.** Without it, a registry-derived enum unlocks `top_themes`, `theme_trends`, etc. but the LLM can only filter them by `dateFrom`/`dateTo`/`clientName` — losing access to `severity`, `urgency`, `granularity`, `confidenceMin`, `clientIds[]` that the dashboard exposes. Goal is parity, so the filter schema grows to match.
+
+**Files changed.**
+
+- **Modified:** `lib/services/database-query-service.ts`
+  - Add `interface ActionMeta { llmToolExposed: boolean; description: string }`.
+  - Add `ACTION_METADATA: Record<QueryAction, ActionMeta>` covering all 17 actions.
+  - Export `CHAT_TOOL_ACTIONS` — `as const` tuple derived from entries where `llmToolExposed === true`.
+  - Export `ChatToolAction = (typeof CHAT_TOOL_ACTIONS)[number]`.
+  - Export `buildChatToolDescription(): string` — composes the LLM-facing tool description from the registry (preamble + bulleted action list with per-action `description`).
+- **Modified:** `lib/services/chat-stream-service.ts`
+  - Delete `QUERY_ACTIONS` constant.
+  - Replace `z.enum(QUERY_ACTIONS)` with `z.enum(CHAT_TOOL_ACTIONS)`.
+  - Replace static `description: "Query the database for quantitative data..."` with `description: buildChatToolDescription()`.
+  - Expand the `filters` Zod object: add `clientIds: z.array(z.string().uuid()).optional()`, `severity`, `urgency`, `granularity`, `confidenceMin`. Each field gets a `.describe()` string indicating which actions consume it.
+  - Forward all filter fields to `executeQuery` (the service already accepts them via `QueryFilters`).
+  - Cast `action as QueryAction` continues to typecheck because `ChatToolAction` is a subset.
+
+**Severity implementation (scope expansion).**
+- **Modified:** `lib/services/database-query-service.ts`
+  - Add three shared helpers: `sessionHasSignalWithSeverity(json, severity)` (predicate scanning `painPoints`/`requirements`/`aspirations`/`blockers`/`custom.signals` chunk arrays), `applySeverityRowFilter(rows, severity)` (inline filter for handlers already fetching `structured_json`), and `fetchSessionIdsMatchingSeverity(supabase, filters)` (returns `Set<string> | null` for handlers that don't fetch JSON natively).
+  - `handleSentimentDistribution`, `handleUrgencyDistribution`, `handleRecentSessions` — apply `applySeverityRowFilter` post-fetch (no extra query; they already select `structured_json`).
+  - `handleClientHealthGrid` — add a severity check next to the existing urgency check (was already commented as planned).
+  - `handleCountSessions`, `handleSessionsPerClient` — switch path when `severity` is set: fetch `structured_json`, post-filter, derive count/group from filtered rows. Server-side count is preserved when severity is unset.
+  - `fetchSignalThemeRows` (used by `top_themes`, `theme_trends`, `theme_client_matrix`) — call `fetchSessionIdsMatchingSeverity` first; if returns an empty set, short-circuit `[]`; otherwise add `.in("session_embeddings.session_id", [...])` to the join.
+  - `ACTION_METADATA` per-action `description` strings updated to honestly state which filters each action honors. The deferred handler (`sessions_over_time`) explicitly states severity is not honored, with the reason ("RPC-based aggregation").
+
+**No database changes. No API contract changes. No prompt changes (the tool description is in code). No new dependencies.**
+
+**Deferred work — `sessions_over_time` severity support.**
+The handler calls a Postgres RPC (`sessions_over_time(p_team_id, p_date_from, p_date_to, p_granularity)`) for time-bucketed aggregation. Adding severity would require either (a) extending the RPC with `p_session_ids` and pre-resolving severity-matching sessions in TypeScript, or (b) re-implementing client-side time bucketing when severity is set. Both are out of scope for E4. The action's registry description states the limitation explicitly so the LLM (and any future reader) is aware.
+
+**Implementation increments.**
+
+**Increment 1 — Action registry in `database-query-service.ts`.**
+1. Define `ActionMeta` interface.
+2. Add `ACTION_METADATA: Record<QueryAction, ActionMeta>` immediately after the `QueryAction` type (so a developer changing `QueryAction` sees the registry in the same scroll). All 17 entries:
+
+| action | `llmToolExposed` | `description` (LLM-facing summary) |
+|---|---|---|
+| `count_clients` | true | "Total number of clients in the workspace." |
+| `count_sessions` | true | "Total number of sessions in the workspace." |
+| `sessions_per_client` | true | "Session count grouped by client." |
+| `sentiment_distribution` | true | "Count of signals by sentiment (positive / neutral / negative)." |
+| `urgency_distribution` | true | "Count of signals by urgency tier." |
+| `recent_sessions` | true | "Most recent sessions, newest first." |
+| `client_list` | true | "List of clients with metadata." |
+| `sessions_over_time` | true | "Session volume over time, bucketed by `granularity`." |
+| `client_health_grid` | true | "Per-client health metrics for scatter-plot rendering." |
+| `competitive_mention_frequency` | true | "How often each competitor is mentioned across signals." |
+| `top_themes` | true | "Most-common signal themes ranked by mention count. Honors `confidenceMin`." |
+| `theme_trends` | true | "Theme mention counts over time. Honors `granularity`, `confidenceMin`." |
+| `theme_client_matrix` | true | "Theme × client cross-tabulation. Honors `confidenceMin`, `clientIds`." |
+| `drill_down` | false | (not exposed — payload-driven; used by dashboard widget clicks) |
+| `session_detail` | false | (not exposed — used by chat citation dialog and dashboard "View Session" via direct API fetch with `sessionId`) |
+| `insights_latest` | true | "Most recent batch of AI-generated dashboard insight cards." |
+| `insights_history` | true | "Historical batches of AI-generated insight cards (paginated by `batch_id`)." |
+
+3. Export derivation:
+```ts
+export const CHAT_TOOL_ACTIONS = (Object.entries(ACTION_METADATA) as [QueryAction, ActionMeta][])
+  .filter(([, meta]) => meta.llmToolExposed)
+  .map(([action]) => action) as readonly ChatToolAction[];
+export type ChatToolAction = ...; // narrowed via the same filter; see implementation note
+```
+Implementation note: the runtime filter doesn't narrow the type. Define `ChatToolAction` via a type-level filter (a const-asserted explicit tuple is simpler). Cleanest pattern:
+```ts
+const CHAT_TOOL_ACTIONS_TUPLE = [
+  "count_clients", "count_sessions", "sessions_per_client", ...
+] as const satisfies readonly QueryAction[];
+export type ChatToolAction = typeof CHAT_TOOL_ACTIONS_TUPLE[number];
+export const CHAT_TOOL_ACTIONS = CHAT_TOOL_ACTIONS_TUPLE;
+```
+Add a runtime sanity check (in dev) that `CHAT_TOOL_ACTIONS_TUPLE` matches `Object.keys(ACTION_METADATA).filter(k => ACTION_METADATA[k].llmToolExposed)`. Throws on mismatch — converts a future bug ("registry says exposed, tuple forgot to list it") into a startup-time error. Cheap insurance.
+
+4. Export `buildChatToolDescription(): string`:
+```ts
+export function buildChatToolDescription(): string {
+  const lines = CHAT_TOOL_ACTIONS.map(
+    (action) => `- ${action}: ${ACTION_METADATA[action].description}`
+  );
+  return [
+    "Query the database for quantitative data about clients, sessions, themes, competitive mentions, and dashboard insights. Use when the question involves counts, lists, distributions, or factual lookups.",
+    "",
+    "Available actions:",
+    ...lines,
+  ].join("\n");
+}
+```
+
+**Increment 2 — Wire `chat-stream-service.ts` to the registry.**
+1. Replace import: drop unused `QueryAction` (still used for the cast), import `CHAT_TOOL_ACTIONS`, `ChatToolAction`, `buildChatToolDescription` from the service.
+2. Delete the local `QUERY_ACTIONS` constant.
+3. In `buildQueryDatabaseTool` (line 355):
+   - `description: buildChatToolDescription()`
+   - `action: z.enum(CHAT_TOOL_ACTIONS)`
+   - The cast `action as QueryAction` stays valid (`ChatToolAction extends QueryAction`).
+4. Logging: keep existing `tool:queryDatabase — action: …` log; add `filters: …` to the entry log so diagnostics include the LLM's chosen filter set.
+
+**Increment 3 — Expand the filters input schema.**
+Replace the existing 3-field filters object with the full chat-relevant set:
+```ts
+filters: z.object({
+  dateFrom: z.string().optional().describe("Start date (ISO format YYYY-MM-DD)"),
+  dateTo: z.string().optional().describe("End date (ISO format YYYY-MM-DD)"),
+  clientName: z.string().optional().describe("Single-client convenience: matches by name when no UUID is known"),
+  clientIds: z.array(z.string().uuid()).optional().describe("Filter by one or more client UUIDs"),
+  severity: z.enum([...service severity values]).optional().describe("Filter signals by severity"),
+  urgency: z.enum([...service urgency values]).optional().describe("Filter signals by urgency"),
+  granularity: z.enum(["week", "month"]).optional().describe("Time bucketing granularity. Used by sessions_over_time, theme_trends"),
+  confidenceMin: z.number().min(0).max(1).optional().describe("Minimum confidence score 0–1. Used by theme actions"),
+}).optional()
+```
+Forward all fields into the `executeQuery` filter object. Trim string fields where the existing code does (`?.trim() || undefined` pattern preserved).
+
+**Severity/urgency enum values:** match the service's `QueryFilters` type exactly. Read the type at implementation time and reuse the same union as the Zod enum.
+
+**Increment 4 — Verify each LLM-exposed handler tolerates the expanded filters.**
+Read-only verification step. For each of the 15 `llmToolExposed: true` handlers, confirm:
+- Handler runs correctly with no filters set.
+- Handler runs correctly when only the legacy 3 filters are set (regression check).
+- Handler runs correctly when the new filters are set, including non-applicable cases (e.g., `theme_trends` receiving `confidenceMin` should honor it; `count_clients` receiving `confidenceMin` should ignore it gracefully — confirm no crashes).
+No code changes expected here unless a handler throws on unexpected fields.
+
+**Increment 5 — End-of-part audit + manual smoke tests.**
+- `npx tsc --noEmit` passes.
+- Smoke prompts (manual chat tests):
+  - "What are our top themes?" → expects `top_themes` action.
+  - "How are themes trending week-over-week?" → `theme_trends` with `granularity: "week"`.
+  - "Which competitors come up most often?" → `competitive_mention_frequency`.
+  - "Show me high-confidence themes only (above 0.8)" → `top_themes` with `confidenceMin: 0.8`.
+  - "Show me high-severity feedback for Acme last month" → composed action+filter.
+  - "What's the latest dashboard insights?" → `insights_latest`.
+- Confirm server logs show correct `action` + `filters` per call.
+- Confirm citation chip → "View full session" still opens `SessionPreviewDialog` correctly (regression check that `session_detail` is unaffected — no code path through it changed).
+
+**End-of-part audit checklist.**
+- **SRP.** Registry owns action metadata. Service owns query execution. Chat stream service owns LLM-facing wiring only.
+- **DRY.** Single source of truth for action set, descriptions, and (transitively) the LLM tool description.
+- **Design tokens.** No style changes.
+- **Logging.** Tool entry log enriched with filters payload. No silent failures.
+- **Dead code.** `QUERY_ACTIONS` removed. Confirm no other file imported it (grep first).
+- **Convention compliance.** Named exports. Camel-case symbols. Registry placed alongside the type it shadows.
+
+**Verification.**
+- `npx tsc --noEmit` passes.
+- Smoke prompts above all behave correctly.
+- Citation dialog regression: open chat, get a response with sources, click chip → preview opens, click "View full session" → session loads. No code path through `session_detail` changed; this is a guardrail.
+
+**Documentation updates after the part.**
+- `gap-analysis.md` — mark E4 ✅ Fixed; mark P3 ✅ Fixed (resolved by E4).
+- `ARCHITECTURE.md` — Key Design Decision #14 (chat data isolation): append a sentence noting the action enum and filter schema in the `queryDatabase` tool are derived from `ACTION_METADATA` in `database-query-service.ts`; new actions become LLM-invocable by setting `llmToolExposed: true`.
+- `CHANGELOG.md` — entry under `[Unreleased]`: "Chat: queryDatabase tool now exposes 15 actions (theme, competitive-mention, client-health, sessions-over-time, insights-history) and dashboard-equivalent filters (`severity`, `urgency`, `granularity`, `clientIds`, `confidenceMin`), derived from a single registry in `database-query-service.ts`. Resolves theme/competitive question gap."
+- `gap-analysis-trd.md` — flip P3 from "Blocked on E4" to "Resolved by E4 — see E4 above."
 
 ### E5 — No dev/prod database separation
 _Fix not yet defined in gap file. TRD pending._
@@ -97,8 +261,8 @@ No further technical work in scope. A future cleanup PRD will either revive the 
 ### P2 — Post-login redirect lands on Capture, not Dashboard ✅ Fixed
 Implemented. `DEFAULT_AUTH_ROUTE` + `ONBOARDING_ROUTE` constants in `lib/constants.ts`; auth callback picks based on session count.
 
-### P3 — Chat can't answer theme or competitive questions
-_Fix not yet defined in gap file. TRD pending. (Blocked on E4 design — share a `QueryAction` source of truth.)_
+### P3 — Chat can't answer theme or competitive questions ✅ Fixed (resolved by E4)
+Resolved end-to-end by the E4 fix above — the chat tool's action enum is now derived from the `ACTION_METADATA` registry and exposes `top_themes`, `theme_trends`, `theme_client_matrix`, `competitive_mention_frequency`, and the rest of the dashboard-equivalent action set. No P3-specific TRD needed.
 
 ### P4 — Starter questions are hardcoded and workspace-blind
 _Fix not yet defined in gap file. TRD pending._

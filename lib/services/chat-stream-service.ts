@@ -28,23 +28,17 @@ import type { ChatService, ContextMessage } from "@/lib/services/chat-service";
 import type { EmbeddingRepository } from "@/lib/repositories/embedding-repository";
 import type { ChatSource } from "@/lib/types/chat";
 import type { ChunkType } from "@/lib/types/embedding-chunk";
-import type { QueryAction } from "@/lib/services/database-query-service";
+import {
+  CHAT_TOOL_ACTIONS,
+  buildChatToolDescription,
+  type QueryAction,
+} from "@/lib/services/database-query-service";
 
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
 const LOG_PREFIX = "[chat-stream-service]";
-
-const QUERY_ACTIONS = [
-  "count_clients",
-  "count_sessions",
-  "sessions_per_client",
-  "sentiment_distribution",
-  "urgency_distribution",
-  "recent_sessions",
-  "client_list",
-] as const;
 
 // ---------------------------------------------------------------------------
 // Dependencies interface
@@ -359,33 +353,62 @@ function buildQueryDatabaseTool(
   teamId: string | null
 ) {
   return tool({
-    description:
-      "Query the database for quantitative data about clients and sessions. Use when the question involves counts, lists, distributions, or factual lookups.",
+    description: buildChatToolDescription(),
     inputSchema: zodSchema(
       z.object({
         action: z
-          .enum(QUERY_ACTIONS)
+          .enum(CHAT_TOOL_ACTIONS)
           .describe("The predefined query action to execute"),
         filters: z
           .object({
             dateFrom: z
               .string()
               .optional()
-              .describe("Start date filter (ISO format)"),
+              .describe("Start date filter (ISO format YYYY-MM-DD)"),
             dateTo: z
               .string()
               .optional()
-              .describe("End date filter (ISO format)"),
+              .describe("End date filter (ISO format YYYY-MM-DD)"),
             clientName: z
               .string()
               .optional()
-              .describe("Filter by client name"),
+              .describe(
+                "Single-client convenience: matches by client name when no UUID is known"
+              ),
+            clientIds: z
+              .array(z.string().uuid())
+              .optional()
+              .describe("Filter by one or more client UUIDs"),
+            severity: z
+              .enum(["low", "medium", "high"])
+              .optional()
+              .describe("Filter signals by severity tier"),
+            urgency: z
+              .enum(["low", "medium", "high", "critical"])
+              .optional()
+              .describe("Filter signals by urgency tier"),
+            granularity: z
+              .enum(["week", "month"])
+              .optional()
+              .describe(
+                "Time bucketing granularity. Used by sessions_over_time and theme_trends"
+              ),
+            confidenceMin: z
+              .number()
+              .min(0)
+              .max(1)
+              .optional()
+              .describe(
+                "Minimum theme-assignment confidence score 0–1. Used by theme actions (top_themes, theme_trends, theme_client_matrix)"
+              ),
           })
           .optional(),
       })
     ),
     execute: async ({ action, filters }) => {
-      console.log(`${LOG_PREFIX} tool:queryDatabase — action: ${action}`);
+      console.log(
+        `${LOG_PREFIX} tool:queryDatabase — action: ${action}, filters: ${JSON.stringify(filters ?? {})}`
+      );
       controller.enqueue(
         encoder.encode(
           sseEvent("status", { text: "Looking up your data..." })
@@ -399,6 +422,14 @@ function buildQueryDatabaseTool(
           dateFrom: filters?.dateFrom?.trim() || undefined,
           dateTo: filters?.dateTo?.trim() || undefined,
           clientName: filters?.clientName?.trim() || undefined,
+          clientIds:
+            filters?.clientIds && filters.clientIds.length > 0
+              ? filters.clientIds
+              : undefined,
+          severity: filters?.severity,
+          urgency: filters?.urgency,
+          granularity: filters?.granularity,
+          confidenceMin: filters?.confidenceMin,
         }
       );
       console.log(
