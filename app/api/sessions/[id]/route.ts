@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse, after } from "next/server";
 import { z } from "zod";
-import { MAX_COMBINED_CHARS, SESSION_CHAIN_MAX_DURATION_SECONDS } from "@/lib/constants";
+import { MAX_COMBINED_CHARS } from "@/lib/constants";
 import { EXTRACTION_SCHEMA_VERSION } from "@/lib/schemas/extraction-schema";
 import { createClient, createServiceRoleClient, getActiveTeamId } from "@/lib/supabase/server";
 import { mapAccessError } from "@/lib/utils/map-access-error";
@@ -29,9 +29,10 @@ import {
 import type { ExtractedSignals } from "@/lib/schemas/extraction-schema";
 import type { SessionMeta } from "@/lib/types/embedding-chunk";
 
-// Allow the post-response embedding+theme+insights chain (run via `after()`)
-// up to SESSION_CHAIN_MAX_DURATION_SECONDS to complete before Vercel terminates the function instance.
-export const maxDuration = SESSION_CHAIN_MAX_DURATION_SECONDS;
+// 60s headroom (Vercel Hobby ceiling) for the post-response embedding+theme+insights
+// chain run via `after()`. Must be a literal — Next.js segment configs aren't statically
+// resolvable across module boundaries.
+export const maxDuration = 60;
 
 // --- PUT /api/sessions/[id] ---
 
