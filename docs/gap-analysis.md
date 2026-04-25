@@ -261,3 +261,49 @@ Implementation sketch:
 **Priority: Deferred** — depends on Master Signal UI being reinstated (see P1). With the UI retired, cold-start synthesis is not user-triggered, so the unbounded-prompt risk is dormant. Revisit if/when a future PRD brings back the master-signal surface or removes the backend.
 
 `getAllSignalSessions()` fetches every non-deleted session. As the corpus grows, cold-start synthesis sends an increasingly large prompt. A `is_tainted` flag or manual "regenerate all" forces cold-start regardless of corpus size.
+
+---
+
+### P9 — Conversation routing: clean URL on fresh chat, history-API navigation, UUID on first send ✅ Fixed
+**Files:** `app/chat/page.tsx`, `app/chat/[id]/page.tsx` (created), `app/chat/_components/chat-page-content.tsx`, `app/chat/_components/chat-area.tsx`, `lib/hooks/use-chat.ts`
+**Priority: Medium**
+
+The chat surface today has two coupled symptoms when it comes to routing and reload behavior:
+
+1. **Reload feels like opening a new chat.** `ChatPageContent` initializes `activeConversationId` lazily with `crypto.randomUUID()` on every mount. Even when the URL is `/chat/<id>` (the user is on a known conversation), reload remounts the page component and the lazy initializer fires again, producing a fresh UUID instead of recognizing the URL's id. The `app/chat/[id]/page.tsx` route exists but isn't yet plumbed to seed initial state from `params.id`.
+
+2. **In-app navigation remounts the chat shell.** Sidebar items are `<Link>`s, "New chat" goes through `router.push`, and first-send URL sync goes through `router.replace`. All of these are Next.js page-component navigations, which means traversing between `app/chat/page.tsx` and `app/chat/[id]/page.tsx` (different page files) remounts the shell. That's the visible "the whole chat re-renders" the user is trying to avoid.
+
+There's also a conceptual smell from E15: the conversation UUID is generated at mount, so a fresh chat already has a UUID locally even though the URL `/chat` shows none. The UUID and URL are out of sync until the user sends.
+
+**Fix (planned, 2026-04-26) — ChatGPT-style routing.**
+
+Three principles drive the rewrite:
+
+1. **Generate the conversation UUID on first send, not on mount.** `activeConversationId: string | null`. Null means "fresh chat, no DB row, URL is `/chat`." When the user sends in a fresh chat, `useChat.sendMessage` does `crypto.randomUUID()`, uses it for the POST body, and on receiving the server's `X-Conversation-Id` confirmation calls `onConversationCreated(id)` so the parent can sync state and URL.
+
+2. **All in-app URL updates use raw `window.history` API.** Sidebar items become `<button onClick>` (NOT `<Link>`). "New chat" calls `history.pushState`, not `router.push`. First-send URL replace calls `history.replaceState`, not `router.replace`. None of these trigger Next.js page navigation, so the chat shell stays mounted across all in-app moves — sidebar clicks, new chat, first-send URL sync, browser back/forward.
+
+3. **Initial load / refresh / deep-link / share — Next.js routes do their job once and only once.** Both `app/chat/page.tsx` and `app/chat/[id]/page.tsx` render `<ChatPageContent initialConversationId={…} />`. `/chat` passes `null`; `/chat/[id]` passes the validated UUID. The route files matter only at the moment the browser arrives at the URL; from then on, all navigation is in-page via `history` API.
+
+Browser back/forward handled via a `popstate` listener that reads `window.location.pathname`, parses the conversation id (if any), and synchronously clears messages while updating `activeConversationId` — so the previous conversation's messages don't flash while the new conversation loads. A small atomic `clearMessages()` action exposed by `useChat` lets the parent batch both updates in one render commit.
+
+Confirmed timing details:
+- **URL update fires on response headers, not stream completion.** Mid-stream reload preserves the conversation. (Headers arrive before the SSE body in the same `await fetch()`.)
+- **Sidebar prepend fires on response headers, not stream completion.** Entry appears at the top of the list immediately when the conversation becomes real, before the assistant has finished typing.
+- **404 UI for inaccessible / non-existent UUIDs is retained**, with copy nudging the user toward starting a new conversation rather than just stating "not found." CTA: `<Link href="/chat">Start a new chat</Link>`.
+
+This entry supersedes the previous P9 implementation (which used `<Link>`-based navigation and `router.push`/`replace`); the rewrite removes those mechanisms entirely.
+
+**Relationship to E15.** P9 partially supersedes E15's *client-side* mechanism while leaving E15's *server-side* contract intact:
+
+| E15 concept | Status under P9 |
+|---|---|
+| Client generates the conversation UUID (not server) | ✅ Preserved |
+| Server idempotent `getOrCreateConversation` (try-insert → fall-back-to-fetch on unique-violation) | ✅ Preserved unchanged |
+| `ConversationNotAccessibleError` → 404 mapping for cross-user UUIDs | ✅ Preserved unchanged |
+| Client lazy-initializes UUID at component mount (`useState(() => crypto.randomUUID())`) | ❌ Superseded — UUID is now generated on first send |
+| `isFresh` prop on `useChat`, derived from sidebar list-membership | ❌ Superseded — `activeConversationId: string \| null` makes "fresh" a real first-class state |
+| Sidebar prepend inside `handleSendMessage` before the POST | ❌ Superseded — prepend happens in the `onConversationCreated` callback fired after the server confirms via `X-Conversation-Id` header |
+
+The "client owns the conversation UUID" thesis from E15 is preserved. The mechanism is cleaner (UUID materializes when the conversation does, not phantom-on-mount).

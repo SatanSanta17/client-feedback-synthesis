@@ -38,19 +38,21 @@ function stripFollowUpBlock(text: string): string {
 
 interface UseChatOptions {
   /**
-   * Active conversation UUID. Always a string after E15 — the parent
-   * generates one via `crypto.randomUUID()` on mount and on "New chat",
-   * so the conversation has a stable identifier from the first render.
-   * The server idempotently creates the row on first POST.
+   * Active conversation UUID. `null` means fresh chat — no DB row yet,
+   * URL is `/chat`, sidebar has no entry for this session. The UUID
+   * materialises on first send: `sendMessage` generates one with
+   * `crypto.randomUUID()` for the POST and notifies the parent via
+   * `onConversationCreated` once the server confirms via response
+   * header. (Gap P9)
    */
-  conversationId: string;
+  conversationId: string | null;
   /**
-   * True when the conversationId is a freshly-generated local UUID that
-   * has no DB row yet (i.e. not present in the parent's conversations
-   * sidebar list). The load-messages effect uses this to skip the fetch
-   * — there are no messages to load until the first send.
+   * Fires exactly once per fresh-chat send, right after the server
+   * responds with `X-Conversation-Id` confirming the new conversation
+   * row exists. Parent uses this to prepend the entry to the sidebar
+   * and (in P9 Increment 2) silently update the URL via history API.
    */
-  isFresh: boolean;
+  onConversationCreated?: (id: string) => void;
   onTitleGenerated?: (id: string, title: string) => void;
 }
 
@@ -81,6 +83,22 @@ interface UseChatReturn {
   hasMoreMessages: boolean;
   /** Fetch older messages for infinite scroll. */
   fetchMoreMessages: () => Promise<void>;
+  /**
+   * Synchronously clear messages + pagination state. Used by the parent
+   * around in-app navigation (sidebar click, "New chat", popstate) so the
+   * `setActiveConversationId(...)` call in the same handler batches with
+   * the message clear into one React render commit — no flash of the
+   * previous conversation's messages while the new one loads. (Gap P9)
+   */
+  clearMessages: () => void;
+  /**
+   * True when the messages-list fetch returned 404 — the conversation
+   * doesn't exist or is inaccessible (cross-user UUID hidden by RLS).
+   * UI surfaces a "Conversation not found" state with a CTA back to
+   * `/chat`. Resets to false on every load attempt, on null transitions,
+   * and on `clearMessages()`. (Gap P9)
+   */
+  isConversationNotFound: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -142,12 +160,13 @@ export function useChat(options: UseChatOptions): UseChatReturn {
   // Note: onTitleGenerated is accepted for forward compatibility but not yet
   // wired — titles arrive via fire-and-forget server generation and the client
   // discovers them through conversation list refetch in useConversations.
-  const { conversationId, isFresh } = options;
+  const { conversationId, onConversationCreated } = options;
 
   // Message state
   const [messages, setMessages] = useState<Message[]>([]);
   const [isLoadingMessages, setIsLoadingMessages] = useState(false);
   const [hasMoreMessages, setHasMoreMessages] = useState(false);
+  const [isConversationNotFound, setIsConversationNotFound] = useState(false);
 
   // Streaming state machine
   const [streamState, setStreamState] = useState<StreamState>("idle");
@@ -161,13 +180,17 @@ export function useChat(options: UseChatOptions): UseChatReturn {
 
   // Refs for cancellation and stable callbacks
   const abortControllerRef = useRef<AbortController | null>(null);
-  const conversationIdRef = useRef(conversationId);
+  const conversationIdRef = useRef<string | null>(conversationId);
+  const onConversationCreatedRef = useRef(onConversationCreated);
   const streamingContentRef = useRef(streamingContent);
-  // Mirrors the latest `isFresh` prop so the load-messages effect can read
-  // it without including it in deps (gap E15). isFresh changes when the
-  // wrapper prepends a fresh chat to the sidebar list mid-send — that
-  // transition shouldn't trigger a re-fetch of messages we already have.
-  const isFreshRef = useRef(isFresh);
+  // Mirrors `messages.length` so the load-messages effect can detect "we
+  // already have messages from streaming" without depending on `messages`
+  // (which would re-run on every delta).
+  const messagesRef = useRef(messages);
+  // Tracks the conversationId from the previous render so the load-messages
+  // effect can distinguish `null → just-created via send` (skip refetch —
+  // streaming already populated state) from genuine conversation switches.
+  const prevConversationIdRef = useRef<string | null>(null);
   // Holds the in-flight stream's assistant message UUID — populated from the
   // `X-Assistant-Message-Id` response header at fetch-response time, used by
   // both the success path and the cancel path so the persisted DB row and
@@ -180,8 +203,12 @@ export function useChat(options: UseChatOptions): UseChatReturn {
   }, [conversationId]);
 
   useEffect(() => {
-    isFreshRef.current = isFresh;
-  }, [isFresh]);
+    onConversationCreatedRef.current = onConversationCreated;
+  }, [onConversationCreated]);
+
+  useEffect(() => {
+    messagesRef.current = messages;
+  }, [messages]);
 
   useEffect(() => {
     streamingContentRef.current = streamingContent;
@@ -192,15 +219,23 @@ export function useChat(options: UseChatOptions): UseChatReturn {
   // -------------------------------------------------------------------------
 
   useEffect(() => {
-    // Fresh local UUID: parent generated the conversationId via
-    // crypto.randomUUID() and the row doesn't exist on the server yet.
-    // Skip the fetch (it would 404) and reset message state — the next
-    // sendMessage will populate optimistically. Read from a ref so a
-    // mid-send isFresh→false transition doesn't retrigger this effect
-    // (the fetched messages would be the same ones already in state).
-    if (isFreshRef.current) {
+    const prev = prevConversationIdRef.current;
+    prevConversationIdRef.current = conversationId;
+
+    // Fresh chat — no DB row yet. Clear any prior conversation's messages
+    // and skip the fetch (it would 404).
+    if (conversationId === null) {
       setMessages([]);
       setHasMoreMessages(false);
+      setIsConversationNotFound(false);
+      return;
+    }
+
+    // null → just-created via first-send: useChat already populated
+    // `messages` with the optimistic user message and the streaming
+    // assistant content, then notified the parent to flip activeConversationId.
+    // Refetching here would clobber that state. Skip exactly this transition.
+    if (prev === null && messagesRef.current.length > 0) {
       return;
     }
 
@@ -209,6 +244,7 @@ export function useChat(options: UseChatOptions): UseChatReturn {
     async function loadMessages() {
       setIsLoadingMessages(true);
       setMessages([]);
+      setIsConversationNotFound(false);
 
       try {
         console.log(
@@ -217,6 +253,20 @@ export function useChat(options: UseChatOptions): UseChatReturn {
         const res = await fetch(
           `/api/chat/conversations/${conversationId}/messages?limit=${MESSAGES_PAGE_SIZE}`
         );
+
+        if (res.status === 404) {
+          // Conversation doesn't exist or is inaccessible (RLS hides
+          // cross-user rows). Surface a dedicated UI state instead of a
+          // generic error log. (Gap P9)
+          if (!cancelled) {
+            console.log(
+              `${LOG_PREFIX} conversation not found: ${conversationId}`
+            );
+            setIsConversationNotFound(true);
+            setHasMoreMessages(false);
+          }
+          return;
+        }
 
         if (!res.ok) {
           throw new Error(`HTTP ${res.status}`);
@@ -289,6 +339,12 @@ export function useChat(options: UseChatOptions): UseChatReturn {
       // DB row. No temp-ID swap needed.
       const userMessageId = crypto.randomUUID();
 
+      // Conversation UUID — generated lazily on first send when there's no
+      // active conversation yet (gap P9). Otherwise reuse the active one.
+      // The flag tells us at the end whether to fire onConversationCreated.
+      const isFreshSend = conversationIdRef.current === null;
+      const conversationIdForPost = conversationIdRef.current ?? crypto.randomUUID();
+
       // Reset streaming state
       setStreamState("streaming");
       setStreamingContent("");
@@ -301,7 +357,7 @@ export function useChat(options: UseChatOptions): UseChatReturn {
       // Optimistically add user message
       const optimisticUserMessage: Message = {
         id: userMessageId,
-        conversationId: conversationIdRef.current,
+        conversationId: conversationIdForPost,
         parentMessageId: null,
         role: "user",
         content,
@@ -322,7 +378,7 @@ export function useChat(options: UseChatOptions): UseChatReturn {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            conversationId: conversationIdRef.current,
+            conversationId: conversationIdForPost,
             userMessageId,
             message: content,
           }),
@@ -334,14 +390,19 @@ export function useChat(options: UseChatOptions): UseChatReturn {
           throw new Error(body.message || `HTTP ${res.status}`);
         }
 
-        // X-Conversation-Id header still arrives but is now informational —
-        // the client already knows the conversation UUID (it generated it).
         // Capture the assistant placeholder's UUID from the response header
         // so the cancel path can attach the real ID to a cancelled bubble
         // (instead of a temp-cancelled-… ID with no DB counterpart).
         const headerAssistantId = res.headers.get("X-Assistant-Message-Id");
         if (headerAssistantId) {
           assistantMessageIdRef.current = headerAssistantId;
+        }
+
+        // Fresh send: notify the parent that a new conversation now exists
+        // server-side. Parent prepends to sidebar (and, in P9 Increment 2,
+        // silently updates the URL via history.replaceState).
+        if (isFreshSend && onConversationCreatedRef.current) {
+          onConversationCreatedRef.current(conversationIdForPost);
         }
 
         // Read SSE stream
@@ -427,7 +488,11 @@ export function useChat(options: UseChatOptions): UseChatReturn {
             assistantMessageIdRef.current ??
             assistantMessageId ??
             `temp-assistant-${Date.now()}`,
-          conversationId: conversationIdRef.current,
+          // Use the locally-captured id, not the ref — for fresh sends the
+          // ref may not have synced from the parent's setActiveConversationId
+          // by the time this runs (the sync useEffect runs after commit;
+          // this async function may complete before that).
+          conversationId: conversationIdForPost,
           parentMessageId: null,
           role: "assistant",
           content: cleanContent,
@@ -487,7 +552,12 @@ export function useChat(options: UseChatOptions): UseChatReturn {
         id:
           assistantMessageIdRef.current ??
           `temp-cancelled-${Date.now()}`,
-        conversationId: conversationIdRef.current,
+        // Cancel only meaningfully fires after headers arrive (partial
+        // content exists), at which point onConversationCreated has run
+        // and the parent's setActiveConversationId is in flight. The ref
+        // is normally synced by the time we read it; the `?? ""` fallback
+        // satisfies the non-null type for the unreachable edge case.
+        conversationId: conversationIdRef.current ?? "",
         parentMessageId: null,
         role: "assistant",
         content: partialContent,
@@ -555,6 +625,18 @@ export function useChat(options: UseChatOptions): UseChatReturn {
   }, [messages, sendMessage]);
 
   // -------------------------------------------------------------------------
+  // Clear messages — used around in-app navigation so the parent's
+  // setActiveConversationId(...) and our setMessages([]) batch into one
+  // React render commit. Stable identity via useCallback with empty deps.
+  // -------------------------------------------------------------------------
+
+  const clearMessages = useCallback(() => {
+    setMessages([]);
+    setHasMoreMessages(false);
+    setIsConversationNotFound(false);
+  }, []);
+
+  // -------------------------------------------------------------------------
   // Return
   // -------------------------------------------------------------------------
 
@@ -572,5 +654,7 @@ export function useChat(options: UseChatOptions): UseChatReturn {
     isLoadingMessages,
     hasMoreMessages,
     fetchMoreMessages,
+    clearMessages,
+    isConversationNotFound,
   };
 }

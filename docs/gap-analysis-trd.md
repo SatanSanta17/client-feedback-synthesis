@@ -545,3 +545,223 @@ _Fix not yet defined in gap file. TRD pending._
 
 ### P8 — Master Signal cold-start corpus is unbounded
 _Fix not yet defined in gap file. TRD pending._
+
+### P9 — Conversation routing: clean URL on fresh chat, history-API navigation, UUID on first send ✅ Fixed
+
+**Scope.** Three coordinated changes to the chat client routing layer:
+
+1. UUID generation moves from "on mount" (today) to "on first send" — `activeConversationId: string | null`, null is a real state.
+2. All in-app URL updates use `window.history` API (`pushState` / `replaceState`) rather than Next.js `router.push` / `router.replace` / `<Link>`. Sidebar items become `<button>`s with onClick handlers. The chat shell stays mounted across every in-app navigation.
+3. Initial load / refresh / deep-link routes (`app/chat/page.tsx`, `app/chat/[id]/page.tsx`) seed `<ChatPageContent />` with `initialConversationId`. They run once at navigation arrival; from then on, `history` API does everything.
+
+Browser back/forward via `popstate`. 404 UI for inaccessible UUIDs retained with a "start a new chat" nudge.
+
+**Approach.**
+
+- **Why `window.history`, not Next.js router.** `<Link>` and `router.push/replace` traverse Next.js's page boundary. Even when both routes (`/chat` and `/chat/[id]`) render the same client component, they're different page files — switching between them remounts the React tree. `window.history.pushState`/`replaceState` updates the URL without telling Next.js or React anything happened. The chat shell is one persistent client component for the entire session; only `activeConversationId` state changes.
+- **Why generate UUID on first send.** Matches the user's mental model and the URL state. `activeConversationId === null` ↔ URL is `/chat` ↔ "no DB row yet." Eliminates the phantom-UUID-in-fresh-chat from E15.
+- **Why two route files for initial load.** They're cheap, allow Next.js to validate the URL (UUID shape) and handle SEO/metadata if ever needed, and make the routing intent obvious. Both delegate to the same client component.
+- **Why URL update on headers, not on stream completion.** Mid-stream reload preserves the conversation. Response headers arrive synchronously with the first body chunk; the client reads them before processing the SSE stream. So we get the `X-Conversation-Id` early. Same for sidebar prepend — the conversation is "real" the moment the server has created the row.
+- **Why a `clearMessages` action on `useChat`.** The popstate handler needs both `setActiveConversationId(newId)` and `setMessages([])` to land in the same React render commit, otherwise the new conversation's header would briefly show the old conversation's messages. `flushSync` is the alternative; `clearMessages` is more discoverable and lets the parent batch multiple state updates atomically by calling them in the same handler.
+
+**Starting state (current code on disk, audited 2026-04-26).** Important context for the increments below — the prior P9 v1 work has already been reverted by the user. The starting point is "E15 Increment 3 done":
+
+- `app/chat/page.tsx` — renders `<ChatPageContent />` with no prop.
+- `app/chat/[id]/` — directory exists, **`page.tsx` was deleted**. Hitting `/chat/<uuid>` currently returns the Next.js 404 page.
+- `ChatPageContent` — `activeConversationId: string` initialised eagerly via `useState(() => crypto.randomUUID())` at every mount. `isFresh` derived from sidebar list-membership. `handleSendMessage` does the sidebar prepend before delegating to `useChat.sendMessage`. No router/Link/history imports anywhere.
+- `useChat` — `conversationId: string` (non-nullable), `isFresh: boolean` prop, `isFreshRef` mirrors it. Load-messages effect reads `isFreshRef.current` and is keyed only on `[conversationId]` (so the lazy-load race from the screenshot bug is still live). E14's `assistantMessageIdRef` and X-headers wiring intact.
+- `ConversationItem` — original `<div role="button" onClick={onSelect}>`. No `<Link>`.
+- `ConversationSidebar` — original `onSelectConversation` prop chain intact.
+- `ChatArea` — no 404 UI panel (was reverted along with the rest of P9 v1).
+- `MessageThread` — `if (items.length === 0) return null;` (the flex-1 placeholder that prevents layout collapse was reverted).
+- Server side (`app/api/chat/send/route.ts`) — E14 + E15 intact: required `conversationId` and `userMessageId` in body, `getOrCreateConversation`, `X-Conversation-Id` and `X-Assistant-Message-Id` response headers.
+
+**Files changed (target state).**
+
+- **Modified:** `app/chat/page.tsx` — renders `<ChatPageContent initialConversationId={null} />`.
+- **Created:** `app/chat/[id]/page.tsx` (recreate; the file is missing) — server component, validates UUID shape with regex, calls `notFound()` for malformed URLs, renders `<ChatPageContent initialConversationId={id} />`.
+- **Modified:** `app/chat/_components/chat-page-content.tsx`
+  - Accept `initialConversationId?: string` prop.
+  - `activeConversationId: string | null` (was `string`). Lazy initializer becomes `useState<string | null>(initialConversationId ?? null)`. No `crypto.randomUUID()` call here.
+  - Drop `isFresh` derivation entirely — replaced by direct null vs. non-null checks against `activeConversationId`.
+  - Drop the sidebar-prepend logic from `handleSendMessage`. Replace with an `onConversationCreated(id)` callback handler that runs when `useChat` notifies us — does sidebar prepend AND silent URL update.
+  - Three navigation primitives using `window.history` API (NOT `router.push`/`<Link>`):
+    - `navigateToConversation(id)` — `history.pushState(null, '', `/chat/${id}`)` + `chatHook.clearMessages()` + `setActiveConversationId(id)`.
+    - `navigateToFreshChat()` — `history.pushState(null, '', '/chat')` + `chatHook.clearMessages()` + `setActiveConversationId(null)`.
+    - `silentlyAssignConversationId(id)` — `history.replaceState(null, '', `/chat/${id}`)` + `setActiveConversationId(id)`.
+  - `handleSelectConversation` → `navigateToConversation(conversation.id)`.
+  - `handleNewChat` → `navigateToFreshChat()`.
+  - `handleConversationCreated(id)` → `silentlyAssignConversationId(id)` + `prependConversation({...})`.
+  - Add a `popstate` listener (`useEffect`) that parses `window.location.pathname`, calls `chatHook.clearMessages()` and `setActiveConversationId(...)` in the same handler so React batches both into one render commit.
+- **Modified:** `app/chat/_components/conversation-sidebar.tsx` — no public-API changes. Internal: nothing changes; the existing `onSelectConversation` prop still flows.
+- **Modified:** `app/chat/_components/conversation-item.tsx` — no changes. The original `<div role="button" onClick={onSelect}>` markup stays exactly as it is. Confirmed in audit.
+- **Modified:** `app/chat/_components/chat-area.tsx`
+  - Re-add the 404 UI panel (was reverted). New copy nudges toward a new chat: "This chat doesn't exist or you don't have access to it." + button "Start a new chat" wired to a callback prop.
+  - Add `isConversationNotFound: boolean` prop. Branch the main content area: `isConversationNotFound` → 404 panel; otherwise existing empty-state vs. message-thread branching. Hide `ChatInput` in the not-found state.
+  - Add `onStartNewChat: () => void` prop for the CTA. Parent maps to `navigateToFreshChat`.
+- **Modified:** `app/chat/_components/message-thread.tsx`
+  - Replace `if (items.length === 0) return null;` with `<div className={cn("flex-1", className)} aria-hidden="true" />` — keeps the chat panel's flex layout from collapsing when messages are empty (avoids the screenshot symptom of input-at-top with empty space below).
+- **Modified:** `lib/hooks/use-chat.ts`
+  - `UseChatOptions.conversationId: string | null` (was `string`). Drop `isFresh`. Re-add `onConversationCreated?: (id: string) => void`.
+  - Drop `isFreshRef` and its sync `useEffect` — no longer needed, the null vs. non-null check on `conversationId` does the job directly.
+  - Add `messagesRef` (mirrors `messages` so the load-messages effect can detect "messages already populated by streaming" without putting `messages` in deps).
+  - Add `prevConversationIdRef` (tracks previous-render conversationId, lets the effect tell `null → just-created` from `existing-A → existing-B`).
+  - `sendMessage`: when `conversationIdRef.current === null`, generate `crypto.randomUUID()` synchronously, use it for the POST body's `conversationId` and `userMessageId` correlation. After response headers arrive (`X-Conversation-Id`, `X-Assistant-Message-Id`), call `onConversationCreated(generatedId)` exactly once if this was a fresh send.
+  - Expose `clearMessages: () => void` in `UseChatReturn`. Implementation: `setMessages([]); setHasMoreMessages(false); setIsConversationNotFound(false);`. Used by the parent's navigation primitives and `popstate` handler so messages and `activeConversationId` updates batch into one render commit.
+  - Add `isConversationNotFound: boolean` to `UseChatReturn`. Set true when load-messages fetch returns 404; reset to false on every load attempt. Surfaces the 404 state to `ChatArea`.
+  - Load-messages effect — re-derive on `[conversationId]`, with the prev/curr guard:
+    - `conversationId === null` → clear messages + reset 404 flag, return.
+    - `prevConversationIdRef.current === null && conversationId !== null && messagesRef.current.length > 0` → just-created via send (messages already populated), skip the fetch.
+    - All other transitions (`A → B`, `null → existing-from-URL` with no messages) → fetch.
+    - 404 response → `setIsConversationNotFound(true)` and bail without throwing.
+
+**No server-side changes.** Server still creates the conversation idempotently on first POST using the client-supplied UUID (E15 contract intact). `X-Conversation-Id` and `X-Assistant-Message-Id` headers continue to do their job.
+
+**Relationship to E15 — explicit superseding note.** P9 supersedes E15's *client mechanism* but preserves E15's *server contract*:
+- ✅ Kept from E15: client-owned conversation UUIDs end-to-end; server-side `getOrCreateConversation` idempotency (try-insert → fall-back-to-fetch on unique-violation, code 23505); `ConversationNotAccessibleError` → 404 for cross-user UUIDs; `MessageDuplicateError` → 409.
+- ❌ Superseded by P9: lazy `useState(() => crypto.randomUUID())` at component mount → UUID now generated inside `useChat.sendMessage` on first send; `isFresh` prop on `useChat` → `activeConversationId: string | null` replaces it (null *is* fresh); `handleSendMessage` wrapper's pre-POST sidebar prepend → moves into the `onConversationCreated` callback fired after `X-Conversation-Id` arrives.
+
+Once P9 ships, the E15 entry in this doc remains marked ✅ Fixed (its server-side contract is what's protected), but the *client* portions of the E15 implementation are replaced. CHANGELOG entry for P9 will call out the supersedence; ARCHITECTURE.md KDD #14 sentence on conversation routing is rewritten to reflect the new mechanism.
+
+**Sidebar item element choice.** ConversationItem reverts to the original `<div role="button" tabIndex={0} onClick={onSelect} onKeyDown={...}>` pattern — NOT a `<Link>` (P9 v1 mistake) and NOT a shadcn `<Button>` or native `<button>`. Reasons: (1) the row contains a `<DropdownMenuTrigger>` which renders a real `<button>` — wrapping that in another `<button>` is invalid HTML and breaks click handling; (2) WAI-ARIA "button role on non-button element" is the sanctioned pattern when nesting prevents using a real button, and the existing markup already has all the a11y prerequisites (role, tabIndex, keyboard activation); (3) styling stays clean because no default button paddings/borders need to be overridden. The header action buttons (New chat / Search / Archive toggle) remain shadcn `<Button>` — they're standalone with no nesting concerns.
+
+**Implementation increments.**
+
+Each increment leaves the app in a working state. After each, typecheck must pass and the listed smoke checks confirm forward progress without breaking previously-working flows. Four increments total — chunked so the architectural change lands cleanly in one step rather than being staggered through artificial sub-steps.
+
+**Increment 1 — Conversation routing model: `[id]` route + `string | null` state + UUID on first send.**
+
+The architectural change. After this increment, the conversation lifecycle matches the new model: `null` means fresh, the URL drives initial state, the UUID materializes when the conversation does (on first send). No URL updates on send yet — that's Increment 2.
+
+- **Create:** `app/chat/[id]/page.tsx`
+  - Server component. `params: Promise<{ id: string }>`.
+  - Validates UUID shape via regex (`/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i`); calls `notFound()` on malformed input.
+  - Renders `<ChatPageContent initialConversationId={id} />`.
+  - Re-uses the existing `metadata` constant from `app/chat/page.tsx` (or duplicates inline — minor copy).
+- **Modify:** `app/chat/page.tsx`
+  - Renders `<ChatPageContent />` (or `<ChatPageContent initialConversationId={null} />` if we want it explicit). Either works because the prop is optional and defaults to `null`.
+- **Modify:** `app/chat/_components/chat-page-content.tsx`
+  - Accept `initialConversationId?: string` prop.
+  - `activeConversationId: string | null` (was `string`). Lazy initializer: `useState<string | null>(initialConversationId ?? null)`. No `crypto.randomUUID()` call here.
+  - Drop the `isFresh = useMemo(...)` derivation — list-membership check is gone; null vs. non-null carries the same signal directly.
+  - Drop the `isFresh` prop on `useChat`.
+  - Drop the sidebar-prepend logic from `handleSendMessage`. It simplifies to a thin pass-through (`return chatHook.sendMessage(content)`), kept as a wrapper file-structure for Increment 3 additions.
+  - Add `handleConversationCreated(id: string)` — prepends the new entry to the sidebar via `prependConversation({...})`. URL update lives in Increment 2; for now this is just sidebar + nothing else.
+  - Pass `onConversationCreated={handleConversationCreated}` to `useChat`.
+  - `handleNewChat()` → `setActiveConversationId(null)` (was: regenerate UUID). Mobile sidebar close stays.
+  - The `activeConversation` `useMemo` already handles `null` gracefully (returns null) — no change.
+- **Modify:** `lib/hooks/use-chat.ts`
+  - `UseChatOptions.conversationId: string | null` (was `string`). Drop `isFresh`. Re-add `onConversationCreated?: (id: string) => void`.
+  - `conversationIdRef` typed as `string | null`.
+  - Drop `isFreshRef` and its sync `useEffect`.
+  - Add `messagesRef` (mirrors `messages` so the load-messages effect can read `length` without depending on `messages`).
+  - Add `prevConversationIdRef` (tracks previous-render conversationId for the `null → just-created` discriminator).
+  - Update `sendMessage`: if `conversationIdRef.current === null`, generate `const newId = crypto.randomUUID()` and use it for the POST body's `conversationId` (the existing E14 `userMessageId` generation is unchanged — still its own UUID). After response headers arrive (`X-Conversation-Id`, `X-Assistant-Message-Id`), if `newId` was generated, call `onConversationCreated(newId)` exactly once.
+  - Load-messages effect — re-derive on `[conversationId]` only:
+    - If `conversationId === null` → `setMessages([]); setHasMoreMessages(false);` and return early (no fetch).
+    - Else, capture `prev = prevConversationIdRef.current` and update the ref. If `prev === null && conversationId !== null && messagesRef.current.length > 0` → null→just-created via send (messages already populated), skip the fetch.
+    - Else → fetch (and `setMessages([])` at the top of the fetch path to clear the previous conversation's messages).
+
+**Smoke-verify after Increment 1:**
+- Land on `/chat` → React DevTools shows `activeConversationId === null`, empty starter-questions panel.
+- Hit `/chat/<existing-uuid>` (one from your sidebar) directly — conversation loads, messages render, input at the bottom.
+- Hit `/chat/<random-well-formed-uuid>` — currently shows an empty panel (the messages fetch returns 404 and the catch logs; no dedicated 404 UI yet — that's Increment 3). Acceptable for now.
+- Hit `/chat/foo` (malformed) — Next.js's 404 page from the route's `notFound()`.
+- `/chat`, click "New chat" — UUID stays null, panel still empty.
+- Send first message in fresh chat → server creates conversation, sidebar prepends, `activeConversationId` updates to the server-confirmed UUID. URL stays `/chat` for now (Increment 2 fixes that).
+- Click a sidebar conversation → messages load (state-based; URL doesn't change yet — Increment 2).
+- Cancel mid-stream — E14 behavior intact: DB row → `cancelled` with partial content.
+
+After Increment 1: requirement #1 (`/chat` clean URL on fresh chat) and refresh-preserves-conversation are both true. Requirements #2 (silent URL update on send) and #3 (no remount on in-app nav) come in Increment 2.
+
+---
+
+**Increment 2 — `window.history` API navigation + `clearMessages` + `popstate`.**
+
+This is what makes the chat shell stay mounted across all in-app navigation. URL updates happen via the browser's native history API, completely bypassing Next.js routing.
+
+- **Modify:** `lib/hooks/use-chat.ts`
+  - Add `clearMessages: () => void` to `UseChatReturn`. Implementation: `setMessages([]); setHasMoreMessages(false);` (Increment 3 will also reset `isConversationNotFound` here once that state exists — for now just messages and the more flag).
+- **Modify:** `app/chat/_components/chat-page-content.tsx`
+  - Three navigation primitives:
+    - `navigateToConversation(id: string)` — `window.history.pushState(null, '', `/chat/${id}`)` + `chatHook.clearMessages()` + `setActiveConversationId(id)`.
+    - `navigateToFreshChat()` — `window.history.pushState(null, '', '/chat')` + `chatHook.clearMessages()` + `setActiveConversationId(null)`.
+    - `silentlyAssignConversationId(id: string)` — `window.history.replaceState(null, '', `/chat/${id}`)` + `setActiveConversationId(id)`. **No** `clearMessages` (messages are already populated by streaming; clearing would clobber them).
+  - Wire `handleSelectConversation(conversation)` → `navigateToConversation(conversation.id)`.
+  - Wire `handleNewChat()` → `navigateToFreshChat()`.
+  - Wire `handleConversationCreated(id)` → `silentlyAssignConversationId(id)` then `prependConversation({...})`. Order: state+URL first, sidebar prepend after.
+  - Add a `popstate` `useEffect`:
+    - Mounts once (no deps), registers a `popstate` handler.
+    - Handler reads `window.location.pathname`, parses the conversation id with the same regex used in the `[id]` route file. Falls back to `null` if pathname is `/chat` or doesn't match.
+    - In the same handler, calls `chatHook.clearMessages()` AND `setActiveConversationId(parsedId)`. Both are React state updates so they batch into one render commit — no flash of stale messages.
+    - Also closes the mobile sidebar (`setIsMobileSidebarOpen(false)`).
+    - Returns the cleanup that removes the listener.
+
+**Smoke-verify after Increment 2:**
+- Click sidebar conversation A → URL becomes `/chat/<A>` via pushState; messages load; no remount (use React DevTools to confirm `ChatPageContent` instance keeps its key/identity).
+- Click another conversation B → URL `/chat/<B>`; messages swap; no shell remount.
+- Click "New chat" → URL becomes `/chat`; empty panel.
+- Send first message in fresh chat → URL silently updates to `/chat/<new-uuid>` (replace, not push, so back doesn't return to `/chat`); sidebar prepends; response streams in.
+- Browser back / forward — navigates between conversations and the empty `/chat` correctly; no flash of stale messages.
+- Mid-stream reload at `/chat/<uuid>` → conversation persists (URL was updated on headers, before stream completion).
+
+---
+
+**Increment 3 — 404 UI for inaccessible / non-existent conversations.**
+
+- **Modify:** `lib/hooks/use-chat.ts`
+  - Add `isConversationNotFound: boolean` state. Expose in `UseChatReturn`.
+  - Load-messages effect: detect `res.status === 404` specifically (before the generic `!res.ok` throw); set the flag and return early. Reset to `false` at the start of every load attempt and on the `conversationId === null` early-return.
+  - `clearMessages` also resets the flag.
+- **Modify:** `app/chat/_components/chat-area.tsx`
+  - Add `isConversationNotFound: boolean` and `onStartNewChat: () => void` props.
+  - Add icon import: `FileQuestion` from `lucide-react`.
+  - Branch the main content area: when `isConversationNotFound`, render a centered panel with the message "This chat doesn't exist or you don't have access to it." and a `<button onClick={onStartNewChat}>Start a new chat</button>`. (Plain `<button>` styled with shadcn `<Button variant="outline" size="sm">`, since this is a standalone CTA with no nesting concerns — no Link.) Hide `ChatInput` in this state.
+- **Modify:** `app/chat/_components/chat-page-content.tsx`
+  - Pass `isConversationNotFound={chatHook.isConversationNotFound}` and `onStartNewChat={navigateToFreshChat}` to `<ChatArea>`.
+
+**Smoke-verify after Increment 3:**
+- Open `/chat/<random-well-formed-uuid>` (no DB row) → 404 panel renders, no input bar. Click "Start a new chat" → URL `/chat`, empty panel.
+- Open `/chat/<another-user's-uuid>` (RLS hides) → same 404 panel.
+- Click sidebar conversation from the 404 state → conversation loads, 404 panel disappears.
+
+---
+
+**Increment 4 — End-of-part audit + manual smoke matrix.**
+
+- Typecheck (`npx tsc --noEmit`).
+- Dead-code grep:
+  - `grep -rn "<Link\|next/link" app/chat/_components` — no Link imports anywhere in the chat shell.
+  - `grep -rn "useRouter\|usePathname\|router\.push\|router\.replace" app/chat` — none.
+  - `grep -rn "isFresh" lib/hooks/use-chat.ts app/chat` — none.
+- Smoke matrix:
+  1. `/chat` → URL clean, `activeConversationId === null` (DevTools), starter-questions panel.
+  2. Send first message in fresh chat → URL silently `/chat/<uuid>` mid-stream, sidebar prepends.
+  3. Click sidebar A → click sidebar B → URL pushState each time, messages swap, no shell remount.
+  4. Browser back → previous conversation (or `/chat`), no flash of wrong messages.
+  5. Browser forward → goes back to where we just left.
+  6. Reload `/chat/<uuid>` → conversation loads correctly.
+  7. Reload `/chat` → fresh chat.
+  8. Open `/chat/<random-well-formed-uuid>` → 404 panel; CTA → `/chat`.
+  9. Open `/chat/<not-a-uuid>` → Next.js's 404 page.
+  10. Mid-stream reload — conversation persists.
+  11. "New chat" while in `/chat/<id>` → URL `/chat`, mobile sidebar closes.
+  12. Cancel mid-stream (E14 regression) — DB row → `cancelled` with partial content; client bubble has the real assistant UUID.
+
+**End-of-part audit.**
+- **SRP.** Routes own initial-load URL parsing only. `ChatPageContent` owns the in-page state machine + history API. `useChat` owns messages + streaming, exposes `clearMessages` for atomic resets. Sidebar items are presentational.
+- **DRY.** `navigateToConversation` / `navigateToFreshChat` / `silentlyAssignConversationId` are three small helpers in the parent — single source of truth for URL changes. The 404 CTA reuses `navigateToFreshChat`.
+- **Dead code.** `<Link>` import in `conversation-item.tsx` removed. `useRouter`/`usePathname` removed from `chat-page-content.tsx`. `isFresh` derivation removed.
+- **Convention compliance.** `<Link>` is reserved for cross-route navigation outside the chat shell (it stays in 404 CTA actually — or we use an onClick. Either is fine; onClick is consistent with the shell pattern). `useRouter` not used inside the chat shell.
+- **Lazy `useState` initializer.** Reads the URL-supplied prop; no UUID generated until first send.
+
+**Verification.**
+- `npx tsc --noEmit` passes.
+- All 10 smoke-matrix items behave per spec.
+- Regression check: E14 cancel/error paths still update placeholder rows correctly. E15 idempotent server creation still works. E14 `X-Assistant-Message-Id` still attached to cancelled bubbles.
+
+**Documentation updates after the fix.**
+- `gap-analysis.md` — mark P9 ✅ Fixed.
+- `gap-analysis-trd.md` — flip "TRD locked" to "✅ Fixed".
+- `ARCHITECTURE.md` — Key Design Decision #14 ("Chat data isolation"): the conversation-routing paragraph (added in earlier P9 work) is rewritten to describe the `history`-API approach: "Conversation routing is `window.history`-driven inside the chat shell — sidebar clicks, new-chat, and first-send URL replace all update the URL without traversing Next.js's page boundary, so the shell stays mounted across all in-app navigation. `app/chat/page.tsx` and `app/chat/[id]/page.tsx` exist only to seed initial state on first arrival, refresh, deep-link, or share."
+- `CHANGELOG.md` — entry under `[Unreleased]`: "Chat: routing rewritten to ChatGPT-style. Conversation UUIDs generated on first send (clean URL `/chat` for fresh chats); URL updates via `window.history` API mid-stream so the chat shell never remounts; sidebar items are buttons with onClick (not Links); `popstate` listener handles browser back/forward. Reload preserves the active conversation; mid-stream reload also preserves. Resolves P9."

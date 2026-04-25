@@ -9,8 +9,9 @@
 // ---------------------------------------------------------------------------
 
 import { useState, useCallback, useMemo, useEffect } from "react";
-import { MessageSquare } from "lucide-react";
+import { FileQuestion, MessageSquare } from "lucide-react";
 
+import { Button } from "@/components/ui/button";
 import { ChatHeader } from "./chat-header";
 import { ChatSearchBar } from "./chat-search-bar";
 import { MessageThread } from "./message-thread";
@@ -28,7 +29,19 @@ import type {
 // ---------------------------------------------------------------------------
 
 interface ChatAreaProps {
-  /** The active conversation, or null for new/empty state. */
+  /**
+   * Active conversation UUID — `null` means "fresh chat, no DB row yet"
+   * (URL is `/chat`). When non-null, the user has either deep-linked to
+   * a known conversation OR just sent the first message and the server
+   * confirmed via header. Used for the empty-state vs. message-thread
+   * branch — the looked-up `activeConversation` may briefly be null
+   * during the conversations-list fetch window even though the id is
+   * set, and we don't want to flash the fresh-chat starter panel in
+   * that case. (Gap P9)
+   */
+  activeConversationId: string | null;
+  /** The active conversation looked up from the sidebar list, or null
+   *  when no conversation is selected OR while the list is still loading. */
   activeConversation: Conversation | null;
   /** Messages for the active conversation. */
   messages: Message[];
@@ -48,6 +61,12 @@ interface ChatAreaProps {
   latestFollowUps: string[];
   /** Error message. */
   error: string | null;
+  /**
+   * True when the messages-list fetch returned 404 (conversation doesn't
+   * exist or is inaccessible). Surfaces a "Conversation not found" UI in
+   * place of the message thread / empty state. (Gap P9)
+   */
+  isConversationNotFound: boolean;
   /** Sidebar state for header toggle. */
   isSidebarCollapsed: boolean;
   /** Callbacks */
@@ -58,6 +77,11 @@ interface ChatAreaProps {
   onUnarchive?: () => void;
   onToggleSidebar: () => void;
   onOpenMobileSidebar: () => void;
+  /**
+   * "Start a new chat" CTA inside the 404 panel — wired to the parent's
+   * navigateToFreshChat (window.history.pushState + reset state). (Gap P9)
+   */
+  onStartNewChat: () => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -66,6 +90,7 @@ interface ChatAreaProps {
 
 export function ChatArea(props: ChatAreaProps) {
   const {
+    activeConversationId,
     activeConversation,
     messages,
     isLoadingMessages,
@@ -75,6 +100,7 @@ export function ChatArea(props: ChatAreaProps) {
     statusText,
     latestFollowUps,
     error,
+    isConversationNotFound,
     isSidebarCollapsed,
     onFetchMoreMessages,
     onSendMessage,
@@ -83,10 +109,11 @@ export function ChatArea(props: ChatAreaProps) {
     onUnarchive,
     onToggleSidebar,
     onOpenMobileSidebar,
+    onStartNewChat,
   } = props;
   // Props reserved for future use: latestSources
   const isArchived = activeConversation?.isArchived ?? false;
-  const hasConversation = activeConversation !== null;
+  const isFreshChat = activeConversationId === null;
   const hasMessages = messages.length > 0 || streamState === "streaming";
   const isStreaming = streamState === "streaming";
 
@@ -215,8 +242,30 @@ export function ChatArea(props: ChatAreaProps) {
       )}
 
       {/* Main content area */}
-      {!hasConversation && !hasMessages ? (
-        /* Empty state — no conversation selected */
+      {isConversationNotFound ? (
+        /* 404 — conversation doesn't exist or isn't accessible (gap P9) */
+        <div className="flex flex-1 flex-col items-center justify-center gap-3 px-4">
+          <div className="rounded-full bg-muted p-3">
+            <FileQuestion
+              className="size-6 text-muted-foreground"
+              aria-hidden="true"
+            />
+          </div>
+          <div className="text-center">
+            <p className="text-sm font-medium">Conversation not found</p>
+            <p className="mt-1 text-xs text-muted-foreground">
+              This chat doesn&apos;t exist or you don&apos;t have access to it.
+            </p>
+          </div>
+          <Button variant="outline" size="sm" onClick={onStartNewChat}>
+            Start a new chat
+          </Button>
+        </div>
+      ) : isFreshChat && !hasMessages ? (
+        /* Fresh-chat empty state — only when activeConversationId is null
+           (URL `/chat`). When the URL has an id but the sidebar lookup
+           hasn't resolved yet, fall through to MessageThread which renders
+           a loading skeleton via `isLoadingMessages`. (Gap P9) */
         <div className="flex flex-1 flex-col items-center justify-center gap-3 px-4">
           <div className="rounded-full bg-muted p-3">
             <MessageSquare className="size-6 text-muted-foreground" />
@@ -258,15 +307,17 @@ export function ChatArea(props: ChatAreaProps) {
         </div>
       )}
 
-      {/* Input area */}
-      <ChatInput
-        streamState={streamState}
-        isArchived={isArchived}
-        suggestedText={suggestedText}
-        onSendMessage={onSendMessage}
-        onCancelStream={onCancelStream}
-        onUnarchive={isArchived ? onUnarchive : undefined}
-      />
+      {/* Input area — hidden when the conversation isn't accessible (gap P9) */}
+      {!isConversationNotFound && (
+        <ChatInput
+          streamState={streamState}
+          isArchived={isArchived}
+          suggestedText={suggestedText}
+          onSendMessage={onSendMessage}
+          onCancelStream={onCancelStream}
+          onUnarchive={isArchived ? onUnarchive : undefined}
+        />
+      )}
     </div>
   );
 }
