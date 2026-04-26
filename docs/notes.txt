@@ -18,7 +18,8 @@
 - migrate data to dedicated supabase db 
 - make the auth flow decoupled from supabase
 - clean db from burhanuddin and rest test accounts
-- the sidebar of conversation is not scrollable instead the whole chat interfave is getting scrolled as the conversations keep getting added also check for pagination on that put a scroll pagination on that as well 
+- pagination for past sessions
+
 
 Mental model:
 feedback --> insights fetched --> code context --> creats a feature spec (editable) --> MCP of my platform can be used to conect with IDE like cursor and development can be done based on the spec provided --> after implementation all the insights related to that spec should be cleared from the platform 

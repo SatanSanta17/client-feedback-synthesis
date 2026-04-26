@@ -104,6 +104,13 @@ export function createChatStream(deps: ChatStreamDeps): ReadableStream {
   const encoder = new TextEncoder();
   const collectedSources: ChatSource[] = [];
 
+  // Last user message — used by the tool boundary to drop filter values the
+  // model invented (schema-fill hallucination) rather than derived from user
+  // intent. See sanitizeFilters() below.
+  const lastUserMessage =
+    [...contextMessages].reverse().find((m) => m.role === "user")?.content ??
+    "";
+
   return new ReadableStream({
     async start(controller) {
       // Lifted to outer scope so the catch can preserve partial content when
@@ -125,13 +132,15 @@ export function createChatStream(deps: ChatStreamDeps): ReadableStream {
               encoder,
               embeddingRepo,
               teamId,
-              collectedSources
+              collectedSources,
+              lastUserMessage
             ),
             queryDatabase: buildQueryDatabaseTool(
               controller,
               encoder,
               anonClient,
-              teamId
+              teamId,
+              lastUserMessage
             ),
           },
           stopWhen: stepCountIs(5),
@@ -301,6 +310,134 @@ export function createChatStream(deps: ChatStreamDeps): ReadableStream {
 }
 
 // ---------------------------------------------------------------------------
+// Filter sanitization (defensive — the model hallucinates default filter
+// values even when told not to). For each optional filter, we keep the value
+// only when the user's last message contains a textual cue that maps to it.
+// "User asked for it" is the gate — anything else is schema-fill noise and
+// gets dropped before reaching the database.
+// ---------------------------------------------------------------------------
+
+const SEVERITY_CUES = ["severity", "severe", "low", "medium", "high"];
+const URGENCY_CUES = [
+  "urgency",
+  "urgent",
+  "low",
+  "medium",
+  "high",
+  "critical",
+];
+const GRANULARITY_CUES = [
+  "week",
+  "month",
+  "weekly",
+  "monthly",
+  "trend",
+  "over time",
+  "per month",
+  "per week",
+];
+const CONFIDENCE_CUES = ["confidence", "confident"];
+const DATE_CUE_REGEX =
+  /\b(20\d{2}|jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec|january|february|march|april|june|july|august|september|october|november|december|today|yesterday|recent|since|before|after|between|past|last|this)\b/i;
+
+function mentions(haystack: string, cues: string[]): boolean {
+  const lower = haystack.toLowerCase();
+  return cues.some((c) => lower.includes(c.toLowerCase()));
+}
+
+interface QueryDatabaseFilters {
+  dateFrom?: string;
+  dateTo?: string;
+  clientName?: string;
+  clientIds?: string[];
+  severity?: "low" | "medium" | "high";
+  urgency?: "low" | "medium" | "high" | "critical";
+  granularity?: "week" | "month";
+  confidenceMin?: number;
+}
+
+interface SearchInsightsFilters {
+  clientName?: string;
+  dateFrom?: string;
+  dateTo?: string;
+  chunkTypes?: string[];
+}
+
+function sanitizeQueryDatabaseFilters(
+  raw: QueryDatabaseFilters | undefined,
+  userMessage: string
+): QueryDatabaseFilters {
+  if (!raw) return {};
+  const hasDateCue = DATE_CUE_REGEX.test(userMessage);
+  const out: QueryDatabaseFilters = {};
+
+  const dateFrom = raw.dateFrom?.trim();
+  if (dateFrom && hasDateCue) out.dateFrom = dateFrom;
+
+  const dateTo = raw.dateTo?.trim();
+  if (dateTo && hasDateCue) out.dateTo = dateTo;
+
+  const clientName = raw.clientName?.trim();
+  if (clientName && userMessage.toLowerCase().includes(clientName.toLowerCase())) {
+    out.clientName = clientName;
+  }
+
+  if (raw.clientIds && raw.clientIds.length > 0) {
+    out.clientIds = raw.clientIds;
+  }
+
+  if (raw.severity && mentions(userMessage, SEVERITY_CUES)) {
+    out.severity = raw.severity;
+  }
+
+  if (raw.urgency && mentions(userMessage, URGENCY_CUES)) {
+    out.urgency = raw.urgency;
+  }
+
+  if (raw.granularity && mentions(userMessage, GRANULARITY_CUES)) {
+    out.granularity = raw.granularity;
+  }
+
+  // Drop confidenceMin when it's a no-op (≤ 0) or the user didn't mention
+  // confidence at all. The action handlers treat undefined as "no filter".
+  if (
+    raw.confidenceMin !== undefined &&
+    raw.confidenceMin > 0 &&
+    mentions(userMessage, CONFIDENCE_CUES)
+  ) {
+    out.confidenceMin = raw.confidenceMin;
+  }
+
+  return out;
+}
+
+function sanitizeSearchInsightsFilters(
+  raw: SearchInsightsFilters | undefined,
+  userMessage: string
+): SearchInsightsFilters {
+  if (!raw) return {};
+  const hasDateCue = DATE_CUE_REGEX.test(userMessage);
+  const out: SearchInsightsFilters = {};
+
+  const clientName = raw.clientName?.trim();
+  if (clientName && userMessage.toLowerCase().includes(clientName.toLowerCase())) {
+    out.clientName = clientName;
+  }
+
+  const dateFrom = raw.dateFrom?.trim();
+  if (dateFrom && hasDateCue) out.dateFrom = dateFrom;
+
+  const dateTo = raw.dateTo?.trim();
+  if (dateTo && hasDateCue) out.dateTo = dateTo;
+
+  if (raw.chunkTypes && raw.chunkTypes.length > 0) {
+    out.chunkTypes = raw.chunkTypes;
+  }
+
+  return out;
+}
+
+// ---------------------------------------------------------------------------
 // Tool builders
 // ---------------------------------------------------------------------------
 
@@ -312,7 +449,8 @@ function buildSearchInsightsTool(
   encoder: TextEncoder,
   embeddingRepo: EmbeddingRepository,
   teamId: string | null,
-  collectedSources: ChatSource[]
+  collectedSources: ChatSource[],
+  lastUserMessage: string
 ) {
   return tool({
     description:
@@ -327,26 +465,44 @@ function buildSearchInsightsTool(
             clientName: z
               .string()
               .optional()
-              .describe("Filter by specific client name"),
+              .describe(
+                "Filter by specific client name. OMIT unless the user names a specific client — do NOT pass an empty string."
+              ),
             dateFrom: z
               .string()
               .optional()
-              .describe("Start date (ISO format)"),
+              .describe(
+                "Start date (ISO format YYYY-MM-DD). OMIT unless the user explicitly specifies a start date."
+              ),
             dateTo: z
               .string()
               .optional()
-              .describe("End date (ISO format)"),
+              .describe(
+                "End date (ISO format YYYY-MM-DD). OMIT unless the user explicitly specifies an end date."
+              ),
             chunkTypes: z
               .array(z.string())
               .optional()
               .describe(
-                "Filter by chunk types (e.g., pain_point, requirement)"
+                "Filter by chunk types (e.g., pain_point, requirement). OMIT unless the user explicitly asks for a specific chunk category — do NOT pass an empty array."
               ),
           })
-          .optional(),
+          .optional()
+          .describe(
+            "Optional filters. OMIT this entire object — or omit individual fields — when the user has not explicitly specified that constraint. Never invent default values to 'fill in' the schema."
+          ),
       })
     ),
     execute: async ({ query, filters }) => {
+      const sanitized = sanitizeSearchInsightsFilters(
+        filters,
+        lastUserMessage
+      );
+      if (filters && JSON.stringify(filters) !== JSON.stringify(sanitized)) {
+        console.log(
+          `${LOG_PREFIX} tool:searchInsights — sanitized filters; raw: ${JSON.stringify(filters)}, kept: ${JSON.stringify(sanitized)}`
+        );
+      }
       console.log(`${LOG_PREFIX} tool:searchInsights — query: "${query}"`);
       controller.enqueue(
         encoder.encode(
@@ -357,14 +513,10 @@ function buildSearchInsightsTool(
         query,
         {
           teamId,
-          // Convert empty strings to undefined
-          clientName: filters?.clientName?.trim() || undefined,
-          dateFrom: filters?.dateFrom?.trim() || undefined,
-          dateTo: filters?.dateTo?.trim() || undefined,
-          // Convert empty arrays to undefined
-          chunkTypes: filters?.chunkTypes && filters.chunkTypes.length > 0
-            ? (filters.chunkTypes as ChunkType[])
-            : undefined,
+          clientName: sanitized.clientName,
+          dateFrom: sanitized.dateFrom,
+          dateTo: sanitized.dateTo,
+          chunkTypes: sanitized.chunkTypes as ChunkType[] | undefined,
         },
         embeddingRepo
       );
@@ -405,7 +557,8 @@ function buildQueryDatabaseTool(
   controller: ReadableStreamDefaultController,
   encoder: TextEncoder,
   supabaseClient: SupabaseClient,
-  teamId: string | null
+  teamId: string | null,
+  lastUserMessage: string
 ) {
   return tool({
     description: buildChatToolDescription(),
@@ -419,34 +572,44 @@ function buildQueryDatabaseTool(
             dateFrom: z
               .string()
               .optional()
-              .describe("Start date filter (ISO format YYYY-MM-DD)"),
+              .describe(
+                "Start date filter (ISO format YYYY-MM-DD). OMIT unless the user explicitly specifies a start date — do NOT default to a wide range like '2020-01-01'."
+              ),
             dateTo: z
               .string()
               .optional()
-              .describe("End date filter (ISO format YYYY-MM-DD)"),
+              .describe(
+                "End date filter (ISO format YYYY-MM-DD). OMIT unless the user explicitly specifies an end date — do NOT default to today."
+              ),
             clientName: z
               .string()
               .optional()
               .describe(
-                "Single-client convenience: matches by client name when no UUID is known"
+                "Single-client convenience: matches by client name when no UUID is known. OMIT unless the user names a specific client — do NOT pass an empty string."
               ),
             clientIds: z
               .array(z.string().uuid())
               .optional()
-              .describe("Filter by one or more client UUIDs"),
+              .describe(
+                "Filter by one or more client UUIDs. OMIT unless the user is asking about specific clients by ID — do NOT pass an empty array."
+              ),
             severity: z
               .enum(["low", "medium", "high"])
               .optional()
-              .describe("Filter signals by severity tier"),
+              .describe(
+                "Filter signals by severity tier. OMIT unless the user explicitly asks about a severity tier — do NOT default to 'low'."
+              ),
             urgency: z
               .enum(["low", "medium", "high", "critical"])
               .optional()
-              .describe("Filter signals by urgency tier"),
+              .describe(
+                "Filter signals by urgency tier. OMIT unless the user explicitly asks about an urgency tier — do NOT default to 'low'."
+              ),
             granularity: z
               .enum(["week", "month"])
               .optional()
               .describe(
-                "Time bucketing granularity. Used by sessions_over_time and theme_trends"
+                "Time bucketing granularity. Used by sessions_over_time and theme_trends. OMIT for any other action — irrelevant filters are ignored but pollute the call."
               ),
             confidenceMin: z
               .number()
@@ -454,15 +617,27 @@ function buildQueryDatabaseTool(
               .max(1)
               .optional()
               .describe(
-                "Minimum theme-assignment confidence score 0–1. Used by theme actions (top_themes, theme_trends, theme_client_matrix)"
+                "Minimum theme-assignment confidence score 0–1. Used by theme actions (top_themes, theme_trends, theme_client_matrix). OMIT for any other action — do NOT default to 0."
               ),
           })
-          .optional(),
+          .optional()
+          .describe(
+            "Optional filters. OMIT this entire object — or omit individual fields — when the user has not explicitly specified that constraint. Never invent default values to 'fill in' the schema."
+          ),
       })
     ),
     execute: async ({ action, filters }) => {
+      const sanitized = sanitizeQueryDatabaseFilters(
+        filters,
+        lastUserMessage
+      );
+      if (filters && JSON.stringify(filters) !== JSON.stringify(sanitized)) {
+        console.log(
+          `${LOG_PREFIX} tool:queryDatabase — sanitized filters; raw: ${JSON.stringify(filters)}, kept: ${JSON.stringify(sanitized)}`
+        );
+      }
       console.log(
-        `${LOG_PREFIX} tool:queryDatabase — action: ${action}, filters: ${JSON.stringify(filters ?? {})}`
+        `${LOG_PREFIX} tool:queryDatabase — action: ${action}, filters: ${JSON.stringify(sanitized)}`
       );
       controller.enqueue(
         encoder.encode(
@@ -474,17 +649,14 @@ function buildQueryDatabaseTool(
         action as QueryAction,
         {
           teamId,
-          dateFrom: filters?.dateFrom?.trim() || undefined,
-          dateTo: filters?.dateTo?.trim() || undefined,
-          clientName: filters?.clientName?.trim() || undefined,
-          clientIds:
-            filters?.clientIds && filters.clientIds.length > 0
-              ? filters.clientIds
-              : undefined,
-          severity: filters?.severity,
-          urgency: filters?.urgency,
-          granularity: filters?.granularity,
-          confidenceMin: filters?.confidenceMin,
+          dateFrom: sanitized.dateFrom,
+          dateTo: sanitized.dateTo,
+          clientName: sanitized.clientName,
+          clientIds: sanitized.clientIds,
+          severity: sanitized.severity,
+          urgency: sanitized.urgency,
+          granularity: sanitized.granularity,
+          confidenceMin: sanitized.confidenceMin,
         }
       );
       console.log(
