@@ -18,6 +18,8 @@
 
 import { type SupabaseClient } from "@supabase/supabase-js";
 
+import { scopeByTeam } from "@/lib/repositories/supabase/scope-by-team";
+
 import { LOG_PREFIX } from "../action-metadata";
 import { baseSessionQuery } from "../shared/base-query-builder";
 import type { DrillDownRow, QueryFilters } from "../types";
@@ -136,12 +138,7 @@ async function fetchDrillDownRows(
     embeddingQuery = embeddingQuery.eq("chunk_type", options.embeddingChunkType);
   }
 
-  // Team scoping on embeddings
-  if (filters.teamId) {
-    embeddingQuery = embeddingQuery.eq("team_id", filters.teamId);
-  } else {
-    embeddingQuery = embeddingQuery.is("team_id", null);
-  }
+  embeddingQuery = scopeByTeam(embeddingQuery, filters.teamId);
 
   const { data: embeddings, error: embError } = await embeddingQuery;
   if (embError) {

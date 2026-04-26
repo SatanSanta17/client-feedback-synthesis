@@ -5,11 +5,14 @@
 // recent batch (two-step: find latest batch_id, fetch all rows for it).
 // `insights_history` returns up to 10 prior batches grouped by batch_id.
 //
-// Team scoping is inline (eq team_id when set, is null otherwise) because
-// the dashboard_insights query shape doesn't pass through a wrapper helper.
+// Team scoping flows through scopeByTeam directly — the dashboard_insights
+// queries don't fit the baseSessionQuery / baseClientQuery wrappers (different
+// table, different filter shape), but the scoping primitive is the same.
 // ---------------------------------------------------------------------------
 
 import { type SupabaseClient } from "@supabase/supabase-js";
+
+import { scopeByTeam } from "@/lib/repositories/supabase/scope-by-team";
 
 import { LOG_PREFIX } from "../action-metadata";
 import type { QueryFilters } from "../types";
@@ -23,19 +26,12 @@ export async function handleInsightsLatest(
   filters: QueryFilters
 ): Promise<Record<string, unknown>> {
   // Step 1: find latest batch_id
-  const latestQuery = filters.teamId
-    ? supabase
-        .from("dashboard_insights")
-        .select("batch_id, generated_at")
-        .eq("team_id", filters.teamId)
-        .order("generated_at", { ascending: false })
-        .limit(1)
-    : supabase
-        .from("dashboard_insights")
-        .select("batch_id, generated_at")
-        .is("team_id", null)
-        .order("generated_at", { ascending: false })
-        .limit(1);
+  let latestQuery = supabase
+    .from("dashboard_insights")
+    .select("batch_id, generated_at")
+    .order("generated_at", { ascending: false })
+    .limit(1);
+  latestQuery = scopeByTeam(latestQuery, filters.teamId);
 
   const { data: latestRow, error: latestErr } = await latestQuery;
 
@@ -52,17 +48,11 @@ export async function handleInsightsLatest(
   const generatedAt = (latestRow[0] as unknown as { generated_at: string }).generated_at;
 
   // Step 2: fetch all rows for that batch
-  const batchQuery = filters.teamId
-    ? supabase
-        .from("dashboard_insights")
-        .select("*")
-        .eq("team_id", filters.teamId)
-        .eq("batch_id", batchId)
-    : supabase
-        .from("dashboard_insights")
-        .select("*")
-        .is("team_id", null)
-        .eq("batch_id", batchId);
+  let batchQuery = supabase
+    .from("dashboard_insights")
+    .select("*")
+    .eq("batch_id", batchId);
+  batchQuery = scopeByTeam(batchQuery, filters.teamId);
 
   const { data, error } = await batchQuery;
 
@@ -98,17 +88,11 @@ export async function handleInsightsHistory(
   supabase: SupabaseClient,
   filters: QueryFilters
 ): Promise<Record<string, unknown>> {
-  const query = filters.teamId
-    ? supabase
-        .from("dashboard_insights")
-        .select("*")
-        .eq("team_id", filters.teamId)
-        .order("generated_at", { ascending: false })
-    : supabase
-        .from("dashboard_insights")
-        .select("*")
-        .is("team_id", null)
-        .order("generated_at", { ascending: false });
+  let query = supabase
+    .from("dashboard_insights")
+    .select("*")
+    .order("generated_at", { ascending: false });
+  query = scopeByTeam(query, filters.teamId);
 
   const { data, error } = await query;
 
