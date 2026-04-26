@@ -233,8 +233,85 @@ _Fix not yet defined in gap file. TRD pending._
 ### E7 — `MAX_COMBINED_CHARS` is a single static value for every model
 _Fix not yet defined in gap file. TRD pending._
 
-### E8 — `stopWhen: stepCountIs(3)` limits complex chat queries
-_Fix not yet defined in gap file. TRD pending._
+### E8 — `stopWhen: stepCountIs(3)` limits complex chat queries ✅ Fixed
+
+**Scope.** The chat stream cap is a step budget — `stopWhen: stepCountIs(N)` ends the agent loop after the Nth step, regardless of whether the model wanted another tool call. Two changes that together close the gap:
+1. **Raise the cap from 3 to 5.** Typical multi-hop questions need ≤ 4 steps (`searchInsights` + `queryDatabase` + final synthesis = 3; cross-check / re-search adds 1–2 more). 5 is a deliberate ceiling — bounded latency and token cost.
+2. **Surface truncation explicitly.** When the cap fires mid-tool-calling, the SDK's `result.finishReason` resolves to `"tool-calls"`. The service detects this after the for-await loop and appends a one-line italic notice to the streamed and persisted message so the user knows the answer may be incomplete. Today the user sees a cut-off answer that reads like a final answer — the silent-truncation UX is the real bug.
+
+Adaptive budgets (re-invoke `streamText` to extend) and loop-detection custom `stopWhen` predicates are out of scope. Neither is justified until telemetry shows the cap matters in practice.
+
+**Approach.**
+
+- **Step-budget value.** 5 covers the long tail of legitimate multi-hop queries without removing the safety ceiling. A misbehaving model that wants to call tools indefinitely is still bounded; the user still pays bounded latency. If telemetry shows >10% of streams hit the cap, bump to 7.
+- **Detection signal.** `streamText()` returns a result whose `finishReason` is a Promise. Awaiting it after the for-await loop drains gives us the SDK's terminal verdict: `"stop"` (model finished naturally), `"tool-calls"` (cap fired mid-tool-calling), `"length"` (token cap), `"content-filter"`, `"error"`, etc. `"tool-calls"` is the truncation signal.
+- **User-visible notice.** Appending the notice to `fullText` before `parseFollowUps` runs ensures it survives into `cleanContent` (the saved + re-rendered text). The follow-ups marker is matched by an HTML-comment regex anywhere in the text, so the notice's position relative to the marker doesn't matter — `parseFollowUps` strips the marker either way and the notice survives.
+- **Real-time delivery.** Emitting the notice as a final `delta` SSE event makes it appear in the live UI; the user doesn't need to refetch the message to see it. The client already renders deltas as-is.
+- **Telemetry.** The existing `stream complete — content: …` log line gains two prefix fields (`steps`, `finishReason`) and a trailing `(truncated)` suffix when the cap fires. Cheap; tells us within a week whether 5 is enough.
+
+**Files changed.**
+
+- **Modified:** `lib/services/chat-stream-service.ts`
+  - Cap bumped from `stepCountIs(3)` to `stepCountIs(5)`.
+  - After the `for await (const part of result.fullStream)` loop, await `result.finishReason` and `result.steps`.
+  - When `finishReason === "tool-calls"`: append the italic notice (literal: `"\n\n_Note: this answer may be incomplete — I reached my reasoning step limit before finishing. Try a follow-up to dig deeper._"`) to `fullText`, emit a final `delta` SSE event with that notice.
+  - Extend the `stream complete` log line with `steps`, `finishReason`, and a `(truncated)` suffix.
+
+**No DB schema change. No API contract change.** The notice is part of the assistant message body (existing `messages.content` column). The SSE event types (`delta`, `status`, `done`, etc.) are unchanged — the truncation signal rides on a regular `delta` event.
+
+**No client change.** The notice is plain markdown that the existing markdown renderer handles. The client already loops over `delta` events and appends to the visible content.
+
+**Implementation.** Single change set, single file:
+
+1. `stopWhen: stepCountIs(3)` → `stopWhen: stepCountIs(5)`.
+2. After the for-await loop:
+   ```ts
+   const finishReason = await result.finishReason;
+   const stepCount = (await result.steps).length;
+   const wasTruncated = finishReason === "tool-calls";
+
+   if (wasTruncated) {
+     const warning =
+       "\n\n_Note: this answer may be incomplete — I reached my reasoning step limit before finishing. Try a follow-up to dig deeper._";
+     fullText += warning;
+     controller.enqueue(encoder.encode(sseEvent("delta", { text: warning })));
+   }
+   ```
+3. Update the complete log line:
+   ```ts
+   console.log(
+     `${LOG_PREFIX} stream complete — steps: ${stepCount}, finishReason: ${finishReason}, content: ${cleanContent.length} chars, sources: ${uniqueSources.length}, followUps: ${followUps.length}${wasTruncated ? " (truncated)" : ""}`
+   );
+   ```
+
+**End-of-fix audit.**
+
+- **SRP.** The detection lives next to the rest of the stream-finalization logic in the service; doesn't leak into the route or the client.
+- **DRY.** The notice text is a single literal in one place. Should the wording change, edit the literal.
+- **Logging.** The `stream complete` log line is the canonical observability surface — extending it (additive new fields, additive `(truncated)` suffix) preserves backward-compat for any log parser keying on the existing fields.
+- **Dead code.** None introduced.
+- **Convention compliance.** Italic markdown via underscores; no new dependencies; `LOG_PREFIX` re-used.
+
+**Verification.**
+
+- `npx tsc --noEmit` passes.
+- Manual smoke (after a multi-hop question that triggers ≥ 5 tool calls):
+  1. Ask a question that requires multiple `searchInsights` + `queryDatabase` cycles.
+  2. Observe the notice arrive as the last delta in the UI.
+  3. Refresh the page; verify the saved message includes the notice.
+  4. `grep "stream complete" .vercel-logs` (or equivalent) shows `steps: 5, finishReason: tool-calls, … (truncated)`.
+- Manual smoke (normal multi-hop, ≤ 5 steps):
+  1. Ask a question that resolves naturally.
+  2. No notice in the UI; saved message has no notice.
+  3. Log shows `finishReason: stop`, no `(truncated)` suffix.
+
+**Documentation updates after the fix.**
+- `gap-analysis.md` — mark E8 ✅ Fixed; add Fix Applied paragraph describing both parts (cap raise + truncation notice + telemetry).
+- `gap-analysis-trd.md` — flip "TRD pending" to "✅ Fixed" (this entry).
+- No `ARCHITECTURE.md` update — no architectural decision changes; the cap is a tuning parameter, not a contract.
+- No `CHANGELOG.md` entry under PRD-023 (this is a gap fix, not a cleanup increment).
+
+**Forward-compat.** If telemetry shows truncation is rare (say <2% of streams), leave at 5. If it's frequent (>10%), bump to 7 and revisit. If it's frequent AND the same questions consistently hit it, that's the signal to invest in adaptive budgets or loop-detection — but only then.
 
 ### E9 — Re-extraction race condition within teams
 _Fix not yet defined in gap file. TRD pending._

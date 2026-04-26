@@ -105,11 +105,17 @@ The fix is to make the limit model-aware. Define a per-model "best-performance i
 
 ---
 
-### E8 — `stopWhen: stepCountIs(3)` limits complex chat queries
-**File:** `lib/services/chat-stream-service.ts:131`
+### E8 — `stopWhen: stepCountIs(3)` limits complex chat queries ✅ Fixed
+**File:** `lib/services/chat-stream-service.ts`
 **Priority: Medium**
 
 3 total LLM steps. A question requiring both `searchInsights` and `queryDatabase` consumes 2 steps before the final generation. Complex multi-hop questions return incomplete answers without indicating why.
+
+**Fix applied (2026-04-26).** Two-part fix:
+1. **Cap raised from 3 to 5.** `stopWhen: stepCountIs(5)` covers the typical multi-hop case (`searchInsights` + `queryDatabase` + synthesis = 3 steps; even a re-search + cross-check stays ≤ 5). 5 is a deliberate ceiling, not unlimited — keeps latency and provider-token cost bounded.
+2. **Truncation is no longer silent.** After the for-await loop completes, the service awaits `result.finishReason`. When `finishReason === "tool-calls"` (the model wanted another step but hit the cap), a single-line italic notice is appended to the streamed content and persisted with the message: *"Note: this answer may be incomplete — I reached my reasoning step limit before finishing. Try a follow-up to dig deeper."* The user sees the notice arrive as a final delta and reads it as part of the assistant message; the saved row preserves it. The `stream complete` log line now includes `steps`, `finishReason`, and a `(truncated)` suffix when the cap fired — telemetry to tell us whether 5 is the right number in practice. If >10% of streams come back truncated, bump to 7.
+
+**Out of scope.** Adaptive budgets (re-invoke `streamText` to extend) and loop-detection custom `stopWhen` predicates (kill on repeated tool-call args) are deferred — neither is justified until telemetry shows the cap matters in practice.
 
 ---
 

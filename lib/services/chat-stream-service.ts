@@ -134,7 +134,7 @@ export function createChatStream(deps: ChatStreamDeps): ReadableStream {
               teamId
             ),
           },
-          stopWhen: stepCountIs(3),
+          stopWhen: stepCountIs(5),
           maxOutputTokens: CHAT_MAX_TOKENS,
           abortSignal,
         });
@@ -176,7 +176,24 @@ export function createChatStream(deps: ChatStreamDeps): ReadableStream {
           }
         }
 
-        // Stream complete — finalize
+        // Stream complete — detect step-budget exhaustion (gap E8). When
+        // stopWhen fires mid-tool-calling, finishReason resolves to
+        // "tool-calls" — the model wanted another step but hit the cap.
+        // Append a single-line warning to the streamed content (visible to
+        // the user) and to the persisted message.
+        const finishReason = await result.finishReason;
+        const stepCount = (await result.steps).length;
+        const wasTruncated = finishReason === "tool-calls";
+
+        if (wasTruncated) {
+          const warning =
+            "\n\n_Note: this answer may be incomplete — I reached my reasoning step limit before finishing. Try a follow-up to dig deeper._";
+          fullText += warning;
+          controller.enqueue(
+            encoder.encode(sseEvent("delta", { text: warning }))
+          );
+        }
+
         const { cleanContent, followUps } = parseFollowUps(fullText);
         const uniqueSources = deduplicateSources(collectedSources);
 
@@ -191,7 +208,7 @@ export function createChatStream(deps: ChatStreamDeps): ReadableStream {
         });
 
         console.log(
-          `${LOG_PREFIX} stream complete — content: ${cleanContent.length} chars, sources: ${uniqueSources.length}, followUps: ${followUps.length}`
+          `${LOG_PREFIX} stream complete — steps: ${stepCount}, finishReason: ${finishReason}, content: ${cleanContent.length} chars, sources: ${uniqueSources.length}, followUps: ${followUps.length}${wasTruncated ? " (truncated)" : ""}`
         );
 
         // Send final events
