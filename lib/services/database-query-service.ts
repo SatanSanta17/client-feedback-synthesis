@@ -6,6 +6,11 @@
 // service executes the corresponding safe query.
 //
 // Framework-agnostic: no HTTP or Next.js imports.
+//
+// PRD-023 P5 Increment 1: types, action metadata, and shared query helpers
+// (severity-filter, base-query-builder, row-helpers, theme-helpers) have been
+// extracted into ./database-query/. Handlers continue to live here pending
+// Increments 2–5.
 // ---------------------------------------------------------------------------
 
 import { type SupabaseClient } from "@supabase/supabase-js";
@@ -13,536 +18,51 @@ import { z } from "zod";
 
 import { scopeByTeam } from "@/lib/repositories/supabase/scope-by-team";
 
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
+import { LOG_PREFIX } from "./database-query/action-metadata";
+import {
+  baseClientQuery,
+  baseSessionQuery,
+} from "./database-query/shared/base-query-builder";
+import {
+  aggregateJsonField,
+  dateTrunc,
+  extractClientName,
+} from "./database-query/shared/row-helpers";
+import {
+  filterRowsBySeverity,
+  sessionHasSeverity,
+} from "./database-query/shared/severity-filter";
+import {
+  fetchActiveThemeMap,
+  fetchSignalThemeRows,
+} from "./database-query/shared/theme-helpers";
 
-const LOG_PREFIX = "[database-query-service]";
-
-export type QueryAction =
-  | "count_clients"
-  | "count_sessions"
-  | "sessions_per_client"
-  | "sentiment_distribution"
-  | "urgency_distribution"
-  | "recent_sessions"
-  | "client_list"
-  // Dashboard actions (PRD-021 Part 2)
-  | "sessions_over_time"
-  | "client_health_grid"
-  | "competitive_mention_frequency"
-  // Theme widget actions (PRD-021 Part 3)
-  | "top_themes"
-  | "theme_trends"
-  | "theme_client_matrix"
-  // Drill-down actions (PRD-021 Part 4)
-  | "drill_down"
-  | "session_detail"
-  // Insight actions (PRD-021 Part 5)
-  | "insights_latest"
-  | "insights_history";
-
-export interface QueryFilters {
-  teamId: string | null;
-  dateFrom?: string;
-  dateTo?: string;
-  clientName?: string;
-  // Dashboard filters (PRD-021 Part 2)
-  clientIds?: string[];
-  severity?: string;
-  urgency?: string;
-  granularity?: "week" | "month";
-  // Theme widget filters (PRD-021 Part 3)
-  confidenceMin?: number;
-  // Drill-down filters (PRD-021 Part 4)
-  drillDown?: string;
-  sessionId?: string;
-}
-
-export interface DatabaseQueryResult {
-  action: QueryAction;
-  data: Record<string, unknown>;
-}
+import type {
+  DatabaseQueryResult,
+  DrillDownRow,
+  QueryAction,
+  QueryFilters,
+} from "./database-query/types";
 
 // ---------------------------------------------------------------------------
-// Action registry — single source of truth for which actions the LLM can
-// invoke via the chat `queryDatabase` tool, plus per-action descriptions
-// surfaced to the model. Adding a new entry to QueryAction produces a
-// TypeScript error in ACTION_METADATA until classified — drift is structurally
-// prevented.
-//
-// `llmToolExposed: false` means the action is reachable via direct API or UI
-// fetch but is NOT offered to the LLM as a tool choice. Notably,
-// `session_detail` remains used by the chat citation dialog (a client-side
-// fetch from `SessionPreviewDialog`) — the flag governs LLM tool exposure
-// only; UI-driven and direct-API callers are unaffected. (Gap E4)
+// Public re-exports — preserved verbatim for the three external consumers
+// (app/api/dashboard/route.ts, lib/services/chat-stream-service.ts,
+// lib/services/insight-service.ts). Increment 5 will swap consumer imports
+// to ./database-query directly and delete this file.
 // ---------------------------------------------------------------------------
 
-export interface ActionMeta {
-  llmToolExposed: boolean;
-  description: string;
-}
-
-export const ACTION_METADATA: Record<QueryAction, ActionMeta> = {
-  count_clients: {
-    llmToolExposed: true,
-    description: "Total number of clients in the workspace.",
-  },
-  count_sessions: {
-    llmToolExposed: true,
-    description:
-      "Total number of sessions in the workspace. Honors `severity` (counts only sessions with at least one chunk of that severity).",
-  },
-  sessions_per_client: {
-    llmToolExposed: true,
-    description:
-      "Session count grouped by client. Honors `severity` (counts only sessions with at least one chunk of that severity).",
-  },
-  sentiment_distribution: {
-    llmToolExposed: true,
-    description:
-      "Count of signals by sentiment (positive / neutral / negative). Honors `severity` (restricts to sessions with at least one chunk of that severity before aggregating).",
-  },
-  urgency_distribution: {
-    llmToolExposed: true,
-    description:
-      "Count of signals by urgency tier. Honors `severity` (restricts to sessions with at least one chunk of that severity before aggregating).",
-  },
-  recent_sessions: {
-    llmToolExposed: true,
-    description:
-      "Most recent sessions, newest first. Honors `severity` (filters to sessions with at least one chunk of that severity).",
-  },
-  client_list: {
-    llmToolExposed: true,
-    description: "List of clients with metadata.",
-  },
-  sessions_over_time: {
-    llmToolExposed: true,
-    description:
-      "Session volume over time, bucketed by `granularity`. Does NOT honor `severity` (RPC-based aggregation; deferred — see gap-analysis-trd.md E4).",
-  },
-  client_health_grid: {
-    llmToolExposed: true,
-    description:
-      "Per-client health metrics for scatter-plot rendering. Honors `severity` and `urgency` post-filters.",
-  },
-  competitive_mention_frequency: {
-    llmToolExposed: true,
-    description:
-      "How often each competitor is mentioned across signals. Does NOT honor `severity` (competitive mentions don't carry severity).",
-  },
-  top_themes: {
-    llmToolExposed: true,
-    description:
-      "Most-common signal themes ranked by mention count. Honors `confidenceMin`, `severity` (restricts to sessions with at least one chunk of that severity).",
-  },
-  theme_trends: {
-    llmToolExposed: true,
-    description:
-      "Theme mention counts over time. Honors `granularity`, `confidenceMin`, `severity`.",
-  },
-  theme_client_matrix: {
-    llmToolExposed: true,
-    description:
-      "Theme × client cross-tabulation. Honors `confidenceMin`, `clientIds`, `severity`.",
-  },
-  drill_down: {
-    llmToolExposed: false,
-    description:
-      "(not exposed — payload-driven; used by dashboard widget clicks)",
-  },
-  session_detail: {
-    llmToolExposed: false,
-    description:
-      "(not exposed — used by chat citation dialog and dashboard 'View Session' via direct API fetch with sessionId)",
-  },
-  insights_latest: {
-    llmToolExposed: true,
-    description: "Most recent batch of AI-generated dashboard insight cards.",
-  },
-  insights_history: {
-    llmToolExposed: true,
-    description:
-      "Historical batches of AI-generated insight cards (paginated by `batch_id`).",
-  },
-};
-
-// Const-asserted tuple of actions exposed to the LLM. Used as the runtime
-// source for the chat tool's Zod enum. Type-and-runtime parity with
-// ACTION_METADATA is verified at module load by assertChatToolActionsInSync().
-const CHAT_TOOL_ACTIONS_TUPLE = [
-  "count_clients",
-  "count_sessions",
-  "sessions_per_client",
-  "sentiment_distribution",
-  "urgency_distribution",
-  "recent_sessions",
-  "client_list",
-  "sessions_over_time",
-  "client_health_grid",
-  "competitive_mention_frequency",
-  "top_themes",
-  "theme_trends",
-  "theme_client_matrix",
-  "insights_latest",
-  "insights_history",
-] as const satisfies readonly QueryAction[];
-
-export type ChatToolAction = (typeof CHAT_TOOL_ACTIONS_TUPLE)[number];
-// Exported with the literal tuple type preserved (no widening) so consumers
-// like `z.enum(CHAT_TOOL_ACTIONS)` get a valid non-empty tuple type.
-export const CHAT_TOOL_ACTIONS = CHAT_TOOL_ACTIONS_TUPLE;
-
-// Dev-time sanity: the static tuple must match the runtime filter of the
-// registry. Catches the case where someone flips an `llmToolExposed` flag in
-// ACTION_METADATA without updating the tuple (or vice versa). Throws on
-// module load in non-production builds; never trips in production paths.
-function assertChatToolActionsInSync() {
-  const fromRegistry = (
-    Object.entries(ACTION_METADATA) as [QueryAction, ActionMeta][]
-  )
-    .filter(([, meta]) => meta.llmToolExposed)
-    .map(([action]) => action)
-    .sort();
-  const fromTuple = [...CHAT_TOOL_ACTIONS_TUPLE].sort();
-  if (
-    fromRegistry.length !== fromTuple.length ||
-    fromRegistry.some((a, i) => a !== fromTuple[i])
-  ) {
-    throw new Error(
-      `${LOG_PREFIX} CHAT_TOOL_ACTIONS_TUPLE is out of sync with ACTION_METADATA.\n` +
-        `From registry (llmToolExposed=true): ${fromRegistry.join(", ")}\n` +
-        `From tuple: ${fromTuple.join(", ")}`
-    );
-  }
-}
-
-if (process.env.NODE_ENV !== "production") {
-  assertChatToolActionsInSync();
-}
-
-/**
- * Builds the `description` string surfaced to the LLM as the `queryDatabase`
- * tool description. Composes the preamble with a bulleted list of LLM-exposed
- * actions and their descriptions, sourced from ACTION_METADATA.
- */
-export function buildChatToolDescription(): string {
-  const lines = CHAT_TOOL_ACTIONS.map(
-    (action) => `- ${action}: ${ACTION_METADATA[action].description}`
-  );
-  return [
-    "Query the database for quantitative data about clients, sessions, themes, competitive mentions, and dashboard insights. Use when the question involves counts, lists, distributions, or factual lookups.",
-    "",
-    "Available actions:",
-    ...lines,
-  ].join("\n");
-}
-
-// ---------------------------------------------------------------------------
-// Shared query helpers (DRY)
-// ---------------------------------------------------------------------------
-
-/**
- * Applies team scoping, soft-delete filtering, optional date range, and
- * optional client ID filtering to a query on the `sessions` table.
- * Most handlers share this exact pattern.
- */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any -- Supabase query builder types are loosely typed
-function baseSessionQuery(query: any, filters: QueryFilters): any {
-  let q = query.is("deleted_at", null);
-  q = scopeByTeam(q, filters.teamId);
-  if (filters.dateFrom) {
-    q = q.gte("session_date", filters.dateFrom);
-  }
-  if (filters.dateTo) {
-    q = q.lte("session_date", filters.dateTo);
-  }
-  if (filters.clientIds && filters.clientIds.length > 0) {
-    q = q.in("client_id", filters.clientIds);
-  }
-  return q;
-}
-
-/**
- * Applies team scoping and soft-delete filtering to a query on the `clients`
- * table.
- */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any -- Supabase query builder types are loosely typed
-function baseClientQuery(query: any, filters: QueryFilters): any {
-  let q = query.is("deleted_at", null);
-  q = scopeByTeam(q, filters.teamId);
-  return q;
-}
-
-/**
- * Extracts a string field from each row's `structured_json` column and
- * aggregates into a distribution map. Used by sentiment and urgency handlers.
- */
-function aggregateJsonField(
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Supabase rows are loosely typed
-  rows: any[],
-  field: string,
-  buckets: Record<string, number>
-): Record<string, number> {
-  const distribution = { ...buckets };
-  for (const row of rows) {
-    const json = row.structured_json as Record<string, unknown> | null;
-    const value = json?.[field] as string | undefined;
-    if (value && value in distribution) {
-      distribution[value]++;
-    }
-  }
-  return distribution;
-}
-
-/**
- * Returns true if the session's `structured_json` contains at least one
- * signal chunk whose `severity` matches the requested value. Severity is a
- * per-chunk field (not session-level), so this scans the chunk arrays:
- * painPoints, requirements, aspirations, blockers, and custom.signals.
- */
-function sessionHasSignalWithSeverity(
-  json: Record<string, unknown> | null,
-  severity: string
-): boolean {
-  if (!json) return false;
-
-  const arrayKeys = [
-    "painPoints",
-    "requirements",
-    "aspirations",
-    "blockers",
-  ] as const;
-  for (const key of arrayKeys) {
-    const arr = json[key] as Array<{ severity?: string }> | undefined;
-    if (arr?.some((s) => s.severity === severity)) return true;
-  }
-
-  const custom = json.custom as
-    | Array<{ signals?: Array<{ severity?: string }> }>
-    | undefined;
-  if (
-    custom?.some((c) => c.signals?.some((s) => s.severity === severity))
-  ) {
-    return true;
-  }
-
-  return false;
-}
-
-/**
- * Inline post-filter for handler rows that already include `structured_json`.
- * Returns the input untouched when no severity filter is set.
- */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any -- Supabase rows are loosely typed
-function applySeverityRowFilter(rows: any[], severity: string | undefined): any[] {
-  if (!severity) return rows;
-  return rows.filter((r) =>
-    sessionHasSignalWithSeverity(
-      r.structured_json as Record<string, unknown> | null,
-      severity
-    )
-  );
-}
-
-/**
- * Pre-filter helper for handlers that don't fetch `structured_json` directly
- * (e.g. count handlers, theme join handlers). Returns the set of session IDs
- * within team/date scope that have at least one signal chunk matching the
- * requested severity. Returns null when no severity filter is set so callers
- * can skip the extra query and the in-clause cleanly.
- */
-async function fetchSessionIdsMatchingSeverity(
-  supabase: SupabaseClient,
-  filters: QueryFilters
-): Promise<Set<string> | null> {
-  if (!filters.severity) return null;
-
-  const query = baseSessionQuery(
-    supabase
-      .from("sessions")
-      .select("id, structured_json")
-      .not("structured_json", "is", null),
-    filters
-  );
-
-  const { data, error } = await query;
-  if (error) {
-    console.error(
-      `${LOG_PREFIX} fetchSessionIdsMatchingSeverity error:`,
-      error
-    );
-    throw new Error("Failed to filter sessions by severity");
-  }
-
-  const matching = new Set<string>();
-  for (const row of (data ?? []) as Array<{
-    id: string;
-    structured_json: Record<string, unknown> | null;
-  }>) {
-    if (sessionHasSignalWithSeverity(row.structured_json, filters.severity)) {
-      matching.add(row.id);
-    }
-  }
-  return matching;
-}
-
-/**
- * Casts a joined client row to extract the name.
- * Supabase returns joined rows as { name: string } | null.
- */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any -- Supabase join types are loosely typed
-function extractClientName(row: any): string {
-  const clientData = row.clients as { name: string } | null;
-  return clientData?.name ?? "Unknown";
-}
-
-// ---------------------------------------------------------------------------
-// Theme query helpers (PRD-021 Part 3)
-// ---------------------------------------------------------------------------
-
-/**
- * Fetches all active (non-archived) themes for a workspace and returns a
- * Map of id → name. Used by all 3 theme widget handlers.
- */
-async function fetchActiveThemeMap(
-  supabase: SupabaseClient,
-  teamId: string | null
-): Promise<Map<string, string>> {
-  let query = supabase
-    .from("themes")
-    .select("id, name")
-    .eq("is_archived", false);
-
-  query = scopeByTeam(query, teamId);
-
-  const { data, error } = await query;
-
-  if (error) {
-    console.error(`${LOG_PREFIX} fetchActiveThemeMap error:`, error);
-    throw new Error("Failed to fetch active themes");
-  }
-
-  const map = new Map<string, string>();
-  for (const row of (data ?? []) as Array<{ id: string; name: string }>) {
-    map.set(row.id, row.name);
-  }
-
-  return map;
-}
-
-/**
- * Row shape returned by the signal_themes → session_embeddings → sessions
- * nested join query. Supabase returns nested objects for joins.
- */
-interface SignalThemeJoinRow {
-  theme_id: string;
-  confidence: number | null;
-  session_embeddings: {
-    chunk_type: string;
-    session_id: string;
-    sessions: {
-      session_date: string;
-      client_id: string;
-      deleted_at: string | null;
-    };
-  };
-}
-
-/**
- * Fetches signal_themes joined through session_embeddings → sessions,
- * applying team scoping, date range, client IDs, and confidence threshold.
- * Shared by all 3 theme widget handlers.
- */
-async function fetchSignalThemeRows(
-  supabase: SupabaseClient,
-  filters: QueryFilters
-): Promise<SignalThemeJoinRow[]> {
-  // Severity is per-chunk in `structured_json` and not joinable via SQL.
-  // Pre-resolve the matching session IDs and constrain the join to them.
-  // When severity is set but no sessions match, short-circuit with an empty
-  // result so the join doesn't broaden into "no filter at all".
-  const severitySessionIds = await fetchSessionIdsMatchingSeverity(
-    supabase,
-    filters
-  );
-  if (severitySessionIds && severitySessionIds.size === 0) {
-    return [];
-  }
-
-  let query = supabase
-    .from("signal_themes")
-    .select(
-      `
-      theme_id,
-      confidence,
-      session_embeddings!inner(
-        chunk_type,
-        session_id,
-        team_id,
-        sessions!inner(
-          session_date,
-          client_id,
-          deleted_at
-        )
-      )
-    `
-    )
-    .is("session_embeddings.sessions.deleted_at", null);
-
-  // Team scoping on session_embeddings (which carries team_id)
-  if (filters.teamId) {
-    query = query.eq("session_embeddings.team_id", filters.teamId);
-  } else {
-    query = query.is("session_embeddings.team_id", null);
-  }
-
-  // Date range filters on sessions
-  if (filters.dateFrom) {
-    query = query.gte(
-      "session_embeddings.sessions.session_date",
-      filters.dateFrom
-    );
-  }
-  if (filters.dateTo) {
-    query = query.lte(
-      "session_embeddings.sessions.session_date",
-      filters.dateTo
-    );
-  }
-
-  // Client ID filter on sessions
-  if (filters.clientIds && filters.clientIds.length > 0) {
-    query = query.in(
-      "session_embeddings.sessions.client_id",
-      filters.clientIds
-    );
-  }
-
-  // Severity filter — restrict to pre-resolved session IDs that have at
-  // least one signal chunk with the requested severity.
-  if (severitySessionIds) {
-    query = query.in(
-      "session_embeddings.session_id",
-      Array.from(severitySessionIds)
-    );
-  }
-
-  // Confidence threshold on signal_themes
-  if (filters.confidenceMin !== undefined) {
-    query = query.gte("confidence", filters.confidenceMin);
-  }
-
-  const { data, error } = await query;
-
-  if (error) {
-    console.error(`${LOG_PREFIX} fetchSignalThemeRows error:`, error);
-    throw new Error("Failed to fetch signal theme data");
-  }
-
-  return (data ?? []) as unknown as SignalThemeJoinRow[];
-}
+export type {
+  ActionMeta,
+  DatabaseQueryResult,
+  QueryAction,
+  QueryFilters,
+} from "./database-query/types";
+export {
+  ACTION_METADATA,
+  CHAT_TOOL_ACTIONS,
+  buildChatToolDescription,
+  type ChatToolAction,
+} from "./database-query/action-metadata";
 
 // ---------------------------------------------------------------------------
 // Action handlers
@@ -587,7 +107,7 @@ async function handleCountSessions(
       console.error(`${LOG_PREFIX} count_sessions (severity path) error:`, error);
       throw new Error("Failed to count sessions");
     }
-    const filtered = applySeverityRowFilter(data ?? [], filters.severity);
+    const filtered = filterRowsBySeverity(data ?? [], filters.severity);
     return { count: filtered.length };
   }
 
@@ -631,7 +151,7 @@ async function handleSessionsPerClient(
     throw new Error("Failed to fetch sessions per client");
   }
 
-  const rows = applySeverityRowFilter(data ?? [], filters.severity);
+  const rows = filterRowsBySeverity(data ?? [], filters.severity);
 
   // Group by client name
   const countMap = new Map<string, number>();
@@ -666,7 +186,7 @@ async function handleSentimentDistribution(
     throw new Error("Failed to fetch sentiment distribution");
   }
 
-  const rows = applySeverityRowFilter(data ?? [], filters.severity);
+  const rows = filterRowsBySeverity(data ?? [], filters.severity);
 
   return aggregateJsonField(rows, "sentiment", {
     positive: 0,
@@ -695,7 +215,7 @@ async function handleUrgencyDistribution(
     throw new Error("Failed to fetch urgency distribution");
   }
 
-  const rows = applySeverityRowFilter(data ?? [], filters.severity);
+  const rows = filterRowsBySeverity(data ?? [], filters.severity);
 
   return aggregateJsonField(rows, "urgency", {
     low: 0,
@@ -730,7 +250,7 @@ async function handleRecentSessions(
     throw new Error("Failed to fetch recent sessions");
   }
 
-  const rows = applySeverityRowFilter(data ?? [], filters.severity);
+  const rows = filterRowsBySeverity(data ?? [], filters.severity);
 
   const sessions = rows.map((row: Record<string, unknown>) => {
     const json = row.structured_json as Record<string, unknown> | null;
@@ -830,7 +350,7 @@ async function handleClientHealthGrid(
       if (filters.urgency && urgency !== filters.urgency) return null;
       if (
         filters.severity &&
-        !sessionHasSignalWithSeverity(
+        !sessionHasSeverity(
           row.structured_json as Record<string, unknown> | null,
           filters.severity
         )
@@ -1056,27 +576,6 @@ async function handleThemeClientMatrix(
   return { themes: themesList, clients: clientsList, cells };
 }
 
-/**
- * Truncates a date to the start of its week (Monday) or month.
- * Returns an ISO date string (YYYY-MM-DD).
- */
-function dateTrunc(granularity: "week" | "month", date: Date): string {
-  if (granularity === "month") {
-    const y = date.getUTCFullYear();
-    const m = String(date.getUTCMonth() + 1).padStart(2, "0");
-    return `${y}-${m}-01`;
-  }
-  // Week: truncate to Monday
-  const day = date.getUTCDay(); // 0 = Sunday
-  const diff = day === 0 ? 6 : day - 1; // Monday = 0
-  const monday = new Date(date);
-  monday.setUTCDate(date.getUTCDate() - diff);
-  const y = monday.getUTCFullYear();
-  const m = String(monday.getUTCMonth() + 1).padStart(2, "0");
-  const d = String(monday.getUTCDate()).padStart(2, "0");
-  return `${y}-${m}-${d}`;
-}
-
 // ---------------------------------------------------------------------------
 // Drill-down action handler (PRD-021 Part 4)
 // ---------------------------------------------------------------------------
@@ -1152,17 +651,7 @@ function buildFilterLabel(
  * Returns the grouped response shape expected by DrillDownResult.
  */
 function groupByClient(
-  rows: Array<{
-    embeddingId: string;
-    sessionId: string;
-    sessionDate: string;
-    chunkText: string;
-    chunkType: string;
-    themeName: string | null;
-    metadata: Record<string, unknown>;
-    clientId: string;
-    clientName: string;
-  }>,
+  rows: DrillDownRow[],
   filterLabel: string
 ): Record<string, unknown> {
   const totalSignals = rows.length;
@@ -1238,19 +727,7 @@ async function fetchDirectDrillDownRows(
     jsonValue?: string;
     clientId?: string;
   }
-): Promise<
-  Array<{
-    embeddingId: string;
-    sessionId: string;
-    sessionDate: string;
-    chunkText: string;
-    chunkType: string;
-    themeName: string | null;
-    metadata: Record<string, unknown>;
-    clientId: string;
-    clientName: string;
-  }>
-> {
+): Promise<DrillDownRow[]> {
   // Step 1: Get matching sessions
   let sessionQuery = baseSessionQuery(
     supabase
@@ -1321,17 +798,7 @@ async function fetchDirectDrillDownRows(
   }
 
   // Step 4: Merge into flat rows
-  const rows: Array<{
-    embeddingId: string;
-    sessionId: string;
-    sessionDate: string;
-    chunkText: string;
-    chunkType: string;
-    themeName: string | null;
-    metadata: Record<string, unknown>;
-    clientId: string;
-    clientName: string;
-  }> = [];
+  const rows: DrillDownRow[] = [];
 
   for (const emb of embeddings ?? []) {
     const embRow = emb as {
@@ -1369,19 +836,7 @@ async function handleCompetitorDrillDown(
   supabase: SupabaseClient,
   filters: QueryFilters,
   competitor: string
-): Promise<
-  Array<{
-    embeddingId: string;
-    sessionId: string;
-    sessionDate: string;
-    chunkText: string;
-    chunkType: string;
-    themeName: string | null;
-    metadata: Record<string, unknown>;
-    clientId: string;
-    clientName: string;
-  }>
-> {
+): Promise<DrillDownRow[]> {
   // Step 1: Get sessions with structured_json
   const sessionQuery = baseSessionQuery(
     supabase
@@ -1454,17 +909,7 @@ async function handleCompetitorDrillDown(
   }
 
   // Step 4: Filter embeddings whose metadata references this competitor
-  const rows: Array<{
-    embeddingId: string;
-    sessionId: string;
-    sessionDate: string;
-    chunkText: string;
-    chunkType: string;
-    themeName: string | null;
-    metadata: Record<string, unknown>;
-    clientId: string;
-    clientName: string;
-  }> = [];
+  const rows: DrillDownRow[] = [];
 
   for (const emb of embeddings ?? []) {
     const embRow = emb as {
@@ -1510,19 +955,7 @@ async function fetchThemeDrillDownRows(
   filters: QueryFilters,
   themeId: string,
   opts?: { bucket?: string; clientId?: string }
-): Promise<
-  Array<{
-    embeddingId: string;
-    sessionId: string;
-    sessionDate: string;
-    chunkText: string;
-    chunkType: string;
-    themeName: string | null;
-    metadata: Record<string, unknown>;
-    clientId: string;
-    clientName: string;
-  }>
-> {
+): Promise<DrillDownRow[]> {
   // Resolve theme name
   const themeMap = await fetchActiveThemeMap(supabase, filters.teamId);
   const themeName = themeMap.get(themeId) ?? null;
@@ -1623,17 +1056,7 @@ async function fetchThemeDrillDownRows(
   const typedRows = (data ?? []) as unknown as ThemeDrillRow[];
   const granularity = filters.granularity ?? "week";
 
-  const rows: Array<{
-    embeddingId: string;
-    sessionId: string;
-    sessionDate: string;
-    chunkText: string;
-    chunkType: string;
-    themeName: string | null;
-    metadata: Record<string, unknown>;
-    clientId: string;
-    clientName: string;
-  }> = [];
+  const rows: DrillDownRow[] = [];
 
   for (const row of typedRows) {
     const emb = row.session_embeddings;
@@ -1702,17 +1125,7 @@ async function handleDrillDown(
     `${LOG_PREFIX} handleDrillDown — type: ${ctx.type}, label: "${filterLabel}"`
   );
 
-  let rows: Array<{
-    embeddingId: string;
-    sessionId: string;
-    sessionDate: string;
-    chunkText: string;
-    chunkType: string;
-    themeName: string | null;
-    metadata: Record<string, unknown>;
-    clientId: string;
-    clientName: string;
-  }>;
+  let rows: DrillDownRow[];
 
   switch (ctx.type) {
     case "sentiment":
