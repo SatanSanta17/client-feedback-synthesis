@@ -1,13 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
-import { createClient, createServiceRoleClient } from "@/lib/supabase/server";
 import {
-  getTeamById,
-  getTeamMember,
-  renameTeam,
-  deleteTeam,
-} from "@/lib/services/team-service";
-import { createTeamRepository } from "@/lib/repositories/supabase/supabase-team-repository";
+  requireAuth,
+  requireTeamMember,
+  requireTeamOwner,
+} from "@/lib/api/route-auth";
+import { renameTeam, deleteTeam } from "@/lib/services/team-service";
 
 interface RouteContext {
   params: Promise<{ teamId: string }>;
@@ -22,36 +20,16 @@ export async function GET(_request: NextRequest, context: RouteContext) {
 
   console.log(`[api/teams/[teamId]] GET — teamId: ${teamId}`);
 
-  const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  const auth = await requireAuth();
+  if (auth instanceof NextResponse) return auth;
 
-  if (!user) {
-    return NextResponse.json(
-      { message: "Authentication required" },
-      { status: 401 }
-    );
-  }
-
-  const serviceClient = createServiceRoleClient();
-  const teamRepo = createTeamRepository(supabase, serviceClient);
-
-  const member = await getTeamMember(teamRepo, teamId, user.id);
-  if (!member) {
-    return NextResponse.json(
-      { message: "You are not a member of this team" },
-      { status: 403 }
-    );
-  }
-
-  const team = await getTeamById(teamRepo, teamId);
-  if (!team) {
-    return NextResponse.json(
-      { message: "Team not found" },
-      { status: 404 }
-    );
-  }
+  const ctx = await requireTeamMember(
+    teamId,
+    auth.user,
+    "You are not a member of this team"
+  );
+  if (ctx instanceof NextResponse) return ctx;
+  const { team } = ctx;
 
   return NextResponse.json({
     team: {
@@ -79,35 +57,16 @@ export async function PATCH(request: NextRequest, context: RouteContext) {
 
   console.log(`[api/teams/[teamId]] PATCH — teamId: ${teamId}`);
 
-  const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  const auth = await requireAuth();
+  if (auth instanceof NextResponse) return auth;
 
-  if (!user) {
-    return NextResponse.json(
-      { message: "Authentication required" },
-      { status: 401 }
-    );
-  }
-
-  const serviceClient = createServiceRoleClient();
-  const teamRepo = createTeamRepository(supabase, serviceClient);
-
-  const team = await getTeamById(teamRepo, teamId);
-  if (!team) {
-    return NextResponse.json(
-      { message: "Team not found" },
-      { status: 404 }
-    );
-  }
-
-  if (team.owner_id !== user.id) {
-    return NextResponse.json(
-      { message: "Only the team owner can rename the team" },
-      { status: 403 }
-    );
-  }
+  const ctx = await requireTeamOwner(
+    teamId,
+    auth.user,
+    "Only the team owner can rename the team"
+  );
+  if (ctx instanceof NextResponse) return ctx;
+  const { teamRepo } = ctx;
 
   let body: unknown;
   try {
@@ -152,35 +111,16 @@ export async function DELETE(_request: NextRequest, context: RouteContext) {
 
   console.log(`[api/teams/[teamId]] DELETE — teamId: ${teamId}`);
 
-  const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  const auth = await requireAuth();
+  if (auth instanceof NextResponse) return auth;
 
-  if (!user) {
-    return NextResponse.json(
-      { message: "Authentication required" },
-      { status: 401 }
-    );
-  }
-
-  const serviceClient = createServiceRoleClient();
-  const teamRepo = createTeamRepository(supabase, serviceClient);
-
-  const team = await getTeamById(teamRepo, teamId);
-  if (!team) {
-    return NextResponse.json(
-      { message: "Team not found" },
-      { status: 404 }
-    );
-  }
-
-  if (team.owner_id !== user.id) {
-    return NextResponse.json(
-      { message: "Only the team owner can delete the team" },
-      { status: 403 }
-    );
-  }
+  const ctx = await requireTeamOwner(
+    teamId,
+    auth.user,
+    "Only the team owner can delete the team"
+  );
+  if (ctx instanceof NextResponse) return ctx;
+  const { teamRepo } = ctx;
 
   try {
     await deleteTeam(teamRepo, teamId);

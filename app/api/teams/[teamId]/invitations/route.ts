@@ -1,12 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
-import { createClient, createServiceRoleClient } from "@/lib/supabase/server";
-import { getTeamMember, getTeamById } from "@/lib/services/team-service";
+import { requireAuth, requireTeamAdmin } from "@/lib/api/route-auth";
 import {
   createInvitations,
   getPendingInvitations,
 } from "@/lib/services/invitation-service";
-import { createTeamRepository } from "@/lib/repositories/supabase/supabase-team-repository";
 import { createInvitationRepository } from "@/lib/repositories/supabase/supabase-invitation-repository";
 
 const createInvitationsSchema = z.object({
@@ -26,28 +24,16 @@ export async function GET(
   const { teamId } = await params;
   console.log(`[api/teams/${teamId}/invitations] GET — listing invitations`);
 
-  const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  const auth = await requireAuth();
+  if (auth instanceof NextResponse) return auth;
 
-  if (!user) {
-    return NextResponse.json(
-      { message: "Authentication required" },
-      { status: 401 }
-    );
-  }
-
-  const serviceClient = createServiceRoleClient();
-  const teamRepo = createTeamRepository(supabase, serviceClient);
-
-  const member = await getTeamMember(teamRepo, teamId, user.id);
-  if (!member || member.role !== "admin") {
-    return NextResponse.json(
-      { message: "Only team admins can view invitations" },
-      { status: 403 }
-    );
-  }
+  const ctx = await requireTeamAdmin(
+    teamId,
+    auth.user,
+    "Only team admins can view invitations"
+  );
+  if (ctx instanceof NextResponse) return ctx;
+  const { supabase, serviceClient } = ctx;
 
   const invitationRepo = createInvitationRepository(supabase, serviceClient);
   const invitations = await getPendingInvitations(invitationRepo, teamId);
@@ -61,36 +47,16 @@ export async function POST(
   const { teamId } = await params;
   console.log(`[api/teams/${teamId}/invitations] POST — creating invitations`);
 
-  const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  const auth = await requireAuth();
+  if (auth instanceof NextResponse) return auth;
 
-  if (!user) {
-    return NextResponse.json(
-      { message: "Authentication required" },
-      { status: 401 }
-    );
-  }
-
-  const serviceClient = createServiceRoleClient();
-  const teamRepo = createTeamRepository(supabase, serviceClient);
-
-  const member = await getTeamMember(teamRepo, teamId, user.id);
-  if (!member || member.role !== "admin") {
-    return NextResponse.json(
-      { message: "Only team admins can invite members" },
-      { status: 403 }
-    );
-  }
-
-  const team = await getTeamById(teamRepo, teamId);
-  if (!team) {
-    return NextResponse.json(
-      { message: "Team not found" },
-      { status: 404 }
-    );
-  }
+  const ctx = await requireTeamAdmin(
+    teamId,
+    auth.user,
+    "Only team admins can invite members"
+  );
+  if (ctx instanceof NextResponse) return ctx;
+  const { user, supabase, serviceClient, team, teamRepo } = ctx;
 
   let body: unknown;
   try {

@@ -1,13 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
-import { createClient, createServiceRoleClient } from "@/lib/supabase/server";
 import {
-  getTeamById,
-  getTeamMember,
-  changeMemberRole,
-} from "@/lib/services/team-service";
-import { createTeamRepository } from "@/lib/repositories/supabase/supabase-team-repository";
-import { idempotentNoOp } from "@/lib/api/route-auth";
+  idempotentNoOp,
+  requireAuth,
+  requireTeamOwner,
+} from "@/lib/api/route-auth";
+import { getTeamMember, changeMemberRole } from "@/lib/services/team-service";
 
 interface RouteContext {
   params: Promise<{ teamId: string; userId: string }>;
@@ -30,35 +28,16 @@ export async function PATCH(request: NextRequest, context: RouteContext) {
     `[api/teams/[teamId]/members/[userId]/role] PATCH — teamId: ${teamId}, targetUserId: ${targetUserId}`
   );
 
-  const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  const auth = await requireAuth();
+  if (auth instanceof NextResponse) return auth;
 
-  if (!user) {
-    return NextResponse.json(
-      { message: "Authentication required" },
-      { status: 401 }
-    );
-  }
-
-  const serviceClient = createServiceRoleClient();
-  const teamRepo = createTeamRepository(supabase, serviceClient);
-
-  const team = await getTeamById(teamRepo, teamId);
-  if (!team) {
-    return NextResponse.json(
-      { message: "Team not found" },
-      { status: 404 }
-    );
-  }
-
-  if (team.owner_id !== user.id) {
-    return NextResponse.json(
-      { message: "Only the team owner can change member roles" },
-      { status: 403 }
-    );
-  }
+  const ctx = await requireTeamOwner(
+    teamId,
+    auth.user,
+    "Only the team owner can change member roles"
+  );
+  if (ctx instanceof NextResponse) return ctx;
+  const { user, teamRepo } = ctx;
 
   if (user.id === targetUserId) {
     return NextResponse.json(

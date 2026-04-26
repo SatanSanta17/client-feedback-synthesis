@@ -79,7 +79,8 @@ type RequiredRole = "member" | "admin" | "owner";
 async function loadTeamContext(
   teamId: string,
   user: User,
-  required: RequiredRole
+  required: RequiredRole,
+  forbiddenMessage = "Forbidden"
 ): Promise<TeamContext | NextResponse> {
   const supabase = await createClient();
   const serviceClient = createServiceRoleClient();
@@ -92,7 +93,7 @@ async function loadTeamContext(
 
   const member = await teamRepo.getMember(teamId, user.id);
   if (!member) {
-    return NextResponse.json({ message: "Forbidden" }, { status: 403 });
+    return NextResponse.json({ message: forbiddenMessage }, { status: 403 });
   }
 
   const allowed =
@@ -103,7 +104,7 @@ async function loadTeamContext(
       : team.owner_id === user.id;
 
   if (!allowed) {
-    return NextResponse.json({ message: "Forbidden" }, { status: 403 });
+    return NextResponse.json({ message: forbiddenMessage }, { status: 403 });
   }
 
   return { user, supabase, serviceClient, team, member, teamRepo };
@@ -111,23 +112,26 @@ async function loadTeamContext(
 
 export function requireTeamMember(
   teamId: string,
-  user: User
+  user: User,
+  forbiddenMessage?: string
 ): Promise<TeamContext | NextResponse> {
-  return loadTeamContext(teamId, user, "member");
+  return loadTeamContext(teamId, user, "member", forbiddenMessage);
 }
 
 export function requireTeamAdmin(
   teamId: string,
-  user: User
+  user: User,
+  forbiddenMessage?: string
 ): Promise<TeamContext | NextResponse> {
-  return loadTeamContext(teamId, user, "admin");
+  return loadTeamContext(teamId, user, "admin", forbiddenMessage);
 }
 
 export function requireTeamOwner(
   teamId: string,
-  user: User
+  user: User,
+  forbiddenMessage?: string
 ): Promise<TeamContext | NextResponse> {
-  return loadTeamContext(teamId, user, "owner");
+  return loadTeamContext(teamId, user, "owner", forbiddenMessage);
 }
 
 // ---------------------------------------------------------------------------

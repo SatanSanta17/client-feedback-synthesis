@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
-import { createClient, createServiceRoleClient } from "@/lib/supabase/server";
+import { requireAuth } from "@/lib/api/route-auth";
 import {
   canUserCreateTeam,
   createTeam,
@@ -14,19 +14,10 @@ import { createTeamRepository } from "@/lib/repositories/supabase/supabase-team-
 export async function GET() {
   console.log("[api/teams] GET — fetching teams for current user");
 
-  const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  const auth = await requireAuth();
+  if (auth instanceof NextResponse) return auth;
+  const { user, supabase, serviceClient } = auth;
 
-  if (!user) {
-    return NextResponse.json(
-      { message: "Authentication required" },
-      { status: 401 }
-    );
-  }
-
-  const serviceClient = createServiceRoleClient();
   const teamRepo = createTeamRepository(supabase, serviceClient);
 
   try {
@@ -56,17 +47,9 @@ const createTeamSchema = z.object({
 export async function POST(request: NextRequest) {
   console.log("[api/teams] POST — creating team");
 
-  const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-
-  if (!user) {
-    return NextResponse.json(
-      { message: "Authentication required" },
-      { status: 401 }
-    );
-  }
+  const auth = await requireAuth();
+  if (auth instanceof NextResponse) return auth;
+  const { user, supabase, serviceClient } = auth;
 
   const profileRepo = createProfileRepository(supabase);
   const permission = await canUserCreateTeam(profileRepo, user.id);
@@ -100,7 +83,6 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ message }, { status: 400 });
   }
 
-  const serviceClient = createServiceRoleClient();
   const teamRepo = createTeamRepository(supabase, serviceClient);
 
   try {

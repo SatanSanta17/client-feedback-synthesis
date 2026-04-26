@@ -1,11 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createClient, createServiceRoleClient } from "@/lib/supabase/server";
-import {
-  getTeamById,
-  getTeamMember,
-  removeMember,
-} from "@/lib/services/team-service";
-import { createTeamRepository } from "@/lib/repositories/supabase/supabase-team-repository";
+import { requireAuth, requireTeamMember } from "@/lib/api/route-auth";
+import { getTeamMember, removeMember } from "@/lib/services/team-service";
 
 interface RouteContext {
   params: Promise<{ teamId: string; userId: string }>;
@@ -22,43 +17,23 @@ export async function DELETE(_request: NextRequest, context: RouteContext) {
     `[api/teams/[teamId]/members/[userId]] DELETE — teamId: ${teamId}, targetUserId: ${targetUserId}`
   );
 
-  const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  const auth = await requireAuth();
+  if (auth instanceof NextResponse) return auth;
 
-  if (!user) {
-    return NextResponse.json(
-      { message: "Authentication required" },
-      { status: 401 }
-    );
-  }
-
-  if (user.id === targetUserId) {
+  if (auth.user.id === targetUserId) {
     return NextResponse.json(
       { message: "Use the leave endpoint to remove yourself from the team" },
       { status: 400 }
     );
   }
 
-  const serviceClient = createServiceRoleClient();
-  const teamRepo = createTeamRepository(supabase, serviceClient);
-
-  const team = await getTeamById(teamRepo, teamId);
-  if (!team) {
-    return NextResponse.json(
-      { message: "Team not found" },
-      { status: 404 }
-    );
-  }
-
-  const callerMember = await getTeamMember(teamRepo, teamId, user.id);
-  if (!callerMember) {
-    return NextResponse.json(
-      { message: "You are not a member of this team" },
-      { status: 403 }
-    );
-  }
+  const ctx = await requireTeamMember(
+    teamId,
+    auth.user,
+    "You are not a member of this team"
+  );
+  if (ctx instanceof NextResponse) return ctx;
+  const { user, team, member: callerMember, teamRepo } = ctx;
 
   const targetMember = await getTeamMember(teamRepo, teamId, targetUserId);
   if (!targetMember) {

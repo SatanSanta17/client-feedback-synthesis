@@ -1,12 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createClient, createServiceRoleClient } from "@/lib/supabase/server";
-import {
-  getTeamById,
-  getTeamMember,
-  leaveTeam,
-  LeaveBlockedError,
-} from "@/lib/services/team-service";
-import { createTeamRepository } from "@/lib/repositories/supabase/supabase-team-repository";
+import { requireAuth, requireTeamMember } from "@/lib/api/route-auth";
+import { leaveTeam, LeaveBlockedError } from "@/lib/services/team-service";
 
 interface RouteContext {
   params: Promise<{ teamId: string }>;
@@ -21,36 +15,16 @@ export async function POST(_request: NextRequest, context: RouteContext) {
 
   console.log(`[api/teams/[teamId]/leave] POST — teamId: ${teamId}`);
 
-  const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  const auth = await requireAuth();
+  if (auth instanceof NextResponse) return auth;
 
-  if (!user) {
-    return NextResponse.json(
-      { message: "Authentication required" },
-      { status: 401 }
-    );
-  }
-
-  const serviceClient = createServiceRoleClient();
-  const teamRepo = createTeamRepository(supabase, serviceClient);
-
-  const team = await getTeamById(teamRepo, teamId);
-  if (!team) {
-    return NextResponse.json(
-      { message: "Team not found" },
-      { status: 404 }
-    );
-  }
-
-  const member = await getTeamMember(teamRepo, teamId, user.id);
-  if (!member) {
-    return NextResponse.json(
-      { message: "You are not a member of this team" },
-      { status: 403 }
-    );
-  }
+  const ctx = await requireTeamMember(
+    teamId,
+    auth.user,
+    "You are not a member of this team"
+  );
+  if (ctx instanceof NextResponse) return ctx;
+  const { user, team, teamRepo } = ctx;
 
   const isOwner = team.owner_id === user.id;
 
