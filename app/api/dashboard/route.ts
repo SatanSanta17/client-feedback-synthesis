@@ -7,7 +7,7 @@ import {
   executeQuery,
   type QueryAction,
   type QueryFilters,
-} from "@/lib/services/database-query-service";
+} from "@/lib/services/database-query";
 
 // ---------------------------------------------------------------------------
 // Validation

@@ -11,7 +11,7 @@ import { type SupabaseClient } from "@supabase/supabase-js";
 import { randomUUID } from "crypto";
 
 import { callModelObject } from "@/lib/services/ai-service";
-import { executeQuery } from "@/lib/services/database-query-service";
+import { executeQuery } from "@/lib/services/database-query";
 import type { InsightRepository, InsightInsert } from "@/lib/repositories/insight-repository";
 import type { DashboardInsight } from "@/lib/types/insight";
 import {

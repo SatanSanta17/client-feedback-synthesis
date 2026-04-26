@@ -19,7 +19,7 @@ import {
   toSource,
 } from "@/lib/utils/chat-helpers";
 import { retrieveRelevantChunks } from "@/lib/services/retrieval-service";
-import { executeQuery } from "@/lib/services/database-query-service";
+import { executeQuery } from "@/lib/services/database-query";
 import { CHAT_SYSTEM_PROMPT, CHAT_MAX_TOKENS } from "@/lib/prompts/chat-prompt";
 
 import type { LanguageModel } from "ai";
@@ -32,7 +32,7 @@ import {
   CHAT_TOOL_ACTIONS,
   buildChatToolDescription,
   type QueryAction,
-} from "@/lib/services/database-query-service";
+} from "@/lib/services/database-query";
 
 // ---------------------------------------------------------------------------
 // Constants
