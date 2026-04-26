@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { createClient, createServiceRoleClient } from "@/lib/supabase/server";
+import { requireAuth } from "@/lib/api/route-auth";
 import { getActiveTeamId } from "@/lib/cookies/active-team-server";
 import { mapAIErrorToResponse } from "@/lib/utils/map-ai-error";
 import { generateOrUpdateMasterSignal } from "@/lib/services/master-signal-service";
@@ -19,21 +19,11 @@ import { createMasterSignalRepository } from "@/lib/repositories/supabase/supaba
 export async function POST() {
   console.log("[api/ai/generate-master-signal] POST — starting generation");
 
-  const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-
-  if (!user) {
-    console.warn("[api/ai/generate-master-signal] POST — unauthenticated request");
-    return NextResponse.json(
-      { message: "Authentication required" },
-      { status: 401 }
-    );
-  }
+  const auth = await requireAuth();
+  if (auth instanceof NextResponse) return auth;
+  const { user, supabase, serviceClient } = auth;
 
   const teamId = await getActiveTeamId();
-  const serviceClient = createServiceRoleClient();
 
   if (teamId) {
     const teamRepo = createTeamRepository(supabase, serviceClient);

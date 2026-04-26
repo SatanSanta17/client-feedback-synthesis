@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
-import { createClient } from "@/lib/supabase/server";
+import { requireAuth } from "@/lib/api/route-auth";
 import { getActiveTeamId } from "@/lib/cookies/active-team-server";
 import { MAX_COMBINED_CHARS } from "@/lib/constants";
 import { extractSignals } from "@/lib/services/ai-service";
@@ -20,19 +20,9 @@ const extractSignalsSchema = z.object({
 export async function POST(request: NextRequest) {
   console.log("[api/ai/extract-signals] POST — extracting signals");
 
-  // Auth check — verify the user has an active session
-  const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-
-  if (!user) {
-    console.warn("[api/ai/extract-signals] POST — unauthenticated request");
-    return NextResponse.json(
-      { message: "Authentication required" },
-      { status: 401 }
-    );
-  }
+  const auth = await requireAuth();
+  if (auth instanceof NextResponse) return auth;
+  const { supabase } = auth;
 
   // Parse and validate request body
   let body: unknown;

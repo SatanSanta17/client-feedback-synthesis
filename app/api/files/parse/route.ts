@@ -1,27 +1,14 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createClient } from "@/lib/supabase/server";
+import { requireAuth } from "@/lib/api/route-auth";
+import { validateFileUpload } from "@/lib/api/file-validation";
 import {
   parseFile,
   FileParseError,
 } from "@/lib/services/file-parser-service";
-import {
-  MAX_FILE_SIZE_BYTES,
-  ACCEPTED_FILE_TYPES,
-} from "@/lib/constants";
 
 export async function POST(request: NextRequest) {
-  const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-
-  if (!user) {
-    console.warn("[api/files/parse] POST — unauthenticated request");
-    return NextResponse.json(
-      { message: "Authentication required" },
-      { status: 401 }
-    );
-  }
+  const auth = await requireAuth();
+  if (auth instanceof NextResponse) return auth;
 
   let formData: FormData;
   try {
@@ -50,24 +37,12 @@ export async function POST(request: NextRequest) {
     `[api/files/parse] POST — parsing "${fileName}" (${fileType}, ${fileSize} bytes)`
   );
 
-  if (fileSize > MAX_FILE_SIZE_BYTES) {
+  const validation = validateFileUpload(file);
+  if (!validation.valid) {
     console.warn(
-      `[api/files/parse] POST — file too large: ${fileSize} bytes`
+      `[api/files/parse] POST — rejected: ${validation.message}`
     );
-    return NextResponse.json(
-      { message: "File exceeds 10MB limit" },
-      { status: 400 }
-    );
-  }
-
-  if (!(fileType in ACCEPTED_FILE_TYPES)) {
-    console.warn(
-      `[api/files/parse] POST — unsupported type: ${fileType}`
-    );
-    return NextResponse.json(
-      { message: `Unsupported file type: ${fileType}` },
-      { status: 400 }
-    );
+    return NextResponse.json({ message: validation.message }, { status: 400 });
   }
 
   try {
