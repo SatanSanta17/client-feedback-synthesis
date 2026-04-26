@@ -1,3 +1,4 @@
+import type { ProfileRepository } from "@/lib/repositories/profile-repository";
 import type {
   TeamRepository,
   TeamRow,
@@ -11,6 +12,42 @@ export type Team = TeamRow;
 export type TeamMember = TeamMemberRow;
 export type TeamMemberWithProfile = TeamMemberWithProfileRow;
 export type TeamWithRole = TeamWithRoleRow;
+
+// ---------------------------------------------------------------------------
+// Permissions
+// ---------------------------------------------------------------------------
+
+export type CanCreateTeamResult =
+  | { allowed: true }
+  | { allowed: false; reason: "profile_not_found" | "feature_disabled" };
+
+/**
+ * Checks whether a user is allowed to create new teams.
+ * Reads the `can_create_team` flag from the user's profile.
+ * Framework-agnostic — returns a discriminated union, not HTTP responses.
+ */
+export async function canUserCreateTeam(
+  profileRepo: ProfileRepository,
+  userId: string
+): Promise<CanCreateTeamResult> {
+  console.log("[team-service] canUserCreateTeam — userId:", userId);
+
+  const profile = await profileRepo.getByUserId(userId);
+
+  if (!profile) {
+    console.warn(
+      "[team-service] canUserCreateTeam — profile not found for userId:",
+      userId
+    );
+    return { allowed: false, reason: "profile_not_found" };
+  }
+
+  if (!profile.can_create_team) {
+    return { allowed: false, reason: "feature_disabled" };
+  }
+
+  return { allowed: true };
+}
 
 // ---------------------------------------------------------------------------
 // Team CRUD

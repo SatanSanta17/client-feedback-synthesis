@@ -1,7 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { createClient, createServiceRoleClient } from "@/lib/supabase/server";
-import { createTeam, getTeamsWithRolesForUser } from "@/lib/services/team-service";
+import {
+  canUserCreateTeam,
+  createTeam,
+  getTeamsWithRolesForUser,
+} from "@/lib/services/team-service";
+import { createProfileRepository } from "@/lib/repositories/supabase/supabase-profile-repository";
 import { createTeamRepository } from "@/lib/repositories/supabase/supabase-team-repository";
 
 // --- GET /api/teams ---
@@ -63,21 +68,16 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  const { data: profile, error: profileError } = await supabase
-    .from("profiles")
-    .select("can_create_team")
-    .eq("id", user.id)
-    .single();
+  const profileRepo = createProfileRepository(supabase);
+  const permission = await canUserCreateTeam(profileRepo, user.id);
 
-  if (profileError || !profile) {
-    console.error("[api/teams] POST — profile fetch failed:", profileError?.message);
-    return NextResponse.json(
-      { message: "Failed to verify permissions" },
-      { status: 500 }
-    );
-  }
-
-  if (!profile.can_create_team) {
+  if (!permission.allowed) {
+    if (permission.reason === "profile_not_found") {
+      return NextResponse.json(
+        { message: "Failed to verify permissions" },
+        { status: 500 }
+      );
+    }
     return NextResponse.json(
       { message: "Team creation is not enabled for your account" },
       { status: 403 }
