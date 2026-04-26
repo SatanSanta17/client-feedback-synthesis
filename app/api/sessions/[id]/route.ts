@@ -1,29 +1,17 @@
 import { NextRequest, NextResponse, after } from "next/server";
 import { z } from "zod";
 import { MAX_COMBINED_CHARS } from "@/lib/constants";
-import { EXTRACTION_SCHEMA_VERSION } from "@/lib/schemas/extraction-schema";
 import { requireAuth, requireSessionAccess } from "@/lib/api/route-auth";
 import { createClientRepository } from "@/lib/repositories/supabase/supabase-client-repository";
 import { createMasterSignalRepository } from "@/lib/repositories/supabase/supabase-master-signal-repository";
-import { createEmbeddingRepository } from "@/lib/repositories/supabase/supabase-embedding-repository";
-import { createThemeRepository } from "@/lib/repositories/supabase/supabase-theme-repository";
-import { createSignalThemeRepository } from "@/lib/repositories/supabase/supabase-signal-theme-repository";
-import { createInsightRepository } from "@/lib/repositories/supabase/supabase-insight-repository";
-import { maybeRefreshDashboardInsights } from "@/lib/services/insight-service";
 import {
   updateSession,
   deleteSession,
   SessionNotFoundError,
   ClientDuplicateError,
 } from "@/lib/services/session-service";
-import { generateSessionEmbeddings } from "@/lib/services/embedding-orchestrator";
-import { assignSessionThemes } from "@/lib/services/theme-service";
-import {
-  chunkStructuredSignals,
-  chunkRawNotes,
-} from "@/lib/services/chunking-service";
+import { runSessionPostResponseChain } from "@/lib/services/session-orchestrator";
 import type { ExtractedSignals } from "@/lib/schemas/extraction-schema";
-import type { SessionMeta } from "@/lib/types/embedding-chunk";
 
 // 60s headroom (Vercel Hobby ceiling) for the post-response embedding+theme+insights
 // chain run via `after()`. Must be a literal — Next.js segment configs aren't statically
@@ -122,82 +110,30 @@ export async function PUT(
 
     console.log("[api/sessions/[id]] PUT — updated:", session.id);
 
-    // Pre-compute chunks once — shared by embedding orchestrator and theme service
-    const sessionMeta: SessionMeta = {
-      sessionId: id,
-      clientName: parsed.data.clientName,
-      sessionDate: parsed.data.sessionDate,
-      teamId,
-      schemaVersion: EXTRACTION_SCHEMA_VERSION,
-    };
-    const structuredJson = parsed.data.isExtraction
-      ? ((parsed.data.structuredJson as ExtractedSignals | null) ?? null)
-      : null;
-    const chunks = structuredJson
-      ? chunkStructuredSignals(structuredJson, sessionMeta)
-      : chunkRawNotes(parsed.data.rawNotes, sessionMeta);
-
     // Post-response chain: re-embed → theme assignment → insights refresh.
     // `after()` keeps the function instance alive past the response so the
     // chain isn't frozen mid-flight on Vercel's serverless runtime (gap E2).
     // Always re-embed on PUT — isReExtraction deletes old embeddings first,
     // and the cascade on signal_themes.embedding_id cleans up old assignments.
-    const embeddingRepo = createEmbeddingRepository(serviceClient, teamId);
-    const themeRepo = createThemeRepository(serviceClient, teamId);
-    const signalThemeRepo = createSignalThemeRepository(serviceClient);
+    // structuredJson is only meaningful for the chain when this PUT is itself
+    // an AI extraction; manual edits leave the chain to fall back to rawNotes.
+    const chainStructuredJson = parsed.data.isExtraction
+      ? ((parsed.data.structuredJson as ExtractedSignals | null) ?? null)
+      : null;
 
-    const chainStart = Date.now();
     after(
-      generateSessionEmbeddings({
-        sessionMeta,
-        structuredJson,
+      runSessionPostResponseChain({
+        sessionId: id,
+        userId: user.id,
+        teamId,
+        clientName: parsed.data.clientName,
+        sessionDate: parsed.data.sessionDate,
         rawNotes: parsed.data.rawNotes,
-        embeddingRepo,
+        structuredJson: chainStructuredJson,
+        serviceClient,
         isReExtraction: true,
-        preComputedChunks: chunks,
+        logPrefix: "[PUT /api/sessions/[id]]",
       })
-        .then(async (embeddingIds) => {
-          console.log(
-            `[PUT /api/sessions/[id]] chain timing — embeddings: ${Date.now() - chainStart}ms — sessionId: ${id}`
-          );
-          if (!embeddingIds || embeddingIds.length === 0) return;
-          const themeStart = Date.now();
-          await assignSessionThemes({
-            chunks,
-            embeddingIds,
-            teamId,
-            userId: user.id,
-            themeRepo,
-            signalThemeRepo,
-          });
-          console.log(
-            `[PUT /api/sessions/[id]] chain timing — themes: ${Date.now() - themeStart}ms — sessionId: ${id}`
-          );
-        })
-        .then(async () => {
-          const insightStart = Date.now();
-          const insightRepo = createInsightRepository(serviceClient);
-          await maybeRefreshDashboardInsights({
-            teamId,
-            userId: user.id,
-            insightRepo,
-            supabase: serviceClient,
-          });
-          console.log(
-            `[PUT /api/sessions/[id]] chain timing — insights: ${Date.now() - insightStart}ms; total: ${Date.now() - chainStart}ms — sessionId: ${id}`
-          );
-        })
-        .catch((err) => {
-          console.error(
-            "[PUT /api/sessions/[id]] EMBEDDING+THEME+INSIGHTS CHAIN FAILED — sessionId:",
-            id,
-            "elapsedMs:",
-            Date.now() - chainStart,
-            "error:",
-            err instanceof Error ? err.message : err,
-            err instanceof Error ? err.stack : undefined
-          );
-        })
     );
 
     return NextResponse.json({ session });

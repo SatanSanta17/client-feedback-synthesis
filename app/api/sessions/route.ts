@@ -1,29 +1,17 @@
 import { NextRequest, NextResponse, after } from "next/server";
 import { z } from "zod";
 import { MAX_COMBINED_CHARS } from "@/lib/constants";
-import { EXTRACTION_SCHEMA_VERSION } from "@/lib/schemas/extraction-schema";
 import { requireAuth } from "@/lib/api/route-auth";
 import { getActiveTeamId } from "@/lib/cookies/active-team-server";
 import { createSessionRepository } from "@/lib/repositories/supabase/supabase-session-repository";
 import { createClientRepository } from "@/lib/repositories/supabase/supabase-client-repository";
-import { createEmbeddingRepository } from "@/lib/repositories/supabase/supabase-embedding-repository";
-import { createThemeRepository } from "@/lib/repositories/supabase/supabase-theme-repository";
-import { createSignalThemeRepository } from "@/lib/repositories/supabase/supabase-signal-theme-repository";
-import { createInsightRepository } from "@/lib/repositories/supabase/supabase-insight-repository";
-import { maybeRefreshDashboardInsights } from "@/lib/services/insight-service";
 import {
   getSessions,
   createSession,
   ClientDuplicateError,
 } from "@/lib/services/session-service";
-import { generateSessionEmbeddings } from "@/lib/services/embedding-orchestrator";
-import { assignSessionThemes } from "@/lib/services/theme-service";
-import {
-  chunkStructuredSignals,
-  chunkRawNotes,
-} from "@/lib/services/chunking-service";
+import { runSessionPostResponseChain } from "@/lib/services/session-orchestrator";
 import type { ExtractedSignals } from "@/lib/schemas/extraction-schema";
-import type { SessionMeta } from "@/lib/types/embedding-chunk";
 
 // 60s headroom (Vercel Hobby ceiling) for the post-response embedding+theme+insights
 // chain run via `after()`. Must be a literal — Next.js segment configs aren't statically
@@ -173,79 +161,21 @@ export async function POST(request: NextRequest) {
 
     console.log("[api/sessions] POST — created session:", session.id);
 
-    const userId = user.id;
-
-    // Pre-compute chunks once — shared by embedding orchestrator and theme service
-    const sessionMeta: SessionMeta = {
-      sessionId: session.id,
-      clientName: parsed.data.clientName,
-      sessionDate: parsed.data.sessionDate,
-      teamId,
-      schemaVersion: EXTRACTION_SCHEMA_VERSION,
-    };
-    const structuredJson = (parsed.data.structuredJson as ExtractedSignals | null) ?? null;
-    const chunks = structuredJson
-      ? chunkStructuredSignals(structuredJson, sessionMeta)
-      : chunkRawNotes(parsed.data.rawNotes, sessionMeta);
-
     // Post-response chain: embeddings → theme assignment → insights refresh.
     // `after()` keeps the function instance alive past the response so the
     // chain isn't frozen mid-flight on Vercel's serverless runtime (gap E2).
-    const embeddingRepo = createEmbeddingRepository(serviceClient, teamId);
-    const themeRepo = createThemeRepository(serviceClient, teamId);
-    const signalThemeRepo = createSignalThemeRepository(serviceClient);
-
-    const chainStart = Date.now();
     after(
-      generateSessionEmbeddings({
-        sessionMeta,
-        structuredJson,
+      runSessionPostResponseChain({
+        sessionId: session.id,
+        userId: user.id,
+        teamId,
+        clientName: parsed.data.clientName,
+        sessionDate: parsed.data.sessionDate,
         rawNotes: parsed.data.rawNotes,
-        embeddingRepo,
-        preComputedChunks: chunks,
+        structuredJson: (parsed.data.structuredJson as ExtractedSignals | null) ?? null,
+        serviceClient,
+        logPrefix: "[POST /api/sessions]",
       })
-        .then(async (embeddingIds) => {
-          console.log(
-            `[POST /api/sessions] chain timing — embeddings: ${Date.now() - chainStart}ms — sessionId: ${session.id}`
-          );
-          if (!embeddingIds || embeddingIds.length === 0) return;
-          const themeStart = Date.now();
-          await assignSessionThemes({
-            chunks,
-            embeddingIds,
-            teamId,
-            userId,
-            themeRepo,
-            signalThemeRepo,
-          });
-          console.log(
-            `[POST /api/sessions] chain timing — themes: ${Date.now() - themeStart}ms — sessionId: ${session.id}`
-          );
-        })
-        .then(async () => {
-          const insightStart = Date.now();
-          const insightRepo = createInsightRepository(serviceClient);
-          await maybeRefreshDashboardInsights({
-            teamId,
-            userId,
-            insightRepo,
-            supabase: serviceClient,
-          });
-          console.log(
-            `[POST /api/sessions] chain timing — insights: ${Date.now() - insightStart}ms; total: ${Date.now() - chainStart}ms — sessionId: ${session.id}`
-          );
-        })
-        .catch((err) => {
-          console.error(
-            "[POST /api/sessions] EMBEDDING+THEME+INSIGHTS CHAIN FAILED — sessionId:",
-            session.id,
-            "elapsedMs:",
-            Date.now() - chainStart,
-            "error:",
-            err instanceof Error ? err.message : err,
-            err instanceof Error ? err.stack : undefined
-          );
-        })
     );
 
     return NextResponse.json({ session }, { status: 201 });

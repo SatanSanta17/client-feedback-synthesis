@@ -1,6 +1,6 @@
 # TRD-023: Codebase Cleanup
 
-> **Note on scope.** This TRD is being written one part at a time per CLAUDE.md. Parts 1–2 are detailed below; Parts 3–10 will be drafted as each preceding part lands. Forward-compatibility notes inside each part reference later parts where relevant.
+> **Note on scope.** This TRD is being written one part at a time per CLAUDE.md. Parts 1–3 are detailed below; Parts 4–10 will be drafted as each preceding part lands. Forward-compatibility notes inside each part reference later parts where relevant.
 
 ---
 # Part 1
@@ -804,3 +804,330 @@ After Part 2 completes:
 - **→ Part 9 (smaller cleanups).** The two prompt-version routes (`/api/prompts/[id]`, `/api/sessions/prompt-versions`) — the second is migrated in Increment 7, the first is not (not in P2 scope). Part 9's prompt-version-number consolidation should adopt `requireAuth` on `/api/prompts/[id]` as a small additional cleanup.
 - **→ Part 10 (docs refresh).** The `lib/api/` directory introduction, the new helpers, the `team-service` addition, and the file map all flow into the documentation refresh.
 - **→ Backlog.** Two items surface during Part 2 that don't fit the cleanup scope: (1) consolidating client creation across multiple helper calls (perf optimization, sub-ms today), and (2) extending `validateFileUpload` to also enforce `MAX_ATTACHMENTS` per-session cap. Both belong on the cleanup backlog if measurable pressure ever appears.
+
+---
+
+# Part 3
+## Part 3 — Session Orchestration Extracted from Routes
+
+This part covers P3.R1 through P3.R5. The ~50-line `after(generateSessionEmbeddings → assignSessionThemes → maybeRefreshDashboardInsights)` chain currently inlined and duplicated across `POST /api/sessions` and `PUT /api/sessions/[id]` is moved into a single orchestrator function. Both routes call it with the same arguments shape. `after()` registration and `maxDuration = 60` stay in the routes — only the *body* of the `after()` callback changes.
+
+**Database models:** None.
+**API endpoints:** Same routes (`POST /api/sessions`, `PUT /api/sessions/[id]`); identical contracts (status codes, response payloads, post-response observability).
+**Frontend:** None.
+**New module:** `lib/services/session-orchestrator.ts` (one exported function: `runSessionPostResponseChain`).
+
+### Increments at a glance
+
+| # | Increment | Scope | PR target |
+|---|---|---|---|
+| 1 | Create `runSessionPostResponseChain` orchestrator | 1 new file | small |
+| 2 | Migrate `POST /api/sessions` to call the orchestrator | 1 route | small |
+| 3 | Migrate `PUT /api/sessions/[id]` to call the orchestrator | 1 route | small |
+
+Each increment is independently shippable. Increment 1 is a pure addition (no callers yet) and de-risks Increments 2–3 — if the orchestrator is wrong, the migration step surfaces it immediately. Increments 2 and 3 can be bundled if the diff stays reviewable.
+
+---
+
+### Increment 1 — Create `runSessionPostResponseChain` orchestrator (P3.R1, P3.R2, P3.R4)
+
+**What:** Create `lib/services/session-orchestrator.ts` exporting a single async function that owns the post-response chain end-to-end: builds `sessionMeta`, computes chunks (via `chunkStructuredSignals` or `chunkRawNotes`), creates the four repos used by the chain, runs `generateSessionEmbeddings → assignSessionThemes → maybeRefreshDashboardInsights`, and emits the same per-stage timing logs and the same unconditional error log the routes produce today.
+
+**Files changed:**
+
+| File | Action |
+|------|--------|
+| `lib/services/session-orchestrator.ts` | **Create** — `runSessionPostResponseChain` + `SessionPostResponseChainInput` type |
+
+**Why a new module (not `session-service.ts`):** `session-service.ts` already owns CRUD and access control and is on the larger side. The chain has different concerns — it composes embeddings, themes, insights — and lives downstream of CRUD. Keeping it in its own module preserves SRP and makes it the natural target if/when a queue worker (Inngest, QStash, Supabase queues) replaces `after()` per Decision #19 of `ARCHITECTURE.md`.
+
+**Function contract:**
+
+```ts
+import type { SupabaseClient } from "@supabase/supabase-js";
+import { EXTRACTION_SCHEMA_VERSION } from "@/lib/schemas/extraction-schema";
+import type { ExtractedSignals } from "@/lib/schemas/extraction-schema";
+import type { SessionMeta } from "@/lib/types/embedding-chunk";
+import {
+  chunkStructuredSignals,
+  chunkRawNotes,
+} from "@/lib/services/chunking-service";
+import { generateSessionEmbeddings } from "@/lib/services/embedding-orchestrator";
+import { assignSessionThemes } from "@/lib/services/theme-service";
+import { maybeRefreshDashboardInsights } from "@/lib/services/insight-service";
+import { createEmbeddingRepository } from "@/lib/repositories/supabase/supabase-embedding-repository";
+import { createThemeRepository } from "@/lib/repositories/supabase/supabase-theme-repository";
+import { createSignalThemeRepository } from "@/lib/repositories/supabase/supabase-signal-theme-repository";
+import { createInsightRepository } from "@/lib/repositories/supabase/supabase-insight-repository";
+
+export interface SessionPostResponseChainInput {
+  sessionId: string;
+  userId: string;
+  teamId: string | null;
+  clientName: string;
+  sessionDate: string;
+  rawNotes: string;
+  structuredJson: ExtractedSignals | null;
+  serviceClient: SupabaseClient;
+  /** Set true for re-extract on PUT — controls embedding-orchestrator's
+   *  behavior of deleting existing embeddings before re-embedding. */
+  isReExtraction?: boolean;
+  /** Log prefix used for chain-timing and chain-failure log lines.
+   *  Routes pass `[POST /api/sessions]` or `[PUT /api/sessions/[id]]`
+   *  so production grep patterns match pre-cleanup output (P3.R2). */
+  logPrefix: string;
+}
+
+export async function runSessionPostResponseChain(
+  input: SessionPostResponseChainInput
+): Promise<void> {
+  const {
+    sessionId, userId, teamId,
+    clientName, sessionDate, rawNotes, structuredJson,
+    serviceClient, isReExtraction = false, logPrefix,
+  } = input;
+
+  const sessionMeta: SessionMeta = {
+    sessionId,
+    clientName,
+    sessionDate,
+    teamId,
+    schemaVersion: EXTRACTION_SCHEMA_VERSION,
+  };
+
+  const chunks = structuredJson
+    ? chunkStructuredSignals(structuredJson, sessionMeta)
+    : chunkRawNotes(rawNotes, sessionMeta);
+
+  const embeddingRepo = createEmbeddingRepository(serviceClient, teamId);
+  const themeRepo = createThemeRepository(serviceClient, teamId);
+  const signalThemeRepo = createSignalThemeRepository(serviceClient);
+
+  const chainStart = Date.now();
+
+  try {
+    const embeddingIds = await generateSessionEmbeddings({
+      sessionMeta,
+      structuredJson,
+      rawNotes,
+      embeddingRepo,
+      isReExtraction,
+      preComputedChunks: chunks,
+    });
+    console.log(
+      `${logPrefix} chain timing — embeddings: ${Date.now() - chainStart}ms — sessionId: ${sessionId}`
+    );
+
+    if (!embeddingIds || embeddingIds.length === 0) return;
+
+    const themeStart = Date.now();
+    await assignSessionThemes({
+      chunks,
+      embeddingIds,
+      teamId,
+      userId,
+      themeRepo,
+      signalThemeRepo,
+    });
+    console.log(
+      `${logPrefix} chain timing — themes: ${Date.now() - themeStart}ms — sessionId: ${sessionId}`
+    );
+
+    const insightStart = Date.now();
+    const insightRepo = createInsightRepository(serviceClient);
+    await maybeRefreshDashboardInsights({
+      teamId,
+      userId,
+      insightRepo,
+      supabase: serviceClient,
+    });
+    console.log(
+      `${logPrefix} chain timing — insights: ${Date.now() - insightStart}ms; total: ${Date.now() - chainStart}ms — sessionId: ${sessionId}`
+    );
+  } catch (err) {
+    console.error(
+      `${logPrefix} EMBEDDING+THEME+INSIGHTS CHAIN FAILED — sessionId:`,
+      sessionId,
+      "elapsedMs:",
+      Date.now() - chainStart,
+      "error:",
+      err instanceof Error ? err.message : err,
+      err instanceof Error ? err.stack : undefined
+    );
+  }
+}
+```
+
+**Notes on the rewrite:**
+
+- **`async/await + try/catch` instead of `.then().then().catch()`.** Functionally identical — sequencing semantics are preserved (each stage awaits the previous; catch wraps the whole chain). More readable and standard for this codebase. The per-stage timing logs print at the same boundaries as the existing chain (after embeddings resolves; after themes resolves; after insights resolves).
+- **`logPrefix` is a parameter, not a constant.** Strict P3.R2 compliance — current grep patterns like `grep "\[POST /api/sessions\] chain timing"` continue to match. An alternative single prefix (e.g., `[session-orchestrator]`) was considered but would change production observability dashboards/alerts that key on the route prefix. Kept as a parameter; routes pass their existing prefix verbatim.
+- **`isReExtraction` defaults to false.** POST passes nothing (default false); PUT passes `true`. Matches the current PUT-only `isReExtraction: true` flag passed to `generateSessionEmbeddings`.
+- **Repositories are constructed inside the orchestrator.** Routes don't need to import any of `createEmbeddingRepository`, `createThemeRepository`, `createSignalThemeRepository`, `createInsightRepository`, `chunkStructuredSignals`, `chunkRawNotes`, `EXTRACTION_SCHEMA_VERSION`, `SessionMeta`, or `ExtractedSignals` after the migration — those imports move with the chain. P3.R5's "shrink meaningfully" benefit comes mostly from this import-block cleanup.
+- **`serviceClient` is the only external dependency the route still passes through.** It comes from `requireAuth()` / `requireSessionAccess()` (Part 2 helpers) and threads into the orchestrator. The orchestrator never creates Supabase clients itself — keeps the request-scoped cookie/user binding intact.
+
+**Verify:**
+
+- Module type-checks in isolation: `npx tsc --noEmit`.
+- No new runtime callers — `grep -rn "runSessionPostResponseChain" app lib --include="*.ts"` returns only the export line.
+- All chain-internal symbols (`chunkStructuredSignals`, `generateSessionEmbeddings`, `assignSessionThemes`, `maybeRefreshDashboardInsights`, `createEmbeddingRepository`, etc.) resolve to the same modules the routes currently import — no behavior change in the underlying primitives.
+
+**Forward compatibility:**
+
+- **Queue-worker migration path.** When `after()` is replaced by a queue worker (Decision #19), `runSessionPostResponseChain` becomes the queue-job handler with no change to its body — the migration boundary is the orchestrator's stable input shape (`SessionPostResponseChainInput`), serialisable except for `serviceClient`. The queue worker would re-create `serviceClient` from the job context. The orchestrator's existing log structure (with `sessionId`, `elapsedMs`, stack) is already what the queue's retry/replay logs need.
+- **New stages.** Adding a stage (e.g., post-extraction notification) is a single-file edit to the orchestrator. Routes are untouched.
+- **Per-route variations.** If a future route needs a different chain (e.g., a bulk re-extract route runs only embeddings + themes, no insights refresh), expose a second orchestrator function or accept a stage-flag input. Out of scope for P3 — flagged as a backlog candidate.
+
+---
+
+### Increment 2 — Migrate `POST /api/sessions` to the orchestrator (P3.R1, P3.R3, P3.R4, P3.R5)
+
+**What:** Replace the inlined `after(...)` chain in `POST /api/sessions` with a single `after(runSessionPostResponseChain({...}))` call. Remove all chain-only imports from the route.
+
+**Files changed:**
+
+| File | Action |
+|------|--------|
+| `app/api/sessions/route.ts` | **Modify** — replace lines ~184–255 (sessionMeta, structuredJson, chunks, repos, chain) with one orchestrator call; clean up imports |
+
+**Implementation details:**
+
+1. **Replace the chain block.** Lines that currently build `sessionMeta`, derive `structuredJson`, compute `chunks`, build the three repos (`embeddingRepo`, `themeRepo`, `signalThemeRepo`), capture `chainStart`, and run the `after(generateSessionEmbeddings(...).then(...).then(...).catch(...))` chain become:
+
+   ```ts
+   after(
+     runSessionPostResponseChain({
+       sessionId: session.id,
+       userId: user.id,
+       teamId,
+       clientName: parsed.data.clientName,
+       sessionDate: parsed.data.sessionDate,
+       rawNotes: parsed.data.rawNotes,
+       structuredJson: (parsed.data.structuredJson as ExtractedSignals | null) ?? null,
+       serviceClient,
+       logPrefix: "[POST /api/sessions]",
+     })
+   );
+   ```
+
+   Note: `structuredJson` derivation in POST is `(parsed.data.structuredJson as ExtractedSignals | null) ?? null` — the cast goes inline at the call site to avoid moving `ExtractedSignals` into the route's import block (the orchestrator owns the type internally; the route's payload is the parsed Zod result).
+
+   Actually — the cleaner move is to *not* import `ExtractedSignals` into the route at all. The orchestrator's `structuredJson` parameter is typed as `ExtractedSignals | null`; the route passes `parsed.data.structuredJson ?? null` and TypeScript narrowing through the Zod schema's inferred type plus the orchestrator's contract handles the rest. If a cast is still needed (because `structuredJson` is typed as `Record<string, unknown> | null` from Zod), keep the cast inline as `as ExtractedSignals | null`. This keeps `ExtractedSignals` out of the route's imports.
+
+2. **Remove now-unused imports from the route.** After this increment, `app/api/sessions/route.ts` no longer needs:
+
+   - `EXTRACTION_SCHEMA_VERSION` — only used in `sessionMeta` build, which is now in the orchestrator
+   - `createEmbeddingRepository`, `createThemeRepository`, `createSignalThemeRepository`, `createInsightRepository` — all used by the chain
+   - `generateSessionEmbeddings`, `assignSessionThemes`, `maybeRefreshDashboardInsights` — chain stages
+   - `chunkStructuredSignals`, `chunkRawNotes` — chunk computation
+   - `SessionMeta` type — used only in `sessionMeta` build
+   - `ExtractedSignals` type — only if the cast strategy in step 1 keeps it inline; if a `satisfies` or inline cast removes the need, drop this too
+
+   Add the single new import: `import { runSessionPostResponseChain } from "@/lib/services/session-orchestrator";`.
+
+3. **`after()` registration stays in the route (P3.R3).** The route continues to wrap the orchestrator call in `after()` — the function-instance lifetime extension is unchanged. `export const maxDuration = 60` stays at the top of the file (Next.js requires it as a literal in the route module — moving it would regress).
+
+4. **No business logic stays inline.** After migration, the POST handler does only: parse body → validate → `requireAuth` → resolve teamId → build repos → `createSession` → `after(runSessionPostResponseChain(...))` → return 201. P3.R5's "no inline `.then().then().catch()` chain" is satisfied; the route file shrinks by ~70 LOC (the chain + chain-only imports + `sessionMeta`/`chunks` setup).
+
+**Verify:**
+
+- `grep -n ".then(.*).then(" app/api/sessions/route.ts` returns zero hits.
+- `grep -n "runSessionPostResponseChain\|after(" app/api/sessions/route.ts` shows exactly one orchestrator call inside one `after()` registration.
+- `wc -l app/api/sessions/route.ts` is under 200.
+- Production-equivalent log lines: trigger a session create on a local stack with a structured-extraction payload; tail the dev server console — the four chain logs (`embeddings`, `themes`, `insights`, plus on a forced failure the `EMBEDDING+THEME+INSIGHTS CHAIN FAILED` line) match the pre-cleanup format byte-for-byte (sessionId, elapsedMs, prefix `[POST /api/sessions]`).
+- `npx tsc --noEmit` and `npm run build` pass.
+
+**Forward compatibility:** Inc. 2 leaves the POST route's auth scaffolding (Part 2's `requireAuth`) and CRUD call (`createSession`) untouched. Future cleanup increments that touch the POST handler (e.g., Part 9's session-service decomposition) start from a route file that's now ~200 LOC and contains no orchestration.
+
+---
+
+### Increment 3 — Migrate `PUT /api/sessions/[id]` to the orchestrator (P3.R1, P3.R3, P3.R4, P3.R5)
+
+**What:** Same migration recipe as Increment 2, applied to the PUT route. The only differences from POST are the `structuredJson` derivation rule, the `isReExtraction: true` flag, and the log prefix.
+
+**Files changed:**
+
+| File | Action |
+|------|--------|
+| `app/api/sessions/[id]/route.ts` | **Modify** — replace lines ~138–215 (chain block) with one orchestrator call; clean up imports |
+
+**Implementation details:**
+
+1. **Replace the chain block.** The PUT chain currently derives `structuredJson` based on the `isExtraction` flag in the request body:
+
+   ```ts
+   const structuredJson = parsed.data.isExtraction
+     ? ((parsed.data.structuredJson as ExtractedSignals | null) ?? null)
+     : null;
+   ```
+
+   This logic stays at the *route* level — it's a route-specific request-shape concern (PUT distinguishes "this is a re-extraction; structuredJson is fresh from the AI" vs "this is a manual edit; structuredJson is irrelevant to the chain"). The route passes the resolved value to the orchestrator:
+
+   ```ts
+   const chainStructuredJson = parsed.data.isExtraction
+     ? ((parsed.data.structuredJson as ExtractedSignals | null) ?? null)
+     : null;
+
+   after(
+     runSessionPostResponseChain({
+       sessionId: id,
+       userId: user.id,
+       teamId,
+       clientName: parsed.data.clientName,
+       sessionDate: parsed.data.sessionDate,
+       rawNotes: parsed.data.rawNotes,
+       structuredJson: chainStructuredJson,
+       serviceClient,
+       isReExtraction: true,
+       logPrefix: "[PUT /api/sessions/[id]]",
+     })
+   );
+   ```
+
+   The 3-line `chainStructuredJson` derivation is route-specific business logic and remains inline. The orchestrator stays generic — it accepts a resolved `structuredJson` and chunks accordingly.
+
+2. **`isReExtraction: true`** is the PUT-only flag. POST omits it (defaults to false). This preserves the existing behavior of `generateSessionEmbeddings`'s "delete previous embeddings before re-embedding" path.
+
+3. **Log prefix** is `[PUT /api/sessions/[id]]` (verbatim from the existing route). Production grep patterns are unchanged.
+
+4. **Remove now-unused imports from the route.** Same set as Inc. 2: `EXTRACTION_SCHEMA_VERSION`, the four chain repo factories, `generateSessionEmbeddings`, `assignSessionThemes`, `maybeRefreshDashboardInsights`, `chunkStructuredSignals`, `chunkRawNotes`, `SessionMeta`. The `ExtractedSignals` import may need to stay if the inline cast in step 1 references it; this is a minor judgement call at edit time.
+
+5. **PUT-specific concerns that don't change.** The session-existence error handling (`SessionNotFoundError → 404`), the `ClientDuplicateError → 409` mapping, the body validation, and the access check (`requireSessionAccess` from Part 2) all stay. Only the *post-response* chain block is replaced.
+
+**Verify:**
+
+- Same grep, wc, and runtime-log checks as Inc. 2 (replacing `[POST /api/sessions]` with `[PUT /api/sessions/[id]]`).
+- Manual smoke: re-extract a session, verify the chain still runs to completion (embeddings re-generated, themes re-assigned, insights potentially refreshed). Log output matches pre-cleanup format.
+- `npx tsc --noEmit` and `npm run build` pass.
+
+**Forward compatibility:** PUT inherits the same forward-compat properties as POST. Both routes are now thin: validation, auth, CRUD, orchestrator dispatch, response.
+
+---
+
+## Part 3 — End-of-part audit checklist
+
+Per CLAUDE.md, after Increment 3 lands:
+
+- [ ] **SRP.** `session-orchestrator.ts` does one thing — runs the post-response chain end-to-end. Routes do request validation, CRUD, and post-response dispatch — no chain primitives leaked back into them.
+- [ ] **DRY.** `sessionMeta` construction, chunk selection (`chunkStructuredSignals` vs `chunkRawNotes`), the four chain-repo creations, and the `.then().then().catch()` pattern exist in exactly one place (the orchestrator) — verified by grep.
+- [ ] **Logging.** All four chain log lines (embeddings/themes/insights timings + `EMBEDDING+THEME+INSIGHTS CHAIN FAILED`) emit verbatim with the route's original prefix on both POST and PUT. Verified manually by triggering a successful chain and a forced failure.
+- [ ] **Behavior parity.** `after()` registration and `maxDuration = 60` remain in both route files (P3.R3). The chain still completes post-response on Vercel — verified via Vercel function logs after a deployed test. `isReExtraction: true` flag preserved on PUT.
+- [ ] **LOC.** `wc -l app/api/sessions/route.ts` and `wc -l app/api/sessions/[id]/route.ts` are both under 200.
+- [ ] **Dead code.** Unused imports removed from both route files (the eight+ chain-only imports listed in Inc. 2). ESLint reports zero unused-vars in both files.
+- [ ] **Convention compliance.** New module is named-exported, kebab-case file (`session-orchestrator.ts`), camelCase function (`runSessionPostResponseChain`), PascalCase input interface (`SessionPostResponseChainInput`), import order respected.
+- [ ] **Type safety.** `npx tsc --noEmit` (strict) and `npm run build` both clean.
+
+After Part 3 completes:
+
+- [ ] Update `ARCHITECTURE.md`: add `lib/services/session-orchestrator.ts` to the file map; update Decision #19 ("Post-response background chain via `after()` + `maxDuration = 60`") to point at the new module — currently it says "the chain ... is registered with `after()` from `next/server`" without naming the module that owns it; updating it to "the chain — `runSessionPostResponseChain` in `lib/services/session-orchestrator.ts` — is registered with `after()`" makes the queue-worker migration boundary explicit.
+- [ ] Add a `CHANGELOG.md` entry for PRD-023 P3 covering: the new orchestrator module, the route LOC reductions, and the explicit "log prefix preserved verbatim per P3.R2" note (so future reviewers don't normalize the prefix without thinking about production grep patterns).
+- [ ] Verify no doc references to "the after() chain in /api/sessions" treat the chain as in-route logic — update any decision notes or comments that still imply the chain is route-owned.
+
+---
+
+## Forward references to later parts (Part 3)
+
+- **→ Part 5 (database-query-service split).** Independent of Part 3. The orchestrator does not call any query-service action; the chain operates on embedding/theme/signal-theme/insight repos directly. Part 5's domain-module split has no impact on the orchestrator.
+- **→ Part 9 (smaller cleanups).** `session-service.ts#updateSession`'s staleness decomposition (P9.R5) sits *upstream* of the orchestrator (CRUD → orchestrator). Decomposing the staleness logic doesn't touch the chain; the two cleanups are orthogonal and can land in either order.
+- **→ Part 10 (docs refresh).** Decision #19 in `ARCHITECTURE.md` should name the orchestrator module after Part 3 lands (see end-of-part audit). The file map gains `lib/services/session-orchestrator.ts`.
+- **→ Backlog.** Two items surface during Part 3 that don't fit the cleanup scope: (1) per-route variations of the chain (e.g., a bulk re-extract path that skips insights) — would warrant a stage-flag input on the orchestrator or a second orchestrator function; (2) replacing `after()` with a real queue worker (Inngest, QStash, Supabase queues) per Decision #19's migration trigger — Part 3 deliberately preserves the existing `after()` mechanism; the queue migration is a future PRD when chain duration or failure-rate signals demand it. The orchestrator's stable input contract (`SessionPostResponseChainInput`) is the migration boundary.
