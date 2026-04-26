@@ -172,12 +172,3 @@ export async function requireSessionAccess(
     teamRepo,
   };
 }
-
-// ---------------------------------------------------------------------------
-// idempotentNoOp — canonical 409 response for "no-op: state already matches".
-// Used when a PATCH/PUT request asks to set a field to its current value.
-// ---------------------------------------------------------------------------
-
-export function idempotentNoOp(message: string): NextResponse {
-  return NextResponse.json({ message }, { status: 409 });
-}

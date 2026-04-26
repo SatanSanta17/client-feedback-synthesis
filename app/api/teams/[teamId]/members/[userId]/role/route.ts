@@ -1,10 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
-import {
-  idempotentNoOp,
-  requireAuth,
-  requireTeamOwner,
-} from "@/lib/api/route-auth";
+import { requireAuth, requireTeamOwner } from "@/lib/api/route-auth";
+import { idempotentNoOp } from "@/lib/api/idempotent-no-op";
 import { getTeamMember, changeMemberRole } from "@/lib/services/team-service";
 
 interface RouteContext {
