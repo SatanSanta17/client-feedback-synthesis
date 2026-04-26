@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 
-import { createClient, getActiveTeamId } from "@/lib/supabase/server";
+import { createClient } from "@/lib/supabase/server";
+import { getActiveTeamId } from "@/lib/cookies/active-team-server";
 import { createChatService } from "@/lib/services/chat-service";
 import { createConversationRepository } from "@/lib/repositories/supabase/supabase-conversation-repository";
 import { createMessageRepository } from "@/lib/repositories/supabase/supabase-message-repository";

@@ -4,8 +4,8 @@ import type { User } from "@supabase/supabase-js";
 import {
   createClient,
   createServiceRoleClient,
-  getActiveTeamId,
 } from "@/lib/supabase/server";
+import { getActiveTeamId } from "@/lib/cookies/active-team-server";
 import { createSessionRepository } from "@/lib/repositories/supabase/supabase-session-repository";
 import { createTeamRepository } from "@/lib/repositories/supabase/supabase-team-repository";
 import type { SessionRepository } from "@/lib/repositories/session-repository";

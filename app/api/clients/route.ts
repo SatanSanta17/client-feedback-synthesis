@@ -5,7 +5,8 @@ import {
   createNewClient,
   ClientDuplicateError,
 } from "@/lib/services/client-service";
-import { createClient, getActiveTeamId } from "@/lib/supabase/server";
+import { createClient } from "@/lib/supabase/server";
+import { getActiveTeamId } from "@/lib/cookies/active-team-server";
 import { createClientRepository } from "@/lib/repositories/supabase/supabase-client-repository";
 
 // --- GET /api/clients?q=<search>&hasSession=true ---

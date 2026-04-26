@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
-import { createClient, createServiceRoleClient, getActiveTeamId } from "@/lib/supabase/server";
+import { createClient, createServiceRoleClient } from "@/lib/supabase/server";
+import { getActiveTeamId } from "@/lib/cookies/active-team-server";
 import {
   getPromptHistory,
   savePromptVersion,

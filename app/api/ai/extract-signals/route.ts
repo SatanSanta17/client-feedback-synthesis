@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
-import { createClient, getActiveTeamId } from "@/lib/supabase/server";
+import { createClient } from "@/lib/supabase/server";
+import { getActiveTeamId } from "@/lib/cookies/active-team-server";
 import { MAX_COMBINED_CHARS } from "@/lib/constants";
 import { extractSignals } from "@/lib/services/ai-service";
 import { mapAIErrorToResponse } from "@/lib/utils/map-ai-error";

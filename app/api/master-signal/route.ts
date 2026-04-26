@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
-import { createClient, createServiceRoleClient, getActiveTeamId } from "@/lib/supabase/server";
+import { createClient, createServiceRoleClient } from "@/lib/supabase/server";
+import { getActiveTeamId } from "@/lib/cookies/active-team-server";
 import {
   getLatestMasterSignal,
   getStaleSessionCount,

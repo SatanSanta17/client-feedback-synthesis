@@ -1,8 +1,9 @@
 /**
  * Client-side active team cookie helpers.
  *
- * Server-side reads use `getActiveTeamId()` from `lib/supabase/server.ts`
- * (next/headers cookies). This module handles client-side document.cookie only.
+ * Server-side reads use `getActiveTeamId()` from
+ * `lib/cookies/active-team-server.ts` (next/headers cookies).
+ * This module handles client-side document.cookie only.
  */
 
 const COOKIE_NAME = "active_team_id";

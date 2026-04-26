@@ -1,5 +1,6 @@
 import { redirect } from "next/navigation";
-import { getActiveTeamId, createClient } from "@/lib/supabase/server";
+import { createClient } from "@/lib/supabase/server";
+import { getActiveTeamId } from "@/lib/cookies/active-team-server";
 import { PageHeader } from "@/components/layout/page-header";
 import { TeamManagementClient } from "./_components/team-management-client";
 

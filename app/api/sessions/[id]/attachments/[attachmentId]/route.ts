@@ -5,7 +5,8 @@ import {
   AttachmentNotFoundError,
 } from "@/lib/services/attachment-service";
 import { checkSessionAccess } from "@/lib/services/session-service";
-import { createClient, createServiceRoleClient, getActiveTeamId } from "@/lib/supabase/server";
+import { createClient, createServiceRoleClient } from "@/lib/supabase/server";
+import { getActiveTeamId } from "@/lib/cookies/active-team-server";
 import { mapAccessError } from "@/lib/utils/map-access-error";
 import { createAttachmentRepository } from "@/lib/repositories/supabase/supabase-attachment-repository";
 import { createSessionRepository } from "@/lib/repositories/supabase/supabase-session-repository";

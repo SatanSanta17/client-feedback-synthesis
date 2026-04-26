@@ -3,8 +3,8 @@ import { NextResponse } from "next/server";
 import {
   createClient,
   createServiceRoleClient,
-  getActiveTeamId,
 } from "@/lib/supabase/server";
+import { getActiveTeamId } from "@/lib/cookies/active-team-server";
 import { createInsightRepository } from "@/lib/repositories/supabase/supabase-insight-repository";
 import { generateHeadlineInsights } from "@/lib/services/insight-service";
 
