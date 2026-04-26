@@ -1,9 +1,9 @@
 # TRD-023: Codebase Cleanup
 
-> **Note on scope.** This TRD is being written one part at a time per CLAUDE.md. Only Part 1 is detailed below; Parts 2–10 will be drafted as each preceding part lands. Forward-compatibility notes inside Part 1 reference later parts where relevant.
+> **Note on scope.** This TRD is being written one part at a time per CLAUDE.md. Parts 1–2 are detailed below; Parts 3–10 will be drafted as each preceding part lands. Forward-compatibility notes inside each part reference later parts where relevant.
 
 ---
-
+# Part 1
 ## Part 1 — Quick Wins
 
 This part covers P1.R1 through P1.R6 from the PRD. Six independent fixes grouped into one part because each is small, isolated, and low-risk; they share no shared module.
@@ -299,3 +299,508 @@ These notes capture how Part 1 decisions feed Parts 2–10, so subsequent TRD pa
 - **→ Part 5 (database-query-service split).** The `any` audit defers untouched lines in this file to Part 5, where the rewrite covers them organically.
 - **→ Part 10 (docs refresh).** Removed file (`_helpers.ts`) and the new constant (`CHART_HIGH_CONTRAST_TEXT_HEX`) flow into the file map / Key Design Decisions update.
 - **→ Backlog.** Linting `@typescript-eslint/no-explicit-any` as `error` is a candidate for the cleanup backlog; Part 1 establishes the convention, the lint rule enforces it.
+
+---
+
+# Part 2
+## Part 2 — Shared Route Helpers (Auth, File Validation, Inline Queries)
+
+This part covers P2.R1 through P2.R5. The 7-line `createClient → getUser → 401 → service-client → repo → role-check` block currently duplicated across ~15 API routes is collapsed into a small set of named helpers; file-upload validation duplicated across two routes is collapsed into one helper; the inline `profiles.can_create_team` query in `POST /api/teams` is moved into `team-service.ts`.
+
+**Database models:** None.
+**API endpoints:** ~15 routes migrated; no contract changes (status codes, error bodies, happy-path payloads, and logging granularity preserved per P2.R5).
+**Frontend:** None.
+**New modules:** `lib/api/route-auth.ts` (auth + team-context + session-context helpers), `lib/api/file-validation.ts` (upload constraints).
+
+### Increments at a glance
+
+| # | Increment | Scope | PR target |
+|---|---|---|---|
+| 1 | `requireAuth` foundation + types | 1 new file | small |
+| 2 | Team-context helpers (`requireTeamMember`, `requireTeamAdmin`, `requireTeamOwner`) + `idempotentNoOp` | extend file 1 | small |
+| 3 | `requireSessionAccess` helper | extend file 1 | tiny |
+| 4 | File-validation helper | 1 new file | tiny |
+| 5 | `canUserCreateTeam` moves into `team-service.ts` | 1 service + 1 route migration | small |
+| 6 | Migrate team routes to helpers | ~9 routes | medium |
+| 7 | Migrate session + attachment routes to helpers | ~5 routes | medium |
+| 8 | Migrate AI + file-parse routes to helpers | 3 routes | small |
+
+Increments 1–4 are pure additions (no callers yet) and are independently shippable. Increments 5–8 are the migration phase; each is independently shippable but should land sequentially so a single failed migration is easy to bisect. Increments 6–8 may be bundled if the diff stays reviewable.
+
+---
+
+### Increment 1 — `requireAuth` foundation (P2.R1)
+
+**What:** Create `lib/api/route-auth.ts` with the auth-context types and `requireAuth()`. No callers yet — this is a pure addition that later increments build on.
+
+**Files changed:**
+
+| File | Action |
+|------|--------|
+| `lib/api/route-auth.ts` | **Create** — types + `requireAuth()` |
+
+**Helper signature and contract:**
+
+```ts
+import { NextResponse } from "next/server";
+import type { User } from "@supabase/supabase-js";
+import { createClient, createServiceRoleClient } from "@/lib/supabase/server";
+
+type ServerSupabaseClient = Awaited<ReturnType<typeof createClient>>;
+type ServiceSupabaseClient = ReturnType<typeof createServiceRoleClient>;
+
+export interface AuthContext {
+  user: User;
+  supabase: ServerSupabaseClient;
+  serviceClient: ServiceSupabaseClient;
+}
+
+export async function requireAuth(): Promise<AuthContext | NextResponse> {
+  const supabase = await createClient();
+  const { data: { user }, error } = await supabase.auth.getUser();
+  if (error || !user) {
+    return NextResponse.json({ message: "Unauthenticated" }, { status: 401 });
+  }
+  const serviceClient = createServiceRoleClient();
+  return { user, supabase, serviceClient };
+}
+```
+
+**Caller pattern (used by Increments 6–8):**
+
+```ts
+const auth = await requireAuth();
+if (auth instanceof NextResponse) return auth;
+const { user, supabase, serviceClient } = auth;
+```
+
+The `instanceof NextResponse` discriminator matches the PRD's "destructure or short-circuit" requirement and is idiomatic with how callers already return early on 401.
+
+**Failure body matches existing routes.** A spot-check across the surveyed routes shows the existing 401 body is `{ message: "Unauthenticated" }` (some routes use `{ message: "Unauthorized" }` — see Increment 6 verification step; if a route uses the latter today, P2.R5 requires it stays the same after migration, so the helper must support both messages or the message must be normalized intentionally and called out in the audit).
+
+**Verify:**
+
+- Module type-checks in isolation: `npx tsc --noEmit`.
+- No new runtime callers — `grep -rn "requireAuth" app lib --include="*.ts"` returns only the export line.
+- The helper does not duplicate cookie or auth logic — it composes existing `createClient` / `createServiceRoleClient` from `lib/supabase/server.ts`.
+
+**Forward compatibility:** Future routes consume this helper instead of inlining `auth.getUser()`. The `AuthContext` shape is the extension point — additional fields (e.g., `activeTeamId` resolved from cookie) can be added without breaking callers because callers destructure by name.
+
+---
+
+### Increment 2 — Team-context helpers + `idempotentNoOp` (P2.R1)
+
+**What:** Add `requireTeamMember`, `requireTeamAdmin`, `requireTeamOwner` to `lib/api/route-auth.ts`. Each composes `requireAuth`'s output with a team-role check using existing `team-repository` primitives. Also add `idempotentNoOp(message)` so the canonical 409-no-op response (introduced in Part 1 Increment 3) is callable without re-typing the body.
+
+**Why three helpers, not the two named in the PRD:** The PRD requires `requireTeamAdmin` and `requireTeamOwner` "at minimum." The route survey shows four routes (`teams/[teamId]/route.ts` GET, `teams/[teamId]/leave/route.ts`, `teams/[teamId]/members/route.ts` GET, `teams/[teamId]/invitations/route.ts` GET) need only *membership* (any role), not admin. Adding `requireTeamMember` removes the temptation to call `requireTeamAdmin` for read-only endpoints and prevents false-positive 403s on member-only checks.
+
+**Files changed:**
+
+| File | Action |
+|------|--------|
+| `lib/api/route-auth.ts` | **Modify** — add three team helpers, `TeamContext`, `idempotentNoOp` |
+
+**Helper signatures:**
+
+```ts
+import { createTeamRepository } from "@/lib/repositories";
+import type { Tables } from "@/lib/types/database"; // generated types
+type TeamRepo = ReturnType<typeof createTeamRepository>;
+
+export interface TeamContext extends AuthContext {
+  team: Tables<"teams">;
+  member: Tables<"team_members"> & { role: "owner" | "admin" | "member" };
+  teamRepo: TeamRepo;
+}
+
+export async function requireTeamMember(teamId: string, user: User): Promise<TeamContext | NextResponse>;
+export async function requireTeamAdmin(teamId: string, user: User): Promise<TeamContext | NextResponse>;
+export async function requireTeamOwner(teamId: string, user: User): Promise<TeamContext | NextResponse>;
+
+export function idempotentNoOp(message: string): NextResponse {
+  return NextResponse.json({ message }, { status: 409 });
+}
+```
+
+**Implementation outline (single private helper, three thin specializations):**
+
+```ts
+type RequiredRole = "member" | "admin" | "owner";
+
+async function loadTeamContext(
+  teamId: string,
+  user: User,
+  required: RequiredRole
+): Promise<TeamContext | NextResponse> {
+  const supabase = await createClient();
+  const serviceClient = createServiceRoleClient();
+  const teamRepo = createTeamRepository(supabase, serviceClient);
+
+  const team = await teamRepo.getTeamById(teamId);
+  if (!team) return NextResponse.json({ message: "Team not found" }, { status: 404 });
+
+  const member = await teamRepo.getMember(teamId, user.id);
+  if (!member) return NextResponse.json({ message: "Forbidden" }, { status: 403 });
+
+  // Role hierarchy: owner satisfies admin satisfies member.
+  const rank = { member: 0, admin: 1, owner: 2 } as const;
+  if (rank[member.role] < rank[required]) {
+    return NextResponse.json({ message: "Forbidden" }, { status: 403 });
+  }
+
+  return { user, supabase, serviceClient, team, member, teamRepo };
+}
+
+export const requireTeamMember = (teamId: string, user: User) => loadTeamContext(teamId, user, "member");
+export const requireTeamAdmin  = (teamId: string, user: User) => loadTeamContext(teamId, user, "admin");
+export const requireTeamOwner  = (teamId: string, user: User) => loadTeamContext(teamId, user, "owner");
+```
+
+**Important:** the PRD signatures `requireTeamAdmin(teamId, user)` and `requireTeamOwner(teamId, user)` are preserved verbatim. The internal `loadTeamContext` is a private implementation detail — callers never see it. This honours the user's call (2026-04-26) to keep two named helpers rather than a parameterized `requireRole`.
+
+**Note on duplicated client creation.** Each `requireTeam*` call creates fresh `supabase` + `serviceClient` instances. Since `requireAuth` already created them, callers that use both helpers pay for two creations. This is acceptable: client creation is cookie-read + object construction (sub-millisecond) and Supabase pools the underlying HTTP connection. Optimizing this is deferred to backlog if profiling later flags it.
+
+**Caller pattern:**
+
+```ts
+const auth = await requireAuth();
+if (auth instanceof NextResponse) return auth;
+
+const ctx = await requireTeamAdmin(teamId, auth.user);
+if (ctx instanceof NextResponse) return ctx;
+const { team, member, teamRepo, supabase, serviceClient } = ctx;
+```
+
+**`idempotentNoOp` migration.** Part 1 Increment 3 inlined the 409 response in `app/api/teams/[teamId]/members/[userId]/role/route.ts`. After Increment 2, that line becomes:
+
+```ts
+if (targetMember.role === parsed.data.role) {
+  return idempotentNoOp(`Member already has role '${targetMember.role}'`);
+}
+```
+
+This is a one-line swap — no behavioural change.
+
+**Verify:**
+
+- Module type-checks: `npx tsc --noEmit`.
+- The role hierarchy is correct: a unit-style spot check (manual, by reading the code) confirms `owner` satisfies `admin` and `member` checks.
+- Failure-response bodies match what Increment 6 expects each migrated route to keep returning (`Unauthenticated`, `Team not found`, `Forbidden`).
+
+**Forward compatibility:** New roles (e.g., `viewer`) require a single change: extend `RequiredRole`, the `rank` table, and add a `requireTeamViewer` factory line. The existing helpers are untouched. The user's concern about "future-proofing for more roles" is satisfied by the internal `loadTeamContext` without exposing a parameterized public API.
+
+---
+
+### Increment 3 — `requireSessionAccess` helper (P2.R1)
+
+**What:** Add `requireSessionAccess(sessionId, user)` to `lib/api/route-auth.ts`. This helper wraps the existing framework-agnostic `checkSessionAccess` from `lib/services/session-service.ts` and translates its discriminated-union result into a `NextResponse` on failure. The service stays framework-agnostic; the helper handles HTTP framing.
+
+**Files changed:**
+
+| File | Action |
+|------|--------|
+| `lib/api/route-auth.ts` | **Modify** — add `requireSessionAccess` + `SessionContext` |
+
+**Helper signature:**
+
+```ts
+import { checkSessionAccess } from "@/lib/services/session-service";
+import { createSessionRepository, createTeamRepository } from "@/lib/repositories";
+import { getActiveTeamId } from "@/lib/server/active-team"; // existing helper used by current routes
+
+type SessionRepo = ReturnType<typeof createSessionRepository>;
+
+export interface SessionContext extends AuthContext {
+  sessionId: string;
+  teamId: string | null;
+  sessionRepo: SessionRepo;
+  teamRepo: TeamRepo;
+}
+
+export async function requireSessionAccess(
+  sessionId: string,
+  user: User
+): Promise<SessionContext | NextResponse> {
+  const supabase = await createClient();
+  const serviceClient = createServiceRoleClient();
+  const sessionRepo = createSessionRepository(supabase, serviceClient);
+  const teamRepo = createTeamRepository(supabase, serviceClient);
+  const teamId = await getActiveTeamId();
+
+  const result = await checkSessionAccess(sessionRepo, teamRepo, sessionId, user.id, teamId);
+  if (!result.allowed) {
+    if (result.reason === "not_found") return NextResponse.json({ message: "Session not found" }, { status: 404 });
+    if (result.reason === "forbidden") return NextResponse.json({ message: "Forbidden" }, { status: 403 });
+    return NextResponse.json({ message: "Failed to verify session access" }, { status: 500 });
+  }
+
+  return { user, supabase, serviceClient, sessionId, teamId, sessionRepo, teamRepo };
+}
+```
+
+The exact reason → status-code mapping mirrors what each existing session route does today; Increment 7 verifies that no message string changes during migration.
+
+**Verify:**
+
+- `npx tsc --noEmit` passes.
+- The helper does not redefine the access-rule logic — it imports `checkSessionAccess` and only translates the result.
+
+**Forward compatibility:** Part 3 (session orchestrator) routes will use `requireSessionAccess` after migration. Part 9 (smaller cleanups) does not change session access logic — this helper is stable for both.
+
+---
+
+### Increment 4 — File-validation helper (P2.R3)
+
+**What:** Extract size + MIME-type validation duplicated across `app/api/sessions/[id]/attachments/route.ts:130–142` and `app/api/files/parse/route.ts:53–71` into a single helper.
+
+**Files changed:**
+
+| File | Action |
+|------|--------|
+| `lib/api/file-validation.ts` | **Create** — `validateFileUpload` |
+
+**Helper signature and contract:**
+
+```ts
+import { ACCEPTED_FILE_TYPES, MAX_FILE_SIZE_BYTES } from "@/lib/constants";
+
+export type FileValidationResult =
+  | { valid: true }
+  | { valid: false; message: string };
+
+export function validateFileUpload(file: File): FileValidationResult {
+  if (file.size > MAX_FILE_SIZE_BYTES) {
+    return { valid: false, message: "File exceeds 10MB limit" };
+  }
+  if (!(file.type in ACCEPTED_FILE_TYPES)) {
+    return { valid: false, message: `Unsupported file type: ${file.type}` };
+  }
+  return { valid: true };
+}
+```
+
+The two error message strings are pulled verbatim from the current inline checks (the attachments route currently says `"File exceeds 10MB limit"`; the parse route currently says `"File exceeds 10MB limit"`; both routes use a similar `"Unsupported file type"` phrasing — Increment 4 verification reconciles any wording drift). P2.R5 requires the migrated routes return identical messages; if the two existing wordings differ, the helper picks one and Increment 4 is the single line where the wording change is documented.
+
+**Caller pattern (used by Increments 7 and 8):**
+
+```ts
+const result = validateFileUpload(file);
+if (!result.valid) {
+  return NextResponse.json({ message: result.message }, { status: 400 });
+}
+```
+
+**Verify:**
+
+- `npx tsc --noEmit` passes.
+- Constants are imported from `lib/constants.ts` (the existing source of truth) — the helper does not redeclare the size limit or the MIME map.
+- A grep for `MAX_FILE_SIZE_BYTES` and `ACCEPTED_FILE_TYPES` in `app/api/` returns only the routes that will be migrated in Increments 7 and 8.
+
+**Forward compatibility:** Adding a new file constraint (e.g., reject files with an empty body) is a single-edit on this helper. Future upload routes call the helper without re-implementing constraints.
+
+---
+
+### Increment 5 — `canUserCreateTeam` moves into `team-service.ts` (P2.R4)
+
+**What:** Move the inline `supabase.from("profiles").select("can_create_team")` query from `app/api/teams/route.ts:66–85` into `team-service.ts` as `canUserCreateTeam(supabase, userId)`. The route calls the service.
+
+**Files changed:**
+
+| File | Action |
+|------|--------|
+| `lib/services/team-service.ts` | **Modify** — add exported `canUserCreateTeam` |
+| `app/api/teams/route.ts` | **Modify** — POST handler replaces inline query with service call |
+
+**Implementation details:**
+
+1. **Service function (`team-service.ts`).** Append:
+
+   ```ts
+   export async function canUserCreateTeam(
+     supabase: ServerSupabaseClient,
+     userId: string
+   ): Promise<{ allowed: boolean; reason?: "profile_not_found" | "feature_disabled" }> {
+     const { data: profile, error } = await supabase
+       .from("profiles")
+       .select("can_create_team")
+       .eq("id", userId)
+       .single();
+
+     if (error || !profile) {
+       console.error("[team-service] canUserCreateTeam — profile lookup failed", { userId, error });
+       return { allowed: false, reason: "profile_not_found" };
+     }
+     if (!profile.can_create_team) {
+       return { allowed: false, reason: "feature_disabled" };
+     }
+     return { allowed: true };
+   }
+   ```
+
+   The discriminated-union return type lets the caller surface a precise error message without the service knowing about HTTP. This matches `checkSessionAccess`'s shape — same convention.
+
+2. **Route migration (`app/api/teams/route.ts`).** Replace lines 66–85 with:
+
+   ```ts
+   const permission = await canUserCreateTeam(supabase, user.id);
+   if (!permission.allowed) {
+     const status = permission.reason === "profile_not_found" ? 500 : 403;
+     return NextResponse.json(
+       { message: permission.reason === "profile_not_found"
+           ? "Could not verify team-creation permission"
+           : "Your account does not have permission to create teams" },
+       { status }
+     );
+   }
+   ```
+
+   The status codes and messages must match what the inline query produces today (verify during Increment 5 — read the current route, confirm the existing 500/403 wording, and make the new call site emit identical bodies).
+
+**Verify:**
+
+- `grep -rn 'from("profiles")' app/api` returns no hits in `app/api/teams/route.ts`.
+- Manual: a user with `can_create_team = true` can still create a team; a user with `false` still gets the same 403 they got before; an orphaned profile still gets the same 500.
+- `npx tsc --noEmit` passes.
+
+**Forward compatibility:** Other profile-permission flags (e.g., `can_invite_members`) follow the same pattern in this service — single function per flag, discriminated-union result, route only handles HTTP framing. If profile-permission logic grows, the function moves to `profile-service.ts`; Increment 5 leaves a TODO comment to that effect.
+
+---
+
+### Increment 6 — Migrate team routes to helpers (P2.R2)
+
+**What:** Replace the inline `createClient → getUser → 401 → service-client → repo → role-check` block in every team route with a call to the appropriate helper from Increments 1–2.
+
+**Files changed (route → helper mapping):**
+
+| Route | Methods | Helper(s) used |
+|-------|---------|----------------|
+| `app/api/teams/route.ts` | GET, POST | `requireAuth` (POST also calls `canUserCreateTeam` from Inc. 5) |
+| `app/api/teams/[teamId]/route.ts` | GET | `requireTeamMember` |
+| `app/api/teams/[teamId]/route.ts` | PATCH, DELETE | `requireTeamOwner` |
+| `app/api/teams/[teamId]/transfer/route.ts` | POST | `requireTeamOwner` |
+| `app/api/teams/[teamId]/leave/route.ts` | POST | `requireTeamMember` (owner-leaving guard remains inline — it's logic, not auth) |
+| `app/api/teams/[teamId]/members/route.ts` | GET | `requireTeamMember` |
+| `app/api/teams/[teamId]/members/[userId]/route.ts` | DELETE | `requireTeamAdmin` |
+| `app/api/teams/[teamId]/members/[userId]/role/route.ts` | PATCH | `requireTeamOwner` (also adopts `idempotentNoOp` from Inc. 2) |
+| `app/api/teams/[teamId]/invitations/route.ts` | GET, POST | `requireTeamMember` (GET), `requireTeamAdmin` (POST) |
+| `app/api/teams/[teamId]/invitations/[invitationId]/route.ts` | DELETE | `requireTeamAdmin` |
+| `app/api/teams/[teamId]/invitations/[invitationId]/resend/route.ts` | POST | `requireTeamAdmin` |
+
+**Migration recipe (applied identically per route):**
+
+1. Delete inline `createClient()` + `auth.getUser()` + 401 check + `createServiceRoleClient()` + `createTeamRepository(...)` + (if present) inline `team.owner_id !== user.id` or `member.role !== "admin"` check.
+2. Replace with the two-step `requireAuth` + `requireTeam*` calls (or just `requireAuth` for the team-list/POST route).
+3. Destructure the helper's success result for the variables the rest of the handler uses (`user`, `team`, `member`, `teamRepo`, `supabase`, `serviceClient`).
+4. Preserve the rest of the handler verbatim — validation, business logic, response construction, logging.
+5. Preserve the existing entry/exit/error logs (P2.R5). Helper-level logs are not added — if a helper fails, the route still owns the error log for its own context.
+
+**Per-route specifics worth pinning:**
+
+- **`teams/route.ts` POST.** Uses `requireAuth` only (no team context yet — the team is being created). After auth, calls `canUserCreateTeam` (Inc. 5). The rest of the handler — validation, `teamRepo.createTeam`, response — stays.
+- **`teams/[teamId]/leave/route.ts`.** `requireTeamMember` confirms membership. The "owner cannot leave without transfer" guard — `if (member.role === "owner" && !req.body.transferToUserId) return 409` — is *business logic* and stays inline; it is not part of the auth boilerplate.
+- **`role/route.ts`.** `requireTeamOwner` replaces the inline `team.owner_id !== user.id` check. The Part 1 Increment 3 no-op response is rewritten as `idempotentNoOp(...)`. The role-permission validation (e.g., "only owner can promote to owner") stays inline — same reason as above: business logic, not auth.
+
+**Verify (per-route):**
+
+- For each migrated route: `grep -n "auth.getUser\|createClient\(\)" <file>` returns zero hits inside the handler body. The only acceptable hit is inside import statements (which should also be removed if no longer used).
+- For each migrated route: HTTP contracts unchanged. Manual smoke per route on the happy path + the dominant failure (401, 403, 404, 409) using the existing UI flows (settings page, invites flow, etc.).
+- After all team routes migrated: `grep -rn "from(\"profiles\")" app/api` returns zero hits (Inc. 5 already ensured this for the one offender).
+- `npx tsc --noEmit` passes after each route migration.
+
+**Forward compatibility:** New team routes inherit this pattern. Adding a new role check or context field touches `lib/api/route-auth.ts` only.
+
+---
+
+### Increment 7 — Migrate session + attachment routes to helpers (P2.R2, P2.R3)
+
+**What:** Migrate session and attachment routes onto `requireAuth` + `requireSessionAccess` (Increment 3), and onto `validateFileUpload` (Increment 4) for upload routes.
+
+**Files changed (route → helper mapping):**
+
+| Route | Methods | Helper(s) used |
+|-------|---------|----------------|
+| `app/api/sessions/route.ts` | GET, POST | `requireAuth` (no session yet for POST; team scoping comes from `getActiveTeamId` as today) |
+| `app/api/sessions/[id]/route.ts` | PUT, DELETE | `requireAuth` + `requireSessionAccess` |
+| `app/api/sessions/[id]/attachments/route.ts` | GET | `requireAuth` + `requireSessionAccess` |
+| `app/api/sessions/[id]/attachments/route.ts` | POST | `requireAuth` + `requireSessionAccess` + `validateFileUpload` |
+| `app/api/sessions/[id]/attachments/[attachmentId]/route.ts` | DELETE | `requireAuth` + `requireSessionAccess` |
+| `app/api/sessions/[id]/attachments/[attachmentId]/download/route.ts` | GET | `requireAuth` + `requireSessionAccess` |
+| `app/api/sessions/prompt-versions/route.ts` | GET | `requireAuth` |
+
+**Migration recipe:** identical to Increment 6, except the team-context helper is replaced by `requireSessionAccess`.
+
+**Attachment-upload specifics (POST `/api/sessions/[id]/attachments`):**
+
+- Lines 130–142 (size + MIME inline checks) are replaced with:
+
+  ```ts
+  const validation = validateFileUpload(file);
+  if (!validation.valid) {
+    return NextResponse.json({ message: validation.message }, { status: 400 });
+  }
+  ```
+
+- The `MAX_ATTACHMENTS = 5` cap (currently checked separately) stays in the route — it is per-session count, not per-file constraint, so it is not part of `validateFileUpload`. (If a future PRD wants to consolidate the per-session cap too, it can extend `validateFileUpload` to take a `currentCount` parameter; out of scope for P2.)
+
+**Verify:**
+
+- `grep -rn "MAX_FILE_SIZE_BYTES\|ACCEPTED_FILE_TYPES" app/api` returns hits only in `app/api/files/parse/route.ts` (until Increment 8 migrates it) — never in attachment routes after this increment.
+- Manual smoke: create session, edit session, upload attachment (valid + oversize + wrong-MIME), delete attachment, download attachment. Each path returns identical status + body to pre-cleanup.
+- `npx tsc --noEmit` passes.
+
+**Forward compatibility:** Part 3 (session orchestrator) will edit the body of `POST/PUT /api/sessions/[id]` again — but only the `after()` block, not the auth scaffolding. The migration in Increment 7 leaves the auth-shape stable for Part 3 to slot into.
+
+---
+
+### Increment 8 — Migrate AI + file-parse routes to helpers (P2.R2, P2.R3)
+
+**What:** Migrate the three remaining routes named in the PRD (P2.R2 + P2.R3) onto the helpers.
+
+**Files changed:**
+
+| Route | Methods | Helper(s) used |
+|-------|---------|----------------|
+| `app/api/ai/extract-signals/route.ts` | POST | `requireAuth` |
+| `app/api/ai/generate-master-signal/route.ts` | POST | `requireAuth` |
+| `app/api/files/parse/route.ts` | POST | `requireAuth` + `validateFileUpload` |
+
+**Migration recipe:** same as Increments 6 and 7. The AI routes use only `requireAuth` — they do not perform team or session role checks today. The file-parse route also uses only `requireAuth` and adds `validateFileUpload`.
+
+**Verify:**
+
+- `grep -rn "MAX_FILE_SIZE_BYTES\|ACCEPTED_FILE_TYPES" app/api` returns zero hits — both upload routes now go through `validateFileUpload`.
+- Manual smoke: trigger an extract from the capture flow (requires auth), trigger a master-signal generation, parse a file via the file-parse endpoint. Each path returns identical status + body to pre-cleanup.
+- `npx tsc --noEmit` passes.
+- Final repo-wide grep: `grep -rn "auth.getUser()" app/api` returns zero hits in route-handler bodies. Helper bodies are the only acceptable callers.
+
+**Forward compatibility:** AI routes will likely grow team-scoping in a future PRD (e.g., per-team prompt versioning, per-team rate limits). Adding `requireTeamMember` to those routes is a one-line change once the team scope lands.
+
+---
+
+## Part 2 — End-of-part audit checklist
+
+Per CLAUDE.md, after Increment 8 lands:
+
+- [ ] **SRP.** `lib/api/route-auth.ts` does one thing per export (each helper enforces one auth condition); `lib/api/file-validation.ts` does one thing (validate a single file).
+- [ ] **DRY.** No route handler still inlines `createClient → getUser → 401`; no route still inlines size/MIME checks; the `profiles.can_create_team` query exists in exactly one location (`team-service.ts`).
+- [ ] **Logging.** Every migrated route preserves its entry/exit/error logs with the same context fields (`teamId`, `sessionId`, etc.) it had pre-migration. Helpers do not add logs that would duplicate route-level logs.
+- [ ] **Behavior parity.** Status codes, error bodies, and happy-path payloads are unchanged for every migrated route (P2.R5). Verified via the Increment 6/7/8 manual smoke tests.
+- [ ] **Convention compliance.** Helpers use named exports; types are exported alongside; `lib/api/` is added to the import-order conventions of CLAUDE.md if needed (it slots into "internal services/hooks").
+- [ ] **Dead code.** Imports of `createClient`, `createServiceRoleClient`, `createTeamRepository`, `MAX_FILE_SIZE_BYTES`, `ACCEPTED_FILE_TYPES` are removed from any route that no longer uses them directly.
+- [ ] **Type safety.** `npx tsc --noEmit` and `npm run build` pass.
+
+After Part 2 completes:
+
+- [ ] Update `ARCHITECTURE.md`: add `lib/api/route-auth.ts` and `lib/api/file-validation.ts` to the file map; add a brief note to the data-flow section describing how route handlers compose helpers.
+- [ ] Add a `CHANGELOG.md` entry for PRD-023 P2 listing the eight increments and the three structural outcomes (auth helpers, file validation, profile query → service).
+- [ ] Verify Decision-table entries in `ARCHITECTURE.md`: if any decision named an inlined auth pattern as "the canonical shape," update it to point at the helper module.
+
+---
+
+## Forward references to later parts (Part 2)
+
+- **→ Part 3 (session orchestrator).** Both session write routes (`POST /api/sessions`, `PUT /api/sessions/[id]`) end Part 2 with `requireAuth` + `requireSessionAccess` already in place. Part 3 only edits the `after()` body and extracts the orchestration chain — the auth scaffolding above it is stable.
+- **→ Part 5 (database-query-service split).** The dashboard route (`/api/dashboard/route.ts`) was not migrated in Part 2 (it's not in the PRD's P2.R2 list). When Part 5 touches it, adopting `requireAuth` is a free win — Part 5 should add it as part of the route-side cleanup.
+- **→ Part 9 (smaller cleanups).** The two prompt-version routes (`/api/prompts/[id]`, `/api/sessions/prompt-versions`) — the second is migrated in Increment 7, the first is not (not in P2 scope). Part 9's prompt-version-number consolidation should adopt `requireAuth` on `/api/prompts/[id]` as a small additional cleanup.
+- **→ Part 10 (docs refresh).** The `lib/api/` directory introduction, the new helpers, the `team-service` addition, and the file map all flow into the documentation refresh.
+- **→ Backlog.** Two items surface during Part 2 that don't fit the cleanup scope: (1) consolidating client creation across multiple helper calls (perf optimization, sub-ms today), and (2) extending `validateFileUpload` to also enforce `MAX_ATTACHMENTS` per-session cap. Both belong on the cleanup backlog if measurable pressure ever appears.

@@ -7,6 +7,7 @@ import {
   changeMemberRole,
 } from "@/lib/services/team-service";
 import { createTeamRepository } from "@/lib/repositories/supabase/supabase-team-repository";
+import { idempotentNoOp } from "@/lib/api/route-auth";
 
 interface RouteContext {
   params: Promise<{ teamId: string; userId: string }>;
@@ -94,9 +95,8 @@ export async function PATCH(request: NextRequest, context: RouteContext) {
     console.log(
       `[api/teams/[teamId]/members/[userId]/role] PATCH — no-op: target already has role '${targetMember.role}'`
     );
-    return NextResponse.json(
-      { message: `Member already has role '${targetMember.role}'` },
-      { status: 409 }
+    return idempotentNoOp(
+      `Member already has role '${targetMember.role}'`
     );
   }
 
