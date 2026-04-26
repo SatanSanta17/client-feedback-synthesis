@@ -18,7 +18,7 @@ import type { ChatSource, Message, StreamState } from "@/lib/types/chat";
 // ---------------------------------------------------------------------------
 
 const LOG_PREFIX = "[useChat]";
-const MESSAGES_PAGE_SIZE = 50;
+const MESSAGES_PAGE_SIZE = 20;
 
 /**
  * Strip a complete `<!--follow-ups:...-->` block OR a trailing partial one
@@ -310,7 +310,7 @@ export function useChat(options: UseChatOptions): UseChatReturn {
     try {
       console.log(`${LOG_PREFIX} fetching more messages, cursor: ${cursor}`);
       const res = await fetch(
-        `/api/chat/conversations/${conversationId}/messages?limit=${MESSAGES_PAGE_SIZE}&cursor=${cursor}`
+        `/api/chat/conversations/${conversationId}/messages?limit=${MESSAGES_PAGE_SIZE}&cursor=${encodeURIComponent(cursor)}`
       );
 
       if (!res.ok) throw new Error(`HTTP ${res.status}`);

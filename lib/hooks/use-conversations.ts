@@ -17,7 +17,7 @@ import type { ConversationUpdate } from "@/lib/repositories/conversation-reposit
 // ---------------------------------------------------------------------------
 
 const LOG_PREFIX = "[useConversations]";
-const PAGE_SIZE = 30;
+const PAGE_SIZE = 15;
 
 /**
  * Sort conversations in the same order the DB returns them:
