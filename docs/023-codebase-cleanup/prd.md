@@ -111,32 +111,18 @@ After this part, `POST /api/sessions` and `PUT /api/sessions/[id]` are each unde
 
 ## Part 4 — `useChat` Hook Decomposition
 
-**Severity:** High — `useChat` is the central hook for the chat experience. Any regression breaks the live streaming UX.
+**Status:** Deferred to PRD-024.
 
-### Requirements
+This part originally proposed a cleanup-only decomposition of `lib/hooks/use-chat.ts` with no behavior change. Planning surfaced two limitations that make a cleanup-only refactor not worth shipping in isolation:
 
-**P4.R1 — `useChat` is decomposed by responsibility.**
-The current 660-LOC hook is split such that each new hook owns exactly one concern. At minimum, the boundaries are: streaming content + SSE consumption, message list + pagination, and conversation lifecycle (id switching, reset, cancellation). The exact hook names live in the TRD; the requirement is one-concern-per-hook with no concern split across hooks.
+1. The hook owns streaming state in a single instance scoped to the chat page. Switching conversations mid-stream causes the streaming bubble and the final assistant-message append to render against whichever conversation is currently displayed, even when the stream belongs to a different one. The bug is purely client-side (the server persists correctly), but it's user-visible.
+2. The same shape lets a user navigate away from a streaming conversation and start a second send in another conversation, which silently orphans the first stream's `AbortController` and interleaves writes to shared state. There is no global signal that "a stream is alive somewhere," so the chat-input cannot be disabled correctly across conversations.
 
-**P4.R2 — SSE parsing and follow-up extraction are shared utilities.**
-The SSE chunk parser and the follow-up regex / stripping logic — currently duplicated between `lib/hooks/use-chat.ts` and `lib/services/chat-stream-service.ts` — live in shared utility modules. Both consumers import from the same source. The `FOLLOW_UP_COMPLETE_RE` / `FOLLOW_UP_PARTIAL_RE` patterns exist in exactly one file.
+Both issues require lifting streaming state out of the hook into a `StreamingProvider` keyed by `conversationId`, with per-conversation slices, a global "active streams" set for the sidebar/input gate, and per-conversation cancel/start methods. That architectural change is also the natural enabler of multi-conversation streaming.
 
-**P4.R3 — The public API of `useChat` is unchanged.**
-Components that consume `useChat` (chat area, conversation sidebar, message thread, etc.) are not modified beyond the import path. The returned object shape, callback names, and state names are identical to the current implementation.
+PRD-024 captures this rework end-to-end (architecture lift + multi-stream feature + the bug fix as a side-effect of the new design). The `useChat` decomposition goal of P4.R1 is achieved as a side-effect of PRD-024 rather than as a standalone cleanup pass. PRD-024 also subsumes P4.R2 (shared SSE parser / follow-up regex), since the new provider owns SSE consumption.
 
-**P4.R4 — Ref count drops meaningfully.**
-The current implementation uses 7 refs to coordinate streaming state, abort, conversation switching, and parent callbacks. After decomposition, no single hook holds more than 3 refs, and no ref's purpose overlaps with another's.
-
-**P4.R5 — Cancellation, retry, and conversation switching behavior are preserved.**
-Aborting a stream mid-response, switching conversations during a stream, retrying a failed message, and triggering `onConversationCreated` on a fresh send all behave exactly as they do today.
-
-### Acceptance Criteria
-
-- [ ] P4.R1 — `lib/hooks/use-chat.ts` (or its replacement composer) is under 200 LOC; each extracted sub-hook owns a single concern.
-- [ ] P4.R2 — The follow-up regex and SSE parser exist in exactly one module; `chat-stream-service.ts` imports them.
-- [ ] P4.R3 — Consumers of `useChat` compile and run with no API changes; only the import path may change.
-- [ ] P4.R4 — Each new hook holds at most 3 refs; refs have non-overlapping purposes.
-- [ ] P4.R5 — Manual chat smoke test (send, abort mid-stream, switch conversation mid-stream, retry, fresh-conversation creation) passes with no behavioral diff.
+No work from Part 4 lands under PRD-023.
 
 ---
 
@@ -318,16 +304,16 @@ The conversation search filter in `use-conversations.ts` currently runs on every
 ### Requirements
 
 **P10.R1 — `ARCHITECTURE.md` "Current State" reflects the cleanup outcome.**
-The summary paragraph is updated to describe the new module layout (split query handlers, decomposed `useChat`, route helpers, session orchestrator). It is a description of what exists, not a list of changes.
+The summary paragraph is updated to describe the new module layout (split query handlers, route helpers, session orchestrator). It is a description of what exists, not a list of changes. (`useChat` decomposition is deferred to PRD-024 and is not part of this cleanup outcome.)
 
 **P10.R2 — `ARCHITECTURE.md` file map matches reality.**
-Every new file introduced by Parts 2–9 is added to the file map. Every removed file (Part 1: `_helpers.ts`, `theme-toggle.tsx`) is removed from the file map. A walk of `app/`, `components/`, and `lib/` and a grep against the file map produces zero diffs.
+Every new file introduced by Parts 2, 3, and 5–9 is added to the file map. Every removed file (Part 1: `_helpers.ts`, `theme-toggle.tsx`) is removed from the file map. A walk of `app/`, `components/`, and `lib/` and a grep against the file map produces zero diffs.
 
 **P10.R3 — `ARCHITECTURE.md` Key Design Decisions are updated where relevant.**
 Decision #19 (post-response chain) is updated to point at the new orchestrator module. Any other decision that named a now-moved file is updated.
 
 **P10.R4 — `CHANGELOG.md` has an entry per completed cleanup part.**
-Each part lands its own dated entry summarizing the outcome (e.g., "PRD-023 P5: split `database-query-service.ts` into domain modules"). Entries describe what shipped, not how.
+Each completed part (Parts 1, 2, 3, 5, 6, 7, 8, 9) lands its own dated entry summarizing the outcome (e.g., "PRD-023 P5: split `database-query-service.ts` into domain modules"). Entries describe what shipped, not how. Part 4 is deferred to PRD-024 and does not get an entry under PRD-023.
 
 **P10.R5 — No stale references remain.**
 A grep for the names of removed files, removed exports, or merged helpers returns zero hits across `ARCHITECTURE.md`, `CHANGELOG.md`, and `CLAUDE.md`. Comments in the codebase that point at moved files are also updated.
@@ -337,7 +323,7 @@ A grep for the names of removed files, removed exports, or merged helpers return
 - [ ] P10.R1 — "Current State" paragraph in `ARCHITECTURE.md` reflects the new module layout.
 - [ ] P10.R2 — File map walk returns zero diffs against the actual filesystem.
 - [ ] P10.R3 — Key Design Decisions referencing moved files are updated.
-- [ ] P10.R4 — `CHANGELOG.md` has dated entries for Parts 1–9.
+- [ ] P10.R4 — `CHANGELOG.md` has dated entries for Parts 1, 2, 3, 5, 6, 7, 8, and 9. Part 4 is excluded (deferred to PRD-024).
 - [ ] P10.R5 — A repo-wide grep for removed identifiers returns zero hits in docs.
 
 ---

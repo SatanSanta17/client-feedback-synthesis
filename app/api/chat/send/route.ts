@@ -14,6 +14,11 @@ import { createConversationRepository } from "@/lib/repositories/supabase/supaba
 import { createMessageRepository } from "@/lib/repositories/supabase/supabase-message-repository";
 import { createEmbeddingRepository } from "@/lib/repositories/supabase/supabase-embedding-repository";
 
+// 60s ceiling for streaming chat responses. Pinned so a Vercel plan default
+// change can't silently truncate streams. Must be a literal — Next.js segment
+// configs aren't statically resolvable across module boundaries.
+export const maxDuration = 60;
+
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
