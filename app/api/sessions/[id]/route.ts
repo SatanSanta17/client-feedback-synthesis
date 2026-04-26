@@ -2,12 +2,8 @@ import { NextRequest, NextResponse, after } from "next/server";
 import { z } from "zod";
 import { MAX_COMBINED_CHARS } from "@/lib/constants";
 import { EXTRACTION_SCHEMA_VERSION } from "@/lib/schemas/extraction-schema";
-import { createClient, createServiceRoleClient } from "@/lib/supabase/server";
-import { getActiveTeamId } from "@/lib/cookies/active-team-server";
-import { mapAccessError } from "@/lib/utils/map-access-error";
-import { createSessionRepository } from "@/lib/repositories/supabase/supabase-session-repository";
+import { requireAuth, requireSessionAccess } from "@/lib/api/route-auth";
 import { createClientRepository } from "@/lib/repositories/supabase/supabase-client-repository";
-import { createTeamRepository } from "@/lib/repositories/supabase/supabase-team-repository";
 import { createMasterSignalRepository } from "@/lib/repositories/supabase/supabase-master-signal-repository";
 import { createEmbeddingRepository } from "@/lib/repositories/supabase/supabase-embedding-repository";
 import { createThemeRepository } from "@/lib/repositories/supabase/supabase-theme-repository";
@@ -15,7 +11,6 @@ import { createSignalThemeRepository } from "@/lib/repositories/supabase/supabas
 import { createInsightRepository } from "@/lib/repositories/supabase/supabase-insight-repository";
 import { maybeRefreshDashboardInsights } from "@/lib/services/insight-service";
 import {
-  checkSessionAccess,
   updateSession,
   deleteSession,
   SessionNotFoundError,
@@ -84,23 +79,14 @@ export async function PUT(
 
   console.log("[api/sessions/[id]] PUT — id:", id);
 
-  const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  const auth = await requireAuth();
+  if (auth instanceof NextResponse) return auth;
 
-  if (!user) {
-    return mapAccessError("unauthenticated");
-  }
+  const ctx = await requireSessionAccess(id, auth.user);
+  if (ctx instanceof NextResponse) return ctx;
+  const { user, supabase, serviceClient, teamId, sessionRepo } = ctx;
 
-  const teamId = await getActiveTeamId();
-  const serviceClient = createServiceRoleClient();
-  const sessionRepo = createSessionRepository(supabase, serviceClient, teamId);
-  const teamRepo = createTeamRepository(supabase, serviceClient);
   const clientRepo = createClientRepository(supabase, teamId);
-
-  const access = await checkSessionAccess(sessionRepo, teamRepo, id, user.id, teamId);
-  if (!access.allowed) return mapAccessError(access.reason);
 
   let body: unknown;
   try {
@@ -244,23 +230,14 @@ export async function DELETE(
 
   console.log("[api/sessions/[id]] DELETE — id:", id);
 
-  const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  const auth = await requireAuth();
+  if (auth instanceof NextResponse) return auth;
 
-  if (!user) {
-    return mapAccessError("unauthenticated");
-  }
+  const ctx = await requireSessionAccess(id, auth.user);
+  if (ctx instanceof NextResponse) return ctx;
+  const { supabase, serviceClient, teamId, sessionRepo } = ctx;
 
-  const teamId = await getActiveTeamId();
-  const serviceClient = createServiceRoleClient();
-  const sessionRepo = createSessionRepository(supabase, serviceClient, teamId);
-  const teamRepo = createTeamRepository(supabase, serviceClient);
   const masterSignalRepo = createMasterSignalRepository(supabase, serviceClient, teamId);
-
-  const access = await checkSessionAccess(sessionRepo, teamRepo, id, user.id, teamId);
-  if (!access.allowed) return mapAccessError(access.reason);
 
   try {
     await deleteSession(sessionRepo, masterSignalRepo, id);

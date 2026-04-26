@@ -2,7 +2,7 @@ import { NextRequest, NextResponse, after } from "next/server";
 import { z } from "zod";
 import { MAX_COMBINED_CHARS } from "@/lib/constants";
 import { EXTRACTION_SCHEMA_VERSION } from "@/lib/schemas/extraction-schema";
-import { createClient, createServiceRoleClient } from "@/lib/supabase/server";
+import { requireAuth } from "@/lib/api/route-auth";
 import { getActiveTeamId } from "@/lib/cookies/active-team-server";
 import { createSessionRepository } from "@/lib/repositories/supabase/supabase-session-repository";
 import { createClientRepository } from "@/lib/repositories/supabase/supabase-client-repository";
@@ -56,15 +56,12 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ message }, { status: 400 });
   }
 
-  try {
-    const supabase = await createClient();
-    const teamId = await getActiveTeamId();
-    const serviceClient = createServiceRoleClient();
+  const auth = await requireAuth();
+  if (auth instanceof NextResponse) return auth;
+  const { supabase, serviceClient } = auth;
 
-    const { data: { user } } = await supabase.auth.getUser();
-    if (!user) {
-      return NextResponse.json({ message: "Unauthorized" }, { status: 401 });
-    }
+  try {
+    const teamId = await getActiveTeamId();
 
     const sessionRepo = createSessionRepository(supabase, serviceClient, teamId);
 
@@ -154,15 +151,12 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ message }, { status: 400 });
   }
 
-  try {
-    const supabase = await createClient();
-    const teamId = await getActiveTeamId();
-    const serviceClient = createServiceRoleClient();
+  const auth = await requireAuth();
+  if (auth instanceof NextResponse) return auth;
+  const { user, supabase, serviceClient } = auth;
 
-    const { data: { user } } = await supabase.auth.getUser();
-    if (!user) {
-      return NextResponse.json({ message: "Unauthorized" }, { status: 401 });
-    }
+  try {
+    const teamId = await getActiveTeamId();
 
     const sessionRepo = createSessionRepository(supabase, serviceClient, teamId);
     const clientRepo = createClientRepository(supabase, teamId);

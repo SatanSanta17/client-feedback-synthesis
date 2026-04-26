@@ -1,15 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 
-import { createClient, createServiceRoleClient } from "@/lib/supabase/server";
-import { getActiveTeamId } from "@/lib/cookies/active-team-server";
-import {
-  getSignedDownloadUrl,
-} from "@/lib/services/attachment-service";
-import { checkSessionAccess } from "@/lib/services/session-service";
-import { mapAccessError } from "@/lib/utils/map-access-error";
+import { requireAuth, requireSessionAccess } from "@/lib/api/route-auth";
+import { getSignedDownloadUrl } from "@/lib/services/attachment-service";
 import { createAttachmentRepository } from "@/lib/repositories/supabase/supabase-attachment-repository";
-import { createSessionRepository } from "@/lib/repositories/supabase/supabase-session-repository";
-import { createTeamRepository } from "@/lib/repositories/supabase/supabase-team-repository";
 
 export async function GET(
   _request: NextRequest,
@@ -24,20 +17,12 @@ export async function GET(
     attachmentId
   );
 
-  const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  const auth = await requireAuth();
+  if (auth instanceof NextResponse) return auth;
 
-  if (!user) return mapAccessError("unauthenticated");
-
-  const teamId = await getActiveTeamId();
-  const serviceClient = createServiceRoleClient();
-  const sessionRepo = createSessionRepository(supabase, serviceClient, teamId);
-  const teamRepo = createTeamRepository(supabase, serviceClient);
-
-  const access = await checkSessionAccess(sessionRepo, teamRepo, sessionId, user.id, teamId);
-  if (!access.allowed) return mapAccessError(access.reason);
+  const ctx = await requireSessionAccess(sessionId, auth.user);
+  if (ctx instanceof NextResponse) return ctx;
+  const { supabase, serviceClient } = ctx;
 
   const attachmentRepo = createAttachmentRepository(supabase, serviceClient);
 

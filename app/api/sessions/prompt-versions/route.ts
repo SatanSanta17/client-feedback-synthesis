@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { createClient, createServiceRoleClient } from "@/lib/supabase/server";
+import { requireAuth } from "@/lib/api/route-auth";
 import { getActiveTeamId } from "@/lib/cookies/active-team-server";
 import { createSessionRepository } from "@/lib/repositories/supabase/supabase-session-repository";
 import { createPromptRepository } from "@/lib/repositories/supabase/supabase-prompt-repository";
@@ -9,21 +9,11 @@ import type { PromptKey } from "@/lib/repositories/prompt-repository";
 export async function GET() {
   console.log("[api/sessions/prompt-versions] GET — fetching distinct prompt versions");
 
-  const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-
-  if (!user) {
-    console.warn("[api/sessions/prompt-versions] GET — unauthenticated request");
-    return NextResponse.json(
-      { message: "Authentication required" },
-      { status: 401 }
-    );
-  }
+  const auth = await requireAuth();
+  if (auth instanceof NextResponse) return auth;
+  const { supabase, serviceClient } = auth;
 
   const teamId = await getActiveTeamId();
-  const serviceClient = createServiceRoleClient();
   const sessionRepo = createSessionRepository(supabase, serviceClient, teamId);
   const promptRepo = createPromptRepository(supabase, teamId);
 
