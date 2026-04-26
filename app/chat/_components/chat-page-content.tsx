@@ -209,7 +209,7 @@ export function ChatPageContent({
   }
 
   return (
-    <div className="relative flex h-full w-full">
+    <div className="relative flex h-[100dvh] w-full overflow-hidden">
       <ConversationSidebar
         filteredConversations={conversationsHook.filteredConversations}
         activeConversationId={activeConversationId}

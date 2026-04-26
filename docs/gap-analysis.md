@@ -84,11 +84,13 @@ All environments share one Supabase instance. Schema migrations applied during d
 
 ---
 
-### E6 — Supabase storage not cleaned on session soft-delete
+### E6 — Supabase storage not cleaned on session soft-delete ⏸ Deferred to PRD-025
 **Files:** `app/api/sessions/[id]/route.ts` (DELETE), `lib/services/attachment-service.ts`
 **Priority: Medium-High**
 
 Attachments are hard-deleted from storage when explicitly removed via the UI. But when a parent session is soft-deleted, only the `session_attachments` DB rows are soft-deleted — the files in `SYNTHESISER_FILE_UPLOAD` remain. No cascade, no cleanup job. On Supabase free tier (1GB), orphaned files accumulate silently.
+
+**Deferred (2026-04-26).** Bundled into PRD-025 (Soft-Delete Purge of Session Data) alongside its sibling — embedding rows in `session_embeddings` exhibit the same orphan-on-soft-delete shape (queries filter via `WHERE sessions.deleted_at IS NULL` but the rows persist in pgvector forever). PRD-025 introduces a single time-windowed purge that covers both stores plus the eventual hard-delete of the session row, so storage and pgvector cleanup share one mechanism and one retention policy.
 
 ---
 
@@ -127,11 +129,13 @@ The flow is `deleteBySessionId()` then `upsertChunks()` with no advisory lock. T
 
 ---
 
-### E10 — Theme taxonomy grows noisy with no deduplication
+### E10 — Theme taxonomy grows noisy with no deduplication ⏸ Deferred to PRD-026
 **Files:** `lib/services/theme-service.ts`, `lib/repositories/supabase/supabase-theme-repository.ts`
 **Priority: Medium**
 
 Theme reuse is determined by case-insensitive name matching (`ilike`). Semantically equivalent themes with different wording ("API Performance", "API Speed", "API Latency") are treated as distinct and accumulate over time. No embedding-based deduplication or merge strategy exists. The `top_themes` and `theme_trends` dashboard widgets fragment signal across near-duplicate rows.
+
+**Deferred (2026-04-26).** Bundled into PRD-026 (Theme Deduplication). The PRD addresses both halves of the gap: an embedding-based prevention guard at theme-creation time (so synonyms stop slipping through during extraction), plus an admin-confirmed merge flow with a platform-curated, impact-ranked list of candidate pairs (so the existing backlog of duplicates can be cleaned up without forcing the admin to audit the full taxonomy). Auto-merge and scheduled-cron merging are explicitly rejected — frequency is gated by deliberate admin action so dashboard renames don't surprise workspace members.
 
 ---
 
@@ -150,10 +154,12 @@ No error tracking (Sentry or equivalent), no structured log aggregation, no upti
 
 ---
 
-### E13 — No automated test suite
+### E13 — No automated test suite ⏸ Deferred to PRD-027
 **Priority: Low**
 
 `MockSessionRepository` exists (`lib/repositories/mock/`) but no test runner, no test files, no CI test step. The repository pattern and service layer are cleanly structured for testability but that investment is unrealized.
+
+**Deferred (2026-04-26).** Bundled into PRD-027 (Testing Foundation). The PRD scopes the work to seed-only — install a test runner, wire a CI gate, write happy-path + one-failure-mode tests for the five highest-risk services (`session-service`, `theme-service`, `embedding-orchestrator`, `ai-service`, `database-query-service`), and update `CLAUDE.md` so future PRDs include test coverage in their acceptance criteria where applicable. Route-handler tests, component tests, E2E (Playwright), coverage thresholds, and AI-prompt snapshots are explicitly deferred to backlog — chasing coverage now is busy-work; making tests a default for new work is the leverage point.
 
 ---
 
