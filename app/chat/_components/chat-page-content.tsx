@@ -13,6 +13,7 @@ import { useState, useCallback, useEffect, useMemo } from "react";
 import { useAuth } from "@/components/providers/auth-provider";
 import { useConversations } from "@/lib/hooks/use-conversations";
 import { useChat } from "@/lib/hooks/use-chat";
+import { markConversationViewed } from "@/lib/streaming";
 import { ConversationSidebar } from "./conversation-sidebar";
 import { ChatArea } from "./chat-area";
 import type { Conversation } from "@/lib/types/chat";
@@ -146,6 +147,10 @@ export function ChatPageContent({
       window.history.pushState(null, "", `/chat/${id}`);
       clearMessages();
       setActiveConversationId(id);
+      // Clear the unseen-completion flag so the sidebar's solid dot
+      // disappears the moment the user opens the conversation (PRD-024 P4.R6).
+      // Idempotent with useChat's fold (which also calls this once mounted).
+      markConversationViewed(id);
     },
     [clearMessages]
   );
@@ -180,6 +185,10 @@ export function ChatPageContent({
       const id = parseConversationIdFromPath(window.location.pathname);
       clearMessages();
       setActiveConversationId(id);
+      // Browser back/forward into a conversation also acknowledges any
+      // unseen completion (PRD-024 P4.R6). Skip when id is null (fresh-chat
+      // target — no conversation to mark).
+      if (id) markConversationViewed(id);
       setIsMobileSidebarOpen(false);
     }
     window.addEventListener("popstate", onPopState);
@@ -214,6 +223,7 @@ export function ChatPageContent({
       <ConversationSidebar
         filteredConversations={conversationsHook.filteredConversations}
         activeConversationId={activeConversationId}
+        teamId={teamId}
         isArchiveView={conversationsHook.isArchiveView}
         isLoading={conversationsHook.isLoading}
         hasMore={conversationsHook.hasMore}

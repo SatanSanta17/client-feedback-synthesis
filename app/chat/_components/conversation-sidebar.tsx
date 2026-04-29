@@ -25,6 +25,7 @@ import {
   SheetContent,
   SheetTitle,
 } from "@/components/ui/sheet";
+import { useActiveStreamCount } from "@/lib/streaming";
 import { ConversationItem } from "./conversation-item";
 import type { Conversation } from "@/lib/types/chat";
 
@@ -38,6 +39,12 @@ interface ConversationSidebarProps {
   filteredConversations: Conversation[];
   /** Currently selected conversation ID. */
   activeConversationId: string | null;
+  /**
+   * Active workspace — NULL = personal. Used to scope the footer's
+   * aggregate streaming-count text (PRD-024 P4.R4) to the current
+   * workspace; cross-workspace streams don't appear in the count.
+   */
+  teamId: string | null;
   /** Whether viewing archived conversations. */
   isArchiveView: boolean;
   /** Whether initial load is in progress. */
@@ -72,6 +79,7 @@ export function ConversationSidebar({
   className,
   filteredConversations,
   activeConversationId,
+  teamId,
   isArchiveView,
   isLoading,
   hasMore,
@@ -92,6 +100,17 @@ export function ConversationSidebar({
 }: ConversationSidebarProps) {
   // Search bar visibility
   const [isSearchOpen, setIsSearchOpen] = useState(false);
+
+  // Footer text (PRD-024 P4.R4) — workspace-scoped streaming count with
+  // explicit singular/plural so future i18n catalogs can swap each branch
+  // independently. Updates reactively as streams start/complete.
+  const activeStreamCount = useActiveStreamCount(teamId);
+  const footerText =
+    activeStreamCount === 0
+      ? "Start a conversation"
+      : activeStreamCount === 1
+        ? "1 chat is streaming"
+        : `${activeStreamCount} chats are streaming`;
 
   // Split conversations into pinned and unpinned groups
   const { pinnedConversations, unpinnedConversations } = useMemo(() => {
@@ -277,6 +296,13 @@ export function ConversationSidebar({
         )}
       </div>
 
+      {/* Footer — aggregate streaming status (PRD-024 P4.R4) */}
+      <p
+        aria-live="polite"
+        className="border-t border-border px-4 py-2 text-center text-xs text-muted-foreground"
+      >
+        {footerText}
+      </p>
     </div>
   );
 
