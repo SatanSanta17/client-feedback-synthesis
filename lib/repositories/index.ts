@@ -69,3 +69,10 @@ export type {
   InsightRepository,
   InsightInsert,
 } from "./insight-repository";
+export type {
+  NotificationRepository,
+  NotificationInsert,
+  ListForUserOptions,
+  ListForUserResult,
+  DeleteExpiredOptions,
+} from "./notification-repository";

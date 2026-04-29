@@ -16,3 +16,4 @@ export { createMessageRepository } from "./supabase-message-repository";
 export { createThemeRepository } from "./supabase-theme-repository";
 export { createSignalThemeRepository } from "./supabase-signal-theme-repository";
 export { createInsightRepository } from "./supabase-insight-repository";
+export { createNotificationRepository } from "./supabase-notification-repository";
