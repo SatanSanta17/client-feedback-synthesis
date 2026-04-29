@@ -56,14 +56,6 @@ export function setSlice(
   notify();
 }
 
-/**
- * Read-only snapshot of all slices. Aggregate hooks iterate this to derive
- * workspace-filtered lists (active streams, unseen completions).
- */
-export function listSlices(): ReadonlyMap<string, ConversationStreamSlice> {
-  return slices;
-}
-
 // ---------------------------------------------------------------------------
 // Selectors (PRD-024 Part 6 — predicate consolidation)
 // ---------------------------------------------------------------------------
