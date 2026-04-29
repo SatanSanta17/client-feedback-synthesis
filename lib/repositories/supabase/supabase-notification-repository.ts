@@ -27,6 +27,22 @@ const DEFAULT_LIST_LIMIT = 50;
 const DEFAULT_WINDOW_DAYS = 30;
 
 /**
+ * Conditionally narrows a query to one workspace. `undefined` and `null` are
+ * both treated as "no filter" — consumers pass either when they want the
+ * cross-workspace default (PRD-029 §P2.R10).
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- query builders are heavily generic
+function applyOptionalTeamFilter<Q extends { eq: (col: string, val: any) => Q }>(
+  query: Q,
+  teamId: string | null | undefined
+): Q {
+  if (teamId === undefined || teamId === null) {
+    return query;
+  }
+  return query.eq("team_id", teamId);
+}
+
+/**
  * Maps a raw Supabase row (snake_case) to a domain `WorkspaceNotification`
  * (camelCase). Warns — but does not throw — when the row's `event_type` is
  * not in the registered registry; renderers (Part 3) handle the fallback path.
@@ -111,9 +127,7 @@ export function createNotificationRepository(
         .order("id", { ascending: false })
         .limit(limit + 1);
 
-      if (options.teamId !== undefined && options.teamId !== null) {
-        query = query.eq("team_id", options.teamId);
-      }
+      query = applyOptionalTeamFilter(query, options.teamId);
 
       if (options.includeRead === false) {
         query = query.is("read_at", null);
@@ -163,9 +177,7 @@ export function createNotificationRepository(
         .select("id", { count: "exact", head: true })
         .is("read_at", null);
 
-      if (options.teamId !== undefined && options.teamId !== null) {
-        query = query.eq("team_id", options.teamId);
-      }
+      query = applyOptionalTeamFilter(query, options.teamId);
 
       const { count, error } = await query;
       if (error) {
@@ -205,9 +217,7 @@ export function createNotificationRepository(
         .update({ read_at: new Date().toISOString() })
         .is("read_at", null);
 
-      if (options.teamId !== undefined && options.teamId !== null) {
-        query = query.eq("team_id", options.teamId);
-      }
+      query = applyOptionalTeamFilter(query, options.teamId);
 
       const { error } = await query;
       if (error) {

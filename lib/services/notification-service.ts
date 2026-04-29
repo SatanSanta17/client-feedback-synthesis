@@ -14,6 +14,8 @@
  * this service.
  */
 
+import type { z } from "zod";
+
 import {
   NOTIFICATION_EVENTS,
   isNotificationEventType,
@@ -58,16 +60,27 @@ export class InvalidPayloadError extends Error {
 // Public API
 // ---------------------------------------------------------------------------
 
-export interface EmitInput {
+/** Common emit fields shared by every event variant. */
+interface EmitInputBase {
   teamId: string;
   /** Omit or pass null for a broadcast notification (visible to every team member). */
   userId?: string | null;
-  eventType: NotificationEventType;
-  /** Validated against the event-type's Zod schema before insert. */
-  payload: unknown;
   /** Optional per-row override for retention (Part 5). */
   expiresAt?: string | null;
 }
+
+/**
+ * Discriminated union over `NotificationEventType` — each variant ties an
+ * `eventType` to its inferred payload shape so the call site is checked at
+ * compile time. Catching `archivedTheemId` typos in the editor is what this
+ * shape exists for; the runtime Zod parse remains as defence in depth.
+ */
+export type EmitInput = {
+  [E in NotificationEventType]: EmitInputBase & {
+    eventType: E;
+    payload: z.infer<(typeof NOTIFICATION_EVENTS)[E]["payloadSchema"]>;
+  };
+}[NotificationEventType];
 
 /**
  * Emit a workspace notification.
@@ -186,4 +199,4 @@ export async function markAllRead(
 /** Re-export the closed event registry so admin tooling and tests can
  *  introspect known event types without importing the lower-level module
  *  directly. The registry itself is the public contract. */
-export { NOTIFICATION_EVENTS };
+export { NOTIFICATION_EVENTS } from "@/lib/notifications/events";
