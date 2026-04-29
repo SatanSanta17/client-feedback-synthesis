@@ -1969,3 +1969,436 @@ Per CLAUDE.md ("After each TRD part completes"):
 4. **Test affected flows** — covered by the P5 acceptance battery in Increment 2.
 
 ---
+
+# Part 6
+## Part 6 — `useChat` Cleanup (subsumes PRD-023 P4)
+
+This part covers P6.R1 through P6.R4 from the PRD. **Most of P6's intent is already satisfied as a side-effect of Parts 2–5.** What remains is the explicit LOC-reduction target for `useChat` (P6.R4: under 200 LOC) and the predicate-duplication cleanup that's been carried over from Part 3's and Part 5's audits.
+
+The structural satisfactions:
+
+| Requirement | Status |
+|---|---|
+| **P6.R1 — `useChat` is concise.** No streaming refs, abort controllers, SSE loops, or state machines. | ✅ **Already done.** Part 2 removed all streaming internals; the file has only message-list state plus a thin streaming-passthrough layer. The only thing missing is the LOC ceiling. |
+| **P6.R2 — SSE parsing and follow-up extraction live in one place.** | ✅ **Already done.** Part 1 Increment 1 extracted `parseSSEChunk`, `stripFollowUpBlock`, and the follow-up regexes to `lib/utils/chat-helpers.ts`. Repo-wide grep confirms each pattern in exactly one source file. The streaming module's `runStream` and the server-side `chat-stream-service.ts` both import from the same source. |
+| **P6.R3 — Dead code from the legacy hook is removed.** | ✅ **Already done.** Part 2's rewrite deleted the legacy SSE loop, `abortControllerRef`, `streamingContentRef`, `assistantMessageIdRef`, `parseSSEChunk` / `stripFollowUpBlock` imports — none remain in `use-chat.ts`. No commented-out residue. |
+| **P6.R4 — `useChat` (or successor) under 200 LOC.** | ❌ **Not satisfied.** Post-Part-4 audit fixes, `use-chat.ts` is at **492 LOC**. ~150 LOC of that is JSDoc on the `UseChatReturn` interface (preserved verbatim per P2.R5); the remaining ~340 LOC is structural state + scaffolding. Decomposition is required. |
+
+**Database models:** None.
+**API endpoints:** None.
+**Frontend pages/components:** No chat-surface component changes — `chat-area.tsx`, `chat-input.tsx`, etc. continue to consume the same `UseChatReturn` interface (P2.R5 preserved).
+**Hook decomposition:** `lib/hooks/use-chat.ts` (492 LOC) splits into three:
+- `lib/hooks/use-conversation-messages.ts` (new, ~150 LOC) — owns the message-list role.
+- `lib/hooks/use-chat-streaming.ts` (new, ~180 LOC) — owns the streaming subscription + send/cancel/retry + fold + clear-unseen + pending-fallback role.
+- `lib/hooks/use-chat.ts` (rewrite, ~80 LOC) — thin composer; same `UseChatReturn` shape.
+
+**Streaming module cleanup (carry-over from Parts 3 + 5):** The predicate `slice.teamId === teamId && slice.streamState === "streaming"` currently appears in two source files (`streaming-actions.ts`'s `countActiveStreams` and `streaming-hooks.ts`'s `computeActiveStreamIds`). Extract a shared predicate + iteration helper.
+
+### Architectural pivot — split `useChat` along its two natural concerns
+
+`useChat` already does two distinct things post-Part-2:
+
+1. **Message-list management** — load on conversationId change (with the prev-conversationId skip-refetch guard from Gap P9), paginate via `fetchMoreMessages`, expose `clearMessages` for in-app navigation, surface `isConversationNotFound` for cross-user UUID hits.
+2. **Streaming subscription + actions** — read fields from the slice via `useStreamingSlice(subscriptionId)`, expose `sendMessage` / `cancelStream` / `retryLastMessage` that delegate to the streaming module, fold `slice.finalMessage` into `messages[]` via `useLayoutEffect`, clear `slice.hasUnseenCompletion` via the second `useLayoutEffect` from Part 4 audit, manage the `pendingConversationId` fresh-send fallback from Part 2 audit.
+
+These concerns are **coupled** (send needs to push the optimistic user message into messages[]; retry needs to trim messages[]; fold appends to messages[]) but **separable** — the coupling is a small, well-defined seam: the streaming hook needs `setMessages` and `messages` from the message-list hook.
+
+The composer (`useChat`) wires the seam:
+
+```ts
+function useChat(options: UseChatOptions): UseChatReturn {
+  const messageList = useConversationMessages({ conversationId: options.conversationId });
+  const streaming = useChatStreaming({
+    conversationId: options.conversationId,
+    teamId: options.teamId,
+    onConversationCreated: options.onConversationCreated,
+    setMessages: messageList.setMessages,
+    messages: messageList.messages,
+  });
+  return { ...messageList, ...streaming };
+}
+```
+
+Each sub-hook is focused, testable in isolation, and well under the 200-LOC ceiling. The composer itself is ~80 LOC including the JSDoc-preserved `UseChatReturn` interface (which the chat-surface components depend on per P2.R5).
+
+### Architectural pivot — predicate consolidation in the streaming module
+
+Three Part audits have flagged it; Part 6 owns the cleanup. The duplicated logic:
+
+```ts
+// streaming-actions.ts (Part 3 Increment 1):
+function countActiveStreams(teamId: string | null): number {
+  let count = 0;
+  for (const slice of listSlices().values()) {
+    if (slice.teamId === teamId && slice.streamState === "streaming") count++;
+  }
+  return count;
+}
+
+// streaming-hooks.ts (Part 1 Increment 2, refined Part 3 audit):
+function computeActiveStreamIds(teamId: string | null): string[] {
+  const out: string[] = [];
+  for (const slice of listSlices().values()) {
+    if (slice.teamId === teamId && slice.streamState === "streaming") {
+      out.push(slice.conversationId);
+    }
+  }
+  return out;
+}
+```
+
+Same predicate, same iteration, different reduction (count vs. id list).
+
+**The cleanup**: extract a predicate factory + a generic find helper to `streaming-store.ts`. Both consumers compose them:
+
+```ts
+// streaming-store.ts (new exports):
+export function isStreamingForTeam(teamId: string | null) {
+  return (slice: ConversationStreamSlice): boolean =>
+    slice.teamId === teamId && slice.streamState === "streaming";
+}
+
+export function findSlicesWhere(
+  predicate: (slice: ConversationStreamSlice) => boolean
+): ConversationStreamSlice[] {
+  const out: ConversationStreamSlice[] = [];
+  for (const slice of slices.values()) {
+    if (predicate(slice)) out.push(slice);
+  }
+  return out;
+}
+
+// streaming-actions.ts (caller):
+function countActiveStreams(teamId: string | null): number {
+  return findSlicesWhere(isStreamingForTeam(teamId)).length;
+}
+
+// streaming-hooks.ts (caller):
+function computeActiveStreamIds(teamId: string | null): string[] {
+  return findSlicesWhere(isStreamingForTeam(teamId)).map((s) => s.conversationId);
+}
+```
+
+The intermediate array allocation per call (max 5 slices via the cap) is trivial. Predicate and iteration are now in exactly one place.
+
+### Increments at a glance
+
+| # | Increment | Scope | PR target |
+|---|---|---|---|
+| 1 | Decompose `useChat` into `useConversationMessages` + `useChatStreaming` + thin composer | 2 new hook files, 1 rewrite | medium |
+| 2 | Streaming-store predicate consolidation (carry-over from Parts 3 + 5) | `streaming-store.ts`, `streaming-actions.ts`, `streaming-hooks.ts` | small |
+| 3 | End-of-part audit + verification + docs | docs + audit fixes | small |
+
+Each independently shippable. Increment 1 is the bulk; Increment 2 is the small carry-over cleanup; Increment 3 closes the part.
+
+---
+
+### Increment 1 — Decompose `useChat`
+
+**What:** Split `lib/hooks/use-chat.ts` (492 LOC) into three files:
+
+- **`lib/hooks/use-conversation-messages.ts`** (new) — message-list role: `messages` / `isLoadingMessages` / `hasMoreMessages` / `isConversationNotFound` state, the load-messages effect (with the Gap P9 prev-conversationId skip-refetch guard intact), `fetchMoreMessages`, `clearMessages`. Exposes `setMessages` so the streaming hook can perform optimistic adds, retry trimming, and fold-completion appends.
+- **`lib/hooks/use-chat-streaming.ts`** (new) — streaming role: `useStreamingSlice` subscription, derived passthrough fields, `pendingConversationId` fresh-send fallback, `sendMessage` / `cancelStream` / `retryLastMessage`, the two `useLayoutEffect`s (fold + clear-unseen).
+- **`lib/hooks/use-chat.ts`** (rewrite) — thin composer: instantiates both sub-hooks, wires them together, returns the combined `UseChatReturn` shape that `ChatPageContent` and the chat-surface components consume unchanged.
+
+**Files changed:**
+
+| File | Action |
+|------|--------|
+| `lib/hooks/use-conversation-messages.ts` | **Create** — extracted message-list logic + load-messages effect + Gap P9 guard + pagination + clear |
+| `lib/hooks/use-chat-streaming.ts` | **Create** — extracted streaming subscription + delegates + fold + clear-unseen + pending fallback |
+| `lib/hooks/use-chat.ts` | **Rewrite** — thin composer with the preserved `UseChatReturn` interface |
+
+**Implementation details:**
+
+#### 1a. `useConversationMessages`
+
+Owns the message-list state and effects. Returns the message-list slice of `UseChatReturn` plus the internal `setMessages` setter that the streaming hook needs.
+
+Concrete shape:
+
+```ts
+interface UseConversationMessagesOptions {
+  conversationId: string | null;
+}
+
+interface UseConversationMessagesReturn {
+  messages: Message[];
+  isLoadingMessages: boolean;
+  hasMoreMessages: boolean;
+  isConversationNotFound: boolean;
+  fetchMoreMessages: () => Promise<void>;
+  clearMessages: () => void;
+  // Internal: not part of UseChatReturn; consumed only by the composer
+  // and useChatStreaming. Not exported in the barrel.
+  setMessages: React.Dispatch<React.SetStateAction<Message[]>>;
+}
+```
+
+Body: ~150 LOC. Contains:
+
+- The four `useState` declarations (`messages`, `isLoadingMessages`, `hasMoreMessages`, `isConversationNotFound`).
+- `messagesRef` (mirrors `messages.length` for the load-messages skip-refetch guard).
+- `prevConversationIdRef` (Gap P9 transition detection).
+- The load-messages `useEffect` — moved verbatim, including the `null` early return, the `prev === null && messagesRef.current.length > 0` skip guard, the `cancelled` flag, the 404 / `isConversationNotFound` branch, and the entry/exit logging.
+- `fetchMoreMessages` (`useCallback`).
+- `clearMessages` (`useCallback`).
+
+The `setMessages` setter is exposed in the return object. Consumers outside `lib/hooks/` shouldn't import this hook directly — it's an internal building block. Verified by an audit-time grep: only `use-chat.ts` imports it.
+
+#### 1b. `useChatStreaming`
+
+Owns the streaming-subscription and action-delegate roles. Returns the streaming slice of `UseChatReturn`.
+
+Concrete shape:
+
+```ts
+interface UseChatStreamingOptions {
+  conversationId: string | null;
+  teamId: string | null;
+  onConversationCreated?: (id: string) => void;
+  // Wired in from useConversationMessages — needed for optimistic adds
+  // (sendMessage), trimming (retryLastMessage), and folding (useLayoutEffect).
+  messages: Message[];
+  setMessages: React.Dispatch<React.SetStateAction<Message[]>>;
+}
+
+interface UseChatStreamingReturn {
+  sendMessage: (content: string) => Promise<void>;
+  cancelStream: () => void;
+  retryLastMessage: () => Promise<void>;
+  streamState: StreamState;
+  streamingContent: string;
+  statusText: string | null;
+  latestSources: ChatSource[] | null;
+  latestFollowUps: string[];
+  error: string | null;
+}
+```
+
+Body: ~180 LOC. Contains:
+
+- `pendingConversationId` state + `pendingConversationIdRef` ref-mirror + the auto-clear `useEffect`.
+- `subscriptionId = conversationId ?? pendingConversationId`.
+- `useStreamingSlice(subscriptionId)` subscription.
+- The six derived passthrough fields (`streamState`, `streamingContent`, `statusText`, `latestSources`, `latestFollowUps`, `error`).
+- `subscriptionIdRef` (for `cancelStream`'s stable callback identity, established Part 2 audit).
+- `conversationIdRef` + `onConversationCreatedRef` ref-mirrors.
+- `sendMessage` (`useCallback`) — generates UUIDs, optimistic-add via the threaded `setMessages`, calls `moduleStartStream`.
+- `cancelStream` (`useCallback`) — calls `moduleCancelStream` via `subscriptionIdRef.current`.
+- `retryLastMessage` (`useCallback`) — reads `messages` (threaded in), trims via `setMessages`, re-sends via the inner `sendMessage`.
+- The two `useLayoutEffect`s — fold and clear-unseen, both unchanged from Part 4.
+
+#### 1c. `useChat` (composer)
+
+The new `use-chat.ts` is a thin composer. Approximately:
+
+```ts
+"use client";
+
+// ---------------------------------------------------------------------------
+// useChat — Composer that wires message-list and streaming sub-hooks (PRD-024)
+// ---------------------------------------------------------------------------
+
+import { useConversationMessages } from "./use-conversation-messages";
+import { useChatStreaming } from "./use-chat-streaming";
+
+import type { ChatSource, Message, StreamState } from "@/lib/types/chat";
+
+interface UseChatOptions {
+  conversationId: string | null;
+  teamId: string | null;
+  onConversationCreated?: (id: string) => void;
+  onTitleGenerated?: (id: string, title: string) => void;
+}
+
+// UseChatReturn: see comprehensive JSDoc on each field — preserved verbatim
+// from the pre-Part-6 file because chat-surface components depend on the
+// documented contract (P2.R5).
+interface UseChatReturn { /* ... 50 LOC of JSDoc'd fields ... */ }
+
+export function useChat(options: UseChatOptions): UseChatReturn {
+  const messageList = useConversationMessages({
+    conversationId: options.conversationId,
+  });
+
+  const streaming = useChatStreaming({
+    conversationId: options.conversationId,
+    teamId: options.teamId,
+    onConversationCreated: options.onConversationCreated,
+    messages: messageList.messages,
+    setMessages: messageList.setMessages,
+  });
+
+  return {
+    // Message-list passthrough
+    messages: messageList.messages,
+    isLoadingMessages: messageList.isLoadingMessages,
+    hasMoreMessages: messageList.hasMoreMessages,
+    isConversationNotFound: messageList.isConversationNotFound,
+    fetchMoreMessages: messageList.fetchMoreMessages,
+    clearMessages: messageList.clearMessages,
+    // Streaming passthrough
+    sendMessage: streaming.sendMessage,
+    cancelStream: streaming.cancelStream,
+    retryLastMessage: streaming.retryLastMessage,
+    streamState: streaming.streamState,
+    streamingContent: streaming.streamingContent,
+    statusText: streaming.statusText,
+    latestSources: streaming.latestSources,
+    latestFollowUps: streaming.latestFollowUps,
+    error: streaming.error,
+  };
+}
+```
+
+Estimated final: ~80 LOC (interface JSDoc takes ~50 LOC; composer body ~30 LOC). **Comfortably under the P6.R4 200-LOC ceiling.**
+
+The `onTitleGenerated` option is accepted for forward compatibility but unused (titles arrive via fire-and-forget server generation, discovered by `useConversations` refetch). Same comment from the pre-decomposition file is preserved.
+
+**Verify:**
+
+- `npx tsc --noEmit` passes.
+- `wc -l lib/hooks/use-chat.ts` is **under 200**. The two new hooks are also each well-shaped (target: each under 200 LOC).
+- `grep -rn "from \"@/lib/hooks/use-conversation-messages\"\|from \"@/lib/hooks/use-chat-streaming\"" app components lib` returns hits **only** in `lib/hooks/use-chat.ts` (the composer) — these are internal building blocks, not public API. If any chat-surface component imports them directly, that's a refactor regression to fix.
+- Manual smoke test: every chat behavior from Parts 1–5 still works. The `UseChatReturn` shape consumed by `ChatPageContent` and the chat-surface components is byte-identical, so compilation is the first signal; functional verification covers send / abort / retry / fresh-chat / cross-conversation switch / fold + flicker-free completion / unseen-clear / cap behavior.
+
+**Forward compatibility:**
+
+- The internal hooks (`useConversationMessages`, `useChatStreaming`) are not re-exported from any barrel. They're implementation details of `useChat`. If a future feature needs *just* the message-list role (e.g., a read-only thread view in another surface), it could promote `useConversationMessages` to a barrel-exported hook at that time.
+- Part 7's documentation will reference the new hook layout in the file map.
+
+---
+
+### Increment 2 — Streaming-store predicate consolidation
+
+**What:** Extract the shared workspace+streaming predicate to `streaming-store.ts` so both `countActiveStreams` (in `streaming-actions.ts`) and `computeActiveStreamIds` (in `streaming-hooks.ts`) consume the same source of truth. Carries over the cleanup target flagged by Part 3's and Part 5's audits.
+
+**Files changed:**
+
+| File | Action |
+|------|--------|
+| `lib/streaming/streaming-store.ts` | **Modify** — add two exports: `isStreamingForTeam(teamId)` predicate factory, and `findSlicesWhere(predicate)` generic iteration+filter helper |
+| `lib/streaming/streaming-actions.ts` | **Modify** — remove the inline `countActiveStreams` body; replace with one-liner using the new helpers |
+| `lib/streaming/streaming-hooks.ts` | **Modify** — remove the inline `computeActiveStreamIds` body; replace with one-liner. The `stableFilteredIds` ref-stability machinery stays (it's a separate concern: cache + ref equality). The unseen-completion path can also adopt `findSlicesWhere` for consistency |
+
+**Implementation details:**
+
+1. **Add to `streaming-store.ts`** (alongside the existing `subscribe` / `getSlice` / `setSlice` exports):
+
+   ```ts
+   /**
+    * Predicate factory: matches slices that are actively streaming in the
+    * given workspace. Used by both the cap defense (streaming-actions.ts)
+    * and the React hook layer (streaming-hooks.ts) so the workspace +
+    * streaming-state filter has one source of truth.
+    */
+   export function isStreamingForTeam(teamId: string | null) {
+     return (slice: ConversationStreamSlice): boolean =>
+       slice.teamId === teamId && slice.streamState === "streaming";
+   }
+
+   /**
+    * Generic iteration + filter over the slices Map. Single allocation;
+    * caller specializes via predicate. Used by countActiveStreams,
+    * computeActiveStreamIds, computeUnseenCompletionIds.
+    */
+   export function findSlicesWhere(
+     predicate: (slice: ConversationStreamSlice) => boolean
+   ): ConversationStreamSlice[] {
+     const out: ConversationStreamSlice[] = [];
+     for (const slice of slices.values()) {
+       if (predicate(slice)) out.push(slice);
+     }
+     return out;
+   }
+   ```
+
+2. **Update `streaming-actions.ts`**:
+
+   ```ts
+   import {
+     // ... existing imports ...
+     findSlicesWhere,
+     isStreamingForTeam,
+   } from "./streaming-store";
+
+   // Replace the inline countActiveStreams body:
+   function countActiveStreams(teamId: string | null): number {
+     return findSlicesWhere(isStreamingForTeam(teamId)).length;
+   }
+   ```
+
+   The function still exists with the same name + signature; only the body changes. All call sites (the `startStream` defensive guard) stay unchanged.
+
+3. **Update `streaming-hooks.ts`**:
+
+   ```ts
+   import {
+     // ... existing imports ...
+     findSlicesWhere,
+     isStreamingForTeam,
+   } from "./streaming-store";
+
+   // Replace the inline computeActiveStreamIds body:
+   function computeActiveStreamIds(teamId: string | null): string[] {
+     return findSlicesWhere(isStreamingForTeam(teamId))
+       .map((s) => s.conversationId);
+   }
+   ```
+
+   The `stableFilteredIds` cache + ref-stability layer is unchanged — it operates on the result. Callers (`useActiveStreamIds`) are unchanged.
+
+   For consistency, also adopt `findSlicesWhere` in `computeUnseenCompletionIds` (which has its own predicate `(s) => s.hasUnseenCompletion`). Same pattern, different predicate.
+
+**Verify:**
+
+- `npx tsc --noEmit` passes.
+- `grep -rn "slice\.teamId === teamId && slice\.streamState === \"streaming\"" lib` returns hits in **exactly one source file** (`streaming-store.ts`) — the predicate factory's body. Both consumers now compose it.
+- Cap defense (`startStream`) still fires correctly when at cap (tested via the P3 manual smoke test).
+- Sidebar dot still shows correctly during streams (tested via the P4 manual smoke test).
+
+**Forward compatibility:** `findSlicesWhere` is a generic primitive — future selectors (e.g., "find all slices with errors", "find all slices started before timestamp X") compose it with their own predicates, no further refactoring needed. The predicate factory pattern (`isStreamingForTeam(teamId) → predicate`) enables predicate composition in future, e.g., `isStreamingForTeam(teamId) AND startedAfter(t)`.
+
+---
+
+### Increment 3 — End-of-part audit + verification + docs
+
+**What:** The audit pass per CLAUDE.md "End-of-part audit" + the post-merge documentation updates.
+
+**Files changed:** Audit may produce code fixes in any of the touched files. Documentation:
+
+| File | Action |
+|------|--------|
+| `ARCHITECTURE.md` | **Modify** — `lib/hooks/use-chat.ts` description rewritten to *"Composer that wires `useConversationMessages` + `useChatStreaming` (PRD-024 Part 6)"*. Add file-map entries for the two new hook files. The streaming-module description for `streaming-store.ts` notes the new selector exports |
+| `CHANGELOG.md` | **Add entry** — `PRD-024 P6: useChat decomposition into focused sub-hooks; streaming-store predicate consolidation` |
+
+**Audit checklist (per CLAUDE.md):**
+
+1. **SRP** — Three hooks, each with one clear concern (message-list, streaming, composition). The streaming-store gains two new selector exports, both single-purpose (predicate factory, iteration+filter). The composer wires them via prop-threading (P2.R5 surface preserved).
+2. **DRY** — The workspace+streaming predicate now exists in **exactly one source file**. Predicate composition is now possible (forward-compat for future selectors). The dot-rendering DRY borderline from Part 5 audit is **NOT extracted in this part** — the two surfaces (conversation-item, app-sidebar) still use different positioning + token systems; extraction would require larger token-system unification work outside Part 6's scope. **Re-flag for future cleanup if a third dot surface lands.**
+3. **Design tokens** — N/A (no UI changes in this part).
+4. **Logging** — Both new hooks preserve the `[useChat]` log prefix on equivalent operations. The streaming-store helpers are pure (no side effects, no logging needed).
+5. **Dead code** — Verify the pre-decomposition `use-chat.ts`'s state declarations, refs, and effects are *all* either re-homed in one of the new hooks or deleted. No commented-out residue. Confirm the SSE parsing utilities still live in exactly one source file (`chat-helpers.ts`). Confirm no `parseSSEChunk` / `stripFollowUpBlock` / abort-controller / SSE-loop references in `use-chat.ts`.
+6. **Convention** — kebab-case files; named exports only; both new hooks follow the project's hook-naming pattern (`useX`); imports follow project order; JSDoc on the public-API surface (`UseChatOptions`, `UseChatReturn`) preserved verbatim.
+
+**Manual verification — the P6 acceptance battery:**
+
+- [ ] **P6.R1** — `lib/hooks/use-chat.ts` has no streaming-related internals (the streaming logic lives in `useChatStreaming`; the message-list logic lives in `useConversationMessages`; the composer is pure wiring).
+- [ ] **P6.R2** — Repo-wide grep for the follow-up regex pattern returns hits in **exactly one source module** (`lib/utils/chat-helpers.ts`). The streaming-actions module imports from it; the server-side `chat-stream-service.ts` imports from it.
+- [ ] **P6.R3** — No dead imports, helpers, or refs remain in `use-chat.ts`. `git diff` against the pre-Part-6 file shows the legacy state was either re-homed or deleted; no commented-out residue.
+- [ ] **P6.R4** — `wc -l lib/hooks/use-chat.ts` reports **under 200 LOC**.
+- [ ] **Behavior parity** — Send + abort + retry + fresh-chat + cross-conversation switch + fold (flicker-free completion) + unseen-clear + per-workspace cap behavior all observable as in Parts 1–5. Run the smoke-test batteries from Parts 2–5 and confirm no regressions.
+
+This audit produces fixes in the same PR, not a separate report. The decomposition is structural — most regressions would be type-check failures or shape mismatches, both caught by `tsc`.
+
+### After Part 6 completes
+
+Per CLAUDE.md ("After each TRD part completes"):
+
+1. **`ARCHITECTURE.md` update** — File map gains `lib/hooks/use-conversation-messages.ts` and `lib/hooks/use-chat-streaming.ts`; `lib/hooks/use-chat.ts` description updated. The streaming-store entry mentions the new `isStreamingForTeam` / `findSlicesWhere` selector exports.
+2. **`CHANGELOG.md` entry** — Document the decomposition (motivated by P6.R4), the predicate consolidation (carry-over from Parts 3 + 5), and the explicit non-fix for the dot-rendering DRY (re-flagged for future).
+3. **No DB schema change** — no Supabase types regen.
+4. **Test affected flows** — covered by the P6 acceptance battery + the cumulative Parts 1–5 smoke-test batteries.
+
+---
