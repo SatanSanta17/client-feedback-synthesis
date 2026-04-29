@@ -300,7 +300,7 @@ synthesiser/
 │   │   ├── active-team.ts          # Client-side active team cookie helpers (getActiveTeamId via document.cookie, setActiveTeamCookie, clearActiveTeamCookie)
 │   │   └── active-team-server.ts   # Server-side active team cookie reader (getActiveTeamId via next/headers cookies)
 │   ├── hooks/
-│   │   ├── use-chat.ts          # Chat streaming hook — SSE parsing, AbortController cancellation, sendMessage/cancelStream/retryLastMessage/fetchMoreMessages (PRD-020 Part 2–3)
+│   │   ├── use-chat.ts          # Chat orchestrator — owns conversation-scoped message list (load, paginate, fold-on-completion via useLayoutEffect, clear, not-found); subscribes to slice via useStreamingSlice; delegates SSE/abort/state to @/lib/streaming. Includes pendingConversationId fallback so the streaming bubble subscribes immediately on fresh-send before the parent's onConversationCreated callback fires (PRD-020 Part 2–3 + PRD-024 Part 2)
 │   │   ├── use-conversations.ts # Conversation list management — dual active/archived lists, optimistic CRUD, cursor-based pagination, search (PRD-020 Part 2–3)
 │   │   ├── use-filter-storage.ts # Filter-persistence primitive — sessionStorage keyed by `filters:<surface>:<userId>:<workspaceId|personal>`; consumed by dashboard filter-bar and capture past-sessions-table (Gap P5)
 │   │   ├── use-signal-extraction.ts # Shared extraction state machine hook (ExtractionState, promptVersionId, getInput callback, re-extract confirm flow, forceConfirmOnReextract for server-side manual edit flag)

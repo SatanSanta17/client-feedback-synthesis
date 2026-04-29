@@ -17,6 +17,8 @@
 - make the auth flow decoupled from supabase
 - clean db from burhanuddin and rest test accounts
 - audio clips/video clips
+- org awareness
+- direct jira ticket creation from the platform
 
 
 Mental model:
