@@ -74,5 +74,7 @@ export type {
   NotificationInsert,
   ListForUserOptions,
   ListForUserResult,
+  BellNotificationRow,
+  ListForBellResult,
   DeleteExpiredOptions,
 } from "./notification-repository";

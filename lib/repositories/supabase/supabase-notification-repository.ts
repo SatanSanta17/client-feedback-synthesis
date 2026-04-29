@@ -7,7 +7,9 @@ import type {
 } from "@/lib/types/notification";
 
 import type {
+  BellNotificationRow,
   DeleteExpiredOptions,
+  ListForBellResult,
   ListForUserOptions,
   ListForUserResult,
   NotificationInsert,
@@ -22,6 +24,12 @@ const LOG_PREFIX = "[supabase-notification-repo]";
 
 const COLUMNS =
   "id, team_id, user_id, event_type, payload, read_at, expires_at, created_at";
+
+/** `COLUMNS` plus the joined workspace name for bell rendering. PostgREST
+ *  resolves `teams!inner(name)` through the `team_id` FK; the `inner` join
+ *  drops orphaned rows defensively (the schema's `team_id NOT NULL` already
+ *  prevents these in practice). */
+const BELL_COLUMNS = `${COLUMNS}, teams!inner(name)`;
 
 const DEFAULT_LIST_LIMIT = 50;
 const DEFAULT_WINDOW_DAYS = 30;
@@ -66,6 +74,84 @@ function toNotification(row: any): WorkspaceNotification {
   };
 }
 
+/** Bell variant — composes `toNotification` with the joined `teams.name`. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- Supabase row types are loosely typed
+function toBellNotification(row: any): BellNotificationRow {
+  return {
+    ...toNotification(row),
+    teamName: row.teams?.name ?? "(unknown workspace)",
+  };
+}
+
+/**
+ * Shared keyset-paginated read used by both `listForUser` and `listForBell`.
+ * Differs only in the projected columns and the row mapper; the cursor
+ * predicate, recency window, ordering, and includeRead/teamId filters are
+ * identical between the two callers — extracting prevents drift.
+ */
+async function executeKeysetListQuery<T extends { createdAt: string; id: string }>(
+  supabase: SupabaseClient,
+  options: ListForUserOptions,
+  columns: string,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- raw rows are loosely typed
+  mapRow: (row: any) => T,
+  logLabel: string
+): Promise<{ rows: T[]; nextCursor: NotificationCursor | null }> {
+  const limit = options.limit ?? DEFAULT_LIST_LIMIT;
+  const windowDays = options.windowDays ?? DEFAULT_WINDOW_DAYS;
+  const since = new Date(
+    Date.now() - windowDays * 24 * 60 * 60 * 1000
+  ).toISOString();
+
+  console.log(
+    `${LOG_PREFIX} ${logLabel} — userId: ${options.userId}, teamId: ${options.teamId ?? "(any)"}, limit: ${limit}, includeRead: ${options.includeRead ?? true}`
+  );
+
+  let query = supabase
+    .from("workspace_notifications")
+    .select(columns)
+    .gte("created_at", since)
+    .order("created_at", { ascending: false })
+    .order("id", { ascending: false })
+    .limit(limit + 1);
+
+  query = applyOptionalTeamFilter(query, options.teamId);
+
+  if (options.includeRead === false) {
+    query = query.is("read_at", null);
+  }
+
+  if (options.cursor) {
+    // Compound cursor — order is (created_at desc, id desc), so older rows are
+    // those with created_at < cursor, OR created_at == cursor AND id < cursor.id.
+    query = query.or(
+      `created_at.lt.${options.cursor.createdAt},and(created_at.eq.${options.cursor.createdAt},id.lt.${options.cursor.id})`
+    );
+  }
+
+  const { data, error } = await query;
+  if (error) {
+    console.error(`${LOG_PREFIX} ${logLabel} error:`, error);
+    throw error;
+  }
+
+  const all = data ?? [];
+  const rows = all.slice(0, limit).map(mapRow);
+  const hasMore = all.length > limit;
+  const nextCursor: NotificationCursor | null = hasMore
+    ? {
+        createdAt: rows[rows.length - 1].createdAt,
+        id: rows[rows.length - 1].id,
+      }
+    : null;
+
+  console.log(
+    `${LOG_PREFIX} ${logLabel} — returned ${rows.length} rows, hasMore: ${hasMore}`
+  );
+
+  return { rows, nextCursor };
+}
+
 // ---------------------------------------------------------------------------
 // Factory
 // ---------------------------------------------------------------------------
@@ -108,60 +194,24 @@ export function createNotificationRepository(
       return toNotification(row);
     },
 
-    async listForUser(options: ListForUserOptions): Promise<ListForUserResult> {
-      const limit = options.limit ?? DEFAULT_LIST_LIMIT;
-      const windowDays = options.windowDays ?? DEFAULT_WINDOW_DAYS;
-      const since = new Date(
-        Date.now() - windowDays * 24 * 60 * 60 * 1000
-      ).toISOString();
-
-      console.log(
-        `${LOG_PREFIX} listForUser — userId: ${options.userId}, teamId: ${options.teamId ?? "(any)"}, limit: ${limit}, includeRead: ${options.includeRead ?? true}`
+    listForUser(options: ListForUserOptions): Promise<ListForUserResult> {
+      return executeKeysetListQuery(
+        supabase,
+        options,
+        COLUMNS,
+        toNotification,
+        "listForUser"
       );
+    },
 
-      let query = supabase
-        .from("workspace_notifications")
-        .select(COLUMNS)
-        .gte("created_at", since)
-        .order("created_at", { ascending: false })
-        .order("id", { ascending: false })
-        .limit(limit + 1);
-
-      query = applyOptionalTeamFilter(query, options.teamId);
-
-      if (options.includeRead === false) {
-        query = query.is("read_at", null);
-      }
-
-      if (options.cursor) {
-        // Compound cursor — order is (created_at desc, id desc), so older rows are
-        // those with created_at < cursor, OR created_at == cursor AND id < cursor.id.
-        query = query.or(
-          `created_at.lt.${options.cursor.createdAt},and(created_at.eq.${options.cursor.createdAt},id.lt.${options.cursor.id})`
-        );
-      }
-
-      const { data, error } = await query;
-      if (error) {
-        console.error(`${LOG_PREFIX} listForUser error:`, error);
-        throw error;
-      }
-
-      const all = data ?? [];
-      const rows = all.slice(0, limit).map(toNotification);
-      const hasMore = all.length > limit;
-      const nextCursor: NotificationCursor | null = hasMore
-        ? {
-            createdAt: rows[rows.length - 1].createdAt,
-            id: rows[rows.length - 1].id,
-          }
-        : null;
-
-      console.log(
-        `${LOG_PREFIX} listForUser — returned ${rows.length} rows, hasMore: ${hasMore}`
+    listForBell(options: ListForUserOptions): Promise<ListForBellResult> {
+      return executeKeysetListQuery(
+        supabase,
+        options,
+        BELL_COLUMNS,
+        toBellNotification,
+        "listForBell"
       );
-
-      return { rows, nextCursor };
     },
 
     async unreadCount(options: {

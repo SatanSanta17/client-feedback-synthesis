@@ -36,6 +36,17 @@ export interface ListForUserResult {
   nextCursor: NotificationCursor | null;
 }
 
+/** Notification row augmented with its workspace name for the bell UI.
+ *  Joined server-side so the bell does not need a second round trip. */
+export interface BellNotificationRow extends WorkspaceNotification {
+  teamName: string;
+}
+
+export interface ListForBellResult {
+  rows: BellNotificationRow[];
+  nextCursor: NotificationCursor | null;
+}
+
 export interface DeleteExpiredOptions {
   /** Cutoff for unread rows: rows with `read_at IS NULL AND created_at < olderThan` are deleted. */
   olderThan: string;
@@ -62,6 +73,12 @@ export interface NotificationRepository {
   /** Anon: list rows visible to the user, most-recent first.
    *  RLS scopes the row set; this method scopes by recency, read state, and pagination. */
   listForUser(options: ListForUserOptions): Promise<ListForUserResult>;
+
+  /** Anon: same shape as `listForUser` but with each row's workspace name
+   *  joined in. Used exclusively by the bell UI's API route — keeping it
+   *  separate preserves the basic `WorkspaceNotification` shape for other
+   *  consumers. */
+  listForBell(options: ListForUserOptions): Promise<ListForBellResult>;
 
   /** Anon: count of unread rows visible to the user. */
   unreadCount(options: { userId: string; teamId?: string | null }): Promise<number>;

@@ -953,11 +953,795 @@ This audit closes Part 1.
 
 ---
 
-## Parts 2–5
+## Part 2: Header Bell UI & Dropdown
 
-> Specified after Part 1 lands and at least one consumer (PRD-026 P4 or PRD-028 P5.R9) has emitted in production. Each subsequent part will append a "Part N" section here, mirroring the structure above, and must respect the data shapes locked in by Part 1 (`workspace_notifications` schema, `NOTIFICATION_EVENTS` registry, `NotificationRepository` interface, `notification-service` public API).
+> Implements **P2.R1–P2.R10** from PRD-029.
 
-- **Part 2 — Header bell UI & dropdown.** Adds API routes (`/api/notifications`, `/api/notifications/[id]/read`, `/api/notifications/mark-all-read`, `/api/notifications/unread-count`) and the bell component. Cross-workspace by default per PRD §P2.R10. UI consumes the service via the routes; no new repository methods.
-- **Part 3 — Renderer registry.** Adds `lib/notifications/renderers.ts` keyed on `NotificationEventType` — icon component, title-template function, deep-link function. Bell rows (Part 2) render through this. Unknown event types fall through to a generic "Workspace activity" row.
-- **Part 4 — Delivery mechanism.** Picks Supabase Realtime / polling / hybrid. The choice is documented; the latency bar from PRD §P4.R1 is the measurable acceptance.
-- **Part 5 — Retention & cleanup.** Schedules `notificationService` (or a thin wrapper) calling `repo.deleteExpired` on a cadence. Configurable retention windows; per-row `expires_at` already supported by Part 1's schema and repository contract.
+### Overview
+
+Make Part 1's primitive visible. The bell is a single icon-with-badge in the sidebar chrome that opens a popover listing recent notifications. Each row carries a workspace label (cross-workspace bell per PRD §P2.R10), an event-specific icon and title (via the renderer scaffolding introduced here, which Part 3 fills with per-event content), a relative timestamp, and — when applicable — a deep-link target. Clicking a row marks it read and navigates to the deep-link, switching active workspace first if the row belongs to a different team.
+
+The work splits into four moving pieces:
+
+1. **API surface** — four route handlers wrap the Part 1 service. They authenticate the user, instantiate the repository against the user's anon client (RLS-scoped), call the service, and return JSON.
+2. **Renderer scaffold** — `lib/notifications/renderers.ts` ships the renderer *interface*, a *fallback* renderer for unknown event types, and a `renderNotification(notification)` helper that the bell row consumes. Part 3 populates the per-event entries; Part 2 ensures the consumer is ready.
+3. **Hooks** — `lib/hooks/use-notifications.ts`, `use-unread-count.ts`, `use-mark-notification-read.ts`. Visibility-aware polling for the unread badge (Part 4 may upgrade to realtime — same hook surface).
+4. **Components & integration** — `components/notifications/{notification-bell, notification-dropdown, notification-row, notification-empty-state}.tsx`, plus the sidebar wire-up in `components/layout/app-sidebar.tsx`.
+
+The `Part 1 → Part 2` seam is exactly the `notification-service` public API. No service changes; the only repository addition is a bell-shaped listing method (`listForBell`) that joins `team_id → teams.name` server-side so the row can render its workspace label without a second client-side fetch.
+
+### Forward Compatibility Notes
+
+- **Part 3 (Renderer catalogue).** Part 2 lands `lib/notifications/renderers.ts` with the registry *type* (`RendererRegistry`), an empty (or skeleton) `NOTIFICATION_RENDERERS` map, and the `renderNotification` lookup that falls back to a generic icon + title for unregistered types. Part 3 adds entries to the map — that is its entire footprint. The bell, the row, the API routes, the hooks: nothing changes.
+- **Part 4 (Delivery mechanism).** The polling implementation in `use-unread-count.ts` is page-visibility-aware (pauses when hidden, refetches on focus). When Part 4 lands, the polling loop is replaced by — or augmented with — a Supabase Realtime subscription, but the public hook return shape (`{ count, refetch }`) is unchanged. Part 2's components never know which mechanism is in use.
+- **Part 5 (Retention & cleanup).** No bell-level concern. The cleanup job calls `repo.deleteExpired` (interface from Part 1); the bell's read paths transparently see the smaller table.
+- **Future event consumers.** Adding a new event type lights up in the bell automatically the moment Part 3's renderer entry ships — Part 2's bell renders any registered event without code changes.
+- **Backlog (per-user notification preferences).** When mute-by-event-type lands, the read hooks gain a `mutedTypes` filter (likely server-side via the API route). The bell continues consuming the hook's return shape; no component change.
+- **Backlog (notification grouping).** Group-by-event-type rendering would slot into `notification-dropdown.tsx` between the row map and the rendered list. The renderer interface stays single-row.
+
+### API Routes
+
+Four Next.js Route Handlers under `app/api/notifications/`. Each uses the `requireAuth` helper from `lib/api/route-auth.ts` to extract the authenticated user's Supabase client and user id. RLS scopes the row set; the service-layer error types (`UnknownEventTypeError`, `InvalidPayloadError`) cannot fire from any of these (the routes never emit) so the only error mapping is auth + repository errors.
+
+#### `GET /api/notifications` — paginated listing
+
+| Query param | Type | Default | Purpose |
+|---|---|---|---|
+| `cursor` | string (URL-encoded `<createdAt>:<id>`) | none | Keyset pagination cursor from the previous page's `nextCursor`. |
+| `limit` | int | 50 | Page size; max 100 (clamped by the route, not the service). |
+| `includeRead` | "true" \| "false" | "true" | When false, returns only unread rows. |
+| `windowDays` | int | 30 | Recency window. Capped at 365. |
+
+Response: `{ rows: BellNotificationRow[], nextCursor: { createdAt: string, id: string } | null }`.
+
+`BellNotificationRow` is `WorkspaceNotification & { teamName: string }` — the `teamName` field is what makes the bell's per-row workspace label work without a second fetch (PRD §P2.R10). The route delegates to a new `repo.listForBell` method (see §Repository Changes) which joins `teams.name` server-side.
+
+Validation: a Zod schema parses the query string. Bad params return HTTP 400 with `{ message }`.
+
+#### `GET /api/notifications/unread-count` — badge count
+
+Response: `{ count: number }`. No params. Fast — backed by the `(user_id) WHERE user_id IS NOT NULL AND read_at IS NULL` partial index from Part 1.
+
+#### `POST /api/notifications/[id]/read` — mark one read
+
+Empty body. Response: `{ ok: true }`. RLS enforces ownership; passing an `id` for a row the user cannot see is a no-op (the underlying `UPDATE` matches zero rows). The route does *not* return 404 in that case — distinguishing "doesn't exist" from "RLS-denied" leaks information about other users' notifications. The bell is fire-and-forget on this endpoint anyway; clients optimistically toggle the row's read state and refetch the unread count on next poll.
+
+#### `POST /api/notifications/mark-all-read` — bulk mark
+
+Optional body: `{ teamId?: string }` to scope the bulk action to one workspace. Default (no body) marks every unread row visible to the user across every team — the cross-workspace bell case from PRD §P2.R10 / §P2.R6.
+
+Response: `{ ok: true }`. Same RLS semantics as `markRead`.
+
+### Repository Changes
+
+#### `lib/repositories/notification-repository.ts` (extend)
+
+Add one new method to the interface:
+
+```typescript
+export interface BellNotificationRow extends WorkspaceNotification {
+  /** Joined from `teams.name` at read time. The bell uses this directly so
+   *  it can render the workspace label without a second round trip. */
+  teamName: string;
+}
+
+export interface ListForBellResult {
+  rows: BellNotificationRow[];
+  nextCursor: NotificationCursor | null;
+}
+
+export interface NotificationRepository {
+  // ... existing methods ...
+
+  /** Anon: same shape as `listForUser` but with each row's workspace label
+   *  joined in. Used exclusively by the bell UI's API route. */
+  listForBell(options: ListForUserOptions): Promise<ListForBellResult>;
+}
+```
+
+**Why a separate method instead of an option flag on `listForUser`:** keeping `listForUser` table-shaped (its result type maps 1:1 to `WorkspaceNotification`) preserves the Part 1 invariant that consumers can rely on the basic shape. `listForBell` is explicit about the augmentation; the type signature makes the join visible at the call site rather than hiding it behind an `includeTeamName: true` boolean.
+
+**Why on the repository, not as a join in the API route:** the bell pages of 50 rows could touch up to 50 distinct team_ids in pathological cross-workspace cases; a server-side `select(teams!inner(name))` join in one query is much cheaper than the route firing N team-name lookups or a second batched query. Repository is also the natural home for SQL composition.
+
+#### `lib/repositories/supabase/supabase-notification-repository.ts` (extend)
+
+Add the `listForBell` implementation. It mirrors `listForUser` but extends the `select` to include the joined team name, and the row mapper produces `BellNotificationRow`:
+
+```typescript
+const BELL_COLUMNS = `${COLUMNS}, teams!inner(name)`;
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- Supabase row types are loosely typed
+function toBellNotification(row: any): BellNotificationRow {
+  const base = toNotification(row);
+  // PostgREST returns the joined relation as an object (or array, depending on
+  // FK cardinality). teams is single-FK so we expect a single object.
+  const teamName = row.teams?.name ?? "(unknown workspace)";
+  return { ...base, teamName };
+}
+
+// Inside createNotificationRepository(...)
+async listForBell(options: ListForUserOptions): Promise<ListForBellResult> {
+  // ...same body as listForUser but selects BELL_COLUMNS and maps via
+  // toBellNotification; the cursor logic, window, includeRead, and team-filter
+  // helper are unchanged.
+}
+```
+
+**Why `teams!inner(name)`:** `inner` enforces that every notification row has a parent team (the schema's `team_id NOT NULL` makes this true; if any row lost its parent for some reason the inner join would drop it, which is the right behaviour — orphaned rows shouldn't render). PostgREST's relation-name syntax automatically routes through the FK.
+
+**Why `toBellNotification` reuses `toNotification`:** keeps the camelCase mapping in one place (DRY). The augmentation is a single field; reimplementing the mapping would invite drift.
+
+### Renderer Scaffolding
+
+#### `lib/notifications/renderers.ts` (new)
+
+Part 2 ships the *interface* and the *consumer* (`renderNotification`); Part 3 fills the registry. The fallback path renders any registered-but-unrendered event type AND any unregistered event type (defence in depth — RLS or row corruption could in principle deliver a row whose event_type the client doesn't recognise).
+
+```typescript
+import { Bell } from "lucide-react";
+import type { ComponentType } from "react";
+import type { z } from "zod";
+
+import {
+  NOTIFICATION_EVENTS,
+  payloadSchemaFor,
+  type NotificationEventType,
+} from "@/lib/notifications/events";
+import type { WorkspaceNotification } from "@/lib/types/notification";
+
+/**
+ * Per-event renderer contract. Each entry is parameterised by the event's
+ * payload type so Part 3 authors get type-safe access to payload fields
+ * inside `title` and `deepLink`.
+ */
+export type RendererFor<E extends NotificationEventType> = {
+  icon: ComponentType<{ className?: string }>;
+  title: (
+    payload: z.infer<(typeof NOTIFICATION_EVENTS)[E]["payloadSchema"]>
+  ) => string;
+  deepLink: (
+    payload: z.infer<(typeof NOTIFICATION_EVENTS)[E]["payloadSchema"]>
+  ) => string | null;
+};
+
+/** Total registry over every registered event type. Part 3 makes this total;
+ *  in Part 2 we type it as `Partial<...>` so the bell ships before renderers do. */
+export type RendererRegistry = {
+  [E in NotificationEventType]: RendererFor<E>;
+};
+
+/**
+ * Part 2 ships an empty registry. Part 3 populates each event type. The
+ * `Partial<...>` cast is intentional — it means a deploy that lands a new
+ * event type before its renderer still produces a working (fallback) UI.
+ */
+export const NOTIFICATION_RENDERERS: Partial<RendererRegistry> = {};
+
+/**
+ * The shape every bell row consumes. Independent of the event type so the
+ * row component does not need to special-case events.
+ */
+export interface RenderedNotification {
+  icon: ComponentType<{ className?: string }>;
+  title: string;
+  /** Null when the event has no meaningful destination (the row is informational). */
+  deepLink: string | null;
+}
+
+const FALLBACK: RenderedNotification = {
+  icon: Bell,
+  title: "Workspace activity",
+  deepLink: null,
+};
+
+/**
+ * Look up and run the renderer for a notification. Validates the payload
+ * against the event's Zod schema before passing it to the renderer; a
+ * malformed payload also falls through to FALLBACK so a single bad row
+ * cannot crash the dropdown.
+ */
+export function renderNotification(
+  notification: WorkspaceNotification
+): RenderedNotification {
+  const renderer = NOTIFICATION_RENDERERS[notification.eventType];
+  if (!renderer) {
+    return FALLBACK;
+  }
+  const schema = payloadSchemaFor(notification.eventType);
+  const result = schema.safeParse(notification.payload);
+  if (!result.success) {
+    console.warn(
+      `[notification-renderer] payload mismatch for ${notification.eventType} (id: ${notification.id}); falling through.`
+    );
+    return FALLBACK;
+  }
+  // The renderer's payload param is narrowed to the inferred type for the
+  // specific event — the indexed access above guarantees match-up.
+  return {
+    icon: renderer.icon,
+    title: (renderer.title as (payload: unknown) => string)(result.data),
+    deepLink: (renderer.deepLink as (payload: unknown) => string | null)(result.data),
+  };
+}
+```
+
+**Why the registry is `Partial<RendererRegistry>` and not the total `RendererRegistry`:** during Part 2 it's empty by design; even after Part 3, a deploy that introduces a new event type before its renderer ships still produces a working fallback. Type-level totality would force every event to ship with a renderer in the same PR, coupling concerns the PRD explicitly decouples (P3.R3 — "single-file change to add an event type" — covers the *event-type* file, not necessarily a paired renderer landing simultaneously).
+
+**Why the renderer cast inside `renderNotification`:** TypeScript cannot statically tie the registry's per-event payload narrowing to a generic lookup. The runtime guarantee — that `payloadSchemaFor(eventType)` returns the schema whose `z.infer` type matches the renderer's payload param — is exactly what makes the cast safe. Comment makes the invariant explicit.
+
+**Why `Bell` from lucide-react as the fallback icon:** matches the bell trigger; the user already understands "bell = notification". Using the same icon for the fallback row keeps the visual language tight.
+
+### Hooks
+
+Three hooks under `lib/hooks/`. Each follows the project's `useX` naming and returns an object (per CLAUDE.md "Custom hooks return objects, not arrays").
+
+#### `lib/hooks/use-unread-count.ts` (new)
+
+```typescript
+"use client";
+
+import { useCallback, useEffect, useRef, useState } from "react";
+
+const POLL_INTERVAL_MS = 30_000;
+
+export interface UseUnreadCountReturn {
+  count: number;
+  /** Imperative refetch — used by the bell after marking rows read. */
+  refetch: () => Promise<void>;
+}
+
+/**
+ * Polls the unread-count endpoint while the tab is visible; pauses when
+ * hidden; refetches on focus. Forward-compatible with Part 4: when Realtime
+ * lands, this hook's body changes but the public return shape does not.
+ */
+export function useUnreadCount(): UseUnreadCountReturn {
+  const [count, setCount] = useState<number>(0);
+  const cancelledRef = useRef(false);
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const fetchCount = useCallback(async () => {
+    try {
+      const res = await fetch("/api/notifications/unread-count");
+      if (!res.ok) return;
+      const data = (await res.json()) as { count: number };
+      if (!cancelledRef.current) setCount(data.count);
+    } catch (err) {
+      console.error("[useUnreadCount] fetch failed:", err);
+    }
+  }, []);
+
+  useEffect(() => {
+    cancelledRef.current = false;
+
+    function clearTimer() {
+      if (timerRef.current) {
+        clearTimeout(timerRef.current);
+        timerRef.current = null;
+      }
+    }
+
+    function schedule() {
+      clearTimer();
+      if (document.visibilityState !== "visible") return;
+      void fetchCount();
+      timerRef.current = setTimeout(schedule, POLL_INTERVAL_MS);
+    }
+
+    function onVisibilityChange() {
+      if (document.visibilityState === "visible") schedule();
+      else clearTimer();
+    }
+
+    schedule();
+    document.addEventListener("visibilitychange", onVisibilityChange);
+
+    return () => {
+      cancelledRef.current = true;
+      clearTimer();
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+    };
+  }, [fetchCount]);
+
+  return { count, refetch: fetchCount };
+}
+```
+
+#### `lib/hooks/use-notifications.ts` (new)
+
+```typescript
+"use client";
+
+import { useCallback, useEffect, useState } from "react";
+
+import type { BellNotificationRow } from "@/lib/repositories/notification-repository";
+import type { NotificationCursor } from "@/lib/types/notification";
+
+const PAGE_LIMIT = 50;
+
+export interface UseNotificationsReturn {
+  rows: BellNotificationRow[];
+  isLoading: boolean;
+  isLoadingMore: boolean;
+  hasMore: boolean;
+  error: string | null;
+  /** Imperative refetch from the start (drops `rows` and reloads). */
+  refresh: () => Promise<void>;
+  /** Append the next page using the current cursor. No-op when `hasMore` is false. */
+  loadMore: () => Promise<void>;
+  /** Optimistic local mutation — toggles `readAt` on a single row.
+   *  The bell calls this after firing `markRead` so the UI reflects the change
+   *  before the next poll. */
+  markRowReadLocally: (id: string) => void;
+  /** Optimistic local mutation — clears `readAt: null` on every row. */
+  markAllRowsReadLocally: () => void;
+}
+
+export function useNotifications(): UseNotificationsReturn {
+  const [rows, setRows] = useState<BellNotificationRow[]>([]);
+  const [cursor, setCursor] = useState<NotificationCursor | null>(null);
+  const [hasMore, setHasMore] = useState<boolean>(false);
+  const [isLoading, setIsLoading] = useState<boolean>(false);
+  const [isLoadingMore, setIsLoadingMore] = useState<boolean>(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const fetchPage = useCallback(
+    async (pageCursor: NotificationCursor | null): Promise<void> => {
+      const isFirstPage = pageCursor === null;
+      if (isFirstPage) setIsLoading(true);
+      else setIsLoadingMore(true);
+      setError(null);
+
+      try {
+        const params = new URLSearchParams();
+        params.set("limit", String(PAGE_LIMIT));
+        if (pageCursor) {
+          params.set("cursor", `${pageCursor.createdAt}:${pageCursor.id}`);
+        }
+        const res = await fetch(`/api/notifications?${params}`);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = (await res.json()) as {
+          rows: BellNotificationRow[];
+          nextCursor: NotificationCursor | null;
+        };
+        setRows((prev) => (isFirstPage ? data.rows : [...prev, ...data.rows]));
+        setCursor(data.nextCursor);
+        setHasMore(data.nextCursor !== null);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Failed to load notifications");
+      } finally {
+        setIsLoading(false);
+        setIsLoadingMore(false);
+      }
+    },
+    []
+  );
+
+  const refresh = useCallback(() => fetchPage(null), [fetchPage]);
+  const loadMore = useCallback(
+    () => (hasMore && cursor ? fetchPage(cursor) : Promise.resolve()),
+    [fetchPage, hasMore, cursor]
+  );
+
+  const markRowReadLocally = useCallback((id: string) => {
+    setRows((prev) =>
+      prev.map((r) => (r.id === id && r.readAt === null
+        ? { ...r, readAt: new Date().toISOString() }
+        : r))
+    );
+  }, []);
+
+  const markAllRowsReadLocally = useCallback(() => {
+    const now = new Date().toISOString();
+    setRows((prev) => prev.map((r) => (r.readAt === null ? { ...r, readAt: now } : r)));
+  }, []);
+
+  // Initial load — fires once when the bell mounts (the dropdown lazy-mounts
+  // its content, so this only runs when the user actually opens the bell).
+  useEffect(() => {
+    void refresh();
+  }, [refresh]);
+
+  return { rows, isLoading, isLoadingMore, hasMore, error, refresh, loadMore, markRowReadLocally, markAllRowsReadLocally };
+}
+```
+
+#### `lib/hooks/use-mark-notification-read.ts` (new)
+
+```typescript
+"use client";
+
+import { useCallback } from "react";
+
+export interface UseMarkNotificationReadReturn {
+  markRead: (notificationId: string) => Promise<void>;
+  markAllRead: (teamId?: string | null) => Promise<void>;
+}
+
+/**
+ * Fire-and-forget POSTs against the mark-read endpoints. Failures are logged
+ * but not surfaced — bell UI stays optimistic, and the next unread-count
+ * poll corrects any drift.
+ */
+export function useMarkNotificationRead(): UseMarkNotificationReadReturn {
+  const markRead = useCallback(async (notificationId: string) => {
+    try {
+      const res = await fetch(`/api/notifications/${notificationId}/read`, {
+        method: "POST",
+      });
+      if (!res.ok) console.error(`[useMarkNotificationRead] markRead — HTTP ${res.status}`);
+    } catch (err) {
+      console.error("[useMarkNotificationRead] markRead failed:", err);
+    }
+  }, []);
+
+  const markAllRead = useCallback(async (teamId?: string | null) => {
+    try {
+      const res = await fetch("/api/notifications/mark-all-read", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(teamId ? { teamId } : {}),
+      });
+      if (!res.ok) console.error(`[useMarkNotificationRead] markAllRead — HTTP ${res.status}`);
+    } catch (err) {
+      console.error("[useMarkNotificationRead] markAllRead failed:", err);
+    }
+  }, []);
+
+  return { markRead, markAllRead };
+}
+```
+
+### Components
+
+Five components under `components/notifications/`. All client components (need state + event handlers); each is small and single-purpose.
+
+#### `components/notifications/notification-bell.tsx` — trigger + badge
+
+`NotificationBell` is the only public export from this folder. It composes the dropdown internally — consumers (the sidebar) just drop it in. Renders a `<Popover>` whose trigger is the bell icon with a badge overlay. Clicking the trigger opens the dropdown; the dropdown lazy-mounts its inner list (so the `useNotifications` fetch only fires when the user actually opens the bell).
+
+Inputs: none (auth + active workspace come from `useAuth`).
+
+Composition: `<Popover>` (shadcn) → `<PopoverTrigger>` (bell + badge) → `<PopoverContent>` (`<NotificationDropdown />`).
+
+Accessibility: `aria-label` on the trigger reads `"Notifications, N unread"` when `count > 0`, `"Notifications"` otherwise (cohesive-decoration pattern from PRD-024 P4 / P5). `aria-live="polite"` on the badge so screen readers announce changes without stealing focus.
+
+#### `components/notifications/notification-dropdown.tsx` — popover content
+
+Composes header + list + footer:
+
+- Header: title `"Notifications"` + `"Mark all as read"` action (visible only when at least one row is unread).
+- List: `useNotifications().rows`. Maps each row through `<NotificationRow>`. Empty / loading / error states are sibling `<div>`s, not separate components.
+- Footer (when `hasMore`): `<button>` calling `loadMore()`. Hidden when no further pages.
+
+Empty state: `<NotificationEmptyState>` (separate file because it has copy that may need design iteration; pulling it out keeps the dropdown shell minimal).
+
+Layout: max-height bound + internal scroll so a long list doesn't push the popover off-screen. Uses existing tokens (`var(--surface-elevated)`, etc.) — no new tokens introduced (P2.R9).
+
+#### `components/notifications/notification-row.tsx` — single row
+
+Inputs: `{ notification: BellNotificationRow }`.
+
+Renders icon (from `renderNotification`), title, workspace label (from `notification.teamName` — only rendered when the user belongs to more than one workspace, gated by a prop the dropdown computes), relative timestamp ("2 hours ago"), and read/unread visual state.
+
+Click handler:
+
+```typescript
+const onClick = useCallback(async () => {
+  const rendered = renderNotification(notification);
+
+  // 1. Optimistic local read mark + fire-and-forget POST.
+  if (notification.readAt === null) {
+    markRowReadLocally(notification.id);
+    void markRead(notification.id);
+    void refetchUnreadCount();
+  }
+
+  // 2. Cross-workspace switch if needed (PRD §P2.R10).
+  if (notification.teamId !== activeTeamId) {
+    setActiveTeam(notification.teamId);
+  }
+
+  // 3. Navigate (or close popover if no deep link).
+  if (rendered.deepLink) {
+    router.push(rendered.deepLink);
+  }
+  closePopover();
+}, [notification, activeTeamId, ...]);
+```
+
+The order matters: mark read → switch workspace → navigate. Switching workspace before navigation ensures the destination renders in the correct workspace context (prevents a flash of "no data" on the destination page when the active workspace is mid-transition).
+
+Read vs unread visual: a small leading dot (`bg-[var(--brand-primary)]`) when `readAt === null`, dimmed text (`text-muted-foreground`) when read. Reuses the same dot pattern PRD-024 introduced for streaming indicators — the visual vocabulary already exists.
+
+Relative timestamp: existing project pattern uses `formatDistanceToNow` from `date-fns` (already a dep). Wrapped in a small helper so the row file stays focused.
+
+#### `components/notifications/notification-empty-state.tsx` — "you're all caught up"
+
+Tiny presentational component. Static copy + a muted icon.
+
+#### `components/notifications/notification-skeleton.tsx` — loading state
+
+Three skeleton rows during the initial fetch. Reuses shadcn's `<Skeleton>` primitive. Same tokens as the rest of the app.
+
+### Layout Integration
+
+#### `components/layout/app-sidebar.tsx` (modify)
+
+The bell sits in the bottom region of the sidebar, next to the user menu and theme toggle — that block already hosts user-scoped chrome (settings dropdown, theme toggle, user menu, workspace switcher). Adding the bell there keeps the visual grouping coherent. The bell does not appear as a top-level `NAV_ITEM` because it is not a route — it is an action.
+
+Exact placement: between the theme toggle and the user menu. The mobile sheet variant of the sidebar (already present) gets the bell in the same region.
+
+The integration is a single-line addition:
+
+```tsx
+<div className="...sidebar-footer-region...">
+  <ThemeToggle />
+  <NotificationBell />
+  <UserMenu />
+</div>
+```
+
+No prop wiring — the bell self-fetches. No effect on the existing Chat icon's streaming indicator dot (different concern, different surface).
+
+### Files Changed
+
+| File | Action | Purpose |
+|------|--------|---------|
+| `app/api/notifications/route.ts` | **Create** | `GET` — paginated bell listing |
+| `app/api/notifications/unread-count/route.ts` | **Create** | `GET` — badge count |
+| `app/api/notifications/[id]/read/route.ts` | **Create** | `POST` — mark one read |
+| `app/api/notifications/mark-all-read/route.ts` | **Create** | `POST` — bulk mark |
+| `lib/repositories/notification-repository.ts` | Modify | Add `BellNotificationRow`, `ListForBellResult`, `listForBell` to the interface |
+| `lib/repositories/supabase/supabase-notification-repository.ts` | Modify | Implement `listForBell` with `teams!inner(name)` join + `toBellNotification` mapper |
+| `lib/notifications/renderers.ts` | **Create** | Renderer types, empty `NOTIFICATION_RENDERERS` map, `renderNotification` lookup, fallback |
+| `lib/hooks/use-unread-count.ts` | **Create** | Visibility-aware polling for the badge |
+| `lib/hooks/use-notifications.ts` | **Create** | Paginated bell list, optimistic local mutations |
+| `lib/hooks/use-mark-notification-read.ts` | **Create** | Fire-and-forget mark-read / mark-all-read |
+| `components/notifications/notification-bell.tsx` | **Create** | Public component — trigger + popover composition |
+| `components/notifications/notification-dropdown.tsx` | **Create** | Popover content — header, list, footer |
+| `components/notifications/notification-row.tsx` | **Create** | Single row — renderer + cross-workspace click handler |
+| `components/notifications/notification-empty-state.tsx` | **Create** | Empty surface |
+| `components/notifications/notification-skeleton.tsx` | **Create** | Loading state |
+| `components/layout/app-sidebar.tsx` | Modify | Mount `NotificationBell` in the bottom region (desktop + mobile sheet) |
+| `ARCHITECTURE.md` | Modify | API routes section (4 new routes); file map adds `components/notifications/`, the 3 hooks, the 4 route files, and `lib/notifications/renderers.ts` |
+| `CHANGELOG.md` | Modify | PRD-029 Part 2 entry |
+
+No new env vars, no new external dependencies (`date-fns` already in tree; lucide-react icons already in use; shadcn `Popover` already present).
+
+### Implementation
+
+#### Increment 2.1 — Repository extension + API routes
+
+**What:** Land the four route handlers and the supporting `listForBell` repo method. After this increment, `curl -H "Cookie: ..." /api/notifications` returns rows; nothing else changes UI-side.
+
+**Steps:**
+
+1. Edit `lib/repositories/notification-repository.ts`:
+   - Add `BellNotificationRow extends WorkspaceNotification`.
+   - Add `ListForBellResult { rows; nextCursor }`.
+   - Add `listForBell(options: ListForUserOptions): Promise<ListForBellResult>` to `NotificationRepository`.
+   - Export the new types.
+2. Edit `lib/repositories/supabase/supabase-notification-repository.ts`:
+   - Add `BELL_COLUMNS` constant (same as `COLUMNS` plus `, teams!inner(name)`).
+   - Add `toBellNotification(row)` — composes `toNotification(row)` with `teamName: row.teams?.name ?? "(unknown workspace)"`.
+   - Implement `listForBell` — copy the `listForUser` body verbatim, swap `COLUMNS → BELL_COLUMNS` and `toNotification → toBellNotification`. Reuse `applyOptionalTeamFilter`.
+3. Edit `lib/repositories/index.ts` to re-export `BellNotificationRow`, `ListForBellResult`.
+4. Create `app/api/notifications/route.ts`:
+   - `GET` handler.
+   - Use `requireAuth` from `lib/api/route-auth.ts`.
+   - Zod-validate query params (`cursor`, `limit`, `includeRead`, `windowDays`); decode the `cursor` `"createdAt:id"` form into `NotificationCursor | null`.
+   - Instantiate `createNotificationRepository(supabase)` with the user's anon client.
+   - Call `repo.listForBell({ userId, limit, cursor, includeRead, windowDays })`.
+   - Return `{ rows, nextCursor }`.
+5. Create `app/api/notifications/unread-count/route.ts`:
+   - `GET` handler.
+   - `requireAuth` → repo → `repo.unreadCount({ userId })`.
+   - Return `{ count }`.
+6. Create `app/api/notifications/[id]/read/route.ts`:
+   - `POST` handler.
+   - `requireAuth` + extract `id` from route params (validate UUID format with Zod).
+   - `repo.markRead(id)` (the route does not pass `userId` — the repo doesn't need it; RLS scopes the `UPDATE`).
+   - Return `{ ok: true }`.
+7. Create `app/api/notifications/mark-all-read/route.ts`:
+   - `POST` handler.
+   - `requireAuth`. Optional body `{ teamId?: string }` — Zod-validate with both branches accepted.
+   - `repo.markAllRead({ userId, teamId })`.
+   - Return `{ ok: true }`.
+8. All four routes log entry + outcome under `[api/notifications/...]` prefixes consistent with the existing project pattern.
+
+**Verification:**
+
+1. `npx tsc --noEmit` passes.
+2. Repository smoke (REPL or throwaway script with a service-role client): emit a `theme.merged` row → `listForBell({ userId })` returns it with `teamName` populated.
+3. cURL the four routes against a running dev server with a real auth cookie:
+   - `GET /api/notifications` → returns rows with teamName, paginated.
+   - `GET /api/notifications/unread-count` → returns the right count.
+   - `POST /api/notifications/<id>/read` against an unread row → `{ ok: true }`; subsequent `unread-count` decrements.
+   - `POST /api/notifications/mark-all-read` (no body) → zeroes the unread count across all workspaces.
+4. Auth smoke: an unauthenticated request to any of the four routes returns 401.
+
+**Post-increment:** ARCHITECTURE update batched in audit. No CHANGELOG entry yet (single-Part entry written at audit time).
+
+---
+
+#### Increment 2.2 — Renderer scaffold
+
+**What:** `lib/notifications/renderers.ts` lands with the registry type, an empty map, and the `renderNotification` lookup + fallback. No callers yet.
+
+**Steps:**
+
+1. Create `lib/notifications/renderers.ts` per §Renderer Scaffolding:
+   - `RendererFor<E>` and `RendererRegistry` types.
+   - `NOTIFICATION_RENDERERS: Partial<RendererRegistry> = {}`.
+   - `RenderedNotification` interface.
+   - `FALLBACK` constant.
+   - `renderNotification(notification)` function.
+2. No imports from this file added anywhere yet.
+
+**Verification:**
+
+1. `npx tsc --noEmit` passes.
+2. Quick REPL smoke:
+   ```typescript
+   import { renderNotification } from "@/lib/notifications/renderers";
+   renderNotification({
+     id: "x", teamId: "t", userId: null, eventType: "theme.merged",
+     payload: { /* malformed */ }, readAt: null, expiresAt: null, createdAt: "2026-04-30T00:00:00Z",
+   });
+   // Returns FALLBACK — registry empty, payload also doesn't matter at this point.
+   ```
+3. Adding a stub renderer entry (e.g., `"theme.merged": { icon: Bell, title: () => "Test", deepLink: () => null }`) and re-running the smoke produces the registered render — proving the lookup wires through.
+
+**Post-increment:** none.
+
+---
+
+#### Increment 2.3 — Hooks
+
+**What:** Three custom hooks under `lib/hooks/`. They consume the routes from 2.1 and return the shapes the components in 2.4 will read.
+
+**Steps:**
+
+1. Create `lib/hooks/use-unread-count.ts` per §Hooks. Visibility-aware polling at `POLL_INTERVAL_MS = 30_000`.
+2. Create `lib/hooks/use-notifications.ts` per §Hooks. Paginated bell list with optimistic local mutations.
+3. Create `lib/hooks/use-mark-notification-read.ts` per §Hooks. Fire-and-forget POSTs to the two mark-read routes.
+4. Each hook follows the project's `useX` naming, returns an object, includes cleanup in `useEffect`, logs failures under a per-hook prefix.
+
+**Verification:**
+
+1. `npx tsc --noEmit` passes.
+2. Throwaway smoke page (a temporary `/dev/notif-test` route, deleted at audit time):
+   - Mount `useUnreadCount` → badge value updates after a fresh emit (within ~30s by default).
+   - Mount `useNotifications` → `rows` populates from the API.
+   - Call `useMarkNotificationRead().markRead(id)` → server-side row's `readAt` flips.
+3. Visibility check: open the smoke page, switch tab away for two minutes, return — the network panel should show no fetches during the hidden window and a fresh fetch on focus.
+
+**Post-increment:** delete the smoke page.
+
+---
+
+#### Increment 2.4 — Components
+
+**What:** All five UI components under `components/notifications/`. Composes the hooks from 2.3 and the renderer from 2.2. Not yet mounted in the layout.
+
+**Steps:**
+
+1. Create `components/notifications/notification-row.tsx`:
+   - `<button>` (or `<Link>` when `deepLink` is set) wrapping icon + title + workspace label + timestamp.
+   - Click handler: optimistic local mark-read, `setActiveTeam` if cross-workspace, `router.push(deepLink)` (or `closePopover()` when no deep link).
+   - Read/unread dot, dimmed-when-read text — using existing `var(--brand-primary)` and `text-muted-foreground` tokens.
+2. Create `components/notifications/notification-empty-state.tsx`:
+   - Centered icon (muted bell) + line of copy ("You're all caught up").
+3. Create `components/notifications/notification-skeleton.tsx`:
+   - Three rows of `<Skeleton>` placeholders.
+4. Create `components/notifications/notification-dropdown.tsx`:
+   - Header ("Notifications" + "Mark all as read" when unread > 0).
+   - List: maps `useNotifications().rows` through `<NotificationRow>`.
+   - Empty / skeleton / error branches.
+   - Footer: "Load more" when `hasMore`.
+   - Workspace label rendering gated on a multi-workspace prop computed once at mount time (single-workspace users do not see labels — PRD §P2.R10 noise reduction).
+5. Create `components/notifications/notification-bell.tsx`:
+   - Imports `Popover`, `PopoverTrigger`, `PopoverContent` from shadcn.
+   - Trigger: `<button>` with `<Bell>` icon and the unread badge overlay.
+   - Content: `<NotificationDropdown />`.
+   - Lazy-mount: dropdown content only renders when the popover is open (so `useNotifications` does not fetch until user opens).
+   - Aria labels per §Components.
+
+**Verification:**
+
+1. `npx tsc --noEmit` passes.
+2. Mount the bell on the temporary smoke page:
+   - Badge displays for unread rows; hides at 0; shows "9+" past the threshold.
+   - Opening the bell triggers the list fetch; rows render with the fallback renderer (Part 3 fills in event-specific content).
+   - Clicking a row marks it locally (dot disappears, text dims) and fires the POST.
+   - "Mark all as read" zeroes the badge across all workspaces.
+   - Empty state renders when no rows are visible.
+3. Visual review: confirm no new design tokens. Run a grep on the five new files for any hex code or arbitrary `[...]` Tailwind value not already in `globals.css`. Should return zero hits.
+
+**Post-increment:** none — the smoke page stays for 2.5.
+
+---
+
+#### Increment 2.5 — Sidebar integration
+
+**What:** Mount `NotificationBell` in `app-sidebar.tsx`. Visible on every authenticated route. Delete the smoke page from 2.3 / 2.4.
+
+**Steps:**
+
+1. Edit `components/layout/app-sidebar.tsx`:
+   - Import `NotificationBell`.
+   - Mount it in the bottom region between `<ThemeToggle>` and `<UserMenu>` (both desktop and mobile-sheet variants of the sidebar).
+2. Delete `app/dev/notif-test/` (or whatever path the smoke page used).
+
+**Verification:**
+
+1. `npx tsc --noEmit` passes.
+2. End-to-end on dev:
+   - Sign in → bell visible in sidebar on every authenticated route (`/dashboard`, `/capture`, `/chat`, `/settings/*`).
+   - Sign out → bell disappears (sidebar unmounts).
+   - With at least one team membership in addition to the active workspace: emit a notification scoped to the *non-active* team via SQL, observe the badge increments, open the bell, see the row with the *other* team's label, click it — active workspace switches, page navigates to the deep-link (if any) in the new context.
+   - With a single team: workspace label is suppressed per PRD §P2.R10's noise-reduction note.
+
+**Post-increment:** none — ARCHITECTURE / CHANGELOG batched in audit.
+
+---
+
+#### Increment 2.6 — End-of-part audit
+
+Per CLAUDE.md "End-of-part audit" — produces fixes, not a report.
+
+**Checklist:**
+
+1. **SRP:** each component does one thing. `NotificationBell` is composition only; `NotificationDropdown` is layout only; `NotificationRow` owns the click flow; empty / skeleton are pure presentational. Each hook owns one concern. If any component grew an inline branch larger than ~20 LOC, extract.
+2. **DRY:** the `formatDistanceToNow` call wraps in a single helper at the top of `notification-row.tsx`; the read/unread dot + dimming pattern reused from PRD-024 lives at module-scope (no per-render allocation).
+3. **Design tokens:** zero hardcoded colours, sizes, or spacings in the five new components. Grep verifies (no `#` followed by hex digits, no arbitrary `bg-[#...]`).
+4. **Logging:** all four API routes emit entry + outcome lines under `[api/notifications/...]`. Hooks log failures under their respective `[useX]` prefixes. Repository's new `listForBell` uses `[supabase-notification-repo]`.
+5. **Dead code:** the dev smoke page is deleted. No commented-out scaffolding. No unused imports across the new files.
+6. **Convention compliance:**
+   - File names kebab-case (✓).
+   - Component names PascalCase (✓).
+   - Hook names `useX`, return objects (✓).
+   - Default to Server Components — but every file in this part legitimately needs `"use client"` (state, event handlers, browser APIs). Verify no over-eager client boundary on a parent that doesn't need it.
+   - Import order: React → third-party → utils → components → hooks → types.
+7. **API route hygiene:**
+   - All four routes Zod-validate input (route params, query, body).
+   - All four routes call `requireAuth`.
+   - Status codes per project convention: 400 bad input, 401 unauthenticated, 500 server error.
+   - JSON bodies always include a `message` field on errors.
+8. **Type tightening:** `any` permitted only in the two existing ESLint-suppressed spots (`mapRow` raw row, `applyOptionalTeamFilter` generic builder) and the new `toBellNotification` raw row (same suppression, same comment). Anywhere else is a fix.
+9. **ARCHITECTURE.md updates:**
+   - **Database tables:** unchanged (Part 1 already added `workspace_notifications`).
+   - **API Routes section:** add a new "Notifications" subsection with the four routes (or extend an existing miscellany section if one exists; check the file's structure).
+   - **File map** — add:
+     - `app/api/notifications/route.ts`
+     - `app/api/notifications/unread-count/route.ts`
+     - `app/api/notifications/[id]/read/route.ts`
+     - `app/api/notifications/mark-all-read/route.ts`
+     - `lib/notifications/renderers.ts`
+     - `lib/hooks/use-unread-count.ts`
+     - `lib/hooks/use-notifications.ts`
+     - `lib/hooks/use-mark-notification-read.ts`
+     - `components/notifications/notification-bell.tsx` (and the four siblings)
+     - `components/layout/app-sidebar.tsx` — annotate with the bell mount.
+   - **Status line:** append "PRD-029 Part 2 (Header Bell UI & Dropdown) implemented".
+10. **CHANGELOG.md:** PRD-029 Part 2 entry covering all P2.R1–P2.R10 requirements, the architectural choices (sidebar placement, separate `listForBell` method, polling at 30s with visibility awareness, lazy-mount dropdown content, optimistic local mark-read), the increment-by-increment narrative, and the audit's actual fixes.
+11. **Verify file references:** grep for each new file path in ARCHITECTURE.md after editing. Each should return at least one hit.
+12. **Re-run flows touched by Part 2:**
+    - Existing extraction / chat / dashboard flows render the bell in the sidebar without changing their own behaviour.
+    - Sidebar's existing Chat icon streaming dot still works (no regression — different DOM region, different hooks).
+    - Workspace switcher still works; switching workspaces does not break the bell (the bell aggregates across workspaces, so it should be unaffected, but verify).
+    - Sign-out clears the bell state when the sidebar unmounts (no leaked rows in the next session — same defence as PRD-024 P5 hardened for streams).
+13. **Final:** `npx tsc --noEmit`.
+
+This audit closes Part 2.
+
+---
+
+## Parts 3–5
+
+> Specified after Part 2 lands and at least one renderer (PRD-026 P4's `theme.merged`) ships in production via Part 3. Each subsequent part will append a "Part N" section here, mirroring the structure above, and must respect the data shapes locked in by Parts 1 and 2 (`workspace_notifications` schema, `NOTIFICATION_EVENTS` registry, `NotificationRepository` interface, `notification-service` public API, the four `/api/notifications/*` routes, the renderer interface).
+
+- **Part 3 — Renderer catalogue.** Populates `NOTIFICATION_RENDERERS` from Part 2 with entries for the three initial event types (`theme.merged`, `supersession.proposed`, `bulk_re_extract.completed`). Each entry: icon component, title-template function (typed payload → string), deep-link function (typed payload → string | null). One file change per event type when adding more.
+- **Part 4 — Delivery mechanism.** Picks Supabase Realtime / polling-only / hybrid. The hooks from Part 2 (`use-unread-count.ts` and `use-notifications.ts`) get their internal implementations swapped or augmented; their public return shapes do not change. The latency bar from PRD §P4.R1 is the measurable acceptance.
+- **Part 5 — Retention & cleanup.** Schedules a job (cron / edge function / pg_cron) calling `repo.deleteExpired` on a cadence. Configurable retention windows (read shorter than unread); per-row `expires_at` already supported by Part 1's schema and repository contract.

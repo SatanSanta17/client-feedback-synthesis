@@ -23,6 +23,7 @@ import {
   type NotificationEventType,
 } from "@/lib/notifications/events";
 import type {
+  ListForBellResult,
   ListForUserResult,
   NotificationRepository,
 } from "@/lib/repositories/notification-repository";
@@ -164,6 +165,18 @@ export async function listForUser(
     `${LOG_PREFIX} listForUser — userId: ${params.userId}, teamId: ${params.teamId ?? "(any)"}, limit: ${params.limit ?? "default"}`
   );
   return repo.listForUser(params);
+}
+
+/** Bell-shaped read — same params as `listForUser` but with `teamName`
+ *  joined into each row for the workspace-label rendering (PRD §P2.R10). */
+export async function listForBell(
+  repo: NotificationRepository,
+  params: ListForUserParams
+): Promise<ListForBellResult> {
+  console.log(
+    `${LOG_PREFIX} listForBell — userId: ${params.userId}, teamId: ${params.teamId ?? "(any)"}, limit: ${params.limit ?? "default"}`
+  );
+  return repo.listForBell(params);
 }
 
 export async function unreadCount(
