@@ -235,6 +235,7 @@ export function ChatPageContent({
 
       <ChatArea
         activeConversationId={activeConversationId}
+        teamId={teamId}
         activeConversation={activeConversation}
         messages={chatHook.messages}
         isLoadingMessages={chatHook.isLoadingMessages}

@@ -15,6 +15,10 @@ import { ArchiveRestore, ArrowUp, Square } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
+import {
+  MAX_CONCURRENT_STREAMS,
+  useActiveStreamCount,
+} from "@/lib/streaming";
 import type { StreamState } from "@/lib/types/chat";
 
 // ---------------------------------------------------------------------------
@@ -32,6 +36,12 @@ const LINE_HEIGHT = 24; // px — matches text-sm leading-relaxed
 interface ChatInputProps {
   /** Current streaming state — controls send vs stop button. */
   streamState: StreamState;
+  /**
+   * Active workspace — NULL = personal. Used to scope the concurrent-stream
+   * cap (PRD-024 P3.R3) so a user can have up to MAX_CONCURRENT_STREAMS
+   * running per workspace independently.
+   */
+  teamId: string | null;
   /** Whether the conversation is archived (disables input). */
   isArchived: boolean;
   /** Text to inject into the textarea (e.g. from follow-up chip click).
@@ -53,6 +63,7 @@ interface ChatInputProps {
 
 export function ChatInput({
   streamState,
+  teamId,
   isArchived,
   suggestedText,
   onSendMessage,
@@ -63,7 +74,13 @@ export function ChatInput({
   const [value, setValue] = useState("");
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const isStreaming = streamState === "streaming";
-  const canSend = value.trim().length > 0 && !isStreaming;
+
+  // Per-workspace cap (PRD-024 P3.R3). Only blocks NEW streams — when this
+  // conversation is already streaming, the user can still cancel via Stop.
+  const activeStreamCount = useActiveStreamCount(teamId);
+  const isAtCap =
+    !isStreaming && activeStreamCount >= MAX_CONCURRENT_STREAMS;
+  const canSend = value.trim().length > 0 && !isStreaming && !isAtCap;
 
   // Populate textarea when suggestedText changes (e.g. follow-up chip click)
   const prevSuggestedTsRef = useRef(0);
@@ -161,6 +178,17 @@ export function ChatInput({
 
   return (
     <div className={cn("border-t border-border px-4 py-3", className)}>
+      {isAtCap && (
+        <div
+          role="status"
+          aria-live="polite"
+          className="mx-auto mb-2 max-w-3xl rounded-md border border-border bg-muted/30 px-3 py-2 text-center text-xs text-muted-foreground"
+        >
+          Already running {MAX_CONCURRENT_STREAMS} chats — wait until one of
+          them completes before starting another.
+        </div>
+      )}
+
       <div className="relative mx-auto flex max-w-3xl items-end gap-2">
         <textarea
           ref={textareaRef}

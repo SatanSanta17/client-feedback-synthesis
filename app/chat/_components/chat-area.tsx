@@ -40,6 +40,11 @@ interface ChatAreaProps {
    * that case. (Gap P9)
    */
   activeConversationId: string | null;
+  /**
+   * Active workspace — NULL = personal. Threaded through to `ChatInput`
+   * for the per-workspace concurrent-stream cap (PRD-024 P3.R3).
+   */
+  teamId: string | null;
   /** The active conversation looked up from the sidebar list, or null
    *  when no conversation is selected OR while the list is still loading. */
   activeConversation: Conversation | null;
@@ -91,6 +96,7 @@ interface ChatAreaProps {
 export function ChatArea(props: ChatAreaProps) {
   const {
     activeConversationId,
+    teamId,
     activeConversation,
     messages,
     isLoadingMessages,
@@ -311,6 +317,7 @@ export function ChatArea(props: ChatAreaProps) {
       {!isConversationNotFound && (
         <ChatInput
           streamState={streamState}
+          teamId={teamId}
           isArchived={isArchived}
           suggestedText={suggestedText}
           onSendMessage={onSendMessage}
