@@ -555,6 +555,786 @@ This audit closes Part 1.
 
 ---
 
-## Parts 2–4
+## Part 2: Platform-Suggested Merge Candidates
 
-> Specified after Part 1 lands and the prevention threshold has accumulated telemetry. Each subsequent part will append a "Part N" section here, mirroring the structure above, and must respect the data shapes locked in by Part 1 (`themes.embedding`, `themes.merged_into_theme_id`, `buildThemeEmbeddingText`).
+> Implements **P2.R1–P2.R7** from PRD-026.
+
+### Overview
+
+Surface a workspace-scoped, ranked list of theme pairs that look like duplicates so admins can review (and dismiss or merge) without auditing the whole taxonomy. Five moving pieces:
+
+1. **Schema** — two new tables (`theme_merge_candidates`, `theme_merge_dismissals`) and a new RPC (`find_theme_candidate_pairs`) that walks active themes pairwise and returns those above the candidate-similarity threshold.
+2. **Service** — `theme-candidate-service.ts` owns three operations: `refreshCandidates(workspaceCtx)` rebuilds the candidate set for a workspace; `listCandidates(workspaceCtx, options)` reads the persisted set ordered by composite score (excluding dismissed pairs); `dismissCandidate(workspaceCtx, pairId, userId)` records the admin's "not a duplicate" judgment.
+3. **API routes** — `GET /api/themes/candidates`, `POST /api/themes/candidates/refresh`, `POST /api/themes/candidates/[id]/dismiss`, plus a `GET /api/cron/refresh-theme-candidates` invoked daily by Vercel cron to keep the list fresh without page-load cost.
+4. **UI** — admin-only `/settings/themes` page that lists candidates with the per-side stats P2.R3 demands (assignment count, distinct sessions, distinct clients), the similarity score, and a token-based "shared keywords" hint. "Refresh" and "Dismiss" are wired in Part 2; the "Merge" button is a placeholder Part 3 wires.
+5. **Nav gating** — sidebar's settings cluster gains a "Themes" entry visible only to admins/owners; `/settings/themes` itself returns 403 if reached directly by non-admins.
+
+The flow on the admin's first visit:
+
+```
+GET /settings/themes
+   → page server-component checks role → renders client component
+   → client fetches GET /api/themes/candidates
+   → server reads persisted theme_merge_candidates ⨝ themes (for current name+description)
+   → returns top N ordered by combined_score, excluding dismissals
+Click "Dismiss" on a row
+   → POST /api/themes/candidates/[id]/dismiss
+   → server inserts into theme_merge_dismissals + deletes from candidates table
+   → client optimistically removes the row
+Click "Refresh"
+   → POST /api/themes/candidates/refresh
+   → server runs theme-candidate-service.refreshCandidates()
+   → client re-fetches the list
+Background (no admin click)
+   → Vercel cron hits /api/cron/refresh-theme-candidates daily
+   → iterates every workspace with ≥ 2 active themes
+   → calls refreshCandidates() per workspace
+```
+
+### Forward Compatibility Notes
+
+- **Part 3 (Admin-Confirmed Theme Merge):** Reads the same `theme_merge_candidates` rows surfaced here. The merge transaction sets `themes.merged_into_theme_id` (column already added in Part 1's migration), flips `is_archived`, re-points `signal_themes.theme_id`, and deletes the now-resolved candidate row. No schema change introduced here is incompatible — the candidates row carries everything Part 3's merge dialog needs (similarity, signal counts, distinct sessions/clients).
+- **Part 4 (Notify Affected Users):** The merge action emits a `theme.merged` event into PRD-029's notification primitive. Part 2 is read-only on the merge side — it does not emit anything. The `theme.merged` event type is already registered in `lib/notifications/events.ts` from PRD-029 Part 1.
+- **Backlog (LLM-judged candidate filtering):** A second-pass LLM judge slots in between similarity computation and persistence in `refreshCandidates`. The service's input/output contract (`workspaceCtx → void`) doesn't change; only the body grows a filtering step that consumes the in-memory candidate list before the bulk insert.
+- **Backlog (per-workspace tunable threshold):** `THEME_CANDIDATE_SIMILARITY_THRESHOLD` is a global env var. A per-workspace override would land as a column on `teams` (mirroring the prevention-threshold backlog item from Part 1). Threshold reading is centralised in `theme-candidate-service.ts`.
+- **Backlog (bulk dismiss / bulk merge):** The repository's `dismiss` is currently per-pair. Adding a `bulkDismiss(pairIds[])` method is an additive interface change with no schema impact.
+
+### Technical Decisions
+
+Continuing the numbering from Part 1's decisions.
+
+10. **Candidate set is persisted, not computed-on-page-load.** Two reasons: (a) page-load latency stays a single read against an indexed table, no per-visit pairwise math; (b) the daily background refresh writes to the same store the on-demand refresh does, so the surface is always backed by a coherent snapshot regardless of which path produced it. Computing on every load would double the cost on hot workspaces and make the admin's "is this even loading?" experience flaky.
+
+11. **Pair ordering is normalized at the schema level (`theme_a_id < theme_b_id`).** A `CHECK` constraint on the candidates table enforces lexicographic ordering of UUIDs in every row. This makes (A, B) and (B, A) literally the same row and lets the unique index be straightforward (`UNIQUE (theme_a_id, theme_b_id, scope)` instead of `UNIQUE (LEAST(...), GREATEST(...), scope)` which Postgres allows but is fiddly to read). The same constraint applies to the dismissals table — dismissing (A, B) covers the same pair under any iteration order.
+
+12. **Composite score with pinned weights, not equal averaging.** P2.R2 explicitly requires that a high-similarity-low-volume pair sit *below* a merely-good-similarity-heavy-volume pair. Equal weighting (33/33/33) doesn't achieve that. The TRD pins:
+    - `similarity_score` = raw cosine similarity (already 0..1)
+    - `volume_score` = `log10(total_assignments_across_both + 1) / log10(MAX_VOLUME_NORM + 1)` clamped to `[0, 1]`. Default `MAX_VOLUME_NORM = 200` (so a pair touching 200+ signals saturates).
+    - `recency_score` = `exp(-days_since_most_recent_assignment / 30)` — `1.0` today, `~0.37` at 30 days, `~0.05` at 90 days.
+    - `combined_score = 0.5 * similarity + 0.3 * volume + 0.2 * recency`
+    Worked example — pair A (sim=0.95, vol=0.10, rec=0.05) vs pair B (sim=0.82, vol=0.85, rec=0.95): A scores 0.515, B scores 0.847. B wins, matching P2.R2's intent. The raw scores are stored alongside `combined_score` so the UI can display similarity directly and the admin can re-sort if they prefer "by similarity only".
+
+13. **Candidate similarity threshold pinned below the prevention threshold.** `THEME_CANDIDATE_SIMILARITY_THRESHOLD` defaults to `0.80` (vs Part 1's `0.92`). Rationale: prevention bites only on confident matches because false-positives there silently collapse signal under the wrong theme. Candidate generation is for *human review* — false-positives are filtered by the admin clicking Dismiss, so casting a wider net is safe and fills the surface with more useful pairs. Workspaces on `text-embedding-3-small` typically see 10–40 pairs at 0.80 in a healthy taxonomy of a few hundred themes. Tunable via env.
+
+14. **Candidate count bounded at the API layer, not the table.** `THEME_CANDIDATE_TOP_N = 20` (env-tunable). The candidates table can hold thousands of rows if a workspace has many duplicates; the API's `GET` clamps the response to the top N by `combined_score`. The client offers a "Show more" affordance (P2.R4) that requests the next batch via a `limit`/`offset` pair on the same endpoint. This keeps the default surface tight while preserving access to the long tail.
+
+15. **Pair-finding uses a single RPC with HNSW-eligible WHERE, not in-memory N² in JS.** `find_theme_candidate_pairs(team_id, user_id, threshold)` does a self-join on `themes` filtered by workspace scope and similarity, returning every pair above threshold in one query. Postgres can use the HNSW index for the similarity predicate; even when it doesn't (small tables) the cosine math runs in C and beats a JS loop. Stats per theme (assignment count, distinct sessions/clients, last-assigned-at) come from a second query — `theme-candidate-service` joins them in memory at refresh time. Two queries per refresh, no per-pair round trips.
+
+16. **Per-side stats are snapshotted into the candidates row at refresh time.** Reads from the candidates surface should be O(1) — a single SELECT joined to `themes` for current names+descriptions. If we computed stats at read time, every page-load would hit `signal_themes` ⨝ `session_embeddings` for every visible pair. Snapshotting trades a small amount of staleness (counts age until next refresh, max 24h with the daily cron) for read latency and architectural clarity. The UI shows "Last refreshed at <timestamp>" so the admin knows the snapshot age.
+
+17. **Refresh is a transactional replace, not incremental upsert.** The service's `refreshCandidates(workspaceCtx)` runs `find_theme_candidate_pairs`, computes scores + stats in memory, then in a single transaction: `DELETE FROM theme_merge_candidates WHERE [scope]` + bulk `INSERT` of the new set. Atomic — admins never see a half-replaced list. Dismissed pairs are filtered *during* the in-memory compute step (joined against `theme_merge_dismissals` for the workspace) so they never reach the candidates table at all. Net effect: the persisted candidates set is always exactly what the admin should see *right now*, post-dismissals.
+
+18. **Dismissals survive theme renames; theme deletion is the only invalidator.** `theme_merge_dismissals` keys by `(theme_a_id, theme_b_id, scope)`. If an admin dismisses (A, B) and later A's name/description change (and embedding regenerates), the dismissal stays — the admin's judgment was about theme identity, not current label. The only way a dismissal "comes back" is if either theme is hard-deleted (cascade FK cleans up the dismissal automatically). This mirrors PRD-026's intent: dismissals reflect domain-knowledge calls, not surface-level coincidences.
+
+19. **Token-based "shared keywords" hint in Part 2; LLM-generated rationale deferred.** P2.R3 lets the TRD pick. We extract case-insensitive intersection of word tokens (after a small built-in stop-word list — "the", "a", "of", etc.) from both theme names and descriptions, capped at 3 keywords per pair. Cheap (string ops, no API calls), legible ("Shared: API, performance"), and good enough — the admin reads both names and descriptions on the same row to make the call. An LLM-rationale upgrade is in the PRD's backlog ("LLM-judged candidate filtering"); when it ships, the `shared_keywords` column is a no-op and the new column carries the rationale.
+
+20. **Background refresh via Vercel cron, not Supabase scheduled functions.** Vercel cron is already the runtime for our scheduled work (consistent platform), routes are versioned with the rest of the app, and triggering needs no extra infra. The cron handler authenticates via Vercel's `CRON_SECRET` header check (not user auth), iterates workspaces with `≥ 2` active themes, and calls `refreshCandidates` per workspace inside `Promise.allSettled` so a slow or failing workspace doesn't stall the rest. Schedule pinned at `0 3 * * *` (UTC) — low traffic, before the working day in any major timezone.
+
+21. **`/settings/themes` is gated at three layers.** (a) Sidebar nav: the "Themes" entry only renders for admins (membership role check via existing auth context). (b) Page-level: `app/settings/themes/page.tsx` is a server component that returns 403 if the active workspace member's role is not admin/owner. (c) API routes: every endpoint runs `requireTeamAdmin(teamId, user)` (existing helper from PRD-023 Part 2) before doing any work. Defense in depth — losing the nav gating to a client-side bug still leaves the page and API gated.
+
+### Database Changes
+
+#### Migration: `003-create-theme-candidates-and-dismissals.sql`
+
+```sql
+-- ============================================================
+-- PRD-026 Part 2: Platform-suggested merge candidates.
+-- ============================================================
+
+-- ---------- theme_merge_candidates ----------
+CREATE TABLE IF NOT EXISTS theme_merge_candidates (
+  id                          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  team_id                     UUID REFERENCES teams(id) ON DELETE CASCADE,
+  initiated_by                UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+  theme_a_id                  UUID NOT NULL REFERENCES themes(id) ON DELETE CASCADE,
+  theme_b_id                  UUID NOT NULL REFERENCES themes(id) ON DELETE CASCADE,
+  similarity_score            REAL NOT NULL,
+  volume_score                REAL NOT NULL,
+  recency_score               REAL NOT NULL,
+  combined_score              REAL NOT NULL,
+  theme_a_assignment_count    INTEGER NOT NULL DEFAULT 0,
+  theme_a_distinct_sessions   INTEGER NOT NULL DEFAULT 0,
+  theme_a_distinct_clients    INTEGER NOT NULL DEFAULT 0,
+  theme_a_last_assigned_at    TIMESTAMPTZ,
+  theme_b_assignment_count    INTEGER NOT NULL DEFAULT 0,
+  theme_b_distinct_sessions   INTEGER NOT NULL DEFAULT 0,
+  theme_b_distinct_clients    INTEGER NOT NULL DEFAULT 0,
+  theme_b_last_assigned_at    TIMESTAMPTZ,
+  shared_keywords             TEXT[] NOT NULL DEFAULT '{}',
+  refresh_batch_id            UUID NOT NULL,
+  generated_at                TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CHECK (theme_a_id < theme_b_id)  -- Decision 11: normalized pair ordering
+);
+
+-- Unique candidate per workspace
+CREATE UNIQUE INDEX IF NOT EXISTS theme_merge_candidates_unique_pair_team
+  ON theme_merge_candidates (theme_a_id, theme_b_id, team_id)
+  WHERE team_id IS NOT NULL;
+
+CREATE UNIQUE INDEX IF NOT EXISTS theme_merge_candidates_unique_pair_personal
+  ON theme_merge_candidates (theme_a_id, theme_b_id, initiated_by)
+  WHERE team_id IS NULL;
+
+-- Sort/scan support — primary read path is "top N by combined_score per workspace"
+CREATE INDEX IF NOT EXISTS theme_merge_candidates_team_score_idx
+  ON theme_merge_candidates (team_id, combined_score DESC)
+  WHERE team_id IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS theme_merge_candidates_personal_score_idx
+  ON theme_merge_candidates (initiated_by, combined_score DESC)
+  WHERE team_id IS NULL;
+
+-- Refresh-batch lookup (for the transactional replace flow)
+CREATE INDEX IF NOT EXISTS theme_merge_candidates_batch_idx
+  ON theme_merge_candidates (refresh_batch_id);
+
+ALTER TABLE theme_merge_candidates ENABLE ROW LEVEL SECURITY;
+
+-- Read policies — match the themes-table pattern (admin gating happens at the
+-- API layer; RLS just enforces workspace membership so cross-workspace leakage
+-- is structurally impossible).
+CREATE POLICY "team members read team candidates"
+  ON theme_merge_candidates FOR SELECT TO authenticated
+  USING (team_id IS NOT NULL AND is_team_member(team_id));
+
+CREATE POLICY "users read own personal candidates"
+  ON theme_merge_candidates FOR SELECT TO authenticated
+  USING (team_id IS NULL AND initiated_by = auth.uid());
+
+-- Writes are service-role only — refreshCandidates / dismissCandidate go
+-- through the service which uses the service-role client.
+
+-- ---------- theme_merge_dismissals ----------
+CREATE TABLE IF NOT EXISTS theme_merge_dismissals (
+  id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  team_id         UUID REFERENCES teams(id) ON DELETE CASCADE,
+  initiated_by    UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+  theme_a_id      UUID NOT NULL REFERENCES themes(id) ON DELETE CASCADE,
+  theme_b_id      UUID NOT NULL REFERENCES themes(id) ON DELETE CASCADE,
+  dismissed_by    UUID NOT NULL REFERENCES auth.users(id),
+  dismissed_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CHECK (theme_a_id < theme_b_id)
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS theme_merge_dismissals_unique_pair_team
+  ON theme_merge_dismissals (theme_a_id, theme_b_id, team_id)
+  WHERE team_id IS NOT NULL;
+
+CREATE UNIQUE INDEX IF NOT EXISTS theme_merge_dismissals_unique_pair_personal
+  ON theme_merge_dismissals (theme_a_id, theme_b_id, initiated_by)
+  WHERE team_id IS NULL;
+
+ALTER TABLE theme_merge_dismissals ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "team members read team dismissals"
+  ON theme_merge_dismissals FOR SELECT TO authenticated
+  USING (team_id IS NOT NULL AND is_team_member(team_id));
+
+CREATE POLICY "users read own personal dismissals"
+  ON theme_merge_dismissals FOR SELECT TO authenticated
+  USING (team_id IS NULL AND initiated_by = auth.uid());
+```
+
+**Why no `created_at` on candidates beyond `generated_at`:** the row is the *output* of a generation pass; `refresh_batch_id` and `generated_at` together describe its provenance. There is no separate "created" event to track.
+
+**Why not store name/description in the candidate row:** they're authoritative on the `themes` table. Joining at read time means a renamed theme shows the new name on next page load without a refresh. Stats are different — those are time-series-style snapshots (a count *as of* the refresh moment), so they belong on the candidate row.
+
+#### RPC: `004-find-theme-candidate-pairs.sql`
+
+```sql
+CREATE OR REPLACE FUNCTION find_theme_candidate_pairs(
+  filter_team_id      UUID,
+  filter_user_id      UUID,
+  similarity_threshold FLOAT DEFAULT 0.80
+)
+RETURNS TABLE (
+  theme_a_id UUID,
+  theme_b_id UUID,
+  similarity FLOAT
+)
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+AS $$
+  SELECT
+    t1.id AS theme_a_id,
+    t2.id AS theme_b_id,
+    1 - (t1.embedding <=> t2.embedding) AS similarity
+  FROM themes t1
+  INNER JOIN themes t2
+    ON t1.id < t2.id  -- Decision 11: normalized pair ordering
+  WHERE
+    t1.is_archived = false
+    AND t2.is_archived = false
+    AND (
+      -- Team workspace
+      (filter_team_id IS NOT NULL
+       AND t1.team_id = filter_team_id
+       AND t2.team_id = filter_team_id)
+      OR
+      -- Personal workspace — both NULL team_id, both owned by same user
+      (filter_team_id IS NULL
+       AND t1.team_id IS NULL AND t2.team_id IS NULL
+       AND t1.initiated_by = filter_user_id
+       AND t2.initiated_by = filter_user_id)
+    )
+    AND 1 - (t1.embedding <=> t2.embedding) >= similarity_threshold
+  ORDER BY similarity DESC;
+$$;
+```
+
+**`SECURITY DEFINER`:** matches `match_session_embeddings`. The service-role client always invokes this RPC; the role check happens at the API layer.
+
+**Why no LIMIT in the RPC:** the candidate set should be complete at compute time — Part 2 ranks the full set in JS, not just the top-K of a single dimension. Bounded N comes from the API layer.
+
+### Type Definitions
+
+#### `lib/types/theme-candidate.ts`
+
+```typescript
+export interface ThemeCandidate {
+  id: string;
+  teamId: string | null;
+  initiatedBy: string;
+  themeAId: string;
+  themeBId: string;
+  similarityScore: number;
+  volumeScore: number;
+  recencyScore: number;
+  combinedScore: number;
+  themeAStats: ThemeSideStats;
+  themeBStats: ThemeSideStats;
+  sharedKeywords: string[];
+  refreshBatchId: string;
+  generatedAt: string;
+}
+
+export interface ThemeSideStats {
+  assignmentCount: number;
+  distinctSessions: number;
+  distinctClients: number;
+  lastAssignedAt: string | null;
+}
+
+/** Used by the listCandidates API/page — joins current name+description. */
+export interface ThemeCandidateWithThemes extends ThemeCandidate {
+  themeA: { id: string; name: string; description: string | null };
+  themeB: { id: string; name: string; description: string | null };
+}
+
+export interface ThemeDismissal {
+  id: string;
+  teamId: string | null;
+  initiatedBy: string;
+  themeAId: string;
+  themeBId: string;
+  dismissedBy: string;
+  dismissedAt: string;
+}
+```
+
+### Repository Changes
+
+#### New: `lib/repositories/theme-candidate-repository.ts`
+
+```typescript
+export interface ThemeCandidateInsert {
+  team_id: string | null;
+  initiated_by: string;
+  theme_a_id: string;
+  theme_b_id: string;
+  similarity_score: number;
+  volume_score: number;
+  recency_score: number;
+  combined_score: number;
+  theme_a_assignment_count: number;
+  theme_a_distinct_sessions: number;
+  theme_a_distinct_clients: number;
+  theme_a_last_assigned_at: string | null;
+  theme_b_assignment_count: number;
+  theme_b_distinct_sessions: number;
+  theme_b_distinct_clients: number;
+  theme_b_last_assigned_at: string | null;
+  shared_keywords: string[];
+  refresh_batch_id: string;
+}
+
+export interface ListCandidatesOptions {
+  limit: number;
+  offset: number;
+}
+
+export interface ThemeCandidateRepository {
+  /** Bulk insert from a single refresh pass. Caller is responsible for the
+   *  transactional replace (delete-by-scope before inserting the new set). */
+  bulkCreate(rows: ThemeCandidateInsert[]): Promise<void>;
+
+  /** Workspace-scoped delete used by refreshCandidates' transactional replace. */
+  deleteByWorkspace(teamId: string | null, userId: string): Promise<void>;
+
+  /** Read top N candidates joined with themes for current name+description. */
+  listByWorkspace(
+    teamId: string | null,
+    userId: string,
+    options: ListCandidatesOptions
+  ): Promise<ThemeCandidateWithThemes[]>;
+
+  /** Lookup by id for the dismiss flow's "is this candidate yours?" check. */
+  getById(id: string): Promise<ThemeCandidate | null>;
+
+  /** Delete a single candidate row by id (after dismissal is recorded). */
+  deleteById(id: string): Promise<void>;
+}
+
+/** Output of find_theme_candidate_pairs RPC. */
+export interface CandidatePair {
+  themeAId: string;
+  themeBId: string;
+  similarity: number;
+}
+
+export interface ThemeCandidatePairsRepository {
+  findPairs(
+    teamId: string | null,
+    userId: string,
+    threshold: number
+  ): Promise<CandidatePair[]>;
+}
+```
+
+The pair-finding RPC sits in its own repo so the service depends on a focused interface — easier to mock.
+
+#### New: `lib/repositories/theme-dismissal-repository.ts`
+
+```typescript
+export interface ThemeDismissalInsert {
+  team_id: string | null;
+  initiated_by: string;
+  theme_a_id: string;
+  theme_b_id: string;
+  dismissed_by: string;
+}
+
+export interface ThemeDismissalRepository {
+  /** Records the dismissal. Idempotent — unique constraint catches re-dismissals. */
+  create(input: ThemeDismissalInsert): Promise<void>;
+
+  /** Returns the set of dismissed pairs for a workspace as a Set keyed
+   *  on `${theme_a_id}::${theme_b_id}` — refreshCandidates filters in-memory. */
+  listPairKeysByWorkspace(
+    teamId: string | null,
+    userId: string
+  ): Promise<Set<string>>;
+}
+```
+
+**Supabase adapters** mirror the established pattern (`scopeByTeam`, `[supabase-...-repo]` log prefix per method, throw with context on errors).
+
+#### Per-theme stats query
+
+Lives as a helper on `theme-candidate-service.ts` (not a separate repo — single call site, single domain):
+
+```typescript
+async function fetchThemeStats(
+  serviceClient: SupabaseClient,
+  themeIds: string[]
+): Promise<Map<string, ThemeSideStats>> {
+  // SELECT theme_id, COUNT(*) AS assignment_count, COUNT(DISTINCT se.session_id),
+  //        COUNT(DISTINCT se.metadata->>'client_name'), MAX(st.created_at)
+  // FROM signal_themes st INNER JOIN session_embeddings se ON st.embedding_id = se.id
+  // WHERE st.theme_id = ANY($1) GROUP BY theme_id
+  // → Map<theme_id, ThemeSideStats>
+}
+```
+
+One round trip. In-memory join into the candidate pairs.
+
+### Service Changes
+
+#### New: `lib/services/theme-candidate-service.ts`
+
+```typescript
+const DEFAULT_CANDIDATE_THRESHOLD = 0.80;
+const DEFAULT_TOP_N = 20;
+const VOLUME_NORM = 200;
+const RECENCY_HALF_LIFE_DAYS = 30;
+const W_SIM = 0.5;
+const W_VOL = 0.3;
+const W_REC = 0.2;
+const KEYWORD_CAP = 3;
+
+const STOP_WORDS = new Set(["the","a","an","of","and","or","to","for","in","on","with","is","are"]);
+
+const LOG = "[theme-candidate-service]";
+
+export interface WorkspaceCtx {
+  teamId: string | null;
+  userId: string;
+}
+
+export interface RefreshResult {
+  workspace: WorkspaceCtx;
+  candidatesGenerated: number;
+  pairsAboveThreshold: number;
+  dismissedFiltered: number;
+  elapsedMs: number;
+}
+
+/**
+ * Rebuilds the persisted candidate set for a single workspace.
+ * Atomic from the admin's perspective: the transactional replace inside the
+ * repository ensures readers never see a half-replaced list.
+ */
+export async function refreshCandidates(input: {
+  workspace: WorkspaceCtx;
+  serviceClient: SupabaseClient;
+  candidateRepo: ThemeCandidateRepository;
+  pairsRepo: ThemeCandidatePairsRepository;
+  dismissalRepo: ThemeDismissalRepository;
+  themeRepo: ThemeRepository;
+}): Promise<RefreshResult> {
+  // 1. Read threshold from env (or fall back).
+  // 2. pairsRepo.findPairs(...) → CandidatePair[]
+  // 3. dismissalRepo.listPairKeysByWorkspace(...) → Set<string>
+  // 4. Filter pairs by dismissals.
+  // 5. fetchThemeStats(serviceClient, unique theme ids) → Map<themeId, stats>
+  // 6. For each surviving pair: build ThemeCandidateInsert (compute scores +
+  //    shared_keywords from theme name/description tokens via themeRepo cache).
+  // 7. candidateRepo.deleteByWorkspace + candidateRepo.bulkCreate inside
+  //    a transaction (RPC or sequential within try/catch).
+  // 8. Log summary; return RefreshResult.
+}
+
+export async function listCandidates(input: {
+  workspace: WorkspaceCtx;
+  candidateRepo: ThemeCandidateRepository;
+  limit?: number;  // defaults to THEME_CANDIDATE_TOP_N
+  offset?: number;
+}): Promise<ThemeCandidateWithThemes[]> {
+  // candidateRepo.listByWorkspace with workspace + clamp limit to [1, 100].
+}
+
+export async function dismissCandidate(input: {
+  candidateId: string;
+  workspace: WorkspaceCtx;
+  actingUserId: string;
+  candidateRepo: ThemeCandidateRepository;
+  dismissalRepo: ThemeDismissalRepository;
+}): Promise<void> {
+  // 1. candidateRepo.getById(id) — verify it exists + matches workspace
+  //    (defense in depth; API also checks).
+  // 2. dismissalRepo.create({...pair, dismissed_by: actingUserId}).
+  // 3. candidateRepo.deleteById(id) — keeps the candidates surface tight.
+  //    Future refreshes naturally exclude the dismissed pair.
+}
+
+// --- private helpers ---
+
+function combinedScore(sim: number, vol: number, rec: number): number {
+  return W_SIM * sim + W_VOL * vol + W_REC * rec;
+}
+
+function volumeScore(totalAssignments: number): number {
+  return Math.min(1, Math.log10(totalAssignments + 1) / Math.log10(VOLUME_NORM + 1));
+}
+
+function recencyScore(lastAssignedAt: string | null): number {
+  if (!lastAssignedAt) return 0;
+  const days = (Date.now() - new Date(lastAssignedAt).getTime()) / (1000 * 60 * 60 * 24);
+  return Math.exp(-Math.max(0, days) / RECENCY_HALF_LIFE_DAYS);
+}
+
+function extractSharedKeywords(a: { name: string; description: string | null }, b: typeof a): string[] {
+  // Lowercase, tokenize on \W+, drop stop-words, intersect, cap at KEYWORD_CAP.
+}
+```
+
+**Why scores are computed in JS, not SQL:** the formula has tunable weights that should live next to the rest of the service config. Keeping math in TypeScript means a weight change is a code edit + redeploy, not a migration.
+
+**Why dismissals are filtered before insert (not after read):** P2.R5 requires that dismissed pairs are excluded from the candidate list "going forward unless the underlying themes change materially". Filtering at refresh time means the candidates table is always exactly what the admin should see — page reads stay simple. The dismissals table acts as the source-of-truth for "do not show again"; the candidates table is the materialised result.
+
+### API Routes
+
+All routes admin-gated via `requireTeamAdmin` (existing helper from PRD-023 Part 2). Personal workspace bypasses team checks but still requires authentication.
+
+```
+GET    /api/themes/candidates?limit=20&offset=0
+POST   /api/themes/candidates/refresh
+POST   /api/themes/candidates/[id]/dismiss
+
+GET    /api/cron/refresh-theme-candidates       (Vercel cron, CRON_SECRET-gated)
+```
+
+**Validation:** every route parses input with a Zod schema (`limit` clamped 1..100, `offset` non-negative integer, `id` UUID).
+
+**Response shape (`GET /api/themes/candidates`):**
+
+```typescript
+{
+  candidates: ThemeCandidateWithThemes[];
+  total: number;       // count for pagination affordances
+  hasMore: boolean;
+  lastRefreshedAt: string | null;  // generatedAt from any row in the set
+}
+```
+
+**Cron route:**
+
+```typescript
+// app/api/cron/refresh-theme-candidates/route.ts
+export async function GET(request: NextRequest) {
+  // 1. Verify CRON_SECRET header (Vercel cron pattern).
+  // 2. Read all (teamId, userId) pairs that have ≥ 2 active themes —
+  //    one query against themes GROUP BY workspace HAVING COUNT(*) >= 2.
+  // 3. Promise.allSettled(workspaces.map(refreshCandidates)) — one slow
+  //    workspace doesn't stall the rest; failures are logged per workspace.
+  // 4. Return summary — { workspacesProcessed, succeeded, failed }.
+}
+```
+
+`vercel.json` gains:
+
+```json
+{
+  "crons": [
+    { "path": "/api/cron/refresh-theme-candidates", "schedule": "0 3 * * *" }
+  ]
+}
+```
+
+### UI
+
+```
+app/settings/themes/
+├── page.tsx                              # Server component — admin gate, render shell
+└── _components/
+    ├── themes-page-content.tsx           # Client component — fetches GET /api/themes/candidates
+    ├── candidate-list.tsx                # List rendering with "Show more" affordance
+    ├── candidate-row.tsx                 # Single pair display (P2.R3 fields)
+    ├── refresh-button.tsx                # POST /api/themes/candidates/refresh
+    └── dismiss-action.tsx                # Per-row dismiss button + optimistic update
+```
+
+**`candidate-row.tsx` displays per P2.R3:**
+- Both theme names (bolded) + descriptions
+- Similarity score as a confidence indicator (e.g., "94% match" with a coloured pill — `>= 0.92` green, `0.85–0.92` amber, `< 0.85` neutral)
+- Per-side stats grid: `42 signals · 12 sessions · 8 clients` for theme A, similar for theme B
+- Shared-keywords hint: `Shared: API, performance` (omitted if empty)
+- "Last refreshed at" timestamp (in the page header, not per row)
+- Two action buttons: "Dismiss" (wired in Part 2), "Merge…" (placeholder; Part 3 wires onClick to open the merge dialog)
+
+**Sidebar nav update** — `components/layout/app-sidebar.tsx` adds a fourth settings entry conditionally:
+
+```typescript
+const settingsNavItems = [
+  { label: "Team Management", href: "/settings/team" },
+  { label: "Extraction Prompt", href: "/settings/prompts" },
+  // PRD-026: visible to admins/owners only
+  ...(isAdmin ? [{ label: "Themes", href: "/settings/themes" }] : []),
+];
+```
+
+`isAdmin` is the existing role flag from `useAuth()`/`AuthContext`.
+
+### Files Changed
+
+| File | Action | Purpose |
+|------|--------|---------|
+| `docs/026-theme-deduplication/003-create-theme-candidates-and-dismissals.sql` | **Create** | Migration — both tables, indexes, RLS |
+| `docs/026-theme-deduplication/004-find-theme-candidate-pairs.sql` | **Create** | RPC — pairwise similarity above threshold for a workspace |
+| `lib/types/theme-candidate.ts` | **Create** | `ThemeCandidate`, `ThemeSideStats`, `ThemeCandidateWithThemes`, `ThemeDismissal` |
+| `lib/repositories/theme-candidate-repository.ts` | **Create** | `ThemeCandidateRepository` + `ThemeCandidatePairsRepository` interfaces |
+| `lib/repositories/supabase/supabase-theme-candidate-repository.ts` | **Create** | Supabase adapter — bulk insert, scoped delete, list with theme join, getById, deleteById, RPC wrapper |
+| `lib/repositories/theme-dismissal-repository.ts` | **Create** | `ThemeDismissalRepository` interface |
+| `lib/repositories/supabase/supabase-theme-dismissal-repository.ts` | **Create** | Supabase adapter — create + listPairKeysByWorkspace |
+| `lib/services/theme-candidate-service.ts` | **Create** | `refreshCandidates`, `listCandidates`, `dismissCandidate` + scoring math + keyword helper |
+| `app/api/themes/candidates/route.ts` | **Create** | `GET` — admin-gated list endpoint |
+| `app/api/themes/candidates/refresh/route.ts` | **Create** | `POST` — admin-gated on-demand refresh |
+| `app/api/themes/candidates/[id]/dismiss/route.ts` | **Create** | `POST` — admin-gated dismiss |
+| `app/api/cron/refresh-theme-candidates/route.ts` | **Create** | Vercel-cron-triggered background refresh across all workspaces |
+| `vercel.json` | Modify | Register the new cron schedule |
+| `app/settings/themes/page.tsx` | **Create** | Admin-gated server-component shell |
+| `app/settings/themes/_components/themes-page-content.tsx` | **Create** | Client component — list + refresh wiring |
+| `app/settings/themes/_components/candidate-list.tsx` | **Create** | List rendering + "Show more" |
+| `app/settings/themes/_components/candidate-row.tsx` | **Create** | Single pair display |
+| `app/settings/themes/_components/refresh-button.tsx` | **Create** | Manual-refresh button + loading state |
+| `app/settings/themes/_components/dismiss-action.tsx` | **Create** | Per-row dismiss button + optimistic update |
+| `components/layout/app-sidebar.tsx` | Modify | Conditionally add "Themes" entry for admins |
+| `ARCHITECTURE.md` | Modify | New tables, RPC, file map for `app/settings/themes/` + new repositories/services, status line |
+| `CHANGELOG.md` | Modify | PRD-026 Part 2 entry |
+
+### Implementation
+
+#### Increment 2.1 — Schema + RPC
+
+**What:** Land migrations `003` and `004`. New tables + RPC + RLS policies.
+
+**Steps:**
+
+1. Create `docs/026-theme-deduplication/003-create-theme-candidates-and-dismissals.sql` with both tables, indexes, RLS policies (idempotent via `IF NOT EXISTS`).
+2. Create `docs/026-theme-deduplication/004-find-theme-candidate-pairs.sql` with the RPC.
+3. Apply both to Supabase (dev first, prod after the rest of Part 2 ships).
+4. Smoke-check: insert a fake row directly via SQL editor (workspace-scoped); confirm RLS lets the owning user read it and another user does not.
+5. Smoke-check the RPC: pick a workspace with ≥ 2 active themes; call `find_theme_candidate_pairs(team_id, NULL, 0.5)` (deliberately low threshold). Confirm it returns the expected pairs.
+
+**Verification:**
+
+- `\d theme_merge_candidates` and `\d theme_merge_dismissals` show all columns + indexes.
+- `SELECT proname FROM pg_proc WHERE proname = 'find_theme_candidate_pairs';` returns one row.
+- Cross-workspace read attempt returns zero rows (RLS fence holds).
+- `npx tsc --noEmit` passes (no type changes yet, but verifies the migration's existence didn't break anything).
+
+**Post-increment:** None. ARCHITECTURE batched in 2.6.
+
+---
+
+#### Increment 2.2 — Types + repositories
+
+**What:** Domain types + the four interface files + their two Supabase adapters. No behaviour changes yet — this increment alone does not affect any user surface.
+
+**Steps:**
+
+1. Create `lib/types/theme-candidate.ts` with all four types.
+2. Create `lib/repositories/theme-candidate-repository.ts` and `lib/repositories/theme-dismissal-repository.ts` interfaces.
+3. Create the Supabase adapters following the established pattern (`scopeByTeam`, `[supabase-...]` logging, error wrapping).
+4. The adapters' `listByWorkspace` performs the join to `themes` for current name+description; map the result via a row→domain mapper that validates pair ordering invariant (defensive — DB CHECK should enforce, but mismatch would surface here).
+
+**Verification:**
+
+1. `npx tsc --noEmit` passes.
+2. Hand-test from a Node REPL or one-off script: insert a fake candidate row; `listByWorkspace` returns it with theme names populated.
+
+**Post-increment:** None.
+
+---
+
+#### Increment 2.3 — Service: `refreshCandidates` + `listCandidates` + `dismissCandidate`
+
+**What:** Wire the three service operations + the scoring math + keyword helper. This is the meat of Part 2.
+
+**Steps:**
+
+1. Create `lib/services/theme-candidate-service.ts` per the §Service Changes sketch.
+2. Implement `refreshCandidates`: pair-find → dismissal filter → stats fetch → score compute → keyword extract → transactional replace via repo.
+3. Implement `listCandidates` with the limit clamp.
+4. Implement `dismissCandidate`: getById guard → dismissal insert → candidate delete.
+5. Implement the private helpers (`combinedScore`, `volumeScore`, `recencyScore`, `extractSharedKeywords`).
+6. `THEME_CANDIDATE_SIMILARITY_THRESHOLD` and `THEME_CANDIDATE_TOP_N` env-var reads with validation + warning fallback (mirroring `theme-prevention.ts`).
+
+**Verification:**
+
+1. `npx tsc --noEmit` passes.
+2. Repl/script: call `refreshCandidates` against a dev workspace seeded with two near-duplicate themes ("API Performance", "API Speed"). Confirm:
+   - `theme_merge_candidates` has the pair after refresh.
+   - `combined_score` is in `[0, 1]`.
+   - `shared_keywords` includes "api" (or "API" lowercased — verify the casing decision).
+3. Call `dismissCandidate` for that pair. Confirm the dismissal row exists and the candidate row is gone.
+4. Call `refreshCandidates` again. The pair does NOT come back (dismissal filter holds).
+5. Manually delete one of the two themes (hard DELETE in SQL editor for testing) → cascade removes the dismissal. Re-refresh: with the theme gone, no pair surfaces (only one theme remains).
+
+---
+
+#### Increment 2.4 — API routes (admin-gated)
+
+**What:** The three user-facing routes + Zod validation + role checks.
+
+**Steps:**
+
+1. Create `app/api/themes/candidates/route.ts` (GET): Zod schema for `limit`/`offset`, role check via `requireTeamAdmin`, delegate to `listCandidates`, return `{ candidates, total, hasMore, lastRefreshedAt }`.
+2. Create `app/api/themes/candidates/refresh/route.ts` (POST): role check, delegate to `refreshCandidates`, return `RefreshResult`.
+3. Create `app/api/themes/candidates/[id]/dismiss/route.ts` (POST): role check, parse `id` as UUID, delegate to `dismissCandidate`. Return 204.
+4. Each route logs entry/exit/error per the project's logging convention.
+
+**Verification:**
+
+1. `npx tsc --noEmit` passes.
+2. Manual `curl` (or browser DevTools fetch) tests:
+   - Authenticated admin → `GET` returns the list.
+   - Authenticated non-admin (member) → `GET` returns 403.
+   - Unauthenticated → 401.
+   - Refresh + dismiss tested similarly.
+3. Confirm the route logs include the expected prefix and don't duplicate logs from the service layer (per CLAUDE.md "helpers don't log — routes preserve their own").
+
+---
+
+#### Increment 2.5 — Cron route + scheduling
+
+**What:** The background-refresh handler + Vercel cron registration.
+
+**Steps:**
+
+1. Create `app/api/cron/refresh-theme-candidates/route.ts` (GET): verify `CRON_SECRET` header (request fails if absent or mismatched), enumerate workspaces with `≥ 2` active themes, `Promise.allSettled(refreshCandidates)`, return summary.
+2. Add the cron entry to `vercel.json`.
+3. Set `CRON_SECRET` env var in Vercel project (out-of-band — note in the changelog).
+4. Logs: per-workspace start/finish/error + overall summary `[cron-refresh-theme-candidates]`.
+
+**Verification:**
+
+1. Local: `curl -H "Authorization: Bearer $CRON_SECRET" http://localhost:3000/api/cron/refresh-theme-candidates` → returns summary.
+2. Wrong secret → 401.
+3. After Vercel deploy: trigger the cron manually from the Vercel dashboard; confirm logs.
+4. Wait for the scheduled run; confirm it fires daily at 03:00 UTC.
+
+---
+
+#### Increment 2.6 — `/settings/themes` page UI + sidebar nav
+
+**What:** The user-facing surface. Server-rendered shell + client-rendered list with refresh + dismiss.
+
+**Steps:**
+
+1. Create `app/settings/themes/page.tsx`: server component, runs `requireTeamAdmin` (or its equivalent for the Settings parent layout's auth context); returns 403 if non-admin reaches it directly. Renders `<ThemesPageContent />`.
+2. Create `_components/themes-page-content.tsx`: fetches `GET /api/themes/candidates`, renders `<RefreshButton />` and `<CandidateList />`. Tracks loading + error states; toasts on refresh success/failure.
+3. Create `_components/candidate-list.tsx`: renders rows; "Show more" affordance bumps `limit` and re-fetches.
+4. Create `_components/candidate-row.tsx`: displays per §UI; "Merge…" button has `disabled` (or `aria-label="Coming in Part 3"`) for now.
+5. Create `_components/refresh-button.tsx`: button + loading spinner; success toast updates `lastRefreshedAt`.
+6. Create `_components/dismiss-action.tsx`: button + confirmation tooltip; optimistic remove on success; rollback on failure.
+7. Update `components/layout/app-sidebar.tsx`: conditionally include the "Themes" entry for admins/owners.
+8. Apply the design tokens from `globals.css` — no inline colours; pill colours go through CSS custom properties (`--color-status-success`, `--color-status-warning`, `--color-status-neutral` or equivalents already in the codebase).
+
+**Verification:**
+
+1. `npx tsc --noEmit` passes.
+2. Run dev server. Sign in as admin → settings sidebar shows "Themes" → click → list renders with seeded near-duplicate pair.
+3. Click "Dismiss" → row disappears optimistically; backend confirms; refresh page → row stays gone.
+4. Click "Refresh" → button shows loading state → list updates; "Last refreshed at" timestamp updates.
+5. Sign in as member (non-admin) on the same workspace → no "Themes" entry in nav. Direct navigation to `/settings/themes` returns 403.
+6. Mobile responsive check — narrow the viewport; confirm rows wrap cleanly and buttons remain reachable.
+7. Dark mode check — pill colours and text contrast against both light and dark backgrounds.
+
+---
+
+#### Increment 2.7 — End-of-part audit
+
+Per CLAUDE.md "End-of-part audit" — produces fixes, not a report.
+
+**Checklist:**
+
+1. **SRP:** confirm each new module does one thing — `theme-candidate-service.ts` orchestrates; `theme-candidate-repository.ts` is data access; the candidate-row component is rendering only (no fetch lifecycle); `dismiss-action.tsx` owns its own button + side-effect.
+2. **DRY:** verify `extractSharedKeywords`, scoring helpers, threshold reads each have one home. The `requireTeamAdmin` pattern is the existing helper from PRD-023 — reused, not redefined.
+3. **Design tokens:** every colour, spacing, font-size on the new UI references CSS custom properties or Tailwind tokens. No hex literals in `_components/*.tsx`. Pill colour decisions for the similarity-score indicator go through the existing badge tokens.
+4. **Logging:** every API route + service method logs entry/exit/error per the project convention. The cron route logs per-workspace and overall summary.
+5. **Dead code:** no commented-out blocks, no unused imports, no half-finished components.
+6. **Convention compliance:** kebab-case files; PascalCase types; UPPER_SNAKE for constants; named exports only (page.tsx + route.ts use `default` per Next.js requirement); import order per CLAUDE.md.
+7. **Database review:** RLS policies match the documented intent; cross-workspace read attempt returns zero rows; CHECK constraints hold (try inserting a row with `theme_a_id > theme_b_id` — should fail).
+8. **Error paths:** simulate a slow `find_theme_candidate_pairs` (e.g., add a `pg_sleep`); confirm the on-demand refresh times out gracefully; admin sees an error toast, not a hung spinner.
+9. **ARCHITECTURE.md:**
+   - Add `theme_merge_candidates` and `theme_merge_dismissals` to the data-model section with all columns, indexes, RLS notes.
+   - Add the RPC `find_theme_candidate_pairs` to the RPC list (alongside `match_session_embeddings`, `sessions_over_time`).
+   - File map: add `app/settings/themes/`, `app/api/themes/`, `app/api/cron/refresh-theme-candidates/`, the new repos/service/types.
+   - Implementation status line: append "PRD-026 Part 2 (Platform-Suggested Merge Candidates) implemented".
+10. **CHANGELOG.md:** new entry under `[Unreleased]` summarising Part 2 — schema, service, API, UI, cron, threshold/weights pinned, forward-compat notes for Part 3.
+11. **Verify file references in docs still resolve.**
+12. **Re-run flows touched by Part 2:**
+    - Capture → AI extraction → background chain → assignments persist (Part 1 path unchanged).
+    - Admin opens `/settings/themes` → list renders → refresh → dismiss → refresh again (no resurrection).
+    - Cron manual trigger from Vercel dashboard → all workspaces refresh.
+13. **Final:** `npx tsc --noEmit`.
+
+This audit closes Part 2.
+
+---
+
+## Parts 3–4
+
+> Specified after Part 2 lands and admins have used the candidate surface enough to validate ranking + dismissal. Each subsequent part will append a "Part N" section here, mirroring the structure above, and must respect the data shapes locked in by Parts 1–2 (`themes.embedding`, `themes.merged_into_theme_id`, `theme_merge_candidates`, `theme_merge_dismissals`, `find_theme_candidate_pairs`).
