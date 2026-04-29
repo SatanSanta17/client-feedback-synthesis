@@ -16,8 +16,37 @@ interface ThemeRow {
   initiated_by: string;
   origin: string;
   is_archived: boolean;
+  embedding: string | number[] | null;
+  merged_into_theme_id: string | null;
   created_at: string;
   updated_at: string;
+}
+
+/**
+ * pgvector columns come back from PostgREST as a JSON-array-shaped string
+ * (e.g., "[0.1,0.2,...]"). We parse to number[] so callers see a normal
+ * vector. Already-array shapes are passed through (defensive).
+ */
+function parseEmbedding(raw: string | number[] | null): number[] | null {
+  if (raw === null) return null;
+  if (Array.isArray(raw)) return raw;
+  try {
+    return JSON.parse(raw) as number[];
+  } catch (err) {
+    console.error(
+      "[supabase-theme-repo] parseEmbedding — failed to parse vector:",
+      err instanceof Error ? err.message : err
+    );
+    return null;
+  }
+}
+
+/**
+ * pgvector inserts/updates accept the same JSON-array-shaped string. Centralised
+ * so every write path produces the identical wire format.
+ */
+function serialiseEmbedding(vec: number[]): string {
+  return `[${vec.join(",")}]`;
 }
 
 function mapRow(row: ThemeRow): Theme {
@@ -29,6 +58,8 @@ function mapRow(row: ThemeRow): Theme {
     initiatedBy: row.initiated_by,
     origin: row.origin as "ai" | "user",
     isArchived: row.is_archived,
+    embedding: parseEmbedding(row.embedding),
+    mergedIntoThemeId: row.merged_into_theme_id,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -148,7 +179,7 @@ export function createThemeRepository(
 
     async create(input: ThemeInsert): Promise<Theme> {
       console.log(
-        `[supabase-theme-repo] create — name: "${input.name}", teamId: ${teamId}, origin: ${input.origin}`
+        `[supabase-theme-repo] create — name: "${input.name}", teamId: ${teamId}, origin: ${input.origin}, embedding: ${input.embedding ? "present" : "null"}`
       );
 
       const { data, error } = await serviceClient
@@ -159,6 +190,7 @@ export function createThemeRepository(
           team_id: input.team_id,
           initiated_by: input.initiated_by,
           origin: input.origin,
+          embedding: input.embedding ? serialiseEmbedding(input.embedding) : null,
         })
         .select("*")
         .single();
@@ -183,9 +215,14 @@ export function createThemeRepository(
         `[supabase-theme-repo] update — id: ${id}, fields: ${Object.keys(input).join(", ")}`
       );
 
+      const payload: Record<string, unknown> = { ...input };
+      if (input.embedding !== undefined) {
+        payload.embedding = serialiseEmbedding(input.embedding);
+      }
+
       const { data, error } = await serviceClient
         .from("themes")
-        .update(input)
+        .update(payload)
         .eq("id", id)
         .select("*")
         .single();
@@ -201,6 +238,51 @@ export function createThemeRepository(
       console.log(`[supabase-theme-repo] update — success for id: ${id}`);
 
       return mapRow(data);
+    },
+
+    async listMissingEmbeddings(): Promise<Theme[]> {
+      console.log("[supabase-theme-repo] listMissingEmbeddings — fetching themes with NULL embedding");
+
+      const { data, error } = await serviceClient
+        .from("themes")
+        .select("*")
+        .is("embedding", null)
+        .order("created_at", { ascending: true });
+
+      if (error) {
+        console.error(
+          "[supabase-theme-repo] listMissingEmbeddings — error:",
+          error.message
+        );
+        throw new Error(`Failed to list themes with missing embeddings: ${error.message}`);
+      }
+
+      console.log(
+        `[supabase-theme-repo] listMissingEmbeddings — returning ${data?.length ?? 0} themes`
+      );
+
+      return (data ?? []).map(mapRow);
+    },
+
+    async updateEmbedding(id: string, embedding: number[]): Promise<void> {
+      console.log(
+        `[supabase-theme-repo] updateEmbedding — id: ${id}, dimensions: ${embedding.length}`
+      );
+
+      const { error } = await serviceClient
+        .from("themes")
+        .update({ embedding: serialiseEmbedding(embedding) })
+        .eq("id", id);
+
+      if (error) {
+        console.error(
+          `[supabase-theme-repo] updateEmbedding — error for id ${id}:`,
+          error.message
+        );
+        throw new Error(`Failed to update theme embedding: ${error.message}`);
+      }
+
+      console.log(`[supabase-theme-repo] updateEmbedding — success for id: ${id}`);
     },
   };
 }

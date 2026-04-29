@@ -240,6 +240,9 @@ async function resolveNewTheme(options: {
     team_id: teamId,
     initiated_by: userId,
     origin: "ai",
+    // PRD-026 Increment 1.2 stub. Increment 1.3 will replace this with the
+    // embedding produced by the prevention guard pre-pass.
+    embedding: null,
   };
 
   try {

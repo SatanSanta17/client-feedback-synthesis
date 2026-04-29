@@ -10,6 +10,17 @@ export interface Theme {
   initiatedBy: string;
   origin: "ai" | "user";
   isArchived: boolean;
+  /**
+   * Embedding of the theme's name + description used by the prevention guard
+   * (PRD-026 Part 1) and Part 2's candidate generation. Nullable during the
+   * rollout window between migrations 001 and 002; non-null once 002 lands.
+   */
+  embedding: number[] | null;
+  /**
+   * Forward-compat for PRD-026 Part 3 — pointer from an archived theme to
+   * the canonical theme it merged into. Always null in Part 1.
+   */
+  mergedIntoThemeId: string | null;
   createdAt: string;
   updatedAt: string;
 }

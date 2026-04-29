@@ -85,6 +85,9 @@ If two themes look similar but are domain-distinct ("API Performance" and "API L
 **P2.R6 — Candidate generation runs on demand and on a low cadence.**
 Admins can trigger a refresh manually. The candidate list also refreshes periodically in the background (the TRD pins the cadence — e.g., once per day) so admins arriving at the surface always see a reasonably-current view without paying generation cost on every page load.
 
+**P2.R7 — Candidates surface on a dedicated admin page.**
+The candidate list is rendered on `/settings/themes` (admin-gated, alongside the existing `/settings/team` and `/settings/prompts` surfaces). Non-admins see no entry in the settings nav and the route returns 403 if reached directly. `/settings/themes` is also where merge confirmation (Part 3) and the recent-merges audit log (P3.R7) live — a single screen for the entire deduplication workflow.
+
 ### Acceptance Criteria
 
 - [ ] P2.R1 — A workspace admin opening the merge surface sees a list of candidate pairs derived from theme embeddings, not the full theme taxonomy.
@@ -93,6 +96,7 @@ Admins can trigger a refresh manually. The candidate list also refreshes periodi
 - [ ] P2.R4 — The default view shows a bounded number of candidates; expanding to "see more" is an explicit user action.
 - [ ] P2.R5 — Dismissing a pair removes it from subsequent renders of the candidate list. The dismissal is workspace-scoped and persists.
 - [ ] P2.R6 — A manual refresh recomputes candidates; an automatic refresh runs on the configured cadence with no admin action.
+- [ ] P2.R7 — `/settings/themes` exists, is admin-gated at both the UI nav and the API layer, and is the home for candidates, merge confirmation, and the audit log.
 
 ---
 
@@ -123,6 +127,9 @@ There is no scheduled job that auto-merges on a threshold. Candidates surface (P
 **P3.R7 — Merge history is visible to admins.**
 The admin surface includes a "Recent merges" view: which pairs were merged, by whom, when, and how many assignments were affected. This is the audit trail.
 
+**P3.R8 — Merge confirmation runs through a modal dialog on `/settings/themes`.**
+Clicking a candidate row opens a confirmation dialog hosting the blast-radius preview (P3.R2) and the canonical-flip toggle (P3.R3). On confirm, the merge runs server-side, the row leaves the candidates section, the actor sees a success toast, and the workspace notification (Part 4) fires for other members. The "Recent merges" view (P3.R7) renders as a sibling section on the same page so the audit trail is one click away from the action that produced it.
+
 ### Acceptance Criteria
 
 - [ ] P3.R1 — A non-admin viewing the same workspace sees no merge UI; the merge API returns 403 for non-admin callers.
@@ -132,6 +139,7 @@ The admin surface includes a "Recent merges" view: which pairs were merged, by w
 - [ ] P3.R5 — Forcing the re-point step to fail (manually) leaves the merge fully rolled back — the archived theme is still active, signal_themes is unchanged.
 - [ ] P3.R6 — No background job auto-merges themes. Candidate pairs surface but require admin click to act.
 - [ ] P3.R7 — A "Recent merges" view shows pairs merged, actor, timestamp, and assignment count.
+- [ ] P3.R8 — Confirming a merge from the candidates list goes through a modal dialog on `/settings/themes`; on success the actor sees a toast and the candidate row disappears without a full page reload.
 
 ---
 
@@ -142,7 +150,7 @@ The admin surface includes a "Recent merges" view: which pairs were merged, by w
 ### Requirements
 
 **P4.R1 — Workspace members are notified when a merge happens.**
-Active users in the workspace see an in-app notification (the TRD picks the surface — toast, banner, or comparable) that names the two themes merged and the canonical theme. The notification is non-blocking.
+The merge action emits a `theme.merged` event into the workspace notification primitive (see PRD-029). Members see a non-blocking notification — surfaced through whatever UI PRD-029 ships (header bell, dropdown, etc.) — that names the two themes merged and the canonical theme.
 
 **P4.R2 — Affected dashboard widgets show a transient indicator.**
 Widgets that depend on theme aggregation (`top_themes`, `theme_trends`, `theme_client_matrix`) display a subtle indicator on the affected theme for a configurable window after the merge — long enough that a user returning the next morning still sees it, short enough that it doesn't become permanent visual noise.
@@ -150,15 +158,15 @@ Widgets that depend on theme aggregation (`top_themes`, `theme_trends`, `theme_c
 **P4.R3 — Chat history text is unchanged.**
 Past assistant messages that named the merged theme literally are not rewritten. Only newly-generated chat responses reflect the canonical name. This is also stated in the merge preview (P3.R2) so admins set the same expectation before clicking.
 
-**P4.R4 — Notification mechanism is reusable.**
-The surface introduced for merge notifications is general enough that future workspace-level events (e.g., bulk re-extraction completion, retention purge run from PRD-025) can reuse it. The TRD pins whether this is a new "workspace activity" primitive or a lightweight adapter on existing toast infrastructure.
+**P4.R4 — Notifications consume a shared primitive.**
+This PRD does not introduce its own notification surface. It depends on the workspace notification primitive specified in PRD-029 — table, service, and bell UI — that this part subscribes to via the `theme.merged` event type. PRD-029 (or at minimum the part of it that delivers the table, service, and bell UI) must land before P4.R1 can be implemented. Other workspace-level events (bulk re-extract completion, PRD-025 purge runs, PRD-028 supersession proposals) flow through the same primitive.
 
 ### Acceptance Criteria
 
-- [ ] P4.R1 — A merge confirmed by an admin produces a notification visible to other workspace members on their next dashboard or chat surface load (or live, if real-time delivery is implemented).
+- [ ] P4.R1 — A merge confirmed by an admin produces a `theme.merged` notification visible to other workspace members through the PRD-029 notification surface.
 - [ ] P4.R2 — Affected dashboard widgets show the canonical theme with a "recently merged" indicator for the configured window post-merge.
 - [ ] P4.R3 — Past chat messages referencing the archived theme name remain verbatim in the DB; a re-run of the same chat query produces the canonical name.
-- [ ] P4.R4 — The notification surface introduced here can render at least one other future event type (verified by a hypothetical "purge run completed" stub).
+- [ ] P4.R4 — The merge notification flows through PRD-029's primitive; this PRD adds no bespoke notification UI of its own.
 
 ---
 

@@ -180,6 +180,7 @@ A surface for proposals deferred from bulk operations or dismissed dialogs.
 - **P5.R6.** Bulk actions (Accept all / Reject all) are supported on a per-client and per-theme grouping.
 - **P5.R7.** RLS — users only see proposals belonging to their workspace.
 - **P5.R8.** Dashboard "current state" widgets do **not** count `pending` proposals. Only `confirmed` links suppress predecessor chunks. This keeps the dashboard honest while items await review.
+- **P5.R9.** Non-interactive deposits emit a `supersession.proposed` event into the workspace notification primitive (PRD-029) so members notice proposals that arrived without their direct involvement. This fires for: bulk re-extraction deposits (P5.R3), single-session re-extraction deposits (P5.R4), and inline-dialog timeout fall-throughs (P4.R6). Inline "Decide later" deferrals (P4.R3) do **not** fire — the actor has already seen the proposals and chose to defer; re-notifying them is noise. The notification payload includes the count of proposals deposited and the source operation; clicking the notification deep-links to `/improvements/inbox`. The inbox-specific counter on the nav entry (P5.R5) and the workspace bell (PRD-029) coexist — the counter shows queue depth at a glance; the bell shows event-time arrivals. PRD-029 (or at minimum its Part 1) must land before this requirement can be implemented.
 
 ### Acceptance Criteria
 
@@ -190,6 +191,7 @@ A surface for proposals deferred from bulk operations or dismissed dialogs.
 - [ ] Bulk per-client and per-theme actions work.
 - [ ] Inbox counter updates as proposals are resolved.
 - [ ] Pending proposals do not affect dashboard aggregates.
+- [ ] P5.R9 — A bulk re-extract that produces N proposals fires a `supersession.proposed` notification visible through the PRD-029 bell with the correct count in the payload; an inline "Decide later" deferral does not fire one.
 
 ---
 
@@ -267,7 +269,7 @@ Surface confirmed resolutions as headline insights on the dashboard.
 - **Cross-client supersession.** Aggregate-level "this issue is broadly resolved" detection across clients.
 - **Partial supersession.** A `partial` link kind for cases where a new chunk only addresses part of an old one.
 - **Supersession audit log.** A per-team log of who confirmed / rejected / deferred which proposals.
-- **Inbox notifications.** Email or in-app notification when bulk-re-extract deposits proposals.
+- **Email digest of inbox arrivals.** Email summary when bulk-re-extract deposits proposals. In-app notification ships as part of P5.R9 via PRD-029; email is deferred to PRD-029's own backlog.
 - **Backfill positive feedback for historical sessions.** A one-time job that re-extracts old sessions to populate `whatsWorking` and per-chunk sentiment.
 - **Supersession from chat.** Allow users to confirm / propose links from the RAG chat surface when the model surfaces a contradiction across sessions.
 

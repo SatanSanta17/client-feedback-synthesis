@@ -10,16 +10,24 @@ export interface ThemeInsert {
   team_id: string | null;
   initiated_by: string;
   origin: "ai" | "user";
+  /**
+   * Embedding of name + description. Required (PRD-026 P1.R1) — callers
+   * either supply a precomputed vector (extraction prevention guard) or
+   * `null` during the rollout window (Increment 1.2 stub, replaced in 1.3).
+   */
+  embedding: number[] | null;
 }
 
 export interface ThemeUpdate {
   name?: string;
   description?: string | null;
   is_archived?: boolean;
+  /** Used by the backfill path and any future "rename theme regenerates embedding" flow. */
+  embedding?: number[];
 }
 
 export interface ThemeRepository {
-  /** Fetch all active (non-archived) themes for a workspace. */
+  /** Fetch all active (non-archived) themes for a workspace, including embeddings. */
   getActiveByWorkspace(teamId: string | null, userId: string): Promise<Theme[]>;
 
   /** Get a single theme by ID. */
@@ -33,4 +41,16 @@ export interface ThemeRepository {
 
   /** Update a theme. */
   update(id: string, data: ThemeUpdate): Promise<Theme>;
+
+  /**
+   * Backfill consumer — fetches every theme (across all workspaces) whose
+   * embedding column is NULL. Service-role only; not workspace-scoped.
+   */
+  listMissingEmbeddings(): Promise<Theme[]>;
+
+  /**
+   * Backfill writer — sets the embedding on an existing theme. Distinct from
+   * update() so the operational intent is explicit at the call site.
+   */
+  updateEmbedding(id: string, embedding: number[]): Promise<void>;
 }
