@@ -15,6 +15,7 @@ import {
   setActiveTeamCookie,
   clearActiveTeamCookie,
 } from "@/lib/cookies/active-team";
+import { clearAllStreams } from "@/lib/streaming";
 
 interface AuthContextValue {
   user: User | null;
@@ -105,6 +106,7 @@ export function AuthProvider({ children }: AuthProviderProps) {
   const signOut = useCallback(async () => {
     await supabase.auth.signOut();
     clearActiveTeamCookie();
+    clearAllStreams();
     setUser(null);
     setCanCreateTeam(false);
     setActiveTeamId(null);

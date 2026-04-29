@@ -405,8 +405,14 @@ synthesiser/
 │   │   ├── prompt-service.ts    # Prompt CRUD — accepts PromptRepository
 │   │   ├── session-service.ts   # Session CRUD + checkSessionAccess() — accepts SessionRepository + ClientRepository + MasterSignalRepository
 │   │   └── team-service.ts      # Team CRUD + canUserCreateTeam() + getTeamMembersWithProfiles(), getTeamsWithRolesForUser() — accepts TeamRepository (and ProfileRepository for canUserCreateTeam)
+│   ├── streaming/                # Client-side streaming-state module (PRD-024 Part 1) — module-level store keyed by conversationId, useSyncExternalStore-backed hooks, SSE loop. No consumers wired yet (legacy useChat still owns chat behavior)
+│   │   ├── index.ts              # Public API barrel — types + actions + hooks
+│   │   ├── streaming-types.ts    # ConversationStreamSlice, StartStreamArgs, IDLE_SLICE_DEFAULTS
+│   │   ├── streaming-store.ts    # Module-level Map<conversationId, slice> + listener Set + AbortController map; subscribe/getSlice/setSlice/listSlices/clearAll — framework-agnostic
+│   │   ├── streaming-actions.ts  # startStream (SSE loop, writes to slice), cancelStream (preserves partial content as cancelled bubble), markConversationViewed, clearAllStreams
+│   │   └── streaming-hooks.ts    # useStreamingSlice, useIsStreaming, useActiveStreamIds, useActiveStreamCount, useUnseenCompletionIds, useHasAnyUnseenCompletion — useSyncExternalStore-backed; aggregate hooks cache by teamId for stable refs
 │   ├── utils/
-│   │   ├── chat-helpers.ts        # Pure utilities — SSE encoding, follow-up parsing, source mapping and deduplication (PRD-020)
+│   │   ├── chat-helpers.ts        # Pure utilities — SSE encoding, follow-up parsing/strip, SSE chunk decoder, source mapping and deduplication (PRD-020 + PRD-024 Part 1: parseSSEChunk + stripFollowUpBlock extracted from use-chat.ts)
 │   │   ├── compose-ai-input.ts    # Composes raw notes + attachments into a single AI input string
 │   │   ├── format-file-size.ts    # File size formatting (bytes → "1.2 KB", "3.4 MB")
 │   │   ├── format-relative-time.ts # Relative time formatting ("just now", "5m ago", "3d ago")
