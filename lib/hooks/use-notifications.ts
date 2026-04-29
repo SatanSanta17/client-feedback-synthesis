@@ -71,10 +71,11 @@ export function useNotifications(): UseNotificationsReturn {
         setHasMore(data.nextCursor !== null);
       } catch (err) {
         if (cancelledRef.current) return;
-        const message =
-          err instanceof Error ? err.message : "Failed to load notifications";
+        // Log the raw error for debugging; surface a friendly message to the
+        // user (raw `err.message` is often "HTTP 500" / "Failed to fetch" —
+        // not useful in a dropdown).
         console.error(`${LOG_PREFIX} fetch failed:`, err);
-        setError(message);
+        setError("Failed to load notifications");
       } finally {
         if (!cancelledRef.current) {
           setIsLoading(false);

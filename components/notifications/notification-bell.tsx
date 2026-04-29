@@ -63,6 +63,7 @@ export function NotificationBell({
             {count > 0 && (
               <span
                 aria-live="polite"
+                aria-atomic="true"
                 className={cn(
                   "absolute -top-1 -right-1 flex min-w-4 items-center justify-center rounded-full px-1 text-[10px] font-medium leading-tight",
                   "bg-[var(--brand-primary)] text-white ring-2 ring-[var(--surface-page)]"
