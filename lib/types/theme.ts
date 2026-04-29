@@ -12,10 +12,11 @@ export interface Theme {
   isArchived: boolean;
   /**
    * Embedding of the theme's name + description used by the prevention guard
-   * (PRD-026 Part 1) and Part 2's candidate generation. Nullable during the
-   * rollout window between migrations 001 and 002; non-null once 002 lands.
+   * (PRD-026 Part 1) and Part 2's candidate generation. Guaranteed non-null
+   * after migration 002 — the DB rejects null inserts and the backfill has
+   * populated every pre-existing row.
    */
-  embedding: number[] | null;
+  embedding: number[];
   /**
    * Forward-compat for PRD-026 Part 3 — pointer from an archived theme to
    * the canonical theme it merged into. Always null in Part 1.

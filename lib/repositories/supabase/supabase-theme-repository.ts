@@ -24,21 +24,19 @@ interface ThemeRow {
 
 /**
  * pgvector columns come back from PostgREST as a JSON-array-shaped string
- * (e.g., "[0.1,0.2,...]"). We parse to number[] so callers see a normal
- * vector. Already-array shapes are passed through (defensive).
+ * (e.g., "[0.1,0.2,...]"). Parses to number[]. Throws on null — post-rollout
+ * the DB column is NOT NULL, so a null here means either the column hasn't
+ * been migrated, the backfill hasn't run, or migration 002 hasn't applied.
+ * Surfacing this loudly is better than silently returning a partial row.
  */
-function parseEmbedding(raw: string | number[] | null): number[] | null {
-  if (raw === null) return null;
-  if (Array.isArray(raw)) return raw;
-  try {
-    return JSON.parse(raw) as number[];
-  } catch (err) {
-    console.error(
-      "[supabase-theme-repo] parseEmbedding — failed to parse vector:",
-      err instanceof Error ? err.message : err
+function parseEmbedding(raw: string | number[] | null, themeId: string): number[] {
+  if (raw === null) {
+    throw new Error(
+      `[supabase-theme-repo] theme ${themeId} has NULL embedding — run backfill + migration 002`
     );
-    return null;
   }
+  if (Array.isArray(raw)) return raw;
+  return JSON.parse(raw) as number[];
 }
 
 /**
@@ -58,7 +56,7 @@ function mapRow(row: ThemeRow): Theme {
     initiatedBy: row.initiated_by,
     origin: row.origin as "ai" | "user",
     isArchived: row.is_archived,
-    embedding: parseEmbedding(row.embedding),
+    embedding: parseEmbedding(row.embedding, row.id),
     mergedIntoThemeId: row.merged_into_theme_id,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -240,12 +238,17 @@ export function createThemeRepository(
       return mapRow(data);
     },
 
-    async listMissingEmbeddings(): Promise<Theme[]> {
+    async listMissingEmbeddings(): Promise<
+      Pick<Theme, "id" | "name" | "description">[]
+    > {
       console.log("[supabase-theme-repo] listMissingEmbeddings — fetching themes with NULL embedding");
 
+      // Minimal projection — these rows have null embeddings by definition
+      // and cannot satisfy the full Theme contract. Backfill only needs id,
+      // name, description to compose the embedding text.
       const { data, error } = await serviceClient
         .from("themes")
-        .select("*")
+        .select("id, name, description")
         .is("embedding", null)
         .order("created_at", { ascending: true });
 
@@ -261,7 +264,7 @@ export function createThemeRepository(
         `[supabase-theme-repo] listMissingEmbeddings — returning ${data?.length ?? 0} themes`
       );
 
-      return (data ?? []).map(mapRow);
+      return data ?? [];
     },
 
     async updateEmbedding(id: string, embedding: number[]): Promise<void> {

@@ -11,11 +11,12 @@ export interface ThemeInsert {
   initiated_by: string;
   origin: "ai" | "user";
   /**
-   * Embedding of name + description. Required (PRD-026 P1.R1) — callers
-   * either supply a precomputed vector (extraction prevention guard) or
-   * `null` during the rollout window (Increment 1.2 stub, replaced in 1.3).
+   * Embedding of name + description (PRD-026 P1.R1). Always supplied —
+   * either the prevention guard's precomputed vector during extraction, or
+   * the backfill script's vector for one-shot population. The DB column is
+   * NOT NULL after migration 002.
    */
-  embedding: number[] | null;
+  embedding: number[];
 }
 
 export interface ThemeUpdate {
@@ -45,8 +46,12 @@ export interface ThemeRepository {
   /**
    * Backfill consumer — fetches every theme (across all workspaces) whose
    * embedding column is NULL. Service-role only; not workspace-scoped.
+   *
+   * Returns a minimal projection (id + name + description) rather than full
+   * Theme rows: the embedding column is null by definition for these rows,
+   * which would violate the tightened Theme.embedding: number[] invariant.
    */
-  listMissingEmbeddings(): Promise<Theme[]>;
+  listMissingEmbeddings(): Promise<Pick<Theme, "id" | "name" | "description">[]>;
 
   /**
    * Backfill writer — sets the embedding on an existing theme. Distinct from

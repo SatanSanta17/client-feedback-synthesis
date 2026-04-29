@@ -25,11 +25,15 @@ import {
 /**
  * Assigns themes to a set of signal chunks from a single extraction.
  *
- * 1. Fetches active themes for the workspace.
- * 2. Builds the theme assignment prompt with signal texts + existing theme names.
- * 3. Calls the LLM (one call) to assign each signal to existing or new themes.
- * 4. Creates any new themes in the DB (with unique constraint safety).
- * 5. Inserts signal_themes rows linking embeddings to themes.
+ * 1. Fetch active themes (with embeddings) for the workspace.
+ * 2. Build the theme assignment prompt with signal texts + existing theme names.
+ * 3. Call the LLM to assign each signal to existing or new themes.
+ * 4. Run the embedding-based prevention pre-pass over LLM-proposed "new"
+ *    themes (PRD-026 P1) — collapses semantic duplicates onto existing
+ *    themes before any DB write.
+ * 5. Resolve each assignment: cache hit → reuse, prevention decision →
+ *    reuse-or-create-with-precomputed-embedding, fallback → unique-safe create.
+ * 6. Bulk-insert signal_themes rows linking embeddings to resolved themes.
  *
  * Returns a result summary for logging, or null on failure.
  * Errors are logged but never thrown — this function is called in a
@@ -112,13 +116,14 @@ export async function assignSessionThemes(options: {
     }
 
     // Step 4a: Embedding-based prevention pre-pass (PRD-026 P1.R2 / P1.R5).
-    // Collect every "new" proposal that survives the case-insensitive fast
-    // path (P1.R6), batch-embed them in one call, and resolve each against
-    // existing-theme embeddings via cosine similarity. The main loop below
-    // consults the resulting decision map; no per-iteration embedding work.
-    const proposedNew = collectProposedNewThemes(llmResponse, themeByLowerName);
+    // Collect every proposed name that survives the case-insensitive fast
+    // path (P1.R6) — covers both LLM-marked-new and LLM-hallucinated-existing
+    // cases. Batch-embed them in one call, resolve each against existing-theme
+    // embeddings via cosine similarity. The main loop consults the resulting
+    // decision map; no per-iteration embedding work.
+    const unresolved = collectUnresolvedThemes(llmResponse, themeByLowerName);
     const prevention: PreventionResult = await runThemePrevention({
-      proposed: proposedNew,
+      proposed: unresolved,
       existing: existingThemes,
       sessionId,
     });
@@ -142,73 +147,33 @@ export async function assignSessionThemes(options: {
 
       for (const themeAssignment of themes) {
         const { themeName, isNew, confidence, description } = themeAssignment;
-        let resolvedThemeId: string;
-
         const lowerName = themeName.toLowerCase();
 
-        if (isNew) {
-          // P1.R6 — exact-name fast path: LLM marked new but the name already
-          // exists in the workspace. Reuse without embedding work.
-          const cached = themeByLowerName.get(lowerName);
-          if (cached) {
-            resolvedThemeId = cached.id;
-            existingThemesUsed++;
-          } else {
-            const decision = prevention.decisions.get(lowerName);
-
-            if (decision?.kind === "reuse") {
-              // P1.R2 — semantic match wins; collapse onto the existing theme.
-              resolvedThemeId = decision.themeId;
-              existingThemesUsed++;
-              // Keep cache consistent so a second occurrence of the same
-              // proposed name in this batch short-circuits at the fast path.
-              const matched = themeByLowerName.get(decision.matchedName.toLowerCase());
-              if (matched) themeByLowerName.set(lowerName, matched);
-            } else {
-              // decision.kind === "new", or no decision (rare — proposed name
-              // collided in cache between collection and resolution). Persist
-              // a fresh row, carrying the embedding precomputed by the guard.
-              const embedding =
-                decision?.kind === "new" ? decision.embedding : null;
-              resolvedThemeId = await resolveNewTheme({
-                themeName,
-                description: description ?? null,
-                teamId,
-                userId,
-                themeRepo,
-                themeByLowerName,
-                embedding,
-              });
-              newThemesCreated++;
-            }
-          }
-        } else {
-          // Find existing theme by name
-          const existing = themeByLowerName.get(lowerName);
-          if (existing) {
-            resolvedThemeId = existing.id;
-            existingThemesUsed++;
-          } else {
-            // LLM referenced an existing theme that doesn't exist — try creating it.
-            console.warn(
-              `[theme-service] LLM referenced non-existent theme "${themeName}" as existing, creating it`
-            );
-            resolvedThemeId = await resolveNewTheme({
-              themeName,
-              description: description ?? null,
-              teamId,
-              userId,
-              themeRepo,
-              themeByLowerName,
-              embedding: null,
-            });
-            newThemesCreated++;
-          }
+        // Informational warning when the LLM lies about an existing theme.
+        // Resolution flow below treats it identically to an isNew=true case.
+        if (!isNew && !themeByLowerName.has(lowerName)) {
+          console.warn(
+            `[theme-service] LLM marked "${themeName}" as existing, but workspace has no such theme — resolving via prevention guard`
+          );
         }
+
+        const resolvedThemeId = await resolveThemeForAssignment({
+          themeName,
+          description: description ?? null,
+          lowerName,
+          teamId,
+          userId,
+          themeRepo,
+          themeByLowerName,
+          prevention,
+        });
+
+        if (resolvedThemeId.kind === "reused") existingThemesUsed++;
+        else newThemesCreated++;
 
         signalThemeInserts.push({
           embedding_id: embeddingId,
-          theme_id: resolvedThemeId,
+          theme_id: resolvedThemeId.themeId,
           assigned_by: "ai",
           confidence,
         });
@@ -250,12 +215,18 @@ export async function assignSessionThemes(options: {
 // ---------------------------------------------------------------------------
 
 /**
- * Walks the LLM response and collects every "new" proposal that survives
- * the case-insensitive fast path — i.e., names that don't already exist in
- * the workspace. Deduplicates by lowercased name so a single embedding +
- * similarity check covers every occurrence in this batch (P1.R5).
+ * Walks the LLM response and collects every theme proposal whose name does
+ * NOT already exist in the workspace — i.e., themes the prevention guard
+ * needs to resolve. Captures both:
+ *   - isNew=true proposals (the LLM-explicit "new" case)
+ *   - isNew=false proposals where the LLM hallucinated an existing theme
+ *     (we treat the unknown name the same way: semantic check, then create
+ *     if no match crosses the threshold)
+ *
+ * Deduplicates by lowercased name so a single embedding + similarity check
+ * covers every occurrence in this batch (P1.R5).
  */
-function collectProposedNewThemes(
+function collectUnresolvedThemes(
   llmResponse: ThemeAssignmentResponse,
   themeByLowerName: Map<string, Theme>
 ): ProposedNewTheme[] {
@@ -263,12 +234,13 @@ function collectProposedNewThemes(
 
   for (const assignment of llmResponse.assignments) {
     for (const t of assignment.themes) {
-      if (!t.isNew) continue;
       const lowerName = t.themeName.toLowerCase();
       if (themeByLowerName.has(lowerName)) continue; // P1.R6 fast path
       if (dedup.has(lowerName)) continue;
       dedup.set(lowerName, {
         name: t.themeName,
+        // The LLM only emits a description on isNew=true. For hallucinated-
+        // existing proposals it's null, which buildThemeEmbeddingText handles.
         description: t.description ?? null,
       });
     }
@@ -277,35 +249,100 @@ function collectProposedNewThemes(
   return [...dedup.values()];
 }
 
+interface ResolveOutcome {
+  themeId: string;
+  kind: "reused" | "created";
+}
+
 /**
- * Attempts to create a new theme. If a unique constraint violation occurs
- * (concurrent creation), falls back to findByName() to resolve the existing
- * theme. Updates the themeByLowerName cache in both cases.
+ * Resolves a single LLM theme proposal to a theme id, in one of three ways:
+ *   - cache hit (P1.R6) → reuse
+ *   - prevention says reuse → collapse onto matched theme + update cache
+ *   - prevention says new (or — defensively — no decision) → create with the
+ *     precomputed embedding the guard produced
+ *
+ * Centralising the branching here keeps the assignment loop linear.
  */
-async function resolveNewTheme(options: {
+async function resolveThemeForAssignment(options: {
   themeName: string;
   description: string | null;
+  lowerName: string;
   teamId: string | null;
   userId: string;
   themeRepo: ThemeRepository;
   themeByLowerName: Map<string, Theme>;
-  /**
-   * Precomputed embedding from the prevention guard. Pass `null` only for
-   * the rare paths that bypass the guard (e.g., LLM proposed an
-   * "existing" theme that doesn't actually exist) — those rows will be
-   * caught by the next backfill pass if any.
-   */
-  embedding: number[] | null;
-}): Promise<string> {
-  const { themeName, description, teamId, userId, themeRepo, themeByLowerName, embedding } = options;
+  prevention: PreventionResult;
+}): Promise<ResolveOutcome> {
+  const {
+    themeName,
+    description,
+    lowerName,
+    teamId,
+    userId,
+    themeRepo,
+    themeByLowerName,
+    prevention,
+  } = options;
 
-  const lowerName = themeName.toLowerCase();
-
-  // Check cache first — might have been created by a prior iteration in this batch
   const cached = themeByLowerName.get(lowerName);
   if (cached) {
-    return cached.id;
+    return { themeId: cached.id, kind: "reused" };
   }
+
+  const decision = prevention.decisions.get(lowerName);
+
+  if (decision?.kind === "reuse") {
+    const matched = themeByLowerName.get(decision.matchedName.toLowerCase());
+    if (matched) themeByLowerName.set(lowerName, matched);
+    return { themeId: decision.themeId, kind: "reused" };
+  }
+
+  if (!decision || decision.kind !== "new") {
+    // Shouldn't happen — collectUnresolvedThemes feeds every cache-missed name
+    // into the guard. If it does, log loudly. We can't proceed without an
+    // embedding (DB constraint), so re-throw upward to the outer catch.
+    throw new Error(
+      `[theme-service] missing prevention decision for "${themeName}" — pre-pass coverage gap`
+    );
+  }
+
+  return await createNewTheme({
+    themeName,
+    description,
+    lowerName,
+    teamId,
+    userId,
+    themeRepo,
+    themeByLowerName,
+    embedding: decision.embedding,
+  });
+}
+
+/**
+ * Inserts a fresh theme row carrying the embedding produced by the prevention
+ * guard. On a unique-constraint violation (concurrent insert from a parallel
+ * extraction), falls back to findByName so the caller still gets a valid id.
+ */
+async function createNewTheme(options: {
+  themeName: string;
+  description: string | null;
+  lowerName: string;
+  teamId: string | null;
+  userId: string;
+  themeRepo: ThemeRepository;
+  themeByLowerName: Map<string, Theme>;
+  embedding: number[];
+}): Promise<ResolveOutcome> {
+  const {
+    themeName,
+    description,
+    lowerName,
+    teamId,
+    userId,
+    themeRepo,
+    themeByLowerName,
+    embedding,
+  } = options;
 
   const insertData: ThemeInsert = {
     name: themeName,
@@ -318,26 +355,27 @@ async function resolveNewTheme(options: {
 
   try {
     const created = await themeRepo.create(insertData);
-    // Cache the new theme for subsequent iterations
     themeByLowerName.set(lowerName, created);
     console.log(
       `[theme-service] created new theme: "${created.name}" (${created.id})`
     );
-    return created.id;
+    return { themeId: created.id, kind: "created" };
   } catch (err) {
-    // Unique constraint violation — theme was created concurrently
     const message = err instanceof Error ? err.message : String(err);
-    if (message.includes("unique") || message.includes("duplicate") || message.includes("23505")) {
+    if (
+      message.includes("unique") ||
+      message.includes("duplicate") ||
+      message.includes("23505")
+    ) {
       console.warn(
         `[theme-service] unique constraint hit for theme "${themeName}", resolving existing`
       );
       const existing = await themeRepo.findByName(themeName, teamId, userId);
       if (existing) {
         themeByLowerName.set(lowerName, existing);
-        return existing.id;
+        return { themeId: existing.id, kind: "reused" };
       }
     }
-    // If we can't resolve, re-throw — the outer try/catch in assignSessionThemes handles it
     throw err;
   }
 }

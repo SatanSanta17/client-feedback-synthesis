@@ -110,10 +110,9 @@ export async function runThemePrevention(input: {
     return { decisions };
   }
 
-  const existingWithEmbeddings = existing.filter(
-    (t): t is Theme & { embedding: number[] } =>
-      Array.isArray(t.embedding) && t.embedding.length > 0
-  );
+  // Theme.embedding is non-null after migration 002, but defend against an
+  // accidental empty vector (length 0 would make cosine math undefined).
+  const existingWithEmbeddings = existing.filter((t) => t.embedding.length > 0);
 
   console.log(
     `${LOG} sessionId: ${sessionId} | proposed: ${proposed.length} | existingWithEmbeddings: ${existingWithEmbeddings.length}/${existing.length} | threshold: ${threshold}`
@@ -192,7 +191,7 @@ function readThresholdFromEnv(): number {
 
 function findBestMatch(
   candidate: number[],
-  existing: Array<Theme & { embedding: number[] }>
+  existing: Theme[]
 ): { theme: Theme; score: number } | null {
   let best: { theme: Theme; score: number } | null = null;
 
