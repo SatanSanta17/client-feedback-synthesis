@@ -17,6 +17,7 @@ This PRD lifts streaming state out of the chat-page hook into an app-root stream
 - Start a slow query in one conversation, switch to another conversation to handle a quick task, and come back to find my response either still streaming live or completed — without losing my place or seeing UI artefacts in the conversation I switched to.
 - Have multiple conversations streaming in parallel, so I'm not blocked behind one slow response when I have unrelated work to do in another conversation.
 - See at a glance which conversations are currently generating responses, so I know where to look when a stream completes.
+- Be alerted when a backgrounded response has completed — even from outside `/chat` — so I don't miss it.
 - Navigate away from the chat surface (to the dashboard, capture, etc.) while a response is being generated, and find that response present and complete when I return.
 
 **As a developer**, I want streaming state to live in one well-scoped place — outside the per-page hook — so the central chat hook is small, conversation-scoped, and free of streaming concerns. SSE consumption, abort handling, and stream-to-message-list reconciliation should all live in a single owner module that consumers subscribe to.
@@ -78,6 +79,9 @@ Chat-surface components that consume `useChat` (chat-area, message-thread, chat-
 **P2.R6 — Cancellation, retry, and conversation switching behave correctly.**
 Aborting a stream mid-response cancels only that conversation's stream and preserves partial content under status `cancelled`. Retrying a failed message replays through the context. Switching conversations during a stream displays the destination conversation's slice (which may be empty, may be streaming, or may be completed); the source conversation's stream continues independently in the background.
 
+**P2.R7 — Stream completion produces no visible flicker on the active conversation.**
+When the active conversation's stream transitions from streaming to idle, the swap from the live streaming bubble to the final persisted assistant message happens in a single render commit. There is no intermediate state where neither is visible.
+
 ### Acceptance Criteria
 
 - [ ] P2.R1 — `lib/hooks/use-chat.ts` has no internal streaming state; all streaming fields come from the context.
@@ -86,6 +90,7 @@ Aborting a stream mid-response cancels only that conversation's stream and prese
 - [ ] P2.R4 — Manual reproduction of the pre-existing bleed bug — send in A, switch to B mid-stream — produces no bubble or message in B; the message appears in A on return.
 - [ ] P2.R5 — Chat-surface components compile and run; the streaming-related fields they consume have unchanged names and types.
 - [ ] P2.R6 — Manual smoke test: send + abort + retry + cross-conversation switch all behave coherently.
+- [ ] P2.R7 — Manual test: complete a stream while viewing the active conversation — the streaming bubble disappears and the final message appears in the same frame; no gap, no flicker.
 
 ---
 
@@ -102,7 +107,7 @@ The Send button is disabled only when *this* conversation has an active stream. 
 A user may start a stream in conversation A, switch to conversation B, send a message in B, and have both streams running concurrently. Each stream has its own abort controller; cancelling one does not affect the other. Each stream persists its assistant message to its own conversation server-side.
 
 **P3.R3 — A soft concurrency cap is enforced.**
-A maximum number of concurrent streams per user is enforced client-side (exact value pinned in the TRD; the recommendation is 3–5). Attempting to start a stream while at the cap surfaces a clear blocking message (e.g., "You have N conversations generating responses. Wait for one to finish or cancel it before starting another.") and the Send button remains disabled with this hint until a slot frees up.
+A maximum of **5 concurrent streams per user** is enforced client-side. Attempting to start a stream while at the cap surfaces an inline blocking message rendered above the disabled Send button: *"Already running 5 chats — wait until one of them completes before starting another."* The Send button remains disabled with this hint until a slot frees up. The cap is a single source-controlled constant.
 
 **P3.R4 — Stream completion is decoupled from active conversation.**
 A stream that completes while the user is viewing a different conversation persists its assistant message to the source conversation correctly. When the user navigates back to the source conversation, the completed message is present.
@@ -114,36 +119,44 @@ The Stop button on conversation A's chat-input cancels only A's stream. Conversa
 
 - [ ] P3.R1 — Send is disabled and becomes Stop only on the conversation whose stream is active. Other conversations remain sendable.
 - [ ] P3.R2 — Two streams run in parallel: each emits deltas independently; the chat-area shows the correct stream when displayed; both messages are persisted to the correct conversations.
-- [ ] P3.R3 — Hitting the cap surfaces the documented message; the cap is configurable.
+- [ ] P3.R3 — Hitting the 5-stream cap surfaces the locked inline message above Send; Send remains disabled until a slot frees up.
 - [ ] P3.R4 — A stream completed while the user was viewing a different conversation produces a message visible on return — verified via DB inspection and navigation.
 - [ ] P3.R5 — Cancelling A while B is also streaming leaves B alive; A's partial content is preserved as a cancelled message.
 
 ---
 
-## Part 4 — Sidebar Streaming Indicator
+## Part 4 — Sidebar Streaming Indicators
 
-**Severity:** Medium — the UX surface that makes multi-stream legible. Without it, users have no signal that a stream is alive in a conversation they're not viewing.
+**Severity:** Medium — the UX surface that makes multi-stream legible. Without it, users have no signal that a stream is alive in a conversation they're not viewing, and no signal that a backgrounded stream has completed and is waiting to be read.
 
 ### Requirements
 
-**P4.R1 — Streaming conversations show an indicator in the sidebar.**
-Each conversation entry in the conversation sidebar carries a small visual indicator (e.g., a pulsing dot or a small icon) when that conversation has an active stream. The indicator appears immediately on stream start and disappears on completion, abort, or error.
+**P4.R1 — Streaming conversations show a pulsating indicator on their sidebar entry.**
+Each conversation entry in the conversations sidebar carries a small **pulsating brand-accent dot** when that conversation has an active stream. The dot appears immediately on stream start.
 
-**P4.R2 — The indicator is consistent across active and archived lists.**
-The sidebar's grouped lists (active, archived) both honor the indicator if a streaming conversation appears in either group.
+**P4.R2 — Completed-but-unseen responses show a solid indicator until viewed.**
+When a stream reaches a terminal state (completed, cancelled, or errored with content persisted) while the user is not viewing that conversation, the conversation entry's pulsating dot transitions to a **solid brand-accent dot**. The solid dot persists until the user opens that conversation, at which point it clears. Streams that reach a terminal state while the user *is* viewing the conversation do not produce a solid dot — the message swap (per P2.R7) is the user's signal.
 
-**P4.R3 — The indicator is keyboard- and screen-reader-accessible.**
-Users navigating by keyboard or with assistive tech are informed of the streaming status — for instance, via an extended `aria-label` or a visually-hidden status element. Pure visual cues are not the only signal.
+**P4.R3 — Indicators are consistent across active and archived lists.**
+The sidebar's grouped lists (active, archived) both honor pulsating and solid indicators if a streaming or unseen-completed conversation appears in either group.
 
-**P4.R4 — Clicking a streaming conversation entry behaves identically to clicking any other entry.**
-Selection navigates to the conversation; the chat-area then displays the streaming slice, with the bubble live mid-stream and the Stop button in place.
+**P4.R4 — The conversations sidebar footer reflects aggregate streaming status.**
+A footer line in the conversations sidebar shows *"N chats are streaming"* when one or more of the current user's streams are active in the current workspace, and *"Start a conversation"* otherwise. The text updates reactively as streams start and complete. Singular form (*"1 chat is streaming"*) is used for N=1.
+
+**P4.R5 — Indicators are keyboard- and screen-reader-accessible.**
+Users navigating by keyboard or with assistive tech are informed of streaming and unseen-completed states — for instance, via an extended `aria-label` or a visually-hidden status element. Pure visual cues are not the only signal.
+
+**P4.R6 — Clicking a streaming or unseen-completed conversation entry behaves identically to clicking any other entry.**
+Selection navigates to the conversation; the chat-area then displays the streaming slice (live bubble + Stop button if mid-stream) or the persisted message (if completed). The unseen-solid dot clears on selection.
 
 ### Acceptance Criteria
 
-- [ ] P4.R1 — Visual indicator appears next to streaming conversations and disappears on terminal state.
-- [ ] P4.R2 — Indicator works in both active and archived sidebar groups.
-- [ ] P4.R3 — Screen-reader test exposes the streaming state for affected entries.
-- [ ] P4.R4 — Click-to-navigate to a streaming entry shows the live stream; cancellation works from the destination.
+- [ ] P4.R1 — Pulsating brand-accent dot appears next to streaming conversations and clears (or transitions to solid per P4.R2) on terminal state.
+- [ ] P4.R2 — Solid brand-accent dot appears on terminal state when the viewer is not on that conversation, persists across in-app navigation until the conversation is opened, then clears.
+- [ ] P4.R3 — Indicators work in both active and archived sidebar groups.
+- [ ] P4.R4 — Footer text toggles between *"N chats are streaming"* (with correct singular/plural) and *"Start a conversation"* based on aggregate streaming state in the current workspace.
+- [ ] P4.R5 — Screen-reader test exposes streaming and unseen-completed states for affected entries.
+- [ ] P4.R6 — Click-to-navigate to a streaming or unseen entry shows the live stream (or persisted message); cancellation and indicator-clear behave correctly from the destination.
 
 ---
 
@@ -156,8 +169,13 @@ Selection navigates to the conversation; the chat-area then displays the streami
 **P5.R1 — Streams survive in-app navigation.**
 A stream started on `/chat/<id>` continues running when the user navigates to `/dashboard`, `/capture`, or any other authenticated page. On return to the originating conversation, the stream is either still streaming (live bubble + Stop button) or completed (assistant message present).
 
-**P5.R2 — A global "in-flight" surface is available outside `/chat`.**
-While the user is on a non-chat page, an unobtrusive surface indicates "N conversations are generating responses" and lets the user click through to a streaming conversation. The exact placement and visual treatment are pinned in the TRD; the requirement is that the user is never unaware that a stream is alive.
+**P5.R2 — The AppSidebar chat icon reflects global streaming and unseen-completed state.**
+On every authenticated page (chat and non-chat), the Chat nav icon in the AppSidebar carries a brand-accent dot:
+- **Pulsating** when one or more of the current user's streams are active in the current workspace.
+- **Solid** when no streams are active but one or more conversations have unseen completed responses in the current workspace.
+- **No dot** when neither condition holds.
+
+Clicking the Chat icon navigates to `/chat` per existing behavior; the user then resolves which conversation to open via the per-conversation indicators (Part 4). The AppSidebar dot is the off-chat in-flight surface — its presence guarantees the user is never unaware that a stream is alive or that a backgrounded response is waiting.
 
 **P5.R3 — Streams do not survive a hard refresh or sign-out.**
 A browser refresh or sign-out cancels all client-side streams. The server may still complete and persist them; the client simply re-fetches on next load. No client-side resume from a still-running server stream is in scope for this PRD.
@@ -165,12 +183,16 @@ A browser refresh or sign-out cancels all client-side streams. The server may st
 **P5.R4 — Streams do not leak across users on the same browser.**
 If user A signs out and user B signs in on the same browser session, no stream from A is visible or controllable by B. The streaming context is cleared on sign-out alongside the existing auth/team-cookie cleanup.
 
+**P5.R5 — Workspace switch isolates UI state without aborting streams.**
+Switching the active workspace via the workspace switcher does not abort in-flight streams. Each slice in the streaming context is keyed by `team_id` (NULL = personal). Sidebar streaming indicators (Part 4) and the AppSidebar chat icon dot only reflect slices belonging to the *current* workspace. Cross-workspace slices continue to run server-side; their indicators re-surface when the user switches back to the originating workspace. No streaming, message, or indicator data leaks across workspaces in any UI surface.
+
 ### Acceptance Criteria
 
 - [ ] P5.R1 — Manual test: start a stream on `/chat/<id>`, navigate to `/dashboard`, return — assistant message is present (or stream still live, depending on timing).
-- [ ] P5.R2 — Off-chat indicator is visible and functional on every authenticated non-chat page.
+- [ ] P5.R2 — AppSidebar chat icon dot is visible and accurate on every authenticated page: pulsating during active streams, solid when only unseen-completed responses exist, absent when neither.
 - [ ] P5.R3 — Refresh during a stream produces no client-side stream after reload; the persisted message (if completed server-side) appears on next chat load.
 - [ ] P5.R4 — Sign-out clears all streaming slices; the next user sees no residual state.
+- [ ] P5.R5 — Manual test: start a stream in personal workspace, switch to a team workspace — all streaming indicators clear; switch back — indicators reflect the still-running or unseen-completed state correctly. No cross-workspace bleed in any indicator surface.
 
 ---
 

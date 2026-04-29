@@ -10,7 +10,11 @@
 
 import { useState, useCallback, useRef, useEffect } from "react";
 
-import { parseFollowUps } from "@/lib/utils/chat-helpers";
+import {
+  parseFollowUps,
+  parseSSEChunk,
+  stripFollowUpBlock,
+} from "@/lib/utils/chat-helpers";
 import type { ChatSource, Message, StreamState } from "@/lib/types/chat";
 
 // ---------------------------------------------------------------------------
@@ -19,22 +23,6 @@ import type { ChatSource, Message, StreamState } from "@/lib/types/chat";
 
 const LOG_PREFIX = "[useChat]";
 const MESSAGES_PAGE_SIZE = 20;
-
-/**
- * Strip a complete `<!--follow-ups:...-->` block OR a trailing partial one
- * (e.g. `<!--follow-ups:["What are cli`) from streaming content so
- * follow-up metadata never flashes in the message bubble.
- */
-const FOLLOW_UP_COMPLETE_RE = /<!--follow-ups:(\[[\s\S]*?\])-->/;
-const FOLLOW_UP_PARTIAL_RE = /<!--follow-ups:[\s\S]*$/;
-
-function stripFollowUpBlock(text: string): string {
-  // First try complete match
-  const complete = text.replace(FOLLOW_UP_COMPLETE_RE, "").trimEnd();
-  if (complete !== text) return complete;
-  // Then try partial trailing match
-  return text.replace(FOLLOW_UP_PARTIAL_RE, "").trimEnd();
-}
 
 interface UseChatOptions {
   /**
@@ -99,57 +87,6 @@ interface UseChatReturn {
    * and on `clearMessages()`. (Gap P9)
    */
   isConversationNotFound: boolean;
-}
-
-// ---------------------------------------------------------------------------
-// SSE event parsing
-// ---------------------------------------------------------------------------
-
-interface SSEEvent {
-  event: string;
-  data: string;
-}
-
-/**
- * Parse SSE text chunks into typed events.
- * Handles partial chunks by maintaining a buffer.
- */
-function parseSSEChunk(buffer: string): { events: SSEEvent[]; remaining: string } {
-  const events: SSEEvent[] = [];
-  const lines = buffer.split("\n");
-  let currentEvent = "";
-  let currentData = "";
-  let remaining = "";
-
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-
-    if (line.startsWith("event: ")) {
-      currentEvent = line.slice(7);
-    } else if (line.startsWith("data: ")) {
-      currentData = line.slice(6);
-    } else if (line === "" && currentEvent && currentData) {
-      events.push({ event: currentEvent, data: currentData });
-      currentEvent = "";
-      currentData = "";
-    } else if (line === "" && !currentEvent && !currentData) {
-      // Empty line between events — skip
-    } else {
-      // Incomplete chunk — keep as remaining
-      remaining = lines.slice(i).join("\n");
-      break;
-    }
-  }
-
-  // If we have partial event data at the end, keep it
-  if (currentEvent || currentData) {
-    const partial = [];
-    if (currentEvent) partial.push(`event: ${currentEvent}`);
-    if (currentData) partial.push(`data: ${currentData}`);
-    remaining = partial.join("\n") + (remaining ? "\n" + remaining : "");
-  }
-
-  return { events, remaining };
 }
 
 // ---------------------------------------------------------------------------

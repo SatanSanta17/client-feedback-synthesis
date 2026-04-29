@@ -89,3 +89,80 @@ export function deduplicateSources(sources: ChatSource[]): ChatSource[] {
 
   return unique;
 }
+
+// ---------------------------------------------------------------------------
+// SSE chunk parsing (client-side decoder)
+// ---------------------------------------------------------------------------
+
+export interface SSEEvent {
+  event: string;
+  data: string;
+}
+
+/**
+ * Parse SSE text chunks into typed events.
+ * Handles partial chunks by maintaining a buffer — callers concatenate
+ * `remaining` onto the next decoded chunk before re-parsing.
+ */
+export function parseSSEChunk(buffer: string): {
+  events: SSEEvent[];
+  remaining: string;
+} {
+  const events: SSEEvent[] = [];
+  const lines = buffer.split("\n");
+  let currentEvent = "";
+  let currentData = "";
+  let remaining = "";
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+
+    if (line.startsWith("event: ")) {
+      currentEvent = line.slice(7);
+    } else if (line.startsWith("data: ")) {
+      currentData = line.slice(6);
+    } else if (line === "" && currentEvent && currentData) {
+      events.push({ event: currentEvent, data: currentData });
+      currentEvent = "";
+      currentData = "";
+    } else if (line === "" && !currentEvent && !currentData) {
+      // Empty line between events — skip
+    } else {
+      // Incomplete chunk — keep as remaining
+      remaining = lines.slice(i).join("\n");
+      break;
+    }
+  }
+
+  // If we have partial event data at the end, keep it
+  if (currentEvent || currentData) {
+    const partial = [];
+    if (currentEvent) partial.push(`event: ${currentEvent}`);
+    if (currentData) partial.push(`data: ${currentData}`);
+    remaining = partial.join("\n") + (remaining ? "\n" + remaining : "");
+  }
+
+  return { events, remaining };
+}
+
+// ---------------------------------------------------------------------------
+// Follow-up block stripping (streaming-time)
+// ---------------------------------------------------------------------------
+
+const FOLLOW_UP_COMPLETE_RE = /<!--follow-ups:(\[[\s\S]*?\])-->/;
+const FOLLOW_UP_PARTIAL_RE = /<!--follow-ups:[\s\S]*$/;
+
+/**
+ * Strip a complete `<!--follow-ups:...-->` block OR a trailing partial one
+ * (e.g. `<!--follow-ups:["What are cli`) from streaming content so
+ * follow-up metadata never flashes in the message bubble during streaming.
+ *
+ * Distinct from `parseFollowUps` (which returns both clean content and the
+ * extracted array on completion); this is a streaming-time helper that only
+ * strips and trims.
+ */
+export function stripFollowUpBlock(text: string): string {
+  const complete = text.replace(FOLLOW_UP_COMPLETE_RE, "").trimEnd();
+  if (complete !== text) return complete;
+  return text.replace(FOLLOW_UP_PARTIAL_RE, "").trimEnd();
+}
