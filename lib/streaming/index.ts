@@ -15,6 +15,7 @@ export {
   startStream,
   cancelStream,
   markConversationViewed,
+  markFinalMessageConsumed,
   clearAllStreams,
 } from "./streaming-actions";
 

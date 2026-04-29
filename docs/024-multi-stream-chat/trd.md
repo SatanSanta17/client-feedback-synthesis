@@ -706,3 +706,376 @@ Per CLAUDE.md ("After each TRD part completes"):
 4. **Test affected flows** — covered by Increment 3's manual smoke test.
 
 ---
+
+# Part 2
+## Part 2 — `useChat` Migration
+
+This part covers P2.R1 through P2.R7 from the PRD. The legacy in-hook streaming path is removed; `useChat` becomes a thin orchestrator that delegates SSE to the streaming module (Part 1) and retains only its message-list role. **The pre-existing UI-bleed bug is fixed as a structural side-effect** (P2.R4) — the chat-area's streaming view now reads from a slice keyed by the active conversation ID, so switching conversations switches which slice is read, with zero leakage.
+
+**Database models:** None.
+**API endpoints:** None — the `/api/chat/send` route is unchanged. The streaming module already consumes it via Part 1's `runStream`.
+**Frontend pages/components:** `lib/hooks/use-chat.ts` is rewritten end-to-end. No chat-surface component (`chat-area.tsx`, `chat-input.tsx`, `message-thread.tsx`, `streaming-message.tsx`, `chat-page-content.tsx`) changes — P2.R5 mandates the passthrough surface is preserved.
+**New module addition:** `markFinalMessageConsumed(id)` is added to `lib/streaming/streaming-actions.ts` (and re-exported via `index.ts`). This is the one Part-1-public-API extension Part 2 requires; symmetric with the existing `markConversationViewed` (both are atomic per-field clears triggered by consumer-side acknowledgment).
+
+### Architectural pivot
+
+Part 2's central design choice — the mechanism that makes P2.R7's "no flicker on stream completion" guarantee work — is **`useLayoutEffect` for the final-message handoff**.
+
+The slice's `finalMessage` field is set in the *same* `setSlice` call that flips `streamState` to `idle` (Part 1, `streaming-actions.ts:443–449`). When `useChat` is mounted on the active conversation:
+
+1. The slice update triggers a re-render of `useChat` (via `useStreamingSlice`).
+2. **Render N:** chat-area sees `streamState === 'idle'` (streaming bubble vanishes) and `messages` still without the new message. React commits the DOM but **does not yet paint** — `useLayoutEffect` runs first.
+3. `useLayoutEffect` fires synchronously, observes `slice.finalMessage` is non-null, calls `setMessages(prev => [...prev, slice.finalMessage])`, and calls `markFinalMessageConsumed(id)` to clear the slice's `finalMessage`.
+4. **Render N+1:** chat-area sees `messages` with the appended message and `slice.finalMessage === null`. React commits.
+5. **Browser paints render N+1.** The user never sees render N's intermediate "no bubble, no message" state.
+
+This is the canonical React pattern for "synchronous DOM-tied state derivations that must beat paint." `useEffect` would not work — it runs *after* paint, producing a one-frame gap (the flicker P2.R7 forbids). `useLayoutEffect` is the textbook tool here.
+
+**Why not derive a `displayedMessages` value during render instead?** That would mean the chat-area renders `[...messages, finalMessageIfNotInList]` and `useChat` stays "pure." But this couples chat-area to slice internals (it would need to know about `finalMessage`), violating P2.R5 (passthrough surface unchanged) and SRP (rendering vs. list ownership). The `useLayoutEffect` fold preserves the existing contract: `messages: Message[]` is the single source of truth chat-area renders.
+
+### Increments at a glance
+
+| # | Increment | Scope | PR target |
+|---|---|---|---|
+| 1 | Add `markFinalMessageConsumed` to streaming module | 1 file modified, 1 export added | tiny |
+| 2 | Migrate `useChat` to the streaming module | `lib/hooks/use-chat.ts` rewritten; surface preserved | medium-large |
+| 3 | End-of-part audit + manual smoke test | docs + verification fixes | small |
+
+Each increment is independently shippable. Increment 1 lands a public-API extension that Increment 2 depends on; the streaming module ships in a usable shape after each. Increment 2 is the largest single change of the PRD — it removes ~300 LOC from `use-chat.ts` and replaces it with ~100 LOC of delegation glue.
+
+---
+
+### Increment 1 — `markFinalMessageConsumed` action (P2 prerequisite)
+
+**What:** Add a single public action to the streaming module: `markFinalMessageConsumed(conversationId)`. It atomically clears `slice.finalMessage` to `null`, idempotently (no-op if already null). This is the consumer-side acknowledgment hook that Increment 2's `useLayoutEffect` will call after folding the message into `messages[]`.
+
+**Why a dedicated action and not a re-export of `setSlice`?** `setSlice` is internal to `streaming-store.ts` — exposing it would let any consumer write any field, breaking SRP. A named action documents the intent ("the consumer has taken ownership of this message") and matches the existing pattern of `markConversationViewed` (Part 4 R6 will clear `hasUnseenCompletion` the same way).
+
+**Files changed:**
+
+| File | Action |
+|------|--------|
+| `lib/streaming/streaming-actions.ts` | **Modify** — add `markFinalMessageConsumed` function alongside `markConversationViewed`; same shape, same logging pattern |
+| `lib/streaming/index.ts` | **Modify** — add `markFinalMessageConsumed` to the barrel exports |
+
+**Implementation details:**
+
+In `streaming-actions.ts`, append after `markConversationViewed` (mirrors its structure):
+
+```ts
+// ---------------------------------------------------------------------------
+// markFinalMessageConsumed — clear finalMessage after the consumer (useChat)
+// has folded it into messages[] (Part 2 R3 / P2.R7)
+// ---------------------------------------------------------------------------
+
+export function markFinalMessageConsumed(conversationId: string): void {
+  const slice = getSlice(conversationId);
+  if (!slice || slice.finalMessage === null) {
+    return;
+  }
+  setSlice(conversationId, { finalMessage: null });
+  console.log(
+    `${LOG_PREFIX} markFinalMessageConsumed conversation=${conversationId}`
+  );
+}
+```
+
+In `index.ts`, add the export to the existing `streaming-actions` re-export block:
+
+```ts
+export {
+  startStream,
+  cancelStream,
+  markConversationViewed,
+  markFinalMessageConsumed, // <-- new
+  clearAllStreams,
+} from "./streaming-actions";
+```
+
+**Verify:**
+
+- `npx tsc --noEmit` passes.
+- `grep -rn "markFinalMessageConsumed" lib app components` returns hits only in the two modified files (no consumer wires it yet — Increment 2 will).
+
+**Forward compatibility:** `markFinalMessageConsumed` is the symmetric counterpart of `markConversationViewed`. Both clear specific slice fields under consumer-side acknowledgment. Part 4 will use `markConversationViewed`; Part 2 (Increment 2) uses `markFinalMessageConsumed`. The pair establishes a small, predictable convention for any future "consumer cleared X" actions.
+
+---
+
+### Increment 2 — `useChat` migration (the bulk)
+
+**What:** Rewrite `lib/hooks/use-chat.ts` to delegate streaming to the module from Part 1. After this increment:
+
+- `useChat` no longer owns any streaming state (no `useState` for `streamState`/`streamingContent`/`statusText`/`latestSources`/`latestFollowUps`/`error`).
+- `useChat` no longer owns the SSE loop, the `AbortController`, the `assistantMessageIdRef`, or the SSE event-parsing logic.
+- `useChat` reads streaming fields from the slice via `useStreamingSlice(conversationId)`.
+- `useChat`'s `sendMessage` / `cancelStream` / `retryLastMessage` delegate to `startStream` / `cancelStream` (the module's, not the hook's).
+- `useChat` keeps full ownership of the message list: load on conversation change, paginate, append on stream completion (via `useLayoutEffect`), clear, not-found handling.
+- The `UseChatReturn` interface is byte-for-byte identical — chat-surface components compile and run with no changes (P2.R5).
+- The pre-existing UI-bleed bug is gone (P2.R4) — switching conversations switches the slice subscription, full stop.
+- Stream completion swap is flicker-free (P2.R7) — `useLayoutEffect` folds and clears before paint.
+
+**Files changed:**
+
+| File | Action |
+|------|--------|
+| `lib/hooks/use-chat.ts` | **Rewrite** — remove all streaming internals; replace with slice subscription + delegation; add `useLayoutEffect` fold; preserve passthrough surface |
+
+**Implementation details:**
+
+1. **Remove the streaming internals.** Delete:
+   - The six streaming `useState` declarations (`streamState`, `streamingContent`, `statusText`, `latestSources`, `latestFollowUps`, `error`).
+   - The four streaming refs (`abortControllerRef`, `streamingContentRef`, `assistantMessageIdRef`, `messagesRef`'s use for streaming purposes — keep `messagesRef` for the load-messages effect's "skip refetch on null→just-created" guard).
+   - The entire SSE loop body inside `sendMessage` (lines ~376–510 in the post-Increment-1-of-Part-1 file).
+   - The cancellation body in `cancelStream` (the abort + stash-cancelled-bubble logic) — delegated to the module.
+   - The `parseSSEChunk` / `stripFollowUpBlock` / `parseFollowUps` imports are no longer needed in the hook (they live in the module's `runStream`). Drop them.
+
+2. **Add the streaming module imports.** At the top:
+
+   ```ts
+   import {
+     useStreamingSlice,
+     startStream as moduleStartStream,
+     cancelStream as moduleCancelStream,
+     markFinalMessageConsumed,
+   } from "@/lib/streaming";
+   ```
+
+   The `as` aliases make the delegation visible at the call site (you see `moduleStartStream`, not just `startStream`, so it's obvious the local function is a thin wrapper).
+
+3. **Subscribe to the slice.** Right under the existing `useState` declarations for the message list:
+
+   ```ts
+   const slice = useStreamingSlice(conversationId);
+   ```
+
+   `slice` is `ConversationStreamSlice | null`. When the conversation has no active or recently-completed slice, `slice === null`.
+
+4. **Derive the streaming passthrough fields from the slice.** Replace the deleted `useState` reads with derived values (no `useMemo` needed — these are O(1) reads):
+
+   ```ts
+   const streamState: StreamState = slice?.streamState ?? "idle";
+   const streamingContent = slice?.streamingContent ?? "";
+   const statusText = slice?.statusText ?? null;
+   const latestSources = slice?.latestSources ?? null;
+   const latestFollowUps = slice?.latestFollowUps ?? [];
+   const error = slice?.error ?? null;
+   ```
+
+   These six fields appear in `UseChatReturn` unchanged. Chat-area, message-thread, chat-input read them via the existing passthrough.
+
+5. **Rewrite `sendMessage`.** It becomes a small wrapper preserving Gap P9 semantics:
+
+   ```ts
+   const sendMessage = useCallback(
+     async (content: string) => {
+       console.log(`${LOG_PREFIX} sendMessage — content length: ${content.length}`);
+
+       const userMessageId = crypto.randomUUID();
+       const isFreshSend = conversationIdRef.current === null;
+       const conversationIdForPost = conversationIdRef.current ?? crypto.randomUUID();
+
+       // Optimistic user message — same as legacy.
+       const optimisticUserMessage: Message = {
+         id: userMessageId,
+         conversationId: conversationIdForPost,
+         parentMessageId: null,
+         role: "user",
+         content,
+         sources: null,
+         status: "completed",
+         metadata: null,
+         createdAt: new Date().toISOString(),
+       };
+       setMessages((prev) => [...prev, optimisticUserMessage]);
+
+       // Delegate the SSE work to the streaming module.
+       moduleStartStream({
+         conversationId: conversationIdForPost,
+         teamId,
+         userMessage: content,
+         userMessageId,
+         onConversationCreated: isFreshSend
+           ? onConversationCreatedRef.current
+           : undefined,
+       });
+     },
+     [teamId]
+   );
+   ```
+
+   Notes:
+   - The Gap P9 contract is preserved: `useChat.sendMessage` still owns the UUID generation for fresh sends, the optimistic user-message append, and the `onConversationCreated` callback wiring. The streaming module is the new SSE owner; everything around it stays in `useChat`.
+   - `teamId` becomes a new option on `UseChatOptions` (passed by `chat-page-content.tsx` from `useAuth().activeTeamId`). The hook no longer pulls it from context internally — preserves the dependency-inversion conventions in CLAUDE.md and keeps `useChat` framework-agnostic about auth.
+   - `sendMessage` no longer awaits anything — it returns immediately after kicking off the stream. The `Promise<void>` return type is preserved for compatibility with chat-input's existing `async`/`await` call site, but the hook no longer needs to track per-call lifecycle.
+
+6. **Rewrite `cancelStream`.** Trivially delegates:
+
+   ```ts
+   const cancelStream = useCallback(() => {
+     console.log(`${LOG_PREFIX} cancelStream`);
+     if (conversationIdRef.current) {
+       moduleCancelStream(conversationIdRef.current);
+     }
+     // Cancelled-bubble construction lives in the module now (Part 1 streaming-actions.ts);
+     // it sets slice.finalMessage to a status:"cancelled" Message.
+     // The useLayoutEffect below folds it into messages[] like any other completion.
+   }, []);
+   ```
+
+7. **Add the `useLayoutEffect` fold (P2.R7).** Place it after the message-list effects, before the return:
+
+   ```ts
+   // P2.R7: synchronously fold the slice's finalMessage into messages[] before
+   // the browser paints the streamState→idle transition. This is the canonical
+   // pattern for "DOM-tied derivations that must beat paint."
+   useLayoutEffect(() => {
+     if (!slice?.finalMessage) return;
+     const completed = slice.finalMessage;
+     setMessages((prev) => [...prev, completed]);
+     // Acknowledge consumption so the message isn't re-folded on re-subscribe
+     // (e.g., when the user navigates away and back to this conversation).
+     if (slice.conversationId) {
+       markFinalMessageConsumed(slice.conversationId);
+     }
+   }, [slice?.finalMessage, slice?.conversationId]);
+   ```
+
+   Why both `slice?.finalMessage` and `slice?.conversationId` in the deps:
+   - `slice?.finalMessage` is the primary trigger — when it transitions from null to a Message, fold.
+   - `slice?.conversationId` guards against the cross-conversation navigation case: if `useChat` re-keys to a different conversation whose slice happens to also have a `finalMessage`, the effect re-fires for the new id rather than skipping (which would happen if the dep array compared only by `finalMessage`'s reference and the new conversation's `finalMessage` was the same object — vanishingly unlikely but defensively correct).
+
+8. **Rewrite `retryLastMessage`.** The trim logic is unchanged; only the re-send delegates to the new `sendMessage`:
+
+   ```ts
+   const retryLastMessage = useCallback(async () => {
+     console.log(`${LOG_PREFIX} retryLastMessage`);
+
+     const lastUserMessage = [...messages].reverse().find((m) => m.role === "user");
+     if (!lastUserMessage) {
+       console.warn(`${LOG_PREFIX} no user message found to retry`);
+       return;
+     }
+
+     setMessages((prev) => {
+       let trimmed = prev;
+       const last = trimmed[trimmed.length - 1];
+       if (
+         last &&
+         last.role === "assistant" &&
+         (last.status === "failed" ||
+           last.status === "cancelled" ||
+           last.status === "streaming")
+       ) {
+         trimmed = trimmed.slice(0, -1);
+       }
+       const newLast = trimmed[trimmed.length - 1];
+       if (
+         newLast &&
+         newLast.role === "user" &&
+         newLast.content === lastUserMessage.content
+       ) {
+         trimmed = trimmed.slice(0, -1);
+       }
+       return trimmed;
+     });
+
+     await sendMessage(lastUserMessage.content);
+   }, [messages, sendMessage]);
+   ```
+
+   No streaming-internal cleanup is needed before retry — `moduleStartStream` re-seeds the slice from `IDLE_SLICE_DEFAULTS` (Part 1, `streaming-actions.ts:39–45`), which clears any stale `finalMessage`/`error`/etc. from the previous attempt.
+
+9. **`UseChatOptions` gains `teamId`.** The hook needs it to pass through to `startStream` for workspace-scoped slice keying (Part 5 forward-compat). Update the interface:
+
+   ```ts
+   interface UseChatOptions {
+     conversationId: string | null;
+     teamId: string | null;
+     onConversationCreated?: (id: string) => void;
+     onTitleGenerated?: (id: string, title: string) => void;
+   }
+   ```
+
+   And update the one caller in `app/chat/_components/chat-page-content.tsx`:
+
+   ```ts
+   const chatHook = useChat({
+     conversationId: activeConversationId,
+     teamId, // <-- new; already in scope from useAuth()
+     onConversationCreated: handleConversationCreated,
+     onTitleGenerated: handleTitleGenerated,
+   });
+   ```
+
+   This is the only chat-surface change in Part 2 — strictly additive (a new prop), no behavioral change to existing fields. P2.R5's "passthrough surface unchanged" applies to the *return* surface; adding a required option on the input side is acceptable scope for a hook migration.
+
+10. **Preserve the load-messages effect verbatim.** The existing logic — including the Gap P9 `prev === null && messagesRef.current.length > 0` guard that skips the refetch on the fresh-send → conversation-confirmed transition — stays exactly as-is. The optimistic user message is still added by `sendMessage` *before* `moduleStartStream` fires, so by the time `onConversationCreated` triggers the parent's `setActiveConversationId(uuid)` and `useChat` re-renders with the new id, `messagesRef.current.length > 0` is true — guard fires correctly.
+
+11. **`UseChatReturn` is byte-identical.** Same fields, same names, same types. P2.R5 enforced by reading the existing interface and not touching it.
+
+**Verify:**
+
+- `npx tsc --noEmit` passes.
+- `grep -rn "abortControllerRef\|assistantMessageIdRef\|streamingContentRef\|parseSSEChunk\|stripFollowUpBlock" lib/hooks/use-chat.ts` returns no hits (all streaming internals removed).
+- `wc -l lib/hooks/use-chat.ts` reports under 250 LOC (down from 597 post-P1-Increment-1).
+- Manual smoke test on `/chat` (the full P2 acceptance battery):
+  - **P2.R4 bleed-bug verification:** start a stream in conversation A, switch to B mid-stream — no streaming bubble appears in B, no final message lands in B. Switch back to A — the message is there (live or completed depending on timing).
+  - **P2.R6 cancellation:** abort mid-stream — cancelled bubble appears with partial content, status `cancelled`.
+  - **P2.R6 retry:** click retry on a failed/cancelled assistant message — re-sends correctly, fresh stream begins.
+  - **P2.R6 fresh send:** start a new chat — UUID generates, URL silently updates to `/chat/<id>` after first response, sidebar prepends.
+  - **P2.R7 no-flicker:** complete a stream while viewing the active conversation — the streaming bubble vanishes and the final message appears in the same paint frame (visually: no gap).
+  - **Conversation switching during streaming:** in conversation A, send → switch to B → send → both streams run in parallel (this is technically a Part 3 capability — multi-stream concurrency — but Part 2 already enables it as a side-effect of the per-conversation slice keying; Part 3 only adds the cap and the per-input gating). Both messages persist server-side to their correct conversations.
+
+**Forward compatibility:**
+
+- **Part 3** changes `chat-input.tsx`'s Send-button gating from "any stream active" to "this conversation streaming." The chat-input already reads `streamState` from `useChat`'s passthrough; after Part 2, that's per-conversation (it's the slice for `activeConversationId`). Part 3's change is a one-line condition tweak — no Part 2 work to redo.
+- **Part 3** also adds the concurrency cap. `useActiveStreamCount(teamId)` already exists from Part 1; Part 3 wires it into `chat-input.tsx` for the cap-blocked inline message. No `useChat` change needed.
+- **Part 4** adds `hasUnseenCompletion` flipping. The decision policy ("set true on completion only if no chat-area is currently subscribed to this conversation") lands in Part 4. The mechanism is straightforward: `useChat`'s `useLayoutEffect` fold runs *only when the user is viewing the conversation*, so it can preempt the unseen flag. Two concrete paths Part 4 can choose between:
+  - (a) The streaming module sets `hasUnseenCompletion: true` on every stream completion; `useChat`'s fold immediately calls `markConversationViewed` alongside `markFinalMessageConsumed`. If no `useChat` is mounted on this id, the flag persists — the desired sidebar state. *Simple, self-correcting.*
+  - (b) `useChat` registers a "currently viewing" hint in the store via a new action; the streaming module reads this at completion time. More complex; rejected for Part 4 unless (a) proves insufficient.
+- **Part 6** finishes the cleanup pass. After Increment 2 here, `use-chat.ts` is already under the 200-LOC ceiling P6.R4 mandates and contains no streaming internals (P6.R1, P6.R3). Part 6 will only need to verify and update docs — most of its acceptance criteria are met as a side-effect of this increment.
+
+---
+
+### Increment 3 — End-of-part audit + verification
+
+**What:** The audit pass per CLAUDE.md "End-of-part audit" + the post-merge documentation updates.
+
+**Files changed:** Audit may produce code fixes in `lib/hooks/use-chat.ts` and/or the streaming module. Documentation:
+
+| File | Action |
+|------|--------|
+| `ARCHITECTURE.md` | **Modify** — update the `lib/hooks/use-chat.ts` description to reflect its new role (message-list orchestrator, no streaming internals); note the `useStreamingSlice` consumption |
+| `CHANGELOG.md` | **Add entry** — `PRD-024 P2: useChat migration to streaming module + bleed-bug fix + no-flicker handoff` |
+
+**Audit checklist (per CLAUDE.md, applied to Increment 2's changes):**
+
+1. **SRP** — `useChat` does one thing (manage the active conversation's message list). Streaming, SSE parsing, abort handling all live in `lib/streaming/`. The `useLayoutEffect` fold is not "streaming logic" — it's a list-mutation handoff, which belongs to the message-list owner.
+2. **DRY** — There are now no remaining duplicates of SSE parsing (Part 1 Increment 1 already collapsed those), abort handling (in the module), or stream-state machinery (in the module). The follow-up regex still lives in exactly one source file (`chat-helpers.ts`); the SSE chunk decoder still lives in exactly one source file. P6.R2's "exactly one source" check passes after this increment.
+3. **Design tokens** — N/A (no UI changes).
+4. **Logging** — `useChat`'s `sendMessage`, `cancelStream`, `retryLastMessage` all retain entry logs with `[useChat]` prefix. The streaming module owns the SSE-loop logs with `[streaming]` prefix. Errors from the module surface to `slice.error`, which `useChat` passes through; if `slice.error` becomes set, the chat-area's existing error-banner renders it.
+5. **Dead code** — Verify `parseSSEChunk`, `stripFollowUpBlock`, `parseFollowUps`, `abortControllerRef`, `streamingContentRef`, `assistantMessageIdRef`, and the SSE loop body are all gone from `use-chat.ts`. No commented-out residue.
+6. **Convention compliance** — Imports follow project order (React → utilities → internal modules → types). Exports are named. `'use client'` directive retained at the top.
+
+**Manual verification — the P2 acceptance battery (also lives in Increment 2's verify section; reproduced here as the audit gate):**
+
+- [ ] P2.R1 — `lib/hooks/use-chat.ts` has no internal streaming state.
+- [ ] P2.R2 — `useChat` does not contain the SSE loop, the `AbortController`, or the streaming state machine.
+- [ ] P2.R3 — Message-list functions (load, paginate, append-via-fold, clear, not-found) all in `useChat`.
+- [ ] P2.R4 — Manual reproduction of the legacy bleed bug: send in A, switch to B mid-stream → no bubble or message in B.
+- [ ] P2.R5 — Chat-surface components compile and run unchanged. `git diff` shows zero modifications outside `lib/hooks/use-chat.ts`, `lib/streaming/streaming-actions.ts`, `lib/streaming/index.ts`, and `app/chat/_components/chat-page-content.tsx` (the one-prop addition).
+- [ ] P2.R6 — Send + abort + retry + cross-conversation switch all behave coherently across smoke tests.
+- [ ] P2.R7 — Stream completion produces no visible flicker (visual check in DevTools' "Paint Flashing" overlay confirms no separate paint frames between bubble-vanish and message-appear).
+
+This audit produces fixes in the same PR, not a separate report.
+
+### After Part 2 completes
+
+Per CLAUDE.md ("After each TRD part completes"):
+
+1. **`ARCHITECTURE.md` update** — Update `lib/hooks/use-chat.ts`'s file-map description to: *"Chat orchestrator — owns conversation-scoped message list (load, paginate, fold-on-completion, clear, not-found); delegates SSE/abort/state to `lib/streaming` (PRD-024 Part 2)"*. The streaming-module description from Part 1 already covers the SSE side.
+2. **`CHANGELOG.md` entry** — Document the migration, the bleed-bug fix as a structural side-effect, and the no-flicker mechanism. Include the `markFinalMessageConsumed` API addition.
+3. **No DB schema change** — no Supabase types regen.
+4. **Test affected flows** — covered by Increment 2's manual smoke test + Increment 3's audit gate.
+
+---

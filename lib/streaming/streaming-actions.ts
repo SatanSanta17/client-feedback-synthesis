@@ -275,6 +275,22 @@ export function markConversationViewed(conversationId: string): void {
 }
 
 // ---------------------------------------------------------------------------
+// markFinalMessageConsumed — clear finalMessage after the consumer (useChat)
+// has folded it into messages[] (Part 2 R3 / P2.R7)
+// ---------------------------------------------------------------------------
+
+export function markFinalMessageConsumed(conversationId: string): void {
+  const slice = getSlice(conversationId);
+  if (!slice || slice.finalMessage === null) {
+    return;
+  }
+  setSlice(conversationId, { finalMessage: null });
+  console.log(
+    `${LOG_PREFIX} markFinalMessageConsumed conversation=${conversationId}`
+  );
+}
+
+// ---------------------------------------------------------------------------
 // clearAllStreams — sign-out teardown (Part 5 R4)
 // ---------------------------------------------------------------------------
 
