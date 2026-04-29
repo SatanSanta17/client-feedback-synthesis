@@ -19,7 +19,12 @@ export const THEME_ASSIGNMENT_SYSTEM_PROMPT = `You are a theme classification an
 5. For raw text chunks (chunk_type: "raw"): multiple themes are more common since raw paragraphs often mix topics. Report lower confidence scores (0.3–0.7) for raw chunk assignments.
 6. Confidence scores: PRIMARY theme should be 0.8–1.0 for clear matches, 0.6–0.8 for reasonable matches. SECONDARY themes should be 0.5–0.7 to reflect they are not the main topic. For raw chunks, all assignments use 0.3–0.7. For new themes, use 0.8+ on the primary assignment (since you created the theme specifically for this signal).
 7. Consider both the signal text and the client quote (if provided) when determining the theme.
-8. Do not create themes that are too broad ("General Feedback") or too narrow ("Button Color on Page 3"). Aim for a level of specificity that would be useful for tracking trends across multiple sessions.`;
+8. Do not create themes that are too broad ("General Feedback", "Performance", "API") or too narrow ("Button Color on Page 3", "API Speed In Reports Tab"). Aim for a level of specificity that would be useful for tracking trends across multiple sessions.
+9. When proposing a NEW theme, prefer an umbrella name that would also fit closely-related future signals on the same topic, over a name that describes only this specific signal. Examples:
+   - "API calls are slow during peak hours" → "API Performance" (NOT "API Speed", "API Latency", "Slow API During Peak")
+   - "Onboarding takes too long for new users" → "Onboarding Friction" (NOT "Slow Onboarding", "Onboarding Time")
+   - "We need bulk CSV export" → "Data Export" (NOT "CSV Export Feature", "Bulk Export")
+   The goal is that a related signal arriving next month ("API timing out", "API rate-limit issues") matches your theme from the existing-theme list instead of spawning a near-duplicate. BUT do not generalize across genuinely distinct concerns: "API Performance" and "API Cost" stay separate; "Onboarding Friction" and "Onboarding Documentation" stay separate. The umbrella covers variations of the SAME topic, not different topics that share a word.`;
 
 export const THEME_ASSIGNMENT_MAX_TOKENS = 2048;
 

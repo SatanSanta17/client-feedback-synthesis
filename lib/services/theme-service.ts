@@ -12,6 +12,11 @@ import {
   buildThemeAssignmentUserMessage,
 } from "@/lib/prompts/theme-assignment";
 import { callModelObject } from "@/lib/services/ai-service";
+import {
+  runThemePrevention,
+  type ProposedNewTheme,
+  type PreventionResult,
+} from "@/lib/services/theme-prevention";
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -106,6 +111,18 @@ export async function assignSessionThemes(options: {
       themeByLowerName.set(theme.name.toLowerCase(), theme);
     }
 
+    // Step 4a: Embedding-based prevention pre-pass (PRD-026 P1.R2 / P1.R5).
+    // Collect every "new" proposal that survives the case-insensitive fast
+    // path (P1.R6), batch-embed them in one call, and resolve each against
+    // existing-theme embeddings via cosine similarity. The main loop below
+    // consults the resulting decision map; no per-iteration embedding work.
+    const proposedNew = collectProposedNewThemes(llmResponse, themeByLowerName);
+    const prevention: PreventionResult = await runThemePrevention({
+      proposed: proposedNew,
+      existing: existingThemes,
+      sessionId,
+    });
+
     let newThemesCreated = 0;
     let existingThemesUsed = 0;
     const signalThemeInserts: SignalThemeInsert[] = [];
@@ -127,32 +144,52 @@ export async function assignSessionThemes(options: {
         const { themeName, isNew, confidence, description } = themeAssignment;
         let resolvedThemeId: string;
 
-        if (isNew) {
-          // Attempt to create the new theme
-          resolvedThemeId = await resolveNewTheme({
-            themeName,
-            description: description ?? null,
-            teamId,
-            userId,
-            themeRepo,
-            themeByLowerName,
-          });
+        const lowerName = themeName.toLowerCase();
 
-          // Check if we actually created it or fell back to existing
-          if (themeByLowerName.has(themeName.toLowerCase())) {
-            // Was already there (concurrent creation or LLM incorrectly marked as new)
+        if (isNew) {
+          // P1.R6 — exact-name fast path: LLM marked new but the name already
+          // exists in the workspace. Reuse without embedding work.
+          const cached = themeByLowerName.get(lowerName);
+          if (cached) {
+            resolvedThemeId = cached.id;
             existingThemesUsed++;
           } else {
-            newThemesCreated++;
+            const decision = prevention.decisions.get(lowerName);
+
+            if (decision?.kind === "reuse") {
+              // P1.R2 — semantic match wins; collapse onto the existing theme.
+              resolvedThemeId = decision.themeId;
+              existingThemesUsed++;
+              // Keep cache consistent so a second occurrence of the same
+              // proposed name in this batch short-circuits at the fast path.
+              const matched = themeByLowerName.get(decision.matchedName.toLowerCase());
+              if (matched) themeByLowerName.set(lowerName, matched);
+            } else {
+              // decision.kind === "new", or no decision (rare — proposed name
+              // collided in cache between collection and resolution). Persist
+              // a fresh row, carrying the embedding precomputed by the guard.
+              const embedding =
+                decision?.kind === "new" ? decision.embedding : null;
+              resolvedThemeId = await resolveNewTheme({
+                themeName,
+                description: description ?? null,
+                teamId,
+                userId,
+                themeRepo,
+                themeByLowerName,
+                embedding,
+              });
+              newThemesCreated++;
+            }
           }
         } else {
           // Find existing theme by name
-          const existing = themeByLowerName.get(themeName.toLowerCase());
+          const existing = themeByLowerName.get(lowerName);
           if (existing) {
             resolvedThemeId = existing.id;
             existingThemesUsed++;
           } else {
-            // LLM referenced an existing theme that doesn't exist — try creating it
+            // LLM referenced an existing theme that doesn't exist — try creating it.
             console.warn(
               `[theme-service] LLM referenced non-existent theme "${themeName}" as existing, creating it`
             );
@@ -163,6 +200,7 @@ export async function assignSessionThemes(options: {
               userId,
               themeRepo,
               themeByLowerName,
+              embedding: null,
             });
             newThemesCreated++;
           }
@@ -212,6 +250,34 @@ export async function assignSessionThemes(options: {
 // ---------------------------------------------------------------------------
 
 /**
+ * Walks the LLM response and collects every "new" proposal that survives
+ * the case-insensitive fast path — i.e., names that don't already exist in
+ * the workspace. Deduplicates by lowercased name so a single embedding +
+ * similarity check covers every occurrence in this batch (P1.R5).
+ */
+function collectProposedNewThemes(
+  llmResponse: ThemeAssignmentResponse,
+  themeByLowerName: Map<string, Theme>
+): ProposedNewTheme[] {
+  const dedup = new Map<string, ProposedNewTheme>();
+
+  for (const assignment of llmResponse.assignments) {
+    for (const t of assignment.themes) {
+      if (!t.isNew) continue;
+      const lowerName = t.themeName.toLowerCase();
+      if (themeByLowerName.has(lowerName)) continue; // P1.R6 fast path
+      if (dedup.has(lowerName)) continue;
+      dedup.set(lowerName, {
+        name: t.themeName,
+        description: t.description ?? null,
+      });
+    }
+  }
+
+  return [...dedup.values()];
+}
+
+/**
  * Attempts to create a new theme. If a unique constraint violation occurs
  * (concurrent creation), falls back to findByName() to resolve the existing
  * theme. Updates the themeByLowerName cache in both cases.
@@ -223,8 +289,15 @@ async function resolveNewTheme(options: {
   userId: string;
   themeRepo: ThemeRepository;
   themeByLowerName: Map<string, Theme>;
+  /**
+   * Precomputed embedding from the prevention guard. Pass `null` only for
+   * the rare paths that bypass the guard (e.g., LLM proposed an
+   * "existing" theme that doesn't actually exist) — those rows will be
+   * caught by the next backfill pass if any.
+   */
+  embedding: number[] | null;
 }): Promise<string> {
-  const { themeName, description, teamId, userId, themeRepo, themeByLowerName } = options;
+  const { themeName, description, teamId, userId, themeRepo, themeByLowerName, embedding } = options;
 
   const lowerName = themeName.toLowerCase();
 
@@ -240,9 +313,7 @@ async function resolveNewTheme(options: {
     team_id: teamId,
     initiated_by: userId,
     origin: "ai",
-    // PRD-026 Increment 1.2 stub. Increment 1.3 will replace this with the
-    // embedding produced by the prevention guard pre-pass.
-    embedding: null,
+    embedding,
   };
 
   try {
