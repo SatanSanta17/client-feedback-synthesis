@@ -15,7 +15,8 @@ import {
 import {
   setSlice,
   getSlice,
-  listSlices,
+  findSlicesWhere,
+  isStreamingForTeam,
   setAbortController,
   getAbortController,
   deleteAbortController,
@@ -32,17 +33,12 @@ import type { StartStreamArgs } from "./streaming-types";
 const LOG_PREFIX = "[streaming]";
 
 // Workspace-scoped active-stream counter. Used by startStream's defensive
-// cap guard. Duplicates the predicate logic in streaming-hooks.ts'
-// computeActiveStreamIds — flagged in Part 3's end-of-part audit as a
-// Part 6 cleanup target (extract a shared non-React selector).
+// cap guard. Composes the shared `isStreamingForTeam` predicate factory +
+// `findSlicesWhere` iteration helper — both exported by streaming-store.ts
+// (PRD-024 Part 6 consolidation; previously the predicate was inlined here
+// and duplicated in streaming-hooks.ts' computeActiveStreamIds).
 function countActiveStreams(teamId: string | null): number {
-  let count = 0;
-  for (const slice of listSlices().values()) {
-    if (slice.teamId === teamId && slice.streamState === "streaming") {
-      count++;
-    }
-  }
-  return count;
+  return findSlicesWhere(isStreamingForTeam(teamId)).length;
 }
 
 // ---------------------------------------------------------------------------

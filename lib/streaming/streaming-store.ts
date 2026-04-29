@@ -65,6 +65,51 @@ export function listSlices(): ReadonlyMap<string, ConversationStreamSlice> {
 }
 
 // ---------------------------------------------------------------------------
+// Selectors (PRD-024 Part 6 — predicate consolidation)
+// ---------------------------------------------------------------------------
+
+/**
+ * Predicate factory: matches slices that are actively streaming in the
+ * given workspace. Used by both the cap defense in streaming-actions.ts
+ * and the React hook layer in streaming-hooks.ts so the workspace +
+ * streaming-state filter has exactly one source of truth.
+ */
+export function isStreamingForTeam(
+  teamId: string | null
+): (slice: ConversationStreamSlice) => boolean {
+  return (slice) =>
+    slice.teamId === teamId && slice.streamState === "streaming";
+}
+
+/**
+ * Predicate factory: matches slices in the given workspace that have a
+ * completed/cancelled response not yet viewed (PRD-024 P4.R2). Symmetric
+ * with `isStreamingForTeam` — both predicates are complete filters
+ * (workspace + state), keeping the iteration helper generic.
+ */
+export function hasUnseenCompletionForTeam(
+  teamId: string | null
+): (slice: ConversationStreamSlice) => boolean {
+  return (slice) =>
+    slice.teamId === teamId && slice.hasUnseenCompletion;
+}
+
+/**
+ * Generic iteration + filter over the slices Map. Single allocation per
+ * call; caller specializes via predicate. Bounded by the active-stream
+ * cap (5 in practice) so the array is always tiny.
+ */
+export function findSlicesWhere(
+  predicate: (slice: ConversationStreamSlice) => boolean
+): ConversationStreamSlice[] {
+  const out: ConversationStreamSlice[] = [];
+  for (const slice of slices.values()) {
+    if (predicate(slice)) out.push(slice);
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------------------
 // AbortController access
 // ---------------------------------------------------------------------------
 

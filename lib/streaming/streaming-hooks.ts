@@ -3,15 +3,23 @@
 // ---------------------------------------------------------------------------
 // Streaming Hooks — useSyncExternalStore-backed subscriptions (PRD-024)
 // ---------------------------------------------------------------------------
-// Single-conversation hooks subscribe to one slice; aggregate hooks derive
-// workspace-filtered lists from listSlices(). All aggregate hooks cache the
-// last result keyed by teamId so getSnapshot returns a stable reference when
-// nothing relevant changed (otherwise useSyncExternalStore's bailout breaks).
+// Single-conversation hooks subscribe to one slice via primitive selectors;
+// aggregate hooks derive workspace-filtered lists via the shared predicate
+// factories + `findSlicesWhere` from streaming-store.ts (PRD-024 Part 6).
+// All aggregate hooks cache the last result keyed by teamId so getSnapshot
+// returns a stable reference when nothing relevant changed (otherwise
+// useSyncExternalStore's bailout breaks).
 // ---------------------------------------------------------------------------
 
 import { useSyncExternalStore } from "react";
 
-import { subscribe, getSlice, listSlices } from "./streaming-store";
+import {
+  subscribe,
+  getSlice,
+  findSlicesWhere,
+  hasUnseenCompletionForTeam,
+  isStreamingForTeam,
+} from "./streaming-store";
 import type { ConversationStreamSlice } from "./streaming-types";
 
 // ---------------------------------------------------------------------------
@@ -74,22 +82,18 @@ export function useHasUnseenCompletion(id: string | null): boolean {
 type SlicePredicate = (slice: ConversationStreamSlice) => boolean;
 
 /**
- * Generic stable-ref derivation over the slice store. Used by aggregate hooks
- * that filter slices by workspace + a per-slice predicate. The cache is keyed
- * by teamId; identical fresh results return the cached array reference so
- * useSyncExternalStore's bailout works.
+ * Generic stable-ref derivation over the slice store. The predicate is a
+ * complete filter (the team-scoping is baked into the predicate factories
+ * exported from streaming-store.ts). Cache is keyed by teamId; identical
+ * fresh results return the cached array reference so useSyncExternalStore's
+ * bailout works.
  */
 function stableFilteredIds(
   cache: Map<string | null, string[]>,
   teamId: string | null,
   predicate: SlicePredicate
 ): string[] {
-  const fresh: string[] = [];
-  for (const slice of listSlices().values()) {
-    if (slice.teamId === teamId && predicate(slice)) {
-      fresh.push(slice.conversationId);
-    }
-  }
+  const fresh = findSlicesWhere(predicate).map((s) => s.conversationId);
   const cached = cache.get(teamId);
   if (
     cached &&
@@ -103,7 +107,6 @@ function stableFilteredIds(
 }
 
 const activeStreamIdsCache = new Map<string | null, string[]>();
-const isStreamingPredicate: SlicePredicate = (s) => s.streamState === "streaming";
 
 /**
  * IDs of conversations currently streaming in the given workspace. NULL =
@@ -113,7 +116,12 @@ const isStreamingPredicate: SlicePredicate = (s) => s.streamState === "streaming
 export function useActiveStreamIds(teamId: string | null): string[] {
   return useSyncExternalStore(
     subscribe,
-    () => stableFilteredIds(activeStreamIdsCache, teamId, isStreamingPredicate),
+    () =>
+      stableFilteredIds(
+        activeStreamIdsCache,
+        teamId,
+        isStreamingForTeam(teamId)
+      ),
     () => []
   );
 }
@@ -123,7 +131,6 @@ export function useActiveStreamCount(teamId: string | null): number {
 }
 
 const unseenCompletionIdsCache = new Map<string | null, string[]>();
-const hasUnseenPredicate: SlicePredicate = (s) => s.hasUnseenCompletion;
 
 /**
  * IDs of conversations in the given workspace whose last stream completed
@@ -132,7 +139,12 @@ const hasUnseenPredicate: SlicePredicate = (s) => s.hasUnseenCompletion;
 export function useUnseenCompletionIds(teamId: string | null): string[] {
   return useSyncExternalStore(
     subscribe,
-    () => stableFilteredIds(unseenCompletionIdsCache, teamId, hasUnseenPredicate),
+    () =>
+      stableFilteredIds(
+        unseenCompletionIdsCache,
+        teamId,
+        hasUnseenCompletionForTeam(teamId)
+      ),
     () => []
   );
 }
