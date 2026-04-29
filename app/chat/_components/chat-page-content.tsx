@@ -108,6 +108,7 @@ export function ChatPageContent({
   // Chat streaming
   const chatHook = useChat({
     conversationId: activeConversationId,
+    teamId,
     onConversationCreated: handleConversationCreated,
     onTitleGenerated: handleTitleGenerated,
   });

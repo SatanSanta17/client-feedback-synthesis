@@ -1,20 +1,32 @@
 "use client";
 
 // ---------------------------------------------------------------------------
-// useChat — Custom SSE streaming hook (PRD-020 Part 3)
+// useChat — Conversation-scoped chat orchestrator (PRD-024 Part 2)
 // ---------------------------------------------------------------------------
-// Manages the SSE connection to /api/chat/send, streaming state machine,
-// AbortController for cancellation, and message list for the active
-// conversation. Does NOT use Vercel AI SDK's useChat — custom SSE protocol.
+// Owns the active conversation's message list (load, paginate, fold-on-
+// completion, clear, not-found). Streaming state, the SSE loop, abort
+// handling, and the cancelled-bubble construction all live in
+// `lib/streaming/`. This hook subscribes to the slice for the active
+// conversation and folds the slice's `finalMessage` into `messages[]` via
+// useLayoutEffect — synchronous before paint to satisfy P2.R7's no-flicker
+// guarantee.
 // ---------------------------------------------------------------------------
-
-import { useState, useCallback, useRef, useEffect } from "react";
 
 import {
-  parseFollowUps,
-  parseSSEChunk,
-  stripFollowUpBlock,
-} from "@/lib/utils/chat-helpers";
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
+
+import {
+  cancelStream as moduleCancelStream,
+  markFinalMessageConsumed,
+  startStream as moduleStartStream,
+  useStreamingSlice,
+} from "@/lib/streaming";
+
 import type { ChatSource, Message, StreamState } from "@/lib/types/chat";
 
 // ---------------------------------------------------------------------------
@@ -23,6 +35,10 @@ import type { ChatSource, Message, StreamState } from "@/lib/types/chat";
 
 const LOG_PREFIX = "[useChat]";
 const MESSAGES_PAGE_SIZE = 20;
+
+// Stable empty-array reference so the `latestFollowUps` passthrough doesn't
+// produce a fresh array on every render when no slice exists.
+const EMPTY_FOLLOW_UPS: string[] = [];
 
 interface UseChatOptions {
   /**
@@ -35,10 +51,16 @@ interface UseChatOptions {
    */
   conversationId: string | null;
   /**
+   * Active workspace — NULL = personal. Threaded into the streaming
+   * module so each slice carries its workspace tag for Part 5's
+   * cross-workspace isolation. (PRD-024 P5.R5)
+   */
+  teamId: string | null;
+  /**
    * Fires exactly once per fresh-chat send, right after the server
    * responds with `X-Conversation-Id` confirming the new conversation
    * row exists. Parent uses this to prepend the entry to the sidebar
-   * and (in P9 Increment 2) silently update the URL via history API.
+   * and silently update the URL via history API.
    */
   onConversationCreated?: (id: string) => void;
   onTitleGenerated?: (id: string, title: string) => void;
@@ -76,7 +98,7 @@ interface UseChatReturn {
    * around in-app navigation (sidebar click, "New chat", popstate) so the
    * `setActiveConversationId(...)` call in the same handler batches with
    * the message clear into one React render commit — no flash of the
-   * previous conversation's messages while the new one loads. (Gap P9)
+   * previous conversation's messages while the new one loads.
    */
   clearMessages: () => void;
   /**
@@ -84,7 +106,7 @@ interface UseChatReturn {
    * doesn't exist or is inaccessible (cross-user UUID hidden by RLS).
    * UI surfaces a "Conversation not found" state with a CTA back to
    * `/chat`. Resets to false on every load attempt, on null transitions,
-   * and on `clearMessages()`. (Gap P9)
+   * and on `clearMessages()`.
    */
   isConversationNotFound: boolean;
 }
@@ -97,47 +119,58 @@ export function useChat(options: UseChatOptions): UseChatReturn {
   // Note: onTitleGenerated is accepted for forward compatibility but not yet
   // wired — titles arrive via fire-and-forget server generation and the client
   // discovers them through conversation list refetch in useConversations.
-  const { conversationId, onConversationCreated } = options;
+  const { conversationId, teamId, onConversationCreated } = options;
 
-  // Message state
   const [messages, setMessages] = useState<Message[]>([]);
   const [isLoadingMessages, setIsLoadingMessages] = useState(false);
   const [hasMoreMessages, setHasMoreMessages] = useState(false);
   const [isConversationNotFound, setIsConversationNotFound] = useState(false);
 
-  // Streaming state machine
-  const [streamState, setStreamState] = useState<StreamState>("idle");
-  const [streamingContent, setStreamingContent] = useState("");
-  const [statusText, setStatusText] = useState<string | null>(null);
-  const [latestSources, setLatestSources] = useState<ChatSource[] | null>(
-    null
-  );
-  const [latestFollowUps, setLatestFollowUps] = useState<string[]>([]);
-  const [error, setError] = useState<string | null>(null);
+  // Fresh-send fallback: between sendMessage running (which generates the
+  // uuid synchronously) and the parent's onConversationCreated callback
+  // propagating the uuid back through props, conversationId is still null —
+  // useStreamingSlice would otherwise return null and the streaming bubble
+  // wouldn't appear until the server's response header arrives. This holds
+  // the in-flight uuid so the slice subscription kicks in immediately.
+  const [pendingConversationId, setPendingConversationId] = useState<
+    string | null
+  >(null);
 
-  // Refs for cancellation and stable callbacks
-  const abortControllerRef = useRef<AbortController | null>(null);
+  // Effective subscription target: prop wins, fallback to pending.
+  const subscriptionId = conversationId ?? pendingConversationId;
+  const slice = useStreamingSlice(subscriptionId);
+
+  // Streaming state — derived from the slice. Switching conversations
+  // switches which slice is read, which structurally fixes the pre-PRD
+  // UI-bleed bug (PRD-024 P2.R4).
+  const streamState: StreamState = slice?.streamState ?? "idle";
+  const streamingContent = slice?.streamingContent ?? "";
+  const statusText = slice?.statusText ?? null;
+  const latestSources = slice?.latestSources ?? null;
+  const latestFollowUps = slice?.latestFollowUps ?? EMPTY_FOLLOW_UPS;
+  const error = slice?.error ?? null;
+
+  // Stable refs for callbacks and the load-messages skip-refetch guard.
   const conversationIdRef = useRef<string | null>(conversationId);
+  const pendingConversationIdRef = useRef<string | null>(null);
   const onConversationCreatedRef = useRef(onConversationCreated);
-  const streamingContentRef = useRef(streamingContent);
-  // Mirrors `messages.length` so the load-messages effect can detect "we
-  // already have messages from streaming" without depending on `messages`
-  // (which would re-run on every delta).
+  // Mirrors `messages.length` so the load-messages effect can detect
+  // "we already have messages from streaming" without depending on
+  // `messages` (which would re-run on every fold).
   const messagesRef = useRef(messages);
   // Tracks the conversationId from the previous render so the load-messages
   // effect can distinguish `null → just-created via send` (skip refetch —
-  // streaming already populated state) from genuine conversation switches.
+  // the optimistic user message is already present) from genuine
+  // conversation switches.
   const prevConversationIdRef = useRef<string | null>(null);
-  // Holds the in-flight stream's assistant message UUID — populated from the
-  // `X-Assistant-Message-Id` response header at fetch-response time, used by
-  // both the success path and the cancel path so the persisted DB row and
-  // the client-side message bubble share the same identifier (gap E14).
-  const assistantMessageIdRef = useRef<string | null>(null);
 
-  // Keep refs in sync
   useEffect(() => {
     conversationIdRef.current = conversationId;
   }, [conversationId]);
+
+  useEffect(() => {
+    pendingConversationIdRef.current = pendingConversationId;
+  }, [pendingConversationId]);
 
   useEffect(() => {
     onConversationCreatedRef.current = onConversationCreated;
@@ -147,9 +180,14 @@ export function useChat(options: UseChatOptions): UseChatReturn {
     messagesRef.current = messages;
   }, [messages]);
 
+  // Clear the fresh-send fallback once the parent confirms by setting
+  // conversationId. After this point, the prop carries the uuid and
+  // pendingConversationId is no longer needed.
   useEffect(() => {
-    streamingContentRef.current = streamingContent;
-  }, [streamingContent]);
+    if (conversationId !== null && pendingConversationId !== null) {
+      setPendingConversationId(null);
+    }
+  }, [conversationId, pendingConversationId]);
 
   // -------------------------------------------------------------------------
   // Load messages when conversation changes
@@ -169,9 +207,9 @@ export function useChat(options: UseChatOptions): UseChatReturn {
     }
 
     // null → just-created via first-send: useChat already populated
-    // `messages` with the optimistic user message and the streaming
-    // assistant content, then notified the parent to flip activeConversationId.
-    // Refetching here would clobber that state. Skip exactly this transition.
+    // `messages` with the optimistic user message and the streaming module
+    // is mid-stream. Refetching here would clobber the optimistic message.
+    // Skip exactly this transition.
     if (prev === null && messagesRef.current.length > 0) {
       return;
     }
@@ -192,9 +230,6 @@ export function useChat(options: UseChatOptions): UseChatReturn {
         );
 
         if (res.status === 404) {
-          // Conversation doesn't exist or is inaccessible (RLS hides
-          // cross-user rows). Surface a dedicated UI state instead of a
-          // generic error log. (Gap P9)
           if (!cancelled) {
             console.log(
               `${LOG_PREFIX} conversation not found: ${conversationId}`
@@ -234,13 +269,29 @@ export function useChat(options: UseChatOptions): UseChatReturn {
   }, [conversationId]);
 
   // -------------------------------------------------------------------------
+  // Fold finalMessage into messages[] before paint (P2.R7)
+  // -------------------------------------------------------------------------
+  //
+  // useLayoutEffect runs synchronously after DOM mutations but before paint.
+  // When the slice transitions streaming→idle with finalMessage set, this
+  // appends the message and acknowledges consumption (clearing finalMessage)
+  // in the same render cycle — so the user never sees a frame where the
+  // streaming bubble has vanished but the completed message hasn't appeared.
+
+  useLayoutEffect(() => {
+    if (!slice?.finalMessage) return;
+    const completed = slice.finalMessage;
+    setMessages((prev) => [...prev, completed]);
+    markFinalMessageConsumed(slice.conversationId);
+  }, [slice?.finalMessage, slice?.conversationId]);
+
+  // -------------------------------------------------------------------------
   // Fetch more messages (infinite scroll upward)
   // -------------------------------------------------------------------------
 
   const fetchMoreMessages = useCallback(async () => {
     if (!conversationId || messages.length === 0) return;
 
-    // The oldest message is the first in the chronological list
     const oldestMessage = messages[0];
     const cursor = oldestMessage.createdAt;
 
@@ -254,7 +305,6 @@ export function useChat(options: UseChatOptions): UseChatReturn {
 
       const data = await res.json();
 
-      // Prepend older messages (data.messages is already chronological from API)
       setMessages((prev) => [...data.messages, ...prev]);
       setHasMoreMessages(data.hasMore);
     } catch (err) {
@@ -264,34 +314,29 @@ export function useChat(options: UseChatOptions): UseChatReturn {
   }, [conversationId, messages]);
 
   // -------------------------------------------------------------------------
-  // Send message — SSE streaming
+  // Send message — delegates SSE to the streaming module
   // -------------------------------------------------------------------------
 
   const sendMessage = useCallback(
     async (content: string) => {
-      console.log(`${LOG_PREFIX} sendMessage — content length: ${content.length}`);
+      console.log(
+        `${LOG_PREFIX} sendMessage — content length: ${content.length}`
+      );
 
-      // Client-owned UUID for the user message (gap E14). Same ID used for
-      // the optimistic bubble, the POST body, and (after persistence) the
-      // DB row. No temp-ID swap needed.
+      // Client-owned UUID for the user message. Same ID used for the
+      // optimistic bubble and the POST body; no temp-ID swap needed.
       const userMessageId = crypto.randomUUID();
 
       // Conversation UUID — generated lazily on first send when there's no
-      // active conversation yet (gap P9). Otherwise reuse the active one.
-      // The flag tells us at the end whether to fire onConversationCreated.
+      // active conversation yet (Gap P9). Otherwise reuse the active one.
       const isFreshSend = conversationIdRef.current === null;
-      const conversationIdForPost = conversationIdRef.current ?? crypto.randomUUID();
+      const conversationIdForPost =
+        conversationIdRef.current ?? crypto.randomUUID();
 
-      // Reset streaming state
-      setStreamState("streaming");
-      setStreamingContent("");
-      setStatusText(null);
-      setLatestSources(null);
-      setLatestFollowUps([]);
-      setError(null);
-      assistantMessageIdRef.current = null;
-
-      // Optimistically add user message
+      // Optimistic user message — added before the stream kicks off so the
+      // load-messages effect's "skip refetch" guard observes a non-empty
+      // message list when the conversation id propagates back from the
+      // onConversationCreated callback.
       const optimisticUserMessage: Message = {
         id: userMessageId,
         conversationId: conversationIdForPost,
@@ -303,213 +348,46 @@ export function useChat(options: UseChatOptions): UseChatReturn {
         metadata: null,
         createdAt: new Date().toISOString(),
       };
-
       setMessages((prev) => [...prev, optimisticUserMessage]);
 
-      // Create AbortController for cancellation
-      const controller = new AbortController();
-      abortControllerRef.current = controller;
-
-      try {
-        const res = await fetch("/api/chat/send", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            conversationId: conversationIdForPost,
-            userMessageId,
-            message: content,
-          }),
-          signal: controller.signal,
-        });
-
-        if (!res.ok) {
-          const body = await res.json().catch(() => ({ message: "Unknown error" }));
-          throw new Error(body.message || `HTTP ${res.status}`);
-        }
-
-        // Capture the assistant placeholder's UUID from the response header
-        // so the cancel path can attach the real ID to a cancelled bubble
-        // (instead of a temp-cancelled-… ID with no DB counterpart).
-        const headerAssistantId = res.headers.get("X-Assistant-Message-Id");
-        if (headerAssistantId) {
-          assistantMessageIdRef.current = headerAssistantId;
-        }
-
-        // Fresh send: notify the parent that a new conversation now exists
-        // server-side. Parent prepends to sidebar (and, in P9 Increment 2,
-        // silently updates the URL via history.replaceState).
-        if (isFreshSend && onConversationCreatedRef.current) {
-          onConversationCreatedRef.current(conversationIdForPost);
-        }
-
-        // Read SSE stream
-        const reader = res.body?.getReader();
-        if (!reader) throw new Error("No response body");
-
-        const decoder = new TextDecoder();
-        let sseBuffer = "";
-        let accumulatedContent = "";
-        let accumulatedSources: ChatSource[] | null = null;
-        let accumulatedFollowUps: string[] = [];
-        let assistantMessageId: string | null = null;
-
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-
-          sseBuffer += decoder.decode(value, { stream: true });
-          const { events, remaining } = parseSSEChunk(sseBuffer);
-          sseBuffer = remaining;
-
-          for (const sseEvent of events) {
-            let eventData: Record<string, unknown>;
-            try {
-              eventData = JSON.parse(sseEvent.data);
-            } catch {
-              console.warn(
-                `${LOG_PREFIX} failed to parse SSE event data: ${sseEvent.event}`
-              );
-              continue;
-            }
-
-            switch (sseEvent.event) {
-              case "status":
-                setStatusText((eventData.text as string) ?? null);
-                break;
-
-              case "delta":
-                accumulatedContent += (eventData.text as string) ?? "";
-                // Strip complete or partial <!--follow-ups:...--> so it
-                // never flashes in the streaming display.
-                setStreamingContent(
-                  stripFollowUpBlock(accumulatedContent)
-                );
-                break;
-
-              case "sources":
-                accumulatedSources =
-                  (eventData.sources as ChatSource[]) ?? null;
-                setLatestSources(accumulatedSources);
-                break;
-
-              case "follow_ups":
-                accumulatedFollowUps =
-                  (eventData.questions as string[]) ?? [];
-                setLatestFollowUps(accumulatedFollowUps);
-                break;
-
-              case "done":
-                assistantMessageId =
-                  (eventData.messageId as string) ?? null;
-                break;
-
-              case "error":
-                throw new Error(
-                  (eventData.message as string) ?? "Stream error"
-                );
-            }
-          }
-        }
-
-        // Stream completed — strip any <!--follow-ups:...--> comment the LLM
-        // may have emitted inline so it never appears in the rendered message.
-        const { cleanContent } = parseFollowUps(accumulatedContent);
-
-        // Add the final assistant message to the list. Header-supplied UUID
-        // is the authoritative source; the `done` event's messageId is kept
-        // as a paranoid fallback in case the header was missing for some
-        // reason. The temp-assistant-… fallback should never fire in
-        // practice.
-        const completedMessage: Message = {
-          id:
-            assistantMessageIdRef.current ??
-            assistantMessageId ??
-            `temp-assistant-${Date.now()}`,
-          // Use the locally-captured id, not the ref — for fresh sends the
-          // ref may not have synced from the parent's setActiveConversationId
-          // by the time this runs (the sync useEffect runs after commit;
-          // this async function may complete before that).
-          conversationId: conversationIdForPost,
-          parentMessageId: null,
-          role: "assistant",
-          content: cleanContent,
-          sources: accumulatedSources,
-          status: "completed",
-          metadata: null,
-          createdAt: new Date().toISOString(),
-        };
-
-        setMessages((prev) => [...prev, completedMessage]);
-        setStreamState("idle");
-        setStreamingContent("");
-        setStatusText(null);
-
-        console.log(`${LOG_PREFIX} stream completed — message: ${completedMessage.id}`);
-      } catch (err) {
-        if (err instanceof DOMException && err.name === "AbortError") {
-          // Cancelled by user — handled in cancelStream
-          console.log(`${LOG_PREFIX} stream aborted by user`);
-          return;
-        }
-
-        const errMsg = err instanceof Error ? err.message : "Unknown error";
-        console.error(`${LOG_PREFIX} stream error: ${errMsg}`);
-        setStreamState("error");
-        setError(errMsg);
-        setStreamingContent("");
-        setStatusText(null);
-      } finally {
-        abortControllerRef.current = null;
+      // For fresh sends, set the fallback so useStreamingSlice subscribes
+      // to the new uuid's slice immediately. Without this, the streaming
+      // bubble wouldn't appear until the parent's setActiveConversationId
+      // propagates after the server's X-Conversation-Id header arrives.
+      if (isFreshSend) {
+        setPendingConversationId(conversationIdForPost);
       }
+
+      // Delegate the SSE work to the streaming module. The module owns the
+      // fetch, the AbortController, the state machine, and the slice
+      // mutations. We re-enter via the useLayoutEffect fold above when the
+      // slice's finalMessage transitions from null to a Message.
+      moduleStartStream({
+        conversationId: conversationIdForPost,
+        teamId,
+        userMessage: content,
+        userMessageId,
+        onConversationCreated: isFreshSend
+          ? onConversationCreatedRef.current
+          : undefined,
+      });
     },
-    []
+    [teamId]
   );
 
   // -------------------------------------------------------------------------
-  // Cancel stream
+  // Cancel stream — delegates to the module
   // -------------------------------------------------------------------------
 
   const cancelStream = useCallback(() => {
     console.log(`${LOG_PREFIX} cancelStream`);
-
-    if (abortControllerRef.current) {
-      abortControllerRef.current.abort();
-      abortControllerRef.current = null;
+    const id =
+      conversationIdRef.current ?? pendingConversationIdRef.current;
+    if (id) {
+      moduleCancelStream(id);
     }
-
-    // Store partial content as a cancelled message (read from ref to avoid stale closure)
-    const partialContent = streamingContentRef.current;
-    if (partialContent) {
-      // Use the assistant placeholder's real UUID (captured from the
-      // response header at fetch-response time) so the client-side bubble
-      // and the server-side cancelled row share the same identifier
-      // (gap E14). Fallback to a temp ID only if the header wasn't read
-      // — shouldn't happen in practice, kept for defensive completeness.
-      const cancelledMessage: Message = {
-        id:
-          assistantMessageIdRef.current ??
-          `temp-cancelled-${Date.now()}`,
-        // Cancel only meaningfully fires after headers arrive (partial
-        // content exists), at which point onConversationCreated has run
-        // and the parent's setActiveConversationId is in flight. The ref
-        // is normally synced by the time we read it; the `?? ""` fallback
-        // satisfies the non-null type for the unreachable edge case.
-        conversationId: conversationIdRef.current ?? "",
-        parentMessageId: null,
-        role: "assistant",
-        content: partialContent,
-        sources: null,
-        status: "cancelled",
-        metadata: null,
-        createdAt: new Date().toISOString(),
-      };
-
-      setMessages((prev) => [...prev, cancelledMessage]);
-    }
-
-    setStreamState("idle");
-    setStreamingContent("");
-    setStatusText(null);
+    // The module sets slice.finalMessage to a status:"cancelled" Message;
+    // the useLayoutEffect fold appends it to messages[] in the next render.
   }, []);
 
   // -------------------------------------------------------------------------
@@ -519,20 +397,20 @@ export function useChat(options: UseChatOptions): UseChatReturn {
   const retryLastMessage = useCallback(async () => {
     console.log(`${LOG_PREFIX} retryLastMessage`);
 
-    // Find the last user message to re-send
-    const lastUserMessage = [...messages].reverse().find((m) => m.role === "user");
+    const lastUserMessage = [...messages]
+      .reverse()
+      .find((m) => m.role === "user");
 
     if (!lastUserMessage) {
       console.warn(`${LOG_PREFIX} no user message found to retry`);
       return;
     }
 
-    // Remove the failed/cancelled assistant message AND the preceding user message
-    // in a single state update to avoid batching issues
+    // Strip trailing failed/cancelled/streaming assistant message AND the
+    // user message that preceded it (sendMessage will re-add it).
     setMessages((prev) => {
       let trimmed = prev;
 
-      // Strip trailing failed/cancelled/stale assistant message
       const last = trimmed[trimmed.length - 1];
       if (
         last &&
@@ -544,7 +422,6 @@ export function useChat(options: UseChatOptions): UseChatReturn {
         trimmed = trimmed.slice(0, -1);
       }
 
-      // Strip the user message that preceded it (sendMessage will re-add it)
       const newLast = trimmed[trimmed.length - 1];
       if (
         newLast &&
@@ -557,7 +434,6 @@ export function useChat(options: UseChatOptions): UseChatReturn {
       return trimmed;
     });
 
-    // Re-send
     await sendMessage(lastUserMessage.content);
   }, [messages, sendMessage]);
 
@@ -572,10 +448,6 @@ export function useChat(options: UseChatOptions): UseChatReturn {
     setHasMoreMessages(false);
     setIsConversationNotFound(false);
   }, []);
-
-  // -------------------------------------------------------------------------
-  // Return
-  // -------------------------------------------------------------------------
 
   return {
     sendMessage,
