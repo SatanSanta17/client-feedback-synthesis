@@ -80,6 +80,13 @@ export function AuthProvider({ children }: AuthProviderProps) {
         fetchCanCreateTeam(supabase, session.user.id, setCanCreateTeam);
       } else {
         setCanCreateTeam(false);
+        // Defensive cleanup (PRD-024 P5.R4) — clear streaming store on any
+        // session-null transition, not only the explicit signOut path. This
+        // covers token expiry, multi-tab sign-out, and server-side revoke,
+        // each of which fires onAuthStateChange with session=null without
+        // going through this tab's signOut. Idempotent with signOut's
+        // existing call.
+        clearAllStreams();
       }
     });
 

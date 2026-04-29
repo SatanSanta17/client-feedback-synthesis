@@ -1729,3 +1729,243 @@ Per CLAUDE.md ("After each TRD part completes"):
 4. **Test affected flows** — covered by the manual smoke test battery above.
 
 ---
+
+# Part 5
+## Part 5 — Cross-Page Stream Survival
+
+This part covers P5.R1 through P5.R5 from the PRD. **Four of five requirements are already structurally satisfied** by the architecture established in Parts 1–4. Part 5's only new code work is **the AppSidebar Chat icon dot** (P5.R2) — the third indicator surface, completing the indicator-system started in Part 4. Plus one defensive hardening for auth-state-expiry paths (P5.R4).
+
+The structural satisfactions:
+
+| Requirement | Mechanism (already in place) |
+|---|---|
+| **P5.R1 — Streams survive in-app navigation** | The streaming module is a **module-level singleton** (Part 1). `Map<conversationId, slice>`, listener `Set`, and `AbortController` map all live as module exports — independent of the React tree. Navigating from `/chat` to `/dashboard` unmounts `ChatPageContent` and `useChat`, but the module-level state persists. The SSE loop inside `runStream` is a detached promise — it doesn't observe React lifecycle. Streams continue to run; their slices accumulate deltas; on return to `/chat`, the new `useChat` instance subscribes to the slice and reads its current state. **Already structurally true.** |
+| **P5.R3 — Hard refresh / sign-out cancels client streams** | Hard refresh kills the JS bundle entirely → module re-initializes empty. Sign-out's `clearAllStreams` (Part 1 Increment 3) aborts every controller and drops every slice. **Already implemented.** |
+| **P5.R4 — No leak across users on the same browser** | `clearAllStreams` runs in `auth-provider.signOut` between `clearActiveTeamCookie` and the redirect to `/login`. By the time the next user lands on `/login`, the streaming store is empty. **Already implemented;** Part 5 *hardens* this by also wiring `clearAllStreams` into the auth-state-change listener for non-`signOut` session-end paths (token-expiry, server-side revoke, multi-tab sign-out). |
+| **P5.R5 — Workspace switch isolates UI without aborting streams** | Slices carry `teamId` (Part 1's slice shape). Every public hook (`useActiveStreamCount`, `useUnseenCompletionIds`, `useStreamingSlice` via the per-conversation routing, etc.) filters by the `teamId` argument. Switching workspaces changes which `teamId` callers pass; cross-workspace slices retain their state but produce zero UI in the wrong workspace. The SSE loop is `teamId`-agnostic — it runs to completion regardless. **Already structurally true.** |
+
+The only one that needs new code:
+
+| Requirement | What's new |
+|---|---|
+| **P5.R2 — AppSidebar Chat icon reflects global state** | Pulsating dot on the Chat nav icon when any stream is active in the current workspace; solid dot when no streams but unseen completions exist; no dot otherwise. Uses Part 1's `useActiveStreamCount(teamId)` and `useHasAnyUnseenCompletion(teamId)` — no new module API. |
+
+**Database models:** None.
+**API endpoints:** None.
+**Frontend pages/components:** `components/layout/app-sidebar.tsx` (dot rendering on the Chat nav item + a11y).
+**Auth-provider hardening:** `components/providers/auth-provider.tsx` (one defensive `clearAllStreams` call on session-null transitions).
+
+### Architectural pivot — module-level state IS the survival mechanism
+
+Cross-page survival is a feature most SPA architectures pay for via state-persistence layers (Redux + redux-persist, Zustand + persist middleware, localStorage rehydration, etc.). The streaming module avoids all of that complexity by being a **module-level singleton** — its data lives as long as the JS bundle is loaded.
+
+This was implicit in Part 1's design (P1.R4: *"The context lives at app root. Streams started on `/chat/<id>` survive navigation between authenticated pages within the same session."*). Part 1's architectural choice — module-level Map / Set / function exports, no React Context — *was* the cross-page survival mechanism. Part 5 verifies that the implicit guarantee holds in practice.
+
+The trade-off accepted in Part 1: hard refresh wipes everything (the bundle reloads). Part 5.R3 explicitly accepts this as the boundary; client-side resume from a still-running server stream is in the backlog, not in scope.
+
+### Architectural pivot — the AppSidebar dot completes the three-tier system
+
+After Part 4 + Part 5, the indicator system spans three surfaces, all reading from the same Part 1 store:
+
+| Surface | Subscribes to | Visual states |
+|---|---|---|
+| **Conversation row** (per-entry, in `/chat`) | `useIsStreaming(id)`, `useHasUnseenCompletion(id)` (per-conversation primitive selectors) | Pulsating / solid / none |
+| **Conversations sidebar footer** (in `/chat`) | `useActiveStreamCount(teamId)` | *"N chats are streaming"* / *"Start a conversation"* |
+| **AppSidebar Chat icon** (every authenticated page) | `useActiveStreamCount(teamId)`, `useHasAnyUnseenCompletion(teamId)` (workspace-aggregate) | Pulsating / solid / none |
+
+Same lifecycle semantics across all three (always-set + consumer-clears, established in Part 4). Same brand-accent token. Same a11y pattern (decorative dot + cohesive label on the parent interactive element). Same workspace filtering.
+
+Part 5's dot is the **off-chat surface** — when the user is on `/dashboard`, `/capture`, `/settings`, etc., this is the only indication that streams or unseen responses exist. The conversations-sidebar footer and per-entry dots only render when the user is on `/chat`. The AppSidebar dot is the global "you have something happening" surface.
+
+### Increments at a glance
+
+| # | Increment | Scope | PR target |
+|---|---|---|---|
+| 1 | AppSidebar Chat nav dot + auth-state-change hardening | `components/layout/app-sidebar.tsx`, `components/providers/auth-provider.tsx` | small |
+| 2 | End-of-part audit + P5 acceptance battery + docs | docs + audit fixes | small |
+
+Two increments — Part 5 is the smallest of the parts because most requirements were structurally satisfied by earlier work.
+
+---
+
+### Increment 1 — AppSidebar Chat dot + auth-state-change hardening
+
+**What:** Render a brand-accent dot overlay on the AppSidebar's Chat nav icon — pulsating when any stream is active in the current workspace, solid when no streams but unseen completions exist, no dot otherwise. Extend the Chat link's `aria-label` for cohesive screen-reader announcement. Separately, wire `clearAllStreams` into the auth-state-change listener so the streaming store is cleared on session-null transitions, not only on explicit `signOut`.
+
+**Files changed:**
+
+| File | Action |
+|------|--------|
+| `components/layout/app-sidebar.tsx` | **Modify** — subscribe to `useActiveStreamCount(teamId)` and `useHasAnyUnseenCompletion(teamId)` (with `teamId` from `useAuth().activeTeamId`); compute dot state; render absolutely-positioned dot overlay on the Chat nav icon; extend the Chat link's `aria-label` |
+| `components/providers/auth-provider.tsx` | **Modify** — `onAuthStateChange` listener's `else` branch (session is null) also calls `clearAllStreams()` — defensive cleanup for non-`signOut` session-end paths (token-expiry, multi-tab sign-out, server revoke) |
+
+**Implementation details:**
+
+#### 1a. AppSidebar dot rendering
+
+Subscribe to the Part 1 hooks at the top of `AppSidebar`:
+
+```tsx
+import { useAuth } from "@/components/providers/auth-provider";
+import {
+  useActiveStreamCount,
+  useHasAnyUnseenCompletion,
+} from "@/lib/streaming";
+
+// Inside the component:
+const { activeTeamId } = useAuth();
+const teamId = activeTeamId ?? null;
+const activeStreamCount = useActiveStreamCount(teamId);
+const hasUnseen = useHasAnyUnseenCompletion(teamId);
+const isStreaming = activeStreamCount > 0;
+const showChatDot = isStreaming || hasUnseen;
+```
+
+Then on the Chat nav item — wrap the icon in a `relative` container so the dot can absolutely-position over it:
+
+```tsx
+<Link
+  href="/chat"
+  aria-label={
+    isStreaming
+      ? "Chat, response generating"
+      : hasUnseen
+        ? "Chat, new unread response"
+        : "Chat"
+  }
+  className={/* existing nav-item classes */}
+>
+  <div className="relative">
+    <ChatIcon className={/* existing icon classes */} aria-hidden="true" />
+    {showChatDot && (
+      <span
+        aria-hidden="true"
+        className={cn(
+          "absolute -top-0.5 -right-0.5 size-2 rounded-full bg-primary",
+          // Optional ring to lift the dot off the icon for contrast:
+          "ring-2 ring-background",
+          isStreaming && "animate-pulse"
+        )}
+      />
+    )}
+  </div>
+  {/* existing label text (visible when sidebar is hover-expanded) */}
+</Link>
+```
+
+Decisions baked in:
+
+- **Same brand-accent token** (`bg-primary`) and same `animate-pulse` class as the conversation-item dot (Part 4). Visual consistency — one indicator system, three surfaces.
+- **Absolute positioning** at `-top-0.5 -right-0.5` puts the dot in the top-right corner of the icon, which is the conventional badge location across operating systems and design systems. Slight overhang (`-top-0.5`, `-right-0.5`) gives the dot definition against the icon's outline.
+- **Optional `ring-2 ring-background`** lifts the dot against the icon for contrast — particularly important for the dark theme. The implementation should verify visually; this is a standard pattern for icon badges and trivial to remove if the bare dot reads better.
+- **Aria-label cohesion** — same approach as Part 4's conversation-item: dot is decorative (`aria-hidden`); the link's `aria-label` carries the state announcement. *"Chat, response generating"* / *"Chat, new unread response"* / *"Chat"* — three terminal strings, simple to maintain.
+- **No new module API.** Both hooks already exist in Part 1. Part 5's only consumption is workspace-aggregate, exactly what these hooks provide.
+
+The exact positioning + class details should match the AppSidebar's existing icon styling (icon size, padding, hover states). The TRD doesn't pin micro-layout — implementation matches the file's existing visual conventions.
+
+#### 1b. Auth-state-change hardening
+
+The `signOut` path already clears the streaming store (Part 1 Increment 3). But `signOut` is only one of several ways a session can end:
+
+- **Token expiry** — Supabase JWTs expire; the SDK's `onAuthStateChange` fires with `session: null`.
+- **Multi-tab sign-out** — user signs out in tab A; tab B's `onAuthStateChange` fires with `session: null` without going through that tab's `signOut` function.
+- **Server revoke / admin force-logout** — same path.
+
+In all three cases, the JS context survives but the user identity changes. Without explicit cleanup, the streaming store would retain user A's slices when user B (or no user) takes over. Strictly harmless in practice (UUIDs don't collide; no UI subscribes to the orphan slices), but defensive cleanup is the principled fix.
+
+The existing listener:
+
+```ts
+const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+  setUser(session?.user ?? null);
+  setIsLoading(false);
+  if (session?.user) {
+    fetchCanCreateTeam(supabase, session.user.id, setCanCreateTeam);
+  } else {
+    setCanCreateTeam(false);
+  }
+});
+```
+
+Add `clearAllStreams()` to the `else` branch:
+
+```ts
+const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+  setUser(session?.user ?? null);
+  setIsLoading(false);
+  if (session?.user) {
+    fetchCanCreateTeam(supabase, session.user.id, setCanCreateTeam);
+  } else {
+    setCanCreateTeam(false);
+    // Defensive cleanup (PRD-024 P5.R4) — clear streaming store on any
+    // session-null transition, not just explicit signOut. Catches token
+    // expiry, multi-tab sign-out, and server-side revocation. Idempotent
+    // with signOut's existing call.
+    clearAllStreams();
+  }
+});
+```
+
+`clearAllStreams` is already imported in this file (Part 1 Increment 3 added the import for `signOut`'s use). No new imports needed.
+
+**Verify:**
+
+- `npx tsc --noEmit` passes.
+- Visual check: AppSidebar Chat icon shows pulsating dot during a stream; transitions to solid when stream completes off-chat; clears when user opens the conversation; no dot at idle.
+- Cross-page check: start a stream on `/chat/<id>`, navigate to `/dashboard` — Chat icon dot is pulsating in the AppSidebar; navigate back to `/chat`, conversation indicators match.
+- Multi-tab session-end: open the app in two tabs while signed in; sign out in tab 1; verify tab 2's `onAuthStateChange` fires with `session=null` and the streaming store clears. (DevTools Components tab can inspect the streaming module's `slices` Map; should be empty.)
+- Screen-reader test: focus the Chat nav icon; announcement should include the state phrase when a stream is active or an unseen completion exists.
+
+**Forward compatibility:**
+
+- **Part 6 cleanup**: `countActiveStreams` (private in `streaming-actions.ts`) and `computeActiveStreamIds` predicate (in `streaming-hooks.ts`) duplication still flagged — Part 6 owns this.
+- **Part 7 docs**: the Architecture section will get a dedicated subsection on the streaming context's role and the cross-page survival mechanism (module-level state). This part's audit just updates the file-map and CHANGELOG; the deeper narrative is Part 7's territory.
+- **Backlog items unaffected**: cancel-all, toast notifications, server-side stream resume on reload, mobile-specific UX, per-conversation cooldown — all explicitly deferred from this PRD per the Backlog section.
+
+---
+
+### Increment 2 — End-of-part audit + manual verification + docs
+
+**What:** The audit pass per CLAUDE.md "End-of-part audit" + the post-merge documentation updates. Also runs the **full P5 acceptance battery** since most requirements are observational rather than implementation-driven.
+
+**Files changed:** Audit may produce code fixes in `app-sidebar.tsx` or `auth-provider.tsx`. Documentation:
+
+| File | Action |
+|------|--------|
+| `ARCHITECTURE.md` | **Modify** — `app-sidebar.tsx` description gains *"renders brand-accent indicator dot on Chat nav icon — pulsating when any workspace stream is active, solid when only unseen completions exist (PRD-024 P5.R2)"*. `auth-provider.tsx` description (if listed) gains a note about the defensive `clearAllStreams` on session-null transitions |
+| `CHANGELOG.md` | **Add entry** — `PRD-024 P5: cross-page stream survival, AppSidebar streaming dot, defensive cleanup hardening` |
+
+**Audit checklist (per CLAUDE.md):**
+
+1. **SRP** — `app-sidebar.tsx`'s Chat-icon dot rendering is co-located with the Chat nav item it decorates. The auth-state-change cleanup is co-located with the existing user/team state cleanup in the same `else` branch — single cleanup site for session-null transitions.
+2. **DRY** — The dot rendering pattern is now used in two places (`conversation-item.tsx` from Part 4 and `app-sidebar.tsx` here). Both use `bg-primary`, conditional `animate-pulse`, `aria-hidden` decorative + parent `aria-label` cohesion. **Could extract a shared `<StreamingDot />` component** if a third surface is added later. For now, two inline inscriptions of ~5 LOC each is below the extraction threshold (CLAUDE.md: *"If the same UI pattern or logic appears in two or more places, extract it into a shared location"* — this is borderline). **Audit decision:** flag for follow-up if a third surface lands; leave inline for now to avoid premature abstraction. **Carry-over:** `countActiveStreams` / `computeActiveStreamIds` duplication still flagged for Part 6.
+3. **Design tokens** — `bg-primary`, `animate-pulse`, `ring-2 ring-background` (if used). Zero hardcoded colors.
+4. **Logging** — `clearAllStreams` already logs (Part 1). No new log lines needed.
+5. **Dead code** — Verify no unused imports introduced.
+6. **Convention** — `useX` hook calls; `aria-label` cohesion matches Part 4's pattern; design-token classes only.
+
+**Manual verification — the P5 acceptance battery:**
+
+- [ ] **P5.R1** — Start a stream on `/chat/<id>`. Navigate to `/dashboard`. Wait for stream to complete server-side (10–30s for a typical query). Return to `/chat/<id>`. Assistant message is present in the thread (either still streaming live or completed, depending on timing). The streaming-context survives the navigation.
+- [ ] **P5.R2** — AppSidebar Chat icon dot:
+  - Pulsating during any active stream in current workspace.
+  - Solid when no active streams but unseen completions exist (e.g., off-chat completion that hasn't been viewed).
+  - No dot when neither.
+  - Dot present and accurate on every authenticated page (`/chat`, `/dashboard`, `/capture`, `/settings/*`).
+- [ ] **P5.R3** — Refresh the browser during a stream. Verify on reload: no client-side stream resumes (slices Map is empty). The persisted assistant message (if completed server-side) appears on next chat load via the existing `messages` API.
+- [ ] **P5.R4** — Sign out during a stream. Verify the streaming store is empty (DevTools Components tab can inspect via the module's debug surface, or instrument with a one-off log). Sign in as a different user. Verify no residual UI state from previous user.
+- [ ] **P5.R5** — Start a stream in personal workspace. Switch to a team workspace via the workspace switcher. Verify the AppSidebar dot, the conversations-sidebar footer, and the per-conversation dots all clear (the team workspace has zero streams). Switch back to personal — indicators reflect the still-running or unseen-completed state correctly. Stream is **not aborted** by the workspace switch (verify via DevTools / network tab — the original conversation's SSE connection is still alive, or its assistant message is persisted server-side at completion).
+- [ ] **Auth-state hardening** — Multi-tab session-end test: open the app in two tabs (tab A and tab B). Sign out in tab A. Verify tab B's streaming store is also cleared (via Components inspection or by attempting to start a stream in tab B and observing it fails because the user is logged out).
+
+This audit produces fixes in the same PR, not a separate report. If the manual battery surfaces issues that aren't caused by the architecture but by minor wiring oversights, fix in this increment.
+
+### After Part 5 completes
+
+Per CLAUDE.md ("After each TRD part completes"):
+
+1. **`ARCHITECTURE.md` update** — `app-sidebar.tsx` file-map description updated with the dot. Streaming-module section in the architecture narrative (the "Key Design Decisions" block, if Part 5 prefigures Part 7's full doc pass) gains a one-line note about cross-page survival via module-level state. The full streaming-context section is Part 7's job.
+2. **`CHANGELOG.md` entry** — Document the AppSidebar dot, the auth-state hardening, and the verification of the four already-structural requirements (P5.R1, R3, R4, R5).
+3. **No DB schema change** — no Supabase types regen.
+4. **Test affected flows** — covered by the P5 acceptance battery in Increment 2.
+
+---

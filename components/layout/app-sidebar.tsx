@@ -25,6 +25,11 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Sheet, SheetContent } from "@/components/ui/sheet";
+import { useAuth } from "@/components/providers/auth-provider";
+import {
+  useActiveStreamCount,
+  useHasAnyUnseenCompletion,
+} from "@/lib/streaming";
 import { useTheme } from "@/lib/hooks/use-theme";
 
 /* ------------------------------------------------------------------ */
@@ -96,6 +101,23 @@ function SidebarContent({
   const ThemeIcon = isDark ? Sun : Moon;
   const isSettingsRouteActive = pathname.startsWith("/settings");
 
+  // Workspace-scoped streaming indicator state for the Chat nav icon
+  // (PRD-024 P5.R2). Pulsating when any stream is active in the current
+  // workspace; solid when no streams but unseen completions exist; no dot
+  // otherwise. Both hooks use primitive selectors / cached refs so this
+  // sub-tree only re-renders on actual state transitions.
+  const { activeTeamId } = useAuth();
+  const teamId = activeTeamId ?? null;
+  const activeStreamCount = useActiveStreamCount(teamId);
+  const hasUnseen = useHasAnyUnseenCompletion(teamId);
+  const isAnyStreaming = activeStreamCount > 0;
+  const showChatDot = isAnyStreaming || hasUnseen;
+  const chatAriaLabel = isAnyStreaming
+    ? "Chat, response generating"
+    : hasUnseen
+      ? "Chat, new unread response"
+      : "Chat";
+
   return (
     <>
       {/* ---- Logo ---- */}
@@ -117,6 +139,7 @@ function SidebarContent({
       <nav className="flex flex-1 flex-col gap-1 px-3 py-4" aria-label="Main navigation">
         {NAV_ITEMS.map((item) => {
           const isActive = pathname.startsWith(item.href);
+          const isChat = item.href === "/chat";
 
           return (
             <Link
@@ -124,6 +147,7 @@ function SidebarContent({
               href={item.href}
               onClick={onNavigate}
               title={!showLabels ? item.label : undefined}
+              aria-label={isChat ? chatAriaLabel : undefined}
               className={cn(
                 "flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors",
                 isActive
@@ -131,7 +155,18 @@ function SidebarContent({
                   : "text-[var(--text-secondary)] hover:bg-[var(--surface-raised)] hover:text-[var(--text-primary)]"
               )}
             >
-              {item.icon}
+              <span className="relative flex shrink-0">
+                {item.icon}
+                {isChat && showChatDot && (
+                  <span
+                    aria-hidden="true"
+                    className={cn(
+                      "absolute -right-0.5 -top-0.5 size-2 rounded-full bg-[var(--brand-primary)] ring-2 ring-[var(--surface-page)]",
+                      isAnyStreaming && "animate-pulse"
+                    )}
+                  />
+                )}
+              </span>
               <span
                 className={cn(
                   "truncate transition-opacity duration-200",
