@@ -22,6 +22,7 @@ import {
 
 import {
   cancelStream as moduleCancelStream,
+  markConversationViewed,
   markFinalMessageConsumed,
   startStream as moduleStartStream,
   useStreamingSlice,
@@ -286,6 +287,11 @@ export function useChat(options: UseChatOptions): UseChatReturn {
     const completed = slice.finalMessage;
     setMessages((prev) => [...prev, completed]);
     markFinalMessageConsumed(slice.conversationId);
+    // The user is actively viewing this conversation when the fold runs —
+    // clear the unseen flag (set unconditionally at completion-time) so the
+    // sidebar entry doesn't show a stale solid dot. Idempotent with
+    // chat-page-content's navigation-time call.
+    markConversationViewed(slice.conversationId);
     console.log(
       `${LOG_PREFIX} folded finalMessage conversation=${slice.conversationId} messageId=${completed.id} status=${completed.status}`
     );

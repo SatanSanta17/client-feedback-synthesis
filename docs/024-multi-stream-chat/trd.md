@@ -1321,3 +1321,411 @@ Per CLAUDE.md ("After each TRD part completes"):
 4. **Test affected flows** — covered by the manual smoke test battery above.
 
 ---
+
+# Part 4
+## Part 4 — Sidebar Streaming Indicators
+
+This part covers P4.R1 through P4.R6 from the PRD. **Three indicator surfaces inside the conversations sidebar** are wired up to the same Part-1 store: per-conversation dots on each entry (pulsating during streaming, solid for unseen completions), aggregate footer text reflecting workspace-wide streaming count, and the consumer-side acknowledgment that clears the unseen flag on navigation. The slice's `hasUnseenCompletion` field — designed in Part 1 specifically for this purpose — finally gets its lifecycle wired.
+
+Most of the data surface already exists. `useActiveStreamIds(teamId)`, `useActiveStreamCount(teamId)`, and `useUnseenCompletionIds(teamId)` were built in Part 1 with this exact use case in mind. `markConversationViewed(id)` already exists too. **Part 4's only new public-API addition** is `useHasUnseenCompletion(id: string \| null): boolean` — the per-conversation symmetric counterpart to `useIsStreaming(id)`. Everything else is wiring.
+
+**Database models:** None.
+**API endpoints:** None.
+**Frontend pages/components:** `app/chat/_components/conversation-item.tsx` (per-entry dot + aria-label), `app/chat/_components/conversation-sidebar.tsx` (footer text + new `teamId` prop), `app/chat/_components/chat-page-content.tsx` (one prop pass-through + two `markConversationViewed` call sites).
+**New module addition:** `useHasUnseenCompletion(id)` hook in `streaming-hooks.ts`, re-exported via the barrel.
+**Streaming-module behavior change:** the `hasUnseenCompletion` flag now flips to `true` whenever a slice gains a `finalMessage` (completion + cancellation paths in `streaming-actions.ts`). Currently the flag exists on the slice but never transitions — Part 4 makes it live.
+**`useChat` change:** the `useLayoutEffect` fold in `use-chat.ts` now calls `markConversationViewed` alongside `markFinalMessageConsumed`. Self-correcting cleanup: when a stream completes while the user is viewing the conversation, the unseen flag never persists.
+
+### Architectural pivot — "always set, consumer clears"
+
+The central design decision is **how does the slice decide whether to set `hasUnseenCompletion = true`?** Two approaches exist:
+
+- **Option A (rejected): Inspect viewers.** The streaming module asks "is anyone currently subscribed to this slice?" before setting the flag. Requires the store to track active subscribers, which adds coupling and complexity. `useSyncExternalStore` doesn't expose subscriber identity.
+- **Option B (chosen): Always set the flag at completion; let consumers clear it.** The streaming module unconditionally sets `hasUnseenCompletion = true` whenever `finalMessage` is set. Three independent paths clear the flag: (1) `useChat`'s fold (when the user is actively viewing the conversation, the fold runs synchronously after the slice update and immediately calls `markConversationViewed`); (2) `chat-page-content`'s `navigateToConversation` (when the user clicks a sidebar entry, the flag clears before `useChat` even mounts); (3) the popstate handler (when the user uses browser back/forward to enter a conversation).
+
+Option B is **simpler, self-correcting, and reuses an existing primitive** (`markConversationViewed`). The flag sits in a stable terminal state — either `true` (unseen) or `false` (cleared by some consumer). The "viewer detection" question is implicitly answered by which clear path fires first: the fold for in-view, or the navigate path for navigate-in. Both are idempotent; concurrent calls are safe (a no-op if already cleared).
+
+This is the predicted approach from Part 2's forward-compat note. Part 4 implements it.
+
+### Architectural pivot — per-conversation hooks must select primitives
+
+`useIsStreaming(id)` (Part 1) is built on top of `useStreamingSlice(id)`, which returns the slice object. The slice's reference changes on every `setSlice` call for that id — even on a content delta that doesn't change `streamState`. With many conversation items in the sidebar each subscribing to `useIsStreaming(itemId)` and `useHasUnseenCompletion(itemId)`, naïvely returning derived primitives on top of `useStreamingSlice` would mean: every delta in any conversation triggers a re-render of every same-conversation sidebar item, even when the boolean it cares about didn't change.
+
+`useHasUnseenCompletion(id)` is added as a **direct `useSyncExternalStore` consumer with a primitive selector**, bypassing `useStreamingSlice`. The store's `subscribe` notifies on every mutation (broadcast); each hook's `getSnapshot` returns the boolean directly; React's `Object.is` comparison sees the same primitive value and bails out of the re-render. Net result: a `delta` event in conversation A produces zero re-renders in B's sidebar item.
+
+For consistency and to lock in the pattern, the TRD also specifies that **`useIsStreaming` is refactored to the same primitive-selector shape** in Part 4 Increment 1 — a small follow-on to Part 1 that aligns the two per-conversation hooks. ~3 LOC change. Worth doing now because Part 4 is the first part where many simultaneous subscribers to these hooks exist (one per visible sidebar entry).
+
+### Architectural pivot — accessibility through cohesion
+
+The PRD (P4.R5) requires keyboard- and screen-reader-accessible indicators. Two competing approaches:
+
+- **Separate the dot's role.** Give the dot `role="status"` + `aria-label="Generating response"`. Screen readers announce both the conversation title AND the dot's status as separate elements.
+- **Cohere into the entry's a11y label.** Mark the dot decorative (`aria-hidden="true"`); extend the conversation entry's `aria-label` to include the state ("Conversation X, generating response" / "Conversation X, new unread response").
+
+**The cohesion approach wins** — screen readers read the entry as one logical thing instead of fragmenting it into title + dot. Keyboard navigation also benefits: focus lands on the entry, screen reader announces full state in one breath, user moves on. Pinned in Increment 2.
+
+### Increments at a glance
+
+| # | Increment | Scope | PR target |
+|---|---|---|---|
+| 1 | Module additions: `useHasUnseenCompletion` + lifecycle flag flip + `useIsStreaming` selector refactor + `useChat` fold update | `streaming-hooks.ts`, `streaming-actions.ts`, `streaming/index.ts`, `lib/hooks/use-chat.ts` | small |
+| 2 | Per-conversation indicator (P4.R1, R2, R3, R5) | `conversation-item.tsx` | small |
+| 3 | Sidebar footer + viewed-acknowledgment wiring (P4.R4, R6) | `conversation-sidebar.tsx`, `chat-page-content.tsx` | small |
+| 4 | End-of-part audit + manual verification | docs + audit fixes | small |
+
+Each increment is independently shippable. Increment 1 lands the module behavior with no UI changes — sidebar is unchanged after this increment. Increments 2 and 3 surface the indicator UX. Increment 4 closes the part.
+
+---
+
+### Increment 1 — Module additions + lifecycle flag flip
+
+**What:** Add `useHasUnseenCompletion(id)` hook (selector-based, primitive snapshot). Refactor `useIsStreaming(id)` to the same shape. Make `runStream`'s completion path and `cancelStream`'s cancelled-bubble path set `hasUnseenCompletion: true` on the slice. Update `useChat`'s `useLayoutEffect` fold to call `markConversationViewed` alongside `markFinalMessageConsumed`.
+
+**Files changed:**
+
+| File | Action |
+|------|--------|
+| `lib/streaming/streaming-hooks.ts` | **Modify** — add `useHasUnseenCompletion(id: string \| null): boolean`; refactor `useIsStreaming(id: string \| null): boolean` to use direct `useSyncExternalStore` with a boolean selector |
+| `lib/streaming/streaming-actions.ts` | **Modify** — `runStream`'s completion-time `setSlice` adds `hasUnseenCompletion: true`; `cancelStream`'s cancelled-with-content `setSlice` adds `hasUnseenCompletion: true` |
+| `lib/streaming/index.ts` | **Modify** — re-export `useHasUnseenCompletion` |
+| `lib/hooks/use-chat.ts` | **Modify** — `useLayoutEffect` fold imports and calls `markConversationViewed` alongside the existing `markFinalMessageConsumed` |
+
+**Implementation details:**
+
+1. **`useHasUnseenCompletion` in `streaming-hooks.ts`** (place near `useIsStreaming`):
+
+   ```ts
+   /**
+    * True when this conversation has a completed/cancelled response that
+    * the user hasn't yet viewed. Cleared by `markConversationViewed` (called
+    * by useChat's fold on in-view completion AND by chat-page-content on
+    * navigation into the conversation).
+    *
+    * Uses a primitive selector over useSyncExternalStore so subscribers to
+    * conversation A don't re-render on deltas in conversation B.
+    */
+   export function useHasUnseenCompletion(id: string | null): boolean {
+     return useSyncExternalStore(
+       subscribe,
+       () => (id ? getSlice(id)?.hasUnseenCompletion ?? false : false),
+       () => false
+     );
+   }
+   ```
+
+2. **`useIsStreaming` refactor to the same shape** (lock in the pattern):
+
+   ```ts
+   export function useIsStreaming(id: string | null): boolean {
+     return useSyncExternalStore(
+       subscribe,
+       () => (id ? getSlice(id)?.streamState === "streaming" : false),
+       () => false
+     );
+   }
+   ```
+
+   The pre-Part-4 implementation read through `useStreamingSlice(id)` and derived a boolean — the slice's reference changed on every delta, forcing same-conversation subscribers to re-render even when the boolean didn't change. The refactored version's `getSnapshot` returns a primitive; React's Object.is comparison bails out the re-render when the value didn't change. ~3 LOC change.
+
+3. **`runStream` completion-time flag flip** in `streaming-actions.ts`:
+
+   The current completion path:
+
+   ```ts
+   setSlice(conversationId, {
+     streamState: "idle",
+     streamingContent: "",
+     statusText: null,
+     finalMessage,
+   });
+   ```
+
+   gains one field:
+
+   ```ts
+   setSlice(conversationId, {
+     streamState: "idle",
+     streamingContent: "",
+     statusText: null,
+     finalMessage,
+     hasUnseenCompletion: true,
+   });
+   ```
+
+   Same change for `cancelStream`'s cancelled-with-content branch (the `else` branch in `cancelStream` doesn't set `finalMessage`, so it doesn't need to set the flag — there's nothing to "view"). The error path in `runStream`'s catch doesn't set `finalMessage` either, so no flag flip there.
+
+4. **Barrel export in `index.ts`**:
+
+   ```ts
+   export {
+     useStreamingSlice,
+     useIsStreaming,
+     useActiveStreamIds,
+     useActiveStreamCount,
+     useUnseenCompletionIds,
+     useHasAnyUnseenCompletion,
+     useHasUnseenCompletion, // <-- new
+   } from "./streaming-hooks";
+   ```
+
+5. **`useChat` fold update** in `lib/hooks/use-chat.ts`:
+
+   The current fold:
+
+   ```ts
+   useLayoutEffect(() => {
+     if (!slice?.finalMessage) return;
+     const completed = slice.finalMessage;
+     setMessages((prev) => [...prev, completed]);
+     markFinalMessageConsumed(slice.conversationId);
+     console.log(`${LOG_PREFIX} folded finalMessage ...`);
+   }, [slice?.finalMessage, slice?.conversationId]);
+   ```
+
+   gains one line — call `markConversationViewed` alongside `markFinalMessageConsumed`:
+
+   ```ts
+   useLayoutEffect(() => {
+     if (!slice?.finalMessage) return;
+     const completed = slice.finalMessage;
+     setMessages((prev) => [...prev, completed]);
+     markFinalMessageConsumed(slice.conversationId);
+     // The user is actively viewing this conversation when the fold runs —
+     // the unseen flag (set unconditionally at completion-time) is cleared
+     // immediately so the sidebar entry doesn't show a stale solid dot.
+     markConversationViewed(slice.conversationId);
+     console.log(`${LOG_PREFIX} folded finalMessage ...`);
+   }, [slice?.finalMessage, slice?.conversationId]);
+   ```
+
+   Add `markConversationViewed` to the existing import block from `@/lib/streaming`.
+
+**Verify:**
+
+- `npx tsc --noEmit` passes.
+- Manually trigger a stream and observe (DevTools "Components" tab or console-debug) that `slice.hasUnseenCompletion` flips to `true` on completion, then immediately flips to `false` via the fold's `markConversationViewed` call.
+- Trigger a stream in conversation A while viewing B. After completion, A's slice has `hasUnseenCompletion: true`. B's slice is untouched.
+- `useIsStreaming` and `useHasUnseenCompletion` both compile and return the right booleans across slice transitions.
+
+**Forward compatibility:** Increment 2 consumes both hooks per-conversation. Increment 3 needs no module changes (uses Part-1 aggregate hooks already). Part 5 (Cross-Page Stream Survival) consumes `useHasAnyUnseenCompletion(teamId)` for the AppSidebar dot — same lifecycle, no further module changes. Part 6 absorbs the `countActiveStreams` / `computeActiveStreamIds` predicate duplication flagged in Part 3's audit.
+
+---
+
+### Increment 2 — Per-conversation indicator on sidebar entries
+
+**What:** Render a single brand-accent dot on each conversation entry that's either streaming (pulsating) or completed-but-unseen (solid). Decorate the dot as visual-only (`aria-hidden="true"`) and extend the conversation entry's existing `aria-label` to describe the state, so screen readers read the entry as one cohesive announcement.
+
+**Files changed:**
+
+| File | Action |
+|------|--------|
+| `app/chat/_components/conversation-item.tsx` | **Modify** — subscribe to `useIsStreaming(conversation.id)` and `useHasUnseenCompletion(conversation.id)`; render dot conditionally; extend `aria-label` to include state |
+
+**Implementation details:**
+
+1. **Subscribe to the per-conversation hooks at the top of the component:**
+
+   ```tsx
+   import { useIsStreaming, useHasUnseenCompletion } from "@/lib/streaming";
+
+   const isStreaming = useIsStreaming(conversation.id);
+   const hasUnseenCompletion = useHasUnseenCompletion(conversation.id);
+   const showDot = isStreaming || hasUnseenCompletion;
+   ```
+
+   Both hooks bail out of re-renders on irrelevant store changes (per Increment 1's selector refactor).
+
+2. **Render the dot** as a single element with conditional class:
+
+   ```tsx
+   {showDot && (
+     <span
+       aria-hidden="true"
+       className={cn(
+         "size-2 shrink-0 rounded-full bg-primary",
+         isStreaming && "animate-pulse"
+       )}
+     />
+   )}
+   ```
+
+   Decisions baked in:
+   - `bg-primary` — uses the project's existing brand-accent token (shadcn convention; the same token used elsewhere for primary surfaces). If a more specific brand token exists in `globals.css`, use that; the implementation can pick whichever matches the project's existing dot/accent precedent.
+   - `animate-pulse` — Tailwind's built-in opacity-fade animation. Sufficient for the "pulsating" affordance; avoids introducing a custom keyframe.
+   - `shrink-0` — prevents the dot from collapsing in narrow flex containers (e.g., the sidebar collapsed mobile state).
+   - `size-2` (8px) — small enough to be unobtrusive next to the title, large enough to register at a glance. Same scale used elsewhere in shadcn projects for similar status dots.
+   - Single element with conditional class, not two separate elements — when the slice transitions streaming → idle (with hasUnseenCompletion), the dot doesn't unmount-and-remount; it just loses `animate-pulse`. Smoother visual transition.
+
+3. **Extend `aria-label`** on the conversation entry's interactive element (button/link). The current label is presumably `conversation.title`; extend it:
+
+   ```tsx
+   const ariaLabel = isStreaming
+     ? `${conversation.title}, generating response`
+     : hasUnseenCompletion
+       ? `${conversation.title}, new unread response`
+       : conversation.title;
+   ```
+
+   The dot is `aria-hidden`; this label carries the state. Screen readers announce "Acme onboarding, generating response" — one cohesive utterance instead of fragmenting title and status into separate elements.
+
+4. **Placement of the dot** in the entry's flex layout: typically before or after the title, depending on existing visual hierarchy. The TRD doesn't pin micro-layout — the implementation should match the conversation-item's existing alignment (e.g., if other badges live to the right of the title, place the dot there too for consistency).
+
+**Verify:**
+
+- Trigger a stream in conversation A. Verify the pulsating dot appears next to A's sidebar entry (active list).
+- Wait for completion while viewing B. Verify A's dot transitions to solid (no longer pulsating).
+- Click A in the sidebar. Verify the dot disappears (markConversationViewed in Increment 3 will close this loop, but Increment 2's `hasUnseenCompletion=false` after navigation suffices to clear the dot once Increment 3 ships).
+- Repeat with an archived conversation (P4.R3): the indicator should appear on archived entries identically. `conversation-item.tsx` is the same component for both lists — no extra work needed.
+- Screen-reader test (VoiceOver / NVDA): navigate to a streaming entry; verify the announcement includes "generating response" or "new unread response" alongside the title.
+
+**Forward compatibility:** Increment 3's `markConversationViewed` calls complete the lifecycle — between Increments 2 and 3, the dot may persist after a user navigates to a conversation (the fold from Increment 1 covers the in-view-completion case, but the navigate-into-stale case isn't yet wired). Both are needed to fully satisfy P4.R6. Shipping Increment 2 alone produces a partial UX.
+
+---
+
+### Increment 3 — Sidebar footer + viewed-acknowledgment wiring
+
+**What:** Add a footer line to the conversations sidebar reflecting workspace-wide streaming status (P4.R4). Wire `markConversationViewed` calls into `chat-page-content.tsx`'s navigation paths so the unseen dot clears when the user opens a conversation (P4.R6 completion).
+
+**Files changed:**
+
+| File | Action |
+|------|--------|
+| `app/chat/_components/conversation-sidebar.tsx` | **Modify** — accept new `teamId: string \| null` prop; render footer line below the conversations list using `useActiveStreamCount(teamId)`; templated singular/plural |
+| `app/chat/_components/chat-page-content.tsx` | **Modify** — pass `teamId` to `<ConversationSidebar />`; call `markConversationViewed(id)` inside `navigateToConversation` and inside the `popstate` handler when the parsed id is non-null |
+
+**Implementation details:**
+
+1. **Footer text in `conversation-sidebar.tsx`**:
+
+   Place at the bottom of the sidebar's scrollable content (below the conversations list, separate from the "New chat" button). Use the same muted-text styling that the existing "AI-generated responses" disclaimer in `chat-input.tsx` uses, for visual consistency-by-precedent.
+
+   ```tsx
+   import { useActiveStreamCount } from "@/lib/streaming";
+
+   const activeStreamCount = useActiveStreamCount(teamId);
+   const footerText =
+     activeStreamCount === 0
+       ? "Start a conversation"
+       : activeStreamCount === 1
+         ? "1 chat is streaming"
+         : `${activeStreamCount} chats are streaming`;
+
+   // Place at sidebar footer:
+   <p
+     className="px-4 py-2 text-center text-xs text-muted-foreground"
+     aria-live="polite"
+   >
+     {footerText}
+   </p>
+   ```
+
+   Notes:
+   - `aria-live="polite"` on the text element so screen readers announce count transitions without interrupting other speech. The text is short and announcing "3 chats are streaming" is informative without being noisy.
+   - Templated with explicit singular/plural rather than a string-template `chat${count === 1 ? "" : "s"}` so future i18n is straightforward (the message catalog can swap `{count} chats are streaming` → its locale-aware equivalent).
+   - The footer is always rendered — when count is 0, it shows the "Start a conversation" CTA-flavored text. The PRD intentionally treats this as the at-rest state, not an empty/hidden state.
+
+2. **`teamId` prop threading** in `conversation-sidebar.tsx`:
+
+   ```ts
+   interface ConversationSidebarProps {
+     // ... existing props
+     teamId: string | null;
+   }
+   ```
+
+   And in `chat-page-content.tsx` at the existing `<ConversationSidebar ... />` call site, add `teamId={teamId}` (already in scope — same pattern as Part 3's chat-area threading).
+
+3. **`markConversationViewed` calls in `chat-page-content.tsx`**:
+
+   The `navigateToConversation` callback (around line 143–150) gains one line:
+
+   ```ts
+   const navigateToConversation = useCallback(
+     (id: string) => {
+       window.history.pushState(null, "", `/chat/${id}`);
+       clearMessages();
+       setActiveConversationId(id);
+       markConversationViewed(id);
+     },
+     [clearMessages]
+   );
+   ```
+
+   The `popstate` handler (around line 178–186) gains the same line guarded on non-null id:
+
+   ```ts
+   useEffect(() => {
+     function onPopState() {
+       const id = parseConversationIdFromPath(window.location.pathname);
+       clearMessages();
+       setActiveConversationId(id);
+       if (id) markConversationViewed(id);
+       setIsMobileSidebarOpen(false);
+     }
+     window.addEventListener("popstate", onPopState);
+     return () => window.removeEventListener("popstate", onPopState);
+   }, [clearMessages]);
+   ```
+
+   Add `markConversationViewed` to the existing import from `@/lib/streaming`. (chat-page-content already imports `useAuth` and other things; `markConversationViewed` is a new import.)
+
+   No call needed in `silentlyAssignConversationId` (the fresh-send first-confirmation path) — the conversation just got its uuid, no prior unseen state is possible.
+
+   No call needed in `navigateToFreshChat` — fresh-chat target is `null`, no conversation to mark.
+
+   No call needed for the URL-seeded `initialConversationId` on initial mount — the streaming module's slices start empty after a fresh page load (Part 5 R3: client-side state doesn't survive reload), so there's no unseen flag to clear.
+
+**Verify:**
+
+- After Increment 1 (slices flip the flag on completion), the sidebar entry for the source conversation shows a solid dot when the user wasn't viewing during completion.
+- Click the conversation entry → markConversationViewed clears the flag → dot disappears in the same render commit as the navigation (both state changes batch).
+- Use browser back to return to a previously-viewed conversation that's since received an unseen completion (e.g., user clicked away after viewing, the conversation streamed again somehow — unusual but valid). popstate handler fires, calls markConversationViewed, dot clears.
+- Footer text updates reactively: send a message in any conversation → footer flips from "Start a conversation" to "1 chat is streaming". Cancel → flips back.
+- Singular/plural correct: 1 stream → "1 chat is streaming"; 3 streams → "3 chats are streaming".
+- Cross-workspace isolation (verifies P5.R5 forward-compat): start a stream in personal, switch to a team → footer text in team workspace says "Start a conversation" (count is 0 for the team).
+
+**Forward compatibility:** Part 5's AppSidebar chat icon dot consumes `useActiveStreamCount(teamId)` and `useHasAnyUnseenCompletion(teamId)` — both Part 1 hooks, no Part-4 work to redo. The "footer text + per-entry dots + AppSidebar dot" form a three-tier indicator system across two surfaces (Parts 4 and 5); they share the same Part 1 hooks and Part 4 lifecycle (the unconditional `hasUnseenCompletion: true` set, the consumer-clears pattern). No coordination logic needed.
+
+---
+
+### Increment 4 — End-of-part audit + manual verification
+
+**What:** The audit pass per CLAUDE.md "End-of-part audit" + the post-merge documentation updates.
+
+**Files changed:** Audit may produce code fixes in any of the four files modified by Increments 1–3. Documentation:
+
+| File | Action |
+|------|--------|
+| `ARCHITECTURE.md` | **Modify** — `conversation-item.tsx` description gains a note about the per-conversation dot; `conversation-sidebar.tsx` description gains the footer; the streaming module block notes `useHasUnseenCompletion` |
+| `CHANGELOG.md` | **Add entry** — `PRD-024 P4: sidebar streaming indicators (per-conversation pulsating/solid dots, aggregate footer text, navigate-to-clear lifecycle)` |
+
+**Audit checklist (per CLAUDE.md, applied to Increments 1–3):**
+
+1. **SRP** — `conversation-item.tsx` owns "render one conversation row, including its status indicator" (one cohesive surface). `conversation-sidebar.tsx` adds a footer that's consistent with its existing role (compose the conversations list). `streaming-actions.ts`'s lifecycle change is co-located with the existing `setSlice` calls — no new function added, just an extra field on existing setSlice payloads.
+2. **DRY** — `useIsStreaming` and `useHasUnseenCompletion` share a structural pattern (subscribe + primitive selector). Worth verifying they don't duplicate inline — both are 3 LOC each, no extraction needed. The `markConversationViewed` import appears in two consumers (`use-chat.ts` and `chat-page-content.tsx`); each calls it for its own legitimate reason (in-view completion vs. navigate-in). No duplication. **Carry-over:** `countActiveStreams` / `computeActiveStreamIds` predicate duplication still flagged from Part 3 — Part 6 cleanup target.
+3. **Design tokens** — The dot uses `bg-primary` + `animate-pulse` (project tokens). The footer uses `text-muted-foreground` + `text-xs` (project tokens). Zero hardcoded colors / spacing.
+4. **Logging** — `streaming-actions.ts`'s slice-update with `hasUnseenCompletion: true` doesn't add a new log line (it's part of an existing setSlice). `markConversationViewed`'s existing log already fires on each clear. Sufficient observability.
+5. **Dead code** — Verify the removed unconditional `useStreamingSlice` indirection in `useIsStreaming` doesn't leave an orphaned import or comment. Verify `useHasUnseenCompletion` is exported via `index.ts`.
+6. **Convention** — Hooks named `use<Pascal>` per CLAUDE.md naming table. JSDoc on the new public-API hook. `aria-label` extension on the conversation entry uses the `${title}, ${state}` pattern (familiar to screen-reader users). Imports follow project order in all touched files.
+
+**Manual verification — the P4 acceptance battery:**
+
+- [ ] **P4.R1** — Pulsating brand-accent dot appears next to streaming conversations and disappears (or transitions to solid per P4.R2) on terminal state.
+- [ ] **P4.R2** — Solid brand-accent dot appears on terminal state when the viewer is not on that conversation, persists across in-app navigation until the conversation is opened, then clears.
+- [ ] **P4.R3** — Indicators work in both active and archived sidebar groups (`conversation-item.tsx` is shared between both lists; one-component change covers both).
+- [ ] **P4.R4** — Footer text toggles between *"N chats are streaming"* (correct singular/plural for N=1 vs N>1) and *"Start a conversation"* based on aggregate streaming state in the current workspace.
+- [ ] **P4.R5** — Screen-reader test: navigate to a streaming entry; announcement includes "generating response" or "new unread response" alongside the title; the dot itself is announced as nothing (aria-hidden); footer count changes are announced via aria-live="polite".
+- [ ] **P4.R6** — Click-to-navigate to a streaming or unseen entry shows the live stream (or persisted message); cancellation works from the destination; the unseen-solid dot clears on selection (markConversationViewed runs synchronously before useChat re-keys).
+
+This audit produces fixes in the same PR, not a separate report.
+
+### After Part 4 completes
+
+Per CLAUDE.md ("After each TRD part completes"):
+
+1. **`ARCHITECTURE.md` update** — `conversation-item.tsx` description gains *"renders pulsating brand-accent dot when conversation is streaming, solid dot when conversation has unseen completed response (PRD-024 P4)"*. `conversation-sidebar.tsx` description gains *"aggregate streaming-status footer text via useActiveStreamCount(teamId)"*. The `streaming-hooks.ts` description in the module block lists `useHasUnseenCompletion` alongside the existing hooks.
+2. **`CHANGELOG.md` entry** — Document the lifecycle decision (always-set + consumer-clears), the new public API (`useHasUnseenCompletion`), and the three-surface indicator system (per-entry dot, footer, fold-clears-flag).
+3. **No DB schema change** — no Supabase types regen.
+4. **Test affected flows** — covered by the manual smoke test battery above.
+
+---

@@ -24,6 +24,7 @@ export {
 export {
   useStreamingSlice,
   useIsStreaming,
+  useHasUnseenCompletion,
   useActiveStreamIds,
   useActiveStreamCount,
   useUnseenCompletionIds,

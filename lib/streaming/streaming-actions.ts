@@ -219,15 +219,18 @@ async function runStream(args: RunStreamArgs): Promise<void> {
     createdAt: new Date().toISOString(),
   };
 
-  // hasUnseenCompletion is left false here; Part 4's selection logic decides
-  // whether to flip it based on whether a chat-area is currently subscribed
-  // to this conversation. latestFollowUps is already on the slice from the
-  // follow_ups event handler — no need to re-set it here.
+  // hasUnseenCompletion is set unconditionally at completion — three
+  // independent consumer paths clear it: useChat's fold (in-view
+  // completion), chat-page-content's navigateToConversation (sidebar click),
+  // and the popstate handler (browser back/forward). Idempotent.
+  // latestFollowUps is already on the slice from the follow_ups event
+  // handler — no need to re-set it here.
   setSlice(conversationId, {
     streamState: "idle",
     streamingContent: "",
     statusText: null,
     finalMessage,
+    hasUnseenCompletion: true,
   });
 
   console.log(
@@ -269,11 +272,15 @@ export function cancelStream(conversationId: string): void {
       metadata: null,
       createdAt: new Date().toISOString(),
     };
+    // Same lifecycle as completion — cancelled-with-content is a "viewable"
+    // terminal state. The else branch (no partial content) skips the flag
+    // because there's nothing to view.
     setSlice(conversationId, {
       streamState: "idle",
       streamingContent: "",
       statusText: null,
       finalMessage: cancelledMessage,
+      hasUnseenCompletion: true,
     });
   } else {
     setSlice(conversationId, {

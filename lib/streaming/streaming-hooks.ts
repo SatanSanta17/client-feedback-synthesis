@@ -32,9 +32,33 @@ export function useStreamingSlice(
   );
 }
 
+/**
+ * True iff this conversation's slice is currently in the streaming state.
+ * Uses a primitive selector so subscribers to conversation A don't re-render
+ * on deltas in conversation B (the boolean snapshot is reference-compared
+ * by useSyncExternalStore's bailout).
+ */
 export function useIsStreaming(id: string | null): boolean {
-  const slice = useStreamingSlice(id);
-  return slice?.streamState === "streaming";
+  return useSyncExternalStore(
+    subscribe,
+    () => (id ? getSlice(id)?.streamState === "streaming" : false),
+    () => false
+  );
+}
+
+/**
+ * True iff this conversation has a completed/cancelled response that the
+ * user hasn't yet viewed (PRD-024 P4.R2). Cleared by `markConversationViewed`,
+ * called by useChat's fold on in-view completion AND by chat-page-content
+ * on navigation into the conversation. Same primitive-selector shape as
+ * useIsStreaming for selective re-rendering across many sidebar items.
+ */
+export function useHasUnseenCompletion(id: string | null): boolean {
+  return useSyncExternalStore(
+    subscribe,
+    () => (id ? getSlice(id)?.hasUnseenCompletion ?? false : false),
+    () => false
+  );
 }
 
 // ---------------------------------------------------------------------------
