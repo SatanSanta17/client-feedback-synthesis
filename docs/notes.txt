@@ -4,12 +4,10 @@
 - increase width of extract form and the table 
 - dont make the allert version look like golden and like the AI magic theme
 - a lot of states need to be handled on client side first and then hit server for example when the session is stale and i hit re-extract the staleness indicator should disappear without even saving it if i save then it goes permanantly if not then it doesnt go permanantly basically trying to make it optimistic update something like that i dont know if that makes sense we need to discuss more on this
-- regular cleanup as the painpoints are resolved (cleanup Dashboard)
 - separate dev db with production db
 - customer care email sync every product complaint email should be captured here
 - get client info from just clinet name some LLM tool that websearches the client with that name
 - why are we hardcoding chunk_types
-- email with the new domain name
 - rebrand with development catalyst
 - report generator in chat
 - audio video upload which extracts the transcript and upload that
@@ -18,7 +16,7 @@
 - migrate data to dedicated supabase db 
 - make the auth flow decoupled from supabase
 - clean db from burhanuddin and rest test accounts
-- pagination for past sessions
+- audio clips/video clips
 
 
 Mental model:
