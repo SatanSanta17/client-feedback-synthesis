@@ -2402,3 +2402,380 @@ Per CLAUDE.md ("After each TRD part completes"):
 4. **Test affected flows** — covered by the P6 acceptance battery + the cumulative Parts 1–5 smoke-test batteries.
 
 ---
+
+# Part 7
+## Part 7 — Documentation
+
+This part covers P7.R1 through P7.R5 from the PRD. **Pure documentation pass — no code changes.** Aligns with CLAUDE.md's "End-of-PRD audit" prescription that runs after the final part of every PRD completes.
+
+Most of P7's intent has been **partially satisfied incrementally** through Parts 1–6's audit-time docs updates: each part added file-map entries to `ARCHITECTURE.md` and a dated entry to `CHANGELOG.md`. Part 7 closes the remaining gaps:
+
+| Requirement | Status pre-Part-7 |
+|---|---|
+| **P7.R1 — Streaming-context architecture section** | ❌ Not written. File-map entries exist piecemeal; there is no consolidated narrative covering role, placement, slice model, concurrency cap, cross-page survival, useChat consumption pattern, indicator system. |
+| **P7.R2 — File map matches filesystem** | ⚠️ Partially satisfied. Each part added entries during its audit; needs a final walk against the actual filesystem to confirm zero diffs. |
+| **P7.R3 — Key Design Decisions entry** | ❌ Not written. The existing Key Design Decisions list doesn't yet include the streaming-context choice rationale. |
+| **P7.R4 — CHANGELOG entries for every completed part** | ⚠️ Partially satisfied. Parts 1–6 each added a dated entry; needs verification that all 6 are present and correctly worded. |
+| **P7.R5 — PRD-023 P4 deferral reconciled** | ❌ Not addressed. PRD-023 has a Part 4 section that defers to PRD-024; the codebase / docs may have lingering "PRD-023 P4" references that should be updated or removed. |
+
+**Database models:** None.
+**API endpoints:** None.
+**Frontend pages/components:** None.
+**Documentation files touched:** `ARCHITECTURE.md`, `CHANGELOG.md`, `docs/023-codebase-cleanup/prd.md`, `docs/023-codebase-cleanup/trd.md` (if it exists). Possibly `docs/024-multi-stream-chat/prd.md` (linkbacks).
+
+### Architectural pivot — documentation as the final structural step
+
+The documentation pass is **not a write-up after the work** — it's a **structural step that locks in the architecture for future readers**. After Part 7:
+
+- A new engineer reading `ARCHITECTURE.md` understands the streaming-context design without grepping the codebase.
+- The file map serves as a navigable index; every file that exists is described, and only files that exist are listed.
+- The Key Design Decisions section captures *why* the streaming context exists in this shape — preventing future drift toward "let's add a Provider" or "let's persist to localStorage" or "let's increase the cap to 50."
+- The PRD-023 P4 deferral is reconciled — no stale references where the deferred work is still "TODO" in another doc.
+
+This mirrors CLAUDE.md's discipline: *"`ARCHITECTURE.md` reflects what exists in the codebase — never pre-fill with planned-but-unbuilt structures."* Part 7 makes the post-implementation reality canonical.
+
+### Increments at a glance
+
+| # | Increment | Scope | PR target |
+|---|---|---|---|
+| 1 | Streaming-context architecture section in `ARCHITECTURE.md` (P7.R1) | One new top-level section, ~80–120 lines of prose + tables | small |
+| 2 | Key Design Decisions entry (P7.R3) | One new numbered entry in the existing list | tiny |
+| 3 | File-map walk + CHANGELOG verification + PRD-023 P4 reconciliation (P7.R2, R4, R5) | Audit + targeted edits; net +/- a few lines per file | small |
+| 4 | End-of-PRD audit (CLAUDE.md prescribed) | Cumulative audit checklist across all files touched by PRD-024 + final type-check + smoke-test gate | small |
+
+Each increment is independently shippable. Increments 1 + 2 are content writing; Increment 3 is verification + cleanup; Increment 4 is the cumulative audit that closes the PRD.
+
+---
+
+### Increment 1 — Streaming-context architecture section
+
+**What:** Add a new top-level section to `ARCHITECTURE.md` documenting the streaming context end-to-end. Single source of truth for future readers; covers role, placement, data shape, concurrency model, cross-page survival, and consumption patterns.
+
+**Files changed:**
+
+| File | Action |
+|------|--------|
+| `ARCHITECTURE.md` | **Modify** — add a new `## Streaming Context (PRD-024)` section, placed after the existing Data Model / Authentication sections and before (or alongside) the Key Design Decisions list |
+
+**Section structure (proposed):**
+
+```markdown
+## Streaming Context (PRD-024)
+
+> The chat-streaming subsystem owns all client-side state for in-flight and
+> recently-completed AI responses. It's the source of truth for streaming
+> bubbles, sidebar dots, the AppSidebar Chat icon dot, and the conversations-
+> sidebar footer.
+
+### Role and placement
+
+The streaming context lives in `lib/streaming/` as a **module-level singleton**
+— not a React Context. Its state (`Map<conversationId, ConversationStreamSlice>`,
+listener `Set`, `Map<conversationId, AbortController>`) is module-scope, not
+React-scope. This is the cross-page survival mechanism: navigating from
+`/chat` to `/dashboard` unmounts every chat-related React component, but the
+streaming state persists because the JS module is still loaded.
+
+The store is wiped only by:
+- Hard browser refresh (full bundle reload).
+- `clearAllStreams()` called from `auth-provider`'s `signOut` and the
+  `onAuthStateChange` session-null branch (covers token expiry, multi-tab
+  sign-out, server-side revocation).
+
+### Per-conversation slice model
+
+Each conversation has its own `ConversationStreamSlice` (defined in
+`lib/streaming/streaming-types.ts`):
+
+| Field | Purpose |
+|---|---|
+| `conversationId`, `teamId` | Identity + workspace tag |
+| `streamState` | `idle` / `streaming` / `error` |
+| `streamingContent` | Accumulated content during streaming |
+| `statusText` | Ephemeral tool-execution status |
+| `latestSources`, `latestFollowUps` | Citations + chips from the latest stream |
+| `error` | User-visible error message when streamState is `error` |
+| `assistantMessageId` | UUID from `X-Assistant-Message-Id` response header |
+| `hasUnseenCompletion` | True from terminal-state-with-content until viewed |
+| `finalMessage` | Set on streaming→idle transition; consumed by `useChat`'s fold |
+| `startedAt` | ms epoch for ordering / debug |
+
+The slice carries every field any consumer needs in one place; React subscribers
+read fields via primitive selectors (`useIsStreaming`, `useHasUnseenCompletion`)
+or the full slice (`useStreamingSlice`).
+
+### Public API surface
+
+Defined in `lib/streaming/index.ts` (the module's barrel):
+
+**Imperative actions** (called from event handlers, not React render):
+- `startStream(args)` — kicks off the SSE loop for a conversation; defensive
+  cap guard refuses if `count >= MAX_CONCURRENT_STREAMS`.
+- `cancelStream(conversationId)` — aborts and writes the cancelled bubble
+  to `slice.finalMessage`.
+- `markConversationViewed(conversationId)` — clears `hasUnseenCompletion`.
+- `markFinalMessageConsumed(conversationId)` — clears `finalMessage` after
+  the consumer (useChat fold) folds it into the message list.
+- `clearAllStreams()` — sign-out teardown.
+
+**React hooks** (subscribe via `useSyncExternalStore`):
+- Per-conversation primitive selectors: `useIsStreaming(id)`,
+  `useHasUnseenCompletion(id)`, `useStreamingSlice(id)`.
+- Workspace-scoped aggregates (cached for stable refs):
+  `useActiveStreamIds(teamId)`, `useActiveStreamCount(teamId)`,
+  `useUnseenCompletionIds(teamId)`, `useHasAnyUnseenCompletion(teamId)`.
+
+**Selectors** (used by both action and hook layers — predicate consolidation):
+- `isStreamingForTeam(teamId)`, `hasUnseenCompletionForTeam(teamId)` —
+  predicate factories.
+- `findSlicesWhere(predicate)` — generic iteration helper.
+
+**Constants:**
+- `MAX_CONCURRENT_STREAMS = 5`.
+
+### Multi-stream concurrency
+
+A user may run up to **5 concurrent streams per workspace** (cap defined by
+`MAX_CONCURRENT_STREAMS`). Each conversation has its own SSE loop, its own
+`AbortController`, its own slice — they're fully independent. Cancelling one
+doesn't affect the others; completion in one doesn't block another.
+
+The cap is enforced at two layers:
+1. **UI gate** in `chat-area.tsx`'s `capReached` derivation, threaded to
+   `chat-input.tsx`'s Send button (disabled + inline blocking message)
+   AND `starter-questions.tsx`'s buttons (disabled).
+2. **Defensive runtime guard** at the top of `startStream` (`streaming-actions.ts`).
+   If a future caller bypasses the UI gate, the guard logs a warning and
+   refuses without seeding a slice.
+
+The cap is workspace-scoped: a user can have 5 personal streams + 5 team
+streams simultaneously without either count blocking the other.
+
+### Cross-page stream survival
+
+Streams started on `/chat/<id>` continue running when the user navigates to
+`/dashboard`, `/capture`, `/settings`, etc. The streaming module is at module
+scope; the SSE loop in `runStream` is a detached promise with no React
+lifecycle observation. On return to `/chat/<id>`, the new `useChat` instance
+subscribes to the slice and reads its current state — either still streaming
+(live bubble + Stop button) or completed (assistant message in the thread).
+
+The boundary: **hard refresh wipes everything.** Client-side resume from a
+still-running server stream is in the PRD backlog, not in scope.
+
+### Workspace isolation
+
+Slices carry `teamId`; every public hook filters by `teamId`. Switching
+workspaces hides cross-workspace state from UI but does NOT abort in-flight
+streams — they continue to run server-side; their slices remain in the
+store and re-surface on switch back. Sign-out clears the entire store
+(no leak across users on the same browser).
+
+### `useChat` consumption pattern
+
+`useChat` (`lib/hooks/use-chat.ts`) is a **thin composer** that wires two
+focused sub-hooks:
+
+- `useConversationMessages` (`lib/hooks/use-conversation-messages.ts`) —
+  message-list state, load-on-conversation-change with the Gap P9 skip-
+  refetch guard, pagination, clearMessages.
+- `useChatStreaming` (`lib/hooks/use-chat-streaming.ts`) — slice subscription,
+  streaming passthrough fields, `sendMessage` / `cancelStream` /
+  `retryLastMessage` delegating to the streaming module, the `useLayoutEffect`
+  fold for `finalMessage` (P2.R7 no-flicker swap), the `useLayoutEffect`
+  clear-unseen for in-view auto-acknowledgment.
+
+The composition seam is `setMessages` + `messages` threaded from
+`useConversationMessages` to `useChatStreaming`. Three writers — optimistic
+add (sendMessage), retry trim (retryLastMessage), fold append
+(useLayoutEffect) — all flow through the single threaded `setMessages`
+reference.
+
+### Three-tier indicator system
+
+After Parts 4 + 5, the streaming context surfaces in three UI tiers, all
+reading from the same store via the same hooks:
+
+| Tier | Surface | Subscribes to |
+|---|---|---|
+| Per-conversation | Sidebar entry dot in `conversation-item.tsx` | `useIsStreaming(id)`, `useHasUnseenCompletion(id)` |
+| Workspace-aggregate | Footer text in `conversation-sidebar.tsx` | `useActiveStreamCount(teamId)` |
+| Global / off-chat | Chat icon dot in `app-sidebar.tsx` | `useActiveStreamCount(teamId)`, `useHasAnyUnseenCompletion(teamId)` |
+
+Same lifecycle (always-set + consumer-clears established in Part 4), same
+brand-accent token, same a11y pattern (decorative dot + cohesive label on
+the parent interactive element). A user is never unaware that streams are
+running or that responses are pending — regardless of which page they're on.
+```
+
+**Verify:**
+
+- Section renders cleanly in any markdown viewer; tables align; code blocks render.
+- Every claim in the section can be traced to a specific file and line in the codebase (audit-time spot check).
+- Section length is ~120–150 lines — concise enough to read end-to-end, detailed enough to be the canonical reference.
+
+**Forward compatibility:** This section becomes the **canonical reference** for the streaming context. Future PRDs that touch chat (e.g., backlog items: cancel-all from global surface, push notifications, server-side resume) reference this section as their starting point. Future cleanups (e.g., extracting a shared `<StreamingDot />` component if a 4th surface lands) update only the indicator-system table.
+
+---
+
+### Increment 2 — Key Design Decisions entry
+
+**What:** Add a new numbered entry to the existing Key Design Decisions list in `ARCHITECTURE.md` documenting the streaming-context architectural choice.
+
+**Files changed:**
+
+| File | Action |
+|------|--------|
+| `ARCHITECTURE.md` | **Modify** — add a new entry to the Key Design Decisions list |
+
+**Entry content (proposed):**
+
+```markdown
+N. **Streaming context as a module-level singleton** (PRD-024).
+The chat-streaming subsystem lives at module scope (`lib/streaming/`) —
+not React Context, not Redux, not Zustand. Three reasons:
+- **Cross-page survival.** State persists across React tree changes (e.g.,
+  `/chat` → `/dashboard`). Module-level data lives as long as the JS bundle;
+  navigation can't tear it down. No state-persistence layer required.
+- **Selective re-rendering.** Plain React Context broadcasts to every consumer
+  on every change — defeating per-conversation subscribers in the sidebar.
+  `useSyncExternalStore` over a custom Map+listeners store gives selector-
+  based subscriptions with primitive snapshots; subscribers to conversation A
+  bail out of re-renders on deltas in conversation B.
+- **No external state library.** CLAUDE.md mandates "React hooks only." The
+  custom store is ~140 LOC; `useSyncExternalStore` is React 18 native. Same
+  primitive Zustand and Jotai use internally, scoped to one feature.
+
+Per-conversation slices (keyed by conversationId, scoped by teamId) enable
+multi-stream concurrency as a structural property — cancelling stream A
+doesn't affect stream B because each has its own slice + AbortController.
+The pre-PRD UI-bleed bug (streaming-bubble rendering against the wrong
+conversation) is structurally impossible: the chat-area reads its own
+conversation's slice, and switching conversations switches which slice
+is read.
+
+The concurrency cap is **5 per workspace** (`MAX_CONCURRENT_STREAMS`).
+Pinned high enough that real users won't hit it; low enough to prevent
+abuse and ensure resource limits stay reasonable. Enforced at the UI
+layer (chat-area + chat-input) AND defensively in `startStream` itself.
+```
+
+**Verify:**
+
+- Entry numbering matches the existing list (insert at the next available number).
+- Cross-references match other entries' tone and detail level.
+- The decision text is **declarative** (states the choice), not aspirational (states the goal).
+
+**Forward compatibility:** Future architectural changes that propose deviating from this pattern (e.g., "let's add a Provider", "let's persist to localStorage") will read this entry first and have to either justify the deviation or align with the established design.
+
+---
+
+### Increment 3 — File-map walk + CHANGELOG verification + PRD-023 P4 reconciliation
+
+**What:** Triple verification pass:
+
+1. **File-map walk** (P7.R2). Walk `ARCHITECTURE.md`'s file map against the actual filesystem. Add any files introduced by Parts 1–6 that aren't yet listed. Remove any entries for files that no longer exist. Goal: `git diff` between the file map and a freshly-generated tree listing produces zero diffs.
+
+2. **CHANGELOG verification** (P7.R4). Confirm every Part 1–6 has a dated entry in `CHANGELOG.md`. Verify dates are present, wording is consistent, and net-code-change accounting matches the actual diffs.
+
+3. **PRD-023 P4 reconciliation** (P7.R5). Repo-wide grep for "PRD-023 P4" / "PRD-023 Part 4" references. Update PRD-023's deferred-Part-4 block to point at the specific PRD-024 parts that delivered the work (P2 = bleed-bug fix + useChat migration; P6 = under-200-LOC + SSE-utility consolidation). Remove any code-level references; doc-level references that document the deferral history can stay if they reference the resolution.
+
+**Files changed:**
+
+| File | Action |
+|------|--------|
+| `ARCHITECTURE.md` | **Modify** — file-map walk fixes; mostly verifications, may produce small additions/removals |
+| `CHANGELOG.md` | **Modify** — wording polish if any inconsistencies surface; no new entries (Parts 1–6 entries already exist) |
+| `docs/023-codebase-cleanup/prd.md` | **Modify** — deferred-Part-4 block points at PRD-024 P2 + P6 |
+| `docs/023-codebase-cleanup/trd.md` | **Modify** (if exists, if it references P4 specifically) — same pointer update |
+| Any code file with `// PRD-023 P4` style comments | **Modify** — update or remove |
+
+**Implementation steps:**
+
+1. **Generate the actual filesystem tree** for the relevant directories:
+
+   ```bash
+   find app components lib -type f -name "*.ts" -o -name "*.tsx" \
+     | grep -v "node_modules" | sort
+   ```
+
+   Compare against the file map in `ARCHITECTURE.md`. For each file in the tree, verify there's an entry; for each entry, verify the file exists.
+
+2. **CHANGELOG cross-check.** `grep -c "^### PRD-024 Part" CHANGELOG.md` should return **6**. Open each entry, verify the date, the wording, and that the net-code-change accounting roughly matches what shipped.
+
+3. **PRD-023 P4 grep:**
+
+   ```bash
+   grep -rn "PRD-023 P4\|PRD-023 Part 4" \
+     app components lib docs 2>&1 \
+     | grep -v "node_modules"
+   ```
+
+   For each hit:
+   - Code-level reference → remove or update.
+   - Doc-level reference in PRD-023 (the deferral block) → update to point at the delivering PRD-024 parts.
+   - Doc-level reference in PRD-024 (linkback) → keep as historical context.
+
+**Verify:**
+
+- File-map walk produces zero diffs against the filesystem (manual `diff` between map listing and `find` output).
+- `grep -c "^### PRD-024 Part" CHANGELOG.md` returns **6**.
+- `grep -rn "PRD-023 P4" lib app components` returns no code-level hits.
+- PRD-023's deferral block references PRD-024 P2 + P6 (the parts that delivered).
+
+**Forward compatibility:** A future engineer searching for "PRD-023 P4" finds the deferral block in PRD-023 with a clear pointer to where the work landed. No breadcrumb leads to nothing.
+
+---
+
+### Increment 4 — End-of-PRD audit (CLAUDE.md prescribed)
+
+**What:** The cumulative audit pass that runs after the final part of every PRD. Per CLAUDE.md "End-of-PRD audit":
+
+> 1. Run the full end-of-part audit checklist (above) across all files touched by the PRD
+> 2. Verify ARCHITECTURE.md file map is complete and accurate
+> 3. Verify CHANGELOG.md has entries for every completed part
+> 4. Run `npx tsc --noEmit` for a final type check
+> 5. This audit produces fixes and documentation updates, not a report
+
+**What I run:**
+
+1. **The end-of-part audit checklist** (SRP, DRY, design tokens, logging, dead code, convention) **across the entire surface touched by Parts 1–6**:
+   - `lib/streaming/` (5 files)
+   - `lib/hooks/use-chat.ts` + `use-conversation-messages.ts` + `use-chat-streaming.ts`
+   - `lib/utils/chat-helpers.ts`
+   - `app/chat/_components/chat-area.tsx`, `chat-input.tsx`, `chat-page-content.tsx`, `conversation-item.tsx`, `conversation-sidebar.tsx`
+   - `components/layout/app-sidebar.tsx`
+   - `components/providers/auth-provider.tsx`
+
+   Cumulative re-audit catches issues that emerged from later parts touching earlier files (e.g., did Part 5's auth-state change break a Part 1 invariant? Did Part 6's decomposition leave a stale reference in Part 4's conversation-item subscription? etc.).
+
+2. **File map vs. filesystem** — done as part of Increment 3; re-verified here.
+
+3. **CHANGELOG entries for every completed part** — done as part of Increment 3; re-verified here.
+
+4. **`npx tsc --noEmit`** — final type check across the entire codebase.
+
+5. **Smoke test** — run the cumulative manual battery (every P1–P6 acceptance criterion) one final time. By Part 7 each part's gate has been run individually; the cumulative run is the final shipping gate.
+
+**Files changed:** Audit may produce code or documentation fixes anywhere in the codebase. No predicted file list — depends on what the audit finds.
+
+**Verify:**
+
+- `npx tsc --noEmit` passes clean.
+- All P1–P6 acceptance criteria still pass.
+- File map and CHANGELOG are complete and accurate.
+- No stale `PRD-023 P4` references in code.
+- Streaming-context section + Key Design Decisions entry are present and accurate.
+
+**Forward compatibility:** PRD-024 is now a closed, canonical implementation. Future chat-related PRDs reference its design via the `ARCHITECTURE.md` streaming-context section. The PRD-023 P4 carry-over is fully closed.
+
+### After Part 7 completes
+
+PRD-024 ships. Per CLAUDE.md, no further per-part documentation updates are owed (Part 7 IS the documentation increment).
+
+1. **No further `ARCHITECTURE.md` updates** — this part wrote them.
+2. **No further `CHANGELOG.md` entries** — Part 7 itself can land a brief one-line entry summarizing the PRD's closure (e.g., *"PRD-024 complete: multi-stream chat shipped end-to-end with streaming context, indicator system, and decomposed `useChat`"*) but most of the value is in the per-part entries already present.
+3. **No DB schema change.**
+4. **PRD-024 is closed.** The Backlog section of the PRD (cancel-all from global surface, toast notifications, server-side resume on reload, mobile-tailored UX, per-conversation cooldown) remains explicitly out of scope for follow-up work.
+
+---

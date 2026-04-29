@@ -111,16 +111,21 @@ After this part, `POST /api/sessions` and `PUT /api/sessions/[id]` are each unde
 
 ## Part 4 — `useChat` Hook Decomposition
 
-**Status:** Deferred to PRD-024.
+**Status:** Deferred to PRD-024 — **delivered**. See PRD-024 Parts 1, 2, and 6.
 
 This part originally proposed a cleanup-only decomposition of `lib/hooks/use-chat.ts` with no behavior change. Planning surfaced two limitations that make a cleanup-only refactor not worth shipping in isolation:
 
 1. The hook owns streaming state in a single instance scoped to the chat page. Switching conversations mid-stream causes the streaming bubble and the final assistant-message append to render against whichever conversation is currently displayed, even when the stream belongs to a different one. The bug is purely client-side (the server persists correctly), but it's user-visible.
 2. The same shape lets a user navigate away from a streaming conversation and start a second send in another conversation, which silently orphans the first stream's `AbortController` and interleaves writes to shared state. There is no global signal that "a stream is alive somewhere," so the chat-input cannot be disabled correctly across conversations.
 
-Both issues require lifting streaming state out of the hook into a `StreamingProvider` keyed by `conversationId`, with per-conversation slices, a global "active streams" set for the sidebar/input gate, and per-conversation cancel/start methods. That architectural change is also the natural enabler of multi-conversation streaming.
+Both issues require lifting streaming state out of the hook into a streaming context keyed by `conversationId`, with per-conversation slices, a global "active streams" set for the sidebar/input gate, and per-conversation cancel/start methods. That architectural change is also the natural enabler of multi-conversation streaming.
 
-PRD-024 captures this rework end-to-end (architecture lift + multi-stream feature + the bug fix as a side-effect of the new design). The `useChat` decomposition goal of P4.R1 is achieved as a side-effect of PRD-024 rather than as a standalone cleanup pass. PRD-024 also subsumes P4.R2 (shared SSE parser / follow-up regex), since the new provider owns SSE consumption.
+**Where the original P4 goals landed in PRD-024:**
+
+- **P4.R1 — `useChat` decomposition / size reduction.** Delivered by PRD-024 **Part 2** (migration: removed streaming internals — refs, abort controllers, SSE loop, state machines — and re-routed them through the new `lib/streaming/` module) and **Part 6** (decomposed the remaining `useChat` into a thin composer wiring `useConversationMessages` + `useChatStreaming`; under-200-LOC ceiling met at ~128 LOC).
+- **P4.R2 — Shared SSE parser / follow-up regex.** Delivered by PRD-024 **Part 1 Increment 1** (extracted `parseSSEChunk`, `stripFollowUpBlock`, and the `<!--follow-ups:...-->` regex to `lib/utils/chat-helpers.ts`; both the new streaming module's `runStream` and the server-side `chat-stream-service.ts` import from this single source — repo-wide grep confirms exactly one source file).
+
+The pre-existing UI-bleed bug and the multi-stream concurrency capability were delivered as side-effects of the same architectural lift (PRD-024 Parts 2 + 3). See `ARCHITECTURE.md`'s `## Streaming Context (PRD-024)` section for the full architecture narrative.
 
 No work from Part 4 lands under PRD-023.
 

@@ -765,6 +765,126 @@ Stores AI-generated headline insight cards displayed above the dashboard widget 
 
 ---
 
+## Streaming Context (PRD-024)
+
+> The chat-streaming subsystem owns all client-side state for in-flight and recently-completed AI responses. It is the source of truth for streaming bubbles, sidebar dots, the AppSidebar Chat icon dot, and the conversations-sidebar footer text.
+
+### Role and placement
+
+The streaming context lives in `lib/streaming/` as a **module-level singleton** — not a React Context, not Redux, not Zustand. Its state (`Map<conversationId, ConversationStreamSlice>`, listener `Set`, and `Map<conversationId, AbortController>`) lives in module scope, not React scope. This is the cross-page survival mechanism: navigating from `/chat` to `/dashboard` unmounts every chat-related React component, but the streaming state persists because the JS module is still loaded.
+
+The store is wiped only by:
+
+- **Hard browser refresh** — full bundle reload kills the JS context.
+- **`clearAllStreams()`** called from `auth-provider`'s `signOut` AND the `onAuthStateChange` session-null branch (covers explicit sign-out, token expiry, multi-tab sign-out, and server-side revocation).
+
+### Per-conversation slice model
+
+Each conversation has its own `ConversationStreamSlice` (defined in `lib/streaming/streaming-types.ts`):
+
+| Field | Purpose |
+|---|---|
+| `conversationId` | Slice identity |
+| `teamId` | Workspace tag — NULL = personal. Drives workspace-scoped UI filtering |
+| `streamState` | `idle` / `streaming` / `error` |
+| `streamingContent` | Accumulated content during streaming |
+| `statusText` | Ephemeral tool-execution status ("Searching...", etc.) |
+| `latestSources` | Citations from the latest stream |
+| `latestFollowUps` | Follow-up question chips |
+| `error` | User-visible error message when `streamState` is `error` |
+| `assistantMessageId` | UUID from `X-Assistant-Message-Id` response header |
+| `hasUnseenCompletion` | True from a terminal-state-with-content until the user views the conversation |
+| `finalMessage` | Set on streaming→idle transition; consumed by `useChat`'s fold (P2.R7 no-flicker) |
+| `startedAt` | ms epoch — for ordering and stale-stream detection |
+
+The slice carries every field any consumer needs in one place; React subscribers read fields via primitive selectors or the full slice.
+
+### Public API surface
+
+Defined in `lib/streaming/index.ts` (the module's barrel — consumers never import internal modules directly):
+
+**Imperative actions** (called from event handlers or auth lifecycle, not React render):
+
+- `startStream(args)` — kicks off the SSE loop for a conversation; defensive cap guard refuses if `count >= MAX_CONCURRENT_STREAMS`.
+- `cancelStream(conversationId)` — aborts and writes the cancelled bubble to `slice.finalMessage`.
+- `markConversationViewed(conversationId)` — clears `hasUnseenCompletion`.
+- `markFinalMessageConsumed(conversationId)` — clears `finalMessage` after the consumer (`useChat` fold) folds it into the message list.
+- `clearAllStreams()` — sign-out / session-end teardown; aborts every controller, drops every slice.
+
+**React hooks** (subscribe via `useSyncExternalStore`):
+
+- Per-conversation primitive selectors: `useIsStreaming(id)`, `useHasUnseenCompletion(id)`, `useStreamingSlice(id)`.
+- Workspace-scoped aggregates (cached for stable refs): `useActiveStreamIds(teamId)`, `useActiveStreamCount(teamId)`, `useUnseenCompletionIds(teamId)`, `useHasAnyUnseenCompletion(teamId)`.
+
+**Selectors** (used by both action and hook layers — single source of truth for the predicates):
+
+- `isStreamingForTeam(teamId)`, `hasUnseenCompletionForTeam(teamId)` — predicate factories.
+- `findSlicesWhere(predicate)` — generic iteration helper.
+
+**Constants:**
+
+- `MAX_CONCURRENT_STREAMS = 5` — soft concurrency cap per workspace.
+
+### Multi-stream concurrency
+
+A user may run up to **5 concurrent streams per workspace** (`MAX_CONCURRENT_STREAMS`). Each conversation has its own SSE loop, its own `AbortController`, its own slice — they are fully independent. Cancelling one does not affect the others; completion in one does not block another.
+
+The cap is enforced at two layers:
+
+1. **UI gate** in `chat-area.tsx`'s `capReached` derivation, threaded to `chat-input.tsx`'s Send button (disabled + inline blocking message) AND `starter-questions.tsx`'s buttons (disabled).
+2. **Defensive runtime guard** at the top of `startStream` in `streaming-actions.ts`. If a future caller bypasses the UI gate, the guard logs a warning and refuses without seeding a slice.
+
+The cap is **workspace-scoped**: a user can have 5 personal streams + 5 team streams running simultaneously without either count blocking the other.
+
+### Cross-page stream survival
+
+Streams started on `/chat/<id>` continue running when the user navigates to `/dashboard`, `/capture`, `/settings`, etc. The streaming module is at module scope; the SSE loop in `runStream` is a detached promise with no React lifecycle observation. On return to `/chat/<id>`, the new `useChat` instance subscribes to the slice and reads its current state — either still streaming (live bubble + Stop button) or completed (assistant message in the thread).
+
+The boundary is **hard refresh**, which wipes everything client-side. The server may still complete the stream and persist its message; the client just re-fetches via `/api/chat/conversations/[id]/messages` on next chat load. Client-side resume from a still-running server stream is in the PRD backlog, not in scope.
+
+### Workspace isolation
+
+Slices carry `teamId`; every public hook filters by `teamId`. Switching workspaces via the `WorkspaceSwitcher` hides cross-workspace state from UI but does **not** abort in-flight streams — they continue to run server-side, their slices remain in the store, and they re-surface on switch back. Sign-out clears the entire store (no leak across users on the same browser).
+
+### `useChat` consumption pattern
+
+`useChat` (`lib/hooks/use-chat.ts`) is a **thin composer** (~128 LOC) that wires two focused sub-hooks:
+
+- **`useConversationMessages`** (`lib/hooks/use-conversation-messages.ts`) — message-list state, load-on-conversation-change with the Gap P9 skip-refetch guard, pagination via `fetchMoreMessages`, `clearMessages`, `isConversationNotFound` for cross-user UUIDs.
+- **`useChatStreaming`** (`lib/hooks/use-chat-streaming.ts`) — slice subscription via `useStreamingSlice`, six derived passthrough fields, `sendMessage` / `cancelStream` / `retryLastMessage` delegating to the streaming module, the `useLayoutEffect` fold for `finalMessage` (P2.R7 no-flicker bubble→message swap), and the `useLayoutEffect` clear-unseen for in-view auto-acknowledgment.
+
+The composition seam is `setMessages` + `messages` threaded from `useConversationMessages` to `useChatStreaming`. Three writers — optimistic add (sendMessage), retry trim (retryLastMessage), fold append (useLayoutEffect) — all flow through the single threaded `setMessages` reference.
+
+### Three-tier indicator system
+
+The streaming context surfaces in three UI tiers, all reading from the same store via the same hooks:
+
+| Tier | Surface | File | Subscribes to |
+|---|---|---|---|
+| **Per-conversation** | Sidebar entry dot (pulsing or solid) | `conversation-item.tsx` | `useIsStreaming(id)`, `useHasUnseenCompletion(id)` |
+| **Workspace-aggregate** | Footer text (*"N chats are streaming"* / *"Start a conversation"*) | `conversation-sidebar.tsx` | `useActiveStreamCount(teamId)` |
+| **Global / off-chat** | Chat icon dot in the AppSidebar | `app-sidebar.tsx` | `useActiveStreamCount(teamId)`, `useHasAnyUnseenCompletion(teamId)` |
+
+All three use the same lifecycle (always-set + consumer-clears, established in Part 4), the same brand-accent token, and the same a11y pattern (decorative `aria-hidden` dot + cohesive `aria-label` on the parent interactive element). The user is never unaware that streams are running or that responses are pending — regardless of which page they are on.
+
+### File layout summary
+
+```
+lib/streaming/
+├── streaming-types.ts       # ConversationStreamSlice, StartStreamArgs, IDLE_SLICE_DEFAULTS, MAX_CONCURRENT_STREAMS
+├── streaming-store.ts       # Module-level Map + listener Set + AbortController map; selectors (isStreamingForTeam, hasUnseenCompletionForTeam, findSlicesWhere)
+├── streaming-actions.ts     # startStream (SSE loop + cap defense), cancelStream, markConversationViewed, markFinalMessageConsumed, clearAllStreams
+├── streaming-hooks.ts       # All useSyncExternalStore-backed hooks (per-conversation + workspace-aggregate)
+└── index.ts                 # Public API barrel — only this is imported by consumers
+
+lib/hooks/
+├── use-chat.ts              # Composer (≈128 LOC)
+├── use-conversation-messages.ts   # Message-list role
+└── use-chat-streaming.ts    # Streaming subscription + delegates role
+```
+
+---
+
 ## API Routes
 
 ### Core Data
@@ -878,3 +998,5 @@ See `.env.example` for the full template.
 19. **Post-response background chain via `after()` + `maxDuration = 60`.** The embeddings → themes → insights chain on session create (`POST /api/sessions`) and re-extract (`PUT /api/sessions/[id]`) lives in `runSessionPostResponseChain` (`lib/services/session-orchestrator.ts`) — owns sessionMeta construction, chunk selection, chain-repo creation, the three stage calls, per-stage timing logs, and the unconditional error log. Routes register it inside `after()` from `next/server` so Vercel keeps the function instance alive past the JSON response until the chain resolves; `export const maxDuration = 60` (declared in each route file because Next.js requires the literal there) raises the Hobby-tier hard ceiling from the 10s default. The user-perceived latency is unchanged (response is sent immediately after the DB insert). Per-stage timing logs (`chain timing — embeddings/themes/insights`) and the unconditional error log (with sessionId + elapsedMs + stack) are emitted on every run; the route's existing log prefix (`[POST /api/sessions]` or `[PUT /api/sessions/[id]]`) is passed as `logPrefix` so production grep patterns and dashboards continue to match (PRD-023 P3.R2). **Migration trigger:** when p95 chain duration approaches the 60s ceiling — or any stage's failure rate becomes non-trivial — move the chain off the request lifecycle entirely (queue worker: Inngest, QStash, or Supabase queues) for retries, replay, and unbounded execution time. The orchestrator's input contract (`SessionPostResponseChainInput`) is the migration boundary: a queue-job handler would re-create `serviceClient` from job context and call `runSessionPostResponseChain` unchanged. Until then, `after()` + `maxDuration` is the deliberate floor; the timing logs are the signal that determines when to escalate. See `gap-analysis.md` E2 and the corresponding TRD section.
 
 20. **Route-handler auth layer (PRD-023 Part 2).** Auth + team/session role checks + canonical responses live in `lib/api/`. `requireAuth()` returns `AuthContext` (user + supabase + serviceClient) or a 401 NextResponse. `requireTeamMember/Admin/Owner(teamId, user, forbiddenMessage?)` extends it with `team`, `member`, `teamRepo` and enforces role hierarchy: member = membership exists; admin = `member.role === "admin"`; owner = `team.owner_id === user.id`. Owner is orthogonal to `team_members.role` (always also `admin` per `team-repository.create()`), so admin-level routes transparently allow owners. `requireSessionAccess(sessionId, user)` wraps the framework-agnostic `checkSessionAccess` from `session-service.ts` and translates the result via `lib/utils/map-access-error.ts`. Helpers return `T | NextResponse`; callers short-circuit via `if (result instanceof NextResponse) return result`. Helpers don't log — routes preserve their own entry/exit/error logs and helper logs would duplicate them. `idempotentNoOp(message)` (in `lib/api/idempotent-no-op.ts`) is the canonical 409 for "no-op: state already matches" (used by the role-update route's "already has role X" branch). `validateFileUpload(file)` (in `lib/api/file-validation.ts`) enforces per-file size + MIME constraints shared by `/api/sessions/[id]/attachments` POST and `/api/files/parse` POST; per-session caps (`MAX_ATTACHMENTS`) stay in routes as a collection-level concern. `canUserCreateTeam(profileRepo, userId)` in `team-service.ts` replaces the inline `profiles.can_create_team` query and returns a discriminated union (`{ allowed: true } | { allowed: false; reason: "profile_not_found" | "feature_disabled" }`); routes own HTTP framing. Server-side `getActiveTeamId()` lives in `lib/cookies/active-team-server.ts` (paired with the existing client-side `lib/cookies/active-team.ts`); `lib/supabase/server.ts` is now exclusively Supabase client factories.
+
+21. **Streaming context as a module-level singleton (PRD-024).** The chat-streaming subsystem lives at module scope in `lib/streaming/` — not React Context, not Redux, not Zustand. Three reasons: **(a) Cross-page survival.** State persists across React tree changes (e.g., navigating from `/chat` to `/dashboard`). Module-level data lives as long as the JS bundle is loaded; navigation cannot tear it down. No state-persistence layer required. **(b) Selective re-rendering.** Plain `React.createContext` broadcasts to every consumer on every change — defeating per-conversation subscribers in the sidebar with many entries. `useSyncExternalStore` over a custom `Map<conversationId, slice>` + listener `Set` gives selector-based subscriptions with primitive snapshots; subscribers to conversation A bail out of re-renders on deltas in conversation B. **(c) No external state library.** CLAUDE.md mandates "React hooks only." The custom store is ~140 LOC in `streaming-store.ts`; `useSyncExternalStore` is React 18 native — same primitive Zustand and Jotai use internally, scoped to one feature without an extra dependency. Per-conversation slices keyed by `conversationId` and scoped by `teamId` make multi-stream concurrency a structural property — cancelling stream A does not affect stream B because each has its own slice + AbortController. The pre-PRD UI-bleed bug (streaming bubble rendering against the wrong conversation) is structurally impossible: the chat-area reads its own conversation's slice, and switching conversations switches which slice is read. The concurrency cap is **5 per workspace** (`MAX_CONCURRENT_STREAMS` in `streaming-types.ts`) — pinned high enough that real users never hit it, low enough to prevent abuse and keep resource usage reasonable. Enforced at the UI layer (`chat-area.tsx` + `chat-input.tsx` + `starter-questions.tsx`) AND defensively in `startStream` itself. The `useChat` hook is decomposed into a thin composer (~128 LOC) wiring two focused sub-hooks: `useConversationMessages` (message-list role, including the Gap P9 skip-refetch guard) and `useChatStreaming` (slice subscription + delegates + the `useLayoutEffect` fold for P2.R7's no-flicker bubble→message swap). The composition seam is `setMessages` + `messages` threaded between sub-hooks; three writers (optimistic add, retry trim, fold append) all converge on one setter. See the dedicated `## Streaming Context (PRD-024)` section above for the full architecture narrative.
