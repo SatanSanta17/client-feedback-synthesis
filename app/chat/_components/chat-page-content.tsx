@@ -149,7 +149,9 @@ export function ChatPageContent({
       setActiveConversationId(id);
       // Clear the unseen-completion flag so the sidebar's solid dot
       // disappears the moment the user opens the conversation (PRD-024 P4.R6).
-      // Idempotent with useChat's fold (which also calls this once mounted).
+      // Idempotent with useChatStreaming's clear-unseen useLayoutEffect
+      // (which also calls this whenever the user is viewing a conversation
+      // with the flag set — PRD-024 P4.R2 / Part 4 audit).
       markConversationViewed(id);
     },
     [clearMessages]

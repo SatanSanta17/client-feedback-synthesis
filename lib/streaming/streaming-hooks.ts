@@ -16,6 +16,7 @@ import { useSyncExternalStore } from "react";
 import {
   subscribe,
   getSlice,
+  countSlicesWhere,
   findSlicesWhere,
   hasUnseenCompletionForTeam,
   isStreamingForTeam,
@@ -126,8 +127,19 @@ export function useActiveStreamIds(teamId: string | null): string[] {
   );
 }
 
+/**
+ * Count of conversations currently streaming in the given workspace. Uses
+ * a primitive selector (number) so subscribers bail out via Object.is when
+ * the count is unchanged — even if the matching SET of IDs changed (e.g.,
+ * conversation A finishes while B starts simultaneously). Critical for
+ * cap-gate / footer / AppSidebar consumers that don't need ID granularity.
+ */
 export function useActiveStreamCount(teamId: string | null): number {
-  return useActiveStreamIds(teamId).length;
+  return useSyncExternalStore(
+    subscribe,
+    () => countSlicesWhere(isStreamingForTeam(teamId)),
+    () => 0
+  );
 }
 
 const unseenCompletionIdsCache = new Map<string | null, string[]>();

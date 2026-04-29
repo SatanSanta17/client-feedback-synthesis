@@ -232,9 +232,7 @@ export function useChatStreaming(
   const retryLastMessage = useCallback(async () => {
     console.log(`${LOG_PREFIX} retryLastMessage`);
 
-    const lastUserMessage = [...messages]
-      .reverse()
-      .find((m) => m.role === "user");
+    const lastUserMessage = messages.findLast((m) => m.role === "user");
 
     if (!lastUserMessage) {
       console.warn(`${LOG_PREFIX} no user message found to retry`);

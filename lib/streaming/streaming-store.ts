@@ -48,11 +48,24 @@ export function setSlice(
   partial: Partial<Omit<ConversationStreamSlice, "conversationId">>
 ): void {
   const current = slices.get(id);
-  slices.set(id, {
+  const next = {
     ...current,
     ...partial,
     conversationId: id,
-  } as ConversationStreamSlice);
+  } as ConversationStreamSlice;
+  // Footgun trap: a first call for `id` must seed every required field
+  // (callers spread IDLE_SLICE_DEFAULTS). If a future caller forgets the
+  // spread, the cast above silently produces an incomplete slice. Catch
+  // it here at first run instead of when a downstream subscriber crashes.
+  if (
+    !current &&
+    (next.streamState === undefined || next.startedAt === undefined)
+  ) {
+    console.warn(
+      `[streaming-store] setSlice incomplete-seed for ${id} — missing required fields. Caller likely forgot to spread IDLE_SLICE_DEFAULTS.`
+    );
+  }
+  slices.set(id, next);
   notify();
 }
 
@@ -99,6 +112,23 @@ export function findSlicesWhere(
     if (predicate(slice)) out.push(slice);
   }
   return out;
+}
+
+/**
+ * Count slices matching a predicate without allocating an intermediate
+ * array. Used by primitive-selector hooks (`useActiveStreamCount`) so
+ * subscribers don't re-render when the matching set's *contents* change
+ * but the count stays the same — `useSyncExternalStore`'s Object.is
+ * bailout works on the primitive number.
+ */
+export function countSlicesWhere(
+  predicate: (slice: ConversationStreamSlice) => boolean
+): number {
+  let count = 0;
+  for (const slice of slices.values()) {
+    if (predicate(slice)) count++;
+  }
+  return count;
 }
 
 // ---------------------------------------------------------------------------
