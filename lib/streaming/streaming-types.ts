@@ -58,3 +58,10 @@ export const IDLE_SLICE_DEFAULTS = {
   hasUnseenCompletion: false,
   finalMessage: null,
 } as const;
+
+/**
+ * Maximum concurrent streams per user per workspace, enforced client-side.
+ * Pinned by PRD-024 P3.R3. The UI gate in chat-input is the primary
+ * enforcement; startStream's defensive guard is the safety net.
+ */
+export const MAX_CONCURRENT_STREAMS = 5;

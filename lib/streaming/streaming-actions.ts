@@ -15,17 +15,35 @@ import {
 import {
   setSlice,
   getSlice,
+  listSlices,
   setAbortController,
   getAbortController,
   deleteAbortController,
   clearAll,
 } from "./streaming-store";
-import { IDLE_SLICE_DEFAULTS } from "./streaming-types";
+import {
+  IDLE_SLICE_DEFAULTS,
+  MAX_CONCURRENT_STREAMS,
+} from "./streaming-types";
 
 import type { ChatSource, Message } from "@/lib/types/chat";
 import type { StartStreamArgs } from "./streaming-types";
 
 const LOG_PREFIX = "[streaming]";
+
+// Workspace-scoped active-stream counter. Used by startStream's defensive
+// cap guard. Duplicates the predicate logic in streaming-hooks.ts'
+// computeActiveStreamIds — flagged in Part 3's end-of-part audit as a
+// Part 6 cleanup target (extract a shared non-React selector).
+function countActiveStreams(teamId: string | null): number {
+  let count = 0;
+  for (const slice of listSlices().values()) {
+    if (slice.teamId === teamId && slice.streamState === "streaming") {
+      count++;
+    }
+  }
+  return count;
+}
 
 // ---------------------------------------------------------------------------
 // startStream — kick off an SSE stream for a conversation
@@ -36,6 +54,17 @@ export function startStream(args: StartStreamArgs): void {
   console.log(
     `${LOG_PREFIX} startStream conversation=${conversationId} team=${teamId ?? "personal"}`
   );
+
+  // Defensive cap. The UI gate in chat-input is the primary enforcement
+  // (Part 3); this guard catches any caller that bypasses the gate so we
+  // never silently exceed the documented cap.
+  const activeForTeam = countActiveStreams(teamId);
+  if (activeForTeam >= MAX_CONCURRENT_STREAMS) {
+    console.warn(
+      `${LOG_PREFIX} startStream refused (cap reached) conversation=${conversationId} count=${activeForTeam}/${MAX_CONCURRENT_STREAMS}`
+    );
+    return;
+  }
 
   // Seed the slice as streaming. Subscribers (chat-area, sidebar dots) light up immediately.
   setSlice(conversationId, {

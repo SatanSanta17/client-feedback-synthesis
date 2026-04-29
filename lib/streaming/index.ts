@@ -11,6 +11,8 @@ export type {
   StartStreamArgs,
 } from "./streaming-types";
 
+export { MAX_CONCURRENT_STREAMS } from "./streaming-types";
+
 export {
   startStream,
   cancelStream,

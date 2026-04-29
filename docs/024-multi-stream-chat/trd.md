@@ -1079,3 +1079,245 @@ Per CLAUDE.md ("After each TRD part completes"):
 4. **Test affected flows** — covered by Increment 2's manual smoke test + Increment 3's audit gate.
 
 ---
+
+# Part 3
+## Part 3 — Multi-Conversation Streaming
+
+This part covers P3.R1 through P3.R5 from the PRD. **Most of the heavy lifting is already done.** Per-conversation slices (Part 1) and per-conversation `useChat` subscriptions (Part 2) made multi-stream concurrency a *structural property* of the architecture: every conversation has its own slice, its own SSE loop, its own `AbortController`, and its own state machine. A user can already start streams in conversation A and B in parallel after Part 2 ships — there's nothing in the runtime preventing it. The Send-button gating in `chat-input.tsx` reads `streamState` from `useChat`'s passthrough, which is now per-conversation, so the button correctly disables only on the conversation whose stream is active.
+
+What's missing is the **safety rail**: the soft cap of 5 concurrent streams (P3.R3) and the user-facing affordance for the cap-blocked state. That's the entire scope of Part 3.
+
+**Database models:** None.
+**API endpoints:** None — the per-stream nature of `/api/chat/send` was already correct.
+**Frontend pages/components:** `app/chat/_components/chat-input.tsx` (cap gating + inline blocking message), `app/chat/_components/chat-area.tsx` (one new prop pass-through). The per-conversation gating that P3.R1 calls for is already in place from Part 2 — no edits needed for that requirement.
+**New module addition:** `MAX_CONCURRENT_STREAMS` constant in `lib/streaming/streaming-types.ts`, re-exported via the barrel. A defensive cap guard is added at the top of `startStream` so a runtime caller can't bypass the UI gate and exceed the cap (defense in depth).
+
+### Architectural pivot
+
+The pivot is to **resist over-engineering**. P3 looks like a feature ("multi-stream") but it's mostly UX wiring — the actual concurrency primitive is already there. The temptation is to build cap-management infrastructure, queue managers, slot reservations, etc. That's all overkill. The right design:
+
+- One constant: `MAX_CONCURRENT_STREAMS = 5`. Single source-controlled value (P3.R3).
+- One defensive check inside `startStream`: refuse if at cap, log a warning, return. Catches bugs where a future caller bypasses the UI.
+- One UI gate in `chat-input.tsx`: read `useActiveStreamCount(teamId)` (Part 1 hook), compare to the cap, render the inline blocking message when exceeded.
+
+That's the entire implementation. ~30 LOC of new logic across three files. The P3.R1 per-conversation gating, P3.R2 parallel runs, P3.R4 decoupled completion, and P3.R5 per-stream cancellation are all preserved-by-default from Parts 1 & 2 — Part 3 only verifies them via manual testing.
+
+### Where the cap message lives
+
+The PRD locks the wording: *"Already running 5 chats — wait until one of them completes before starting another."* Two implementation choices:
+
+- **Hardcoded literal.** Smallest diff. Drift risk if `MAX_CONCURRENT_STREAMS` changes — message might say "5" when the cap is "7".
+- **Templated from the constant.** ``Already running ${MAX_CONCURRENT_STREAMS} chats — wait...`` Ten more characters; eliminates drift; pins the wording-cap relationship in code.
+
+Templated wins on quality grounds. Single source of truth.
+
+### Increments at a glance
+
+| # | Increment | Scope | PR target |
+|---|---|---|---|
+| 1 | Add `MAX_CONCURRENT_STREAMS` + defensive cap guard in `startStream` | `streaming-types.ts`, `streaming-actions.ts`, `index.ts` | tiny |
+| 2 | Wire cap into `chat-input.tsx` | `chat-input.tsx` (cap gate + inline message), `chat-area.tsx` (one prop pass-through) | small |
+| 3 | End-of-part audit + manual verification | docs + audit fixes | small |
+
+Each increment is independently shippable. Increment 1 lands the constant + defense-in-depth without any UI change. Increment 2 wires the user-facing affordance.
+
+---
+
+### Increment 1 — Cap constant + defensive guard
+
+**What:** Add `MAX_CONCURRENT_STREAMS = 5` to `streaming-types.ts`, re-export it through the module's barrel, and add a defensive check at the top of `startStream` that refuses to start a new stream when the per-workspace count is already at the cap. The defense is paired with a `console.warn` so any UI bypass surfaces in logs immediately.
+
+**Files changed:**
+
+| File | Action |
+|------|--------|
+| `lib/streaming/streaming-types.ts` | **Modify** — add `export const MAX_CONCURRENT_STREAMS = 5;` with a JSDoc anchoring the PRD reference |
+| `lib/streaming/streaming-actions.ts` | **Modify** — `startStream` body gains a per-workspace count check that bails (with `console.warn`) when at the cap; uses `listSlices()` to count |
+| `lib/streaming/index.ts` | **Modify** — add `MAX_CONCURRENT_STREAMS` to the re-exports |
+
+**Implementation details:**
+
+1. **Constant in `streaming-types.ts`** (place after `IDLE_SLICE_DEFAULTS`):
+
+   ```ts
+   /**
+    * Maximum concurrent streams per user per workspace, enforced client-side.
+    * Pinned by PRD-024 P3.R3. The UI gate in chat-input is the primary
+    * enforcement; startStream's defensive guard is the safety net.
+    */
+   export const MAX_CONCURRENT_STREAMS = 5;
+   ```
+
+2. **Defensive guard in `startStream`** (insert at the very top of the function body, before the slice seeding):
+
+   ```ts
+   // Defensive cap. Primary enforcement is the UI gate in chat-input
+   // (Part 3 Increment 2); this guard catches any caller that bypasses
+   // the gate (future bug, programmatic invocation, etc.) so we never
+   // silently exceed the documented cap.
+   const activeForTeam = countActiveStreams(teamId);
+   if (activeForTeam >= MAX_CONCURRENT_STREAMS) {
+     console.warn(
+       `${LOG_PREFIX} startStream refused (cap reached) conversation=${conversationId} count=${activeForTeam}/${MAX_CONCURRENT_STREAMS}`
+     );
+     return;
+   }
+   ```
+
+   And add the helper `countActiveStreams` near the top of `streaming-actions.ts` (just below the imports):
+
+   ```ts
+   function countActiveStreams(teamId: string | null): number {
+     let count = 0;
+     for (const slice of listSlices().values()) {
+       if (slice.teamId === teamId && slice.streamState === "streaming") {
+         count++;
+       }
+     }
+     return count;
+   }
+   ```
+
+   Imports needed: add `listSlices` to the existing `./streaming-store` import block; add `MAX_CONCURRENT_STREAMS` to the `./streaming-types` import block.
+
+3. **Barrel export in `index.ts`**:
+
+   ```ts
+   export {
+     IDLE_SLICE_DEFAULTS,
+     MAX_CONCURRENT_STREAMS,
+     // ... existing type exports stay
+   } from "./streaming-types";
+   ```
+
+   Note: `IDLE_SLICE_DEFAULTS` was previously not re-exported because no consumer needed it externally. It still doesn't need to be — leave the existing re-export shape untouched and add only `MAX_CONCURRENT_STREAMS` as a new value export. (Type-only re-exports stay separate from value-only re-exports.)
+
+**Verify:**
+
+- `npx tsc --noEmit` passes.
+- `grep -n "MAX_CONCURRENT_STREAMS" lib app components` — definition in `streaming-types.ts`, re-export in `index.ts`, consumer hits in `streaming-actions.ts` (and Increment 2 will add `chat-input.tsx`).
+- Unit-style sanity check: in DevTools, manually call `startStream` 6 times for the same workspace; the 6th call should emit the warn log and not seed a slice. (Optional — covered by Increment 3's manual smoke test.)
+
+**Forward compatibility:** `countActiveStreams` is intentionally local (not exported) — it duplicates a small portion of `useActiveStreamIds`'s logic from `streaming-hooks.ts`, but the hook can't be called from a non-React context. Two implementations of the same predicate aren't ideal; the principled fix is to extract a shared `slices.filter(predicate)` utility from the store. *Deferred to Part 6's cleanup pass* — Part 3 ships the duplication intentionally, the audit pass will flag it explicitly so Part 6 has a target to address.
+
+---
+
+### Increment 2 — Wire cap into `chat-input`
+
+**What:** Update `chat-input.tsx` to gate Send by the workspace's active-stream count in addition to the existing per-conversation `streamState` rule. Render the locked PRD wording as an inline message above the disabled Send button when the cap is reached. Thread `teamId` from `chat-page-content.tsx` → `chat-area.tsx` → `chat-input.tsx`.
+
+**Files changed:**
+
+| File | Action |
+|------|--------|
+| `app/chat/_components/chat-input.tsx` | **Modify** — accept `teamId: string \| null` prop; consume `useActiveStreamCount(teamId)` and `MAX_CONCURRENT_STREAMS`; compute `isAtCap`; new disable condition for Send; render inline blocking message when at cap and not currently streaming this conversation |
+| `app/chat/_components/chat-area.tsx` | **Modify** — accept `teamId` prop; pass through to `<ChatInput />` |
+| `app/chat/_components/chat-page-content.tsx` | **Modify** — pass `teamId` (already in scope from `useAuth`) to `<ChatArea />` |
+
+**Implementation details:**
+
+1. **Disable-rule update in `chat-input.tsx`.** The existing logic gates Send by `isStreaming` (this conversation streaming) and empty-input. Add a third gate:
+
+   ```ts
+   import { useActiveStreamCount, MAX_CONCURRENT_STREAMS } from "@/lib/streaming";
+
+   // Inside the component, where the existing isStreaming derivation lives:
+   const activeStreamCount = useActiveStreamCount(teamId);
+   const isAtCap =
+     !isStreaming && activeStreamCount >= MAX_CONCURRENT_STREAMS;
+
+   // The cap only blocks NEW streams. If this conversation is already
+   // streaming, the user can still cancel via the Stop button — that path
+   // doesn't depend on the cap.
+
+   const canSend =
+     value.trim().length > 0 && !isStreaming && !isAtCap;
+   ```
+
+   Stop-button rendering is unchanged: `isStreaming` controls it, and when `isStreaming` is true `isAtCap` is false (by construction), so the two never collide.
+
+2. **Inline blocking message.** Render only when `isAtCap` is true. Place it directly above the Send/Stop button row, mirroring the existing "archived unarchive bar" placement so it visually fits the same banner slot:
+
+   ```tsx
+   {isAtCap && (
+     <div
+       className="px-3 py-2 text-xs text-[var(--text-muted)] bg-[var(--surface-muted)] border-t border-[var(--border)]"
+       role="status"
+       aria-live="polite"
+     >
+       Already running {MAX_CONCURRENT_STREAMS} chats — wait until one of them completes before starting another.
+     </div>
+   )}
+   ```
+
+   Notes on this snippet:
+   - Wording: locked by PRD P3.R3, templated from the constant so cap-value drift is impossible.
+   - Tokens: uses CSS custom properties already in `globals.css` (`--text-muted`, `--surface-muted`, `--border`) — no hardcoded colors per CLAUDE.md.
+   - A11y: `role="status"` + `aria-live="polite"` so screen readers announce the cap state without interrupting the user's typing flow. Per CLAUDE.md "Pure visual cues are not the only signal."
+   - Placement: above the Send button visually, but below the textarea. Final placement (above textarea vs. between textarea and button row) is a small aesthetic choice — both satisfy P3.R3's "rendered above the disabled Send button"; pick whichever sits cleanest in the existing layout. The TRD does not pin this micro-decision.
+
+3. **Prop threading.** Three files, one prop:
+
+   - **`chat-input.tsx`**: add `teamId: string \| null` to `ChatInputProps`. Wire it into the `useActiveStreamCount` call.
+   - **`chat-area.tsx`**: add `teamId: string \| null` to its props; pass it down to `<ChatInput teamId={teamId} ... />`.
+   - **`chat-page-content.tsx`**: at the existing `<ChatArea ... />` call site, add `teamId={teamId}` (the variable already exists at line 46 — `const teamId = activeTeamId ?? null;`).
+
+   No type-safety risk: `teamId` is `string | null` end-to-end, matches the existing convention used by `useChat` and `useConversations`.
+
+**Verify:**
+
+- `npx tsc --noEmit` passes.
+- The Send button is disabled and the inline message appears when the user has 5 streams running in the current workspace and tries to start a 6th.
+- The Send button is unaffected when the user has 5 streams running in *another* workspace (cross-workspace isolation per Part 5 — already enforced by `useActiveStreamCount(teamId)`'s `teamId` filter).
+- Existing behavior preserved: Send disabled while typing nothing; Stop button shown while this conversation streams; per-conversation gating works identically across all conversations.
+- Manual smoke test (the P3 acceptance battery from the PRD):
+  - **P3.R1**: open conversations A and B in two browser tabs (or via sidebar navigation). Send in A. Send button in B is *enabled* (different conversation). Stop button only on A.
+  - **P3.R2**: trigger a slow stream in A, switch to B, send a quick query. Both stream concurrently; both message bubbles appear in their correct conversations server-side and on return.
+  - **P3.R3**: trigger 5 concurrent streams. Try to start a 6th — Send is disabled, the locked message appears above it. Cancel one — Send becomes enabled again.
+  - **P3.R4**: complete a stream in A while viewing B. Navigate back to A — message is present.
+  - **P3.R5**: with two streams running, cancel A — A's bubble switches to `cancelled` status; B continues streaming.
+
+**Forward compatibility:** Part 4 will add the conversations-sidebar footer text *"N chats are streaming"* / *"Start a conversation"*. That uses the same `useActiveStreamCount(teamId)` hook this increment now consumes. Part 5's AppSidebar dot pulses on `useActiveStreamCount(teamId) > 0`. All three consumers share one Part-1 hook — adding more surfaces in later parts is `useActiveStreamCount(teamId)` plus presentation, no new module API.
+
+---
+
+### Increment 3 — End-of-part audit + manual verification
+
+**What:** The audit pass per CLAUDE.md "End-of-part audit" + the post-merge documentation updates. Specifically calls out the `countActiveStreams` / `useActiveStreamCount` duplication introduced by Increment 1 as a known item for Part 6 to address.
+
+**Files changed:** Audit may produce code fixes in `chat-input.tsx`, `chat-area.tsx`, or the streaming module. Documentation:
+
+| File | Action |
+|------|--------|
+| `ARCHITECTURE.md` | **Modify** — `chat-input.tsx` description gains a note about cap gating; `chat-area.tsx` description notes the `teamId` prop pass-through; the `lib/streaming/` block notes `MAX_CONCURRENT_STREAMS` |
+| `CHANGELOG.md` | **Add entry** — `PRD-024 P3: enable multiple concurrent chat streams per user with a cap of 5` |
+
+**Audit checklist (per CLAUDE.md, applied to Increments 1–2):**
+
+1. **SRP** — `chat-input.tsx` owns "input editor + Send/Stop button + cap-blocked banner" (one cohesive UX surface). The cap gate is a derived condition, not a separate concern. `streaming-actions.ts`'s `countActiveStreams` is a private helper for the cap defense, not a public API.
+2. **DRY** — `countActiveStreams` (local helper) and `useActiveStreamIds`'s computeActiveStreamIds (in `streaming-hooks.ts`) duplicate the "filter slices by `teamId === teamId && streamState === 'streaming'`" predicate. **Flag this in the audit output explicitly**: Part 6 should extract a shared predicate (or a cached non-React selector) so the cap defense and the React hook share one source. Two implementations of the same logic ship in this part as a deliberate scope-cap; the audit names them so Part 6 has a target.
+3. **Design tokens** — The inline cap message uses `var(--text-muted)`, `var(--surface-muted)`, `var(--border)`. Verify these tokens already exist in `globals.css`; if not, the message should reuse the same tokens the existing "archived unarchive bar" uses (consistency-by-precedent). Zero hardcoded colors / spacing.
+4. **Logging** — `streaming-actions.ts`'s cap defense uses `console.warn` with `[streaming]` prefix and includes `count/max` context. Sufficient for diagnosing UI bypass bugs.
+5. **Dead code** — Verify nothing was left unused. `countActiveStreams` is only used in `startStream`. `MAX_CONCURRENT_STREAMS` is used in `streaming-actions.ts` (defense), `chat-input.tsx` (gate), and the templated message string. No commented-out residue.
+6. **Convention** — `chat-input.tsx`'s prop interface gains `teamId` in the project-standard `string | null` shape. `MAX_CONCURRENT_STREAMS` is `UPPER_SNAKE_CASE` per CLAUDE.md naming table. Imports follow project order. A11y attributes (`role`, `aria-live`) are present on the cap banner.
+
+**Manual verification — the P3 acceptance battery (also in Increment 2's verify section; reproduced here as the audit gate):**
+
+- [ ] P3.R1 — Send is disabled and becomes Stop only on the conversation whose stream is active. Other conversations remain sendable.
+- [ ] P3.R2 — Two streams run in parallel: each emits deltas independently; the chat-area shows the correct stream when displayed; both messages are persisted to the correct conversations.
+- [ ] P3.R3 — Hitting the 5-stream cap surfaces the locked inline message above Send; Send remains disabled until a slot frees up. The defensive guard in `startStream` also fires (confirmed by warn-log) if any future caller bypasses the gate.
+- [ ] P3.R4 — A stream completed while the user was viewing a different conversation produces a message visible on return — verified via DB inspection and navigation.
+- [ ] P3.R5 — Cancelling A while B is also streaming leaves B alive; A's partial content is preserved as a cancelled message.
+
+This audit produces fixes in the same PR, not a separate report.
+
+### After Part 3 completes
+
+Per CLAUDE.md ("After each TRD part completes"):
+
+1. **`ARCHITECTURE.md` update** — note the cap mechanism in the streaming-module block; update `chat-input.tsx`'s description to reflect cap gating.
+2. **`CHANGELOG.md` entry** — *PRD-024 P3: enable multiple concurrent chat streams per user; soft cap of 5 enforced client-side via UI gate + defensive runtime guard*.
+3. **No DB schema change** — no Supabase types regen.
+4. **Test affected flows** — covered by the manual smoke test battery above.
+
+---
