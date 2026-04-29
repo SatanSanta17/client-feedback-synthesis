@@ -152,7 +152,10 @@ export function useChat(options: UseChatOptions): UseChatReturn {
 
   // Stable refs for callbacks and the load-messages skip-refetch guard.
   const conversationIdRef = useRef<string | null>(conversationId);
-  const pendingConversationIdRef = useRef<string | null>(null);
+  // Mirrors `subscriptionId` so cancelStream can resolve the effective
+  // streaming target (prop, or fresh-send fallback) without recomputing
+  // the priority chain inline. One ref, one concept.
+  const subscriptionIdRef = useRef<string | null>(null);
   const onConversationCreatedRef = useRef(onConversationCreated);
   // Mirrors `messages.length` so the load-messages effect can detect
   // "we already have messages from streaming" without depending on
@@ -169,8 +172,8 @@ export function useChat(options: UseChatOptions): UseChatReturn {
   }, [conversationId]);
 
   useEffect(() => {
-    pendingConversationIdRef.current = pendingConversationId;
-  }, [pendingConversationId]);
+    subscriptionIdRef.current = subscriptionId;
+  }, [subscriptionId]);
 
   useEffect(() => {
     onConversationCreatedRef.current = onConversationCreated;
@@ -283,6 +286,9 @@ export function useChat(options: UseChatOptions): UseChatReturn {
     const completed = slice.finalMessage;
     setMessages((prev) => [...prev, completed]);
     markFinalMessageConsumed(slice.conversationId);
+    console.log(
+      `${LOG_PREFIX} folded finalMessage conversation=${slice.conversationId} messageId=${completed.id} status=${completed.status}`
+    );
   }, [slice?.finalMessage, slice?.conversationId]);
 
   // -------------------------------------------------------------------------
@@ -381,10 +387,8 @@ export function useChat(options: UseChatOptions): UseChatReturn {
 
   const cancelStream = useCallback(() => {
     console.log(`${LOG_PREFIX} cancelStream`);
-    const id =
-      conversationIdRef.current ?? pendingConversationIdRef.current;
-    if (id) {
-      moduleCancelStream(id);
+    if (subscriptionIdRef.current) {
+      moduleCancelStream(subscriptionIdRef.current);
     }
     // The module sets slice.finalMessage to a status:"cancelled" Message;
     // the useLayoutEffect fold appends it to messages[] in the next render.
