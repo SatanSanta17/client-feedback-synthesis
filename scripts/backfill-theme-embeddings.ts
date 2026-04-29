@@ -8,17 +8,19 @@
  * Usage:
  *   npm run backfill:theme-embeddings
  *
- * Required env (loaded from .env via dotenv):
+ * Required env (loaded via @next/env from the same files Next.js reads):
  *   - NEXT_PUBLIC_SUPABASE_URL
  *   - SUPABASE_SERVICE_ROLE_KEY
  *   - EMBEDDING_PROVIDER, EMBEDDING_MODEL, EMBEDDING_DIMENSIONS
  *   - OPENAI_API_KEY (for the openai embedding provider)
  */
 
-// IMPORTANT: dotenv must load before any module that reads process.env at
+// IMPORTANT: env loading must run before any module that reads process.env at
 // import time (e.g., the embedding service resolves provider config eagerly).
-import { config as loadDotenv } from "dotenv";
-loadDotenv({ path: ".env" });
+// @next/env mirrors Next.js's own loader so the script sees the same env
+// resolution rules (file precedence, merging) as `next dev`.
+import { loadEnvConfig } from "@next/env";
+loadEnvConfig(process.cwd());
 
 import { createClient } from "@supabase/supabase-js";
 
