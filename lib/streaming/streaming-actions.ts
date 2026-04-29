@@ -11,7 +11,6 @@ import {
   parseSSEChunk,
   stripFollowUpBlock,
 } from "@/lib/utils/chat-helpers";
-import type { ChatSource, Message } from "@/lib/types/chat";
 
 import {
   setSlice,
@@ -21,7 +20,10 @@ import {
   deleteAbortController,
   clearAll,
 } from "./streaming-store";
-import { IDLE_SLICE_DEFAULTS, type StartStreamArgs } from "./streaming-types";
+import { IDLE_SLICE_DEFAULTS } from "./streaming-types";
+
+import type { ChatSource, Message } from "@/lib/types/chat";
+import type { StartStreamArgs } from "./streaming-types";
 
 const LOG_PREFIX = "[streaming]";
 
@@ -38,7 +40,6 @@ export function startStream(args: StartStreamArgs): void {
   // Seed the slice as streaming. Subscribers (chat-area, sidebar dots) light up immediately.
   setSlice(conversationId, {
     ...IDLE_SLICE_DEFAULTS,
-    conversationId,
     teamId,
     streamState: "streaming",
     startedAt: Date.now(),
@@ -60,7 +61,6 @@ export function startStream(args: StartStreamArgs): void {
         `${LOG_PREFIX} stream failed conversation=${conversationId}: ${message}`
       );
       setSlice(conversationId, {
-        conversationId,
         streamState: "error",
         error: message,
         streamingContent: "",
@@ -105,10 +105,7 @@ async function runStream(args: RunStreamArgs): Promise<void> {
 
   const headerAssistantId = res.headers.get("X-Assistant-Message-Id");
   if (headerAssistantId) {
-    setSlice(conversationId, {
-      conversationId,
-      assistantMessageId: headerAssistantId,
-    });
+    setSlice(conversationId, { assistantMessageId: headerAssistantId });
   }
 
   // Notify the caller that the conversation row exists server-side. Preserves Gap P9.
@@ -145,30 +142,22 @@ async function runStream(args: RunStreamArgs): Promise<void> {
       switch (sseEvent.event) {
         case "status":
           setSlice(conversationId, {
-            conversationId,
             statusText: (data.text as string) ?? null,
           });
           break;
         case "delta":
           accumulatedContent += (data.text as string) ?? "";
           setSlice(conversationId, {
-            conversationId,
             streamingContent: stripFollowUpBlock(accumulatedContent),
           });
           break;
         case "sources":
           accumulatedSources = (data.sources as ChatSource[]) ?? null;
-          setSlice(conversationId, {
-            conversationId,
-            latestSources: accumulatedSources,
-          });
+          setSlice(conversationId, { latestSources: accumulatedSources });
           break;
         case "follow_ups":
           accumulatedFollowUps = (data.questions as string[]) ?? [];
-          setSlice(conversationId, {
-            conversationId,
-            latestFollowUps: accumulatedFollowUps,
-          });
+          setSlice(conversationId, { latestFollowUps: accumulatedFollowUps });
           break;
         case "done":
           // No-op — final-message construction happens after loop exit so the
@@ -203,14 +192,13 @@ async function runStream(args: RunStreamArgs): Promise<void> {
 
   // hasUnseenCompletion is left false here; Part 4's selection logic decides
   // whether to flip it based on whether a chat-area is currently subscribed
-  // to this conversation.
+  // to this conversation. latestFollowUps is already on the slice from the
+  // follow_ups event handler — no need to re-set it here.
   setSlice(conversationId, {
-    conversationId,
     streamState: "idle",
     streamingContent: "",
     statusText: null,
     finalMessage,
-    latestFollowUps: accumulatedFollowUps,
   });
 
   console.log(
@@ -253,7 +241,6 @@ export function cancelStream(conversationId: string): void {
       createdAt: new Date().toISOString(),
     };
     setSlice(conversationId, {
-      conversationId,
       streamState: "idle",
       streamingContent: "",
       statusText: null,
@@ -261,12 +248,15 @@ export function cancelStream(conversationId: string): void {
     });
   } else {
     setSlice(conversationId, {
-      conversationId,
       streamState: "idle",
       streamingContent: "",
       statusText: null,
     });
   }
+
+  console.log(
+    `${LOG_PREFIX} cancelStream done conversation=${conversationId} preservedContent=${partialContent.length > 0}`
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -275,8 +265,13 @@ export function cancelStream(conversationId: string): void {
 
 export function markConversationViewed(conversationId: string): void {
   const slice = getSlice(conversationId);
-  if (!slice || !slice.hasUnseenCompletion) return;
-  setSlice(conversationId, { conversationId, hasUnseenCompletion: false });
+  if (!slice || !slice.hasUnseenCompletion) {
+    return;
+  }
+  setSlice(conversationId, { hasUnseenCompletion: false });
+  console.log(
+    `${LOG_PREFIX} markConversationViewed conversation=${conversationId}`
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -286,4 +281,5 @@ export function markConversationViewed(conversationId: string): void {
 export function clearAllStreams(): void {
   console.log(`${LOG_PREFIX} clearAllStreams — tearing down all slices`);
   clearAll();
+  console.log(`${LOG_PREFIX} clearAllStreams done`);
 }

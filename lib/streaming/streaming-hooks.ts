@@ -47,21 +47,26 @@ export function useIsStreaming(id: string | null): boolean {
 // (defeats P1.R2's selective re-render requirement).
 // ---------------------------------------------------------------------------
 
-const activeStreamIdsCache = new Map<string | null, string[]>();
+type SlicePredicate = (slice: ConversationStreamSlice) => boolean;
 
-function computeActiveStreamIds(teamId: string | null): string[] {
-  const out: string[] = [];
+/**
+ * Generic stable-ref derivation over the slice store. Used by aggregate hooks
+ * that filter slices by workspace + a per-slice predicate. The cache is keyed
+ * by teamId; identical fresh results return the cached array reference so
+ * useSyncExternalStore's bailout works.
+ */
+function stableFilteredIds(
+  cache: Map<string | null, string[]>,
+  teamId: string | null,
+  predicate: SlicePredicate
+): string[] {
+  const fresh: string[] = [];
   for (const slice of listSlices().values()) {
-    if (slice.teamId === teamId && slice.streamState === "streaming") {
-      out.push(slice.conversationId);
+    if (slice.teamId === teamId && predicate(slice)) {
+      fresh.push(slice.conversationId);
     }
   }
-  return out;
-}
-
-function stableActiveStreamIds(teamId: string | null): string[] {
-  const cached = activeStreamIdsCache.get(teamId);
-  const fresh = computeActiveStreamIds(teamId);
+  const cached = cache.get(teamId);
   if (
     cached &&
     cached.length === fresh.length &&
@@ -69,9 +74,12 @@ function stableActiveStreamIds(teamId: string | null): string[] {
   ) {
     return cached;
   }
-  activeStreamIdsCache.set(teamId, fresh);
+  cache.set(teamId, fresh);
   return fresh;
 }
+
+const activeStreamIdsCache = new Map<string | null, string[]>();
+const isStreamingPredicate: SlicePredicate = (s) => s.streamState === "streaming";
 
 /**
  * IDs of conversations currently streaming in the given workspace. NULL =
@@ -81,7 +89,7 @@ function stableActiveStreamIds(teamId: string | null): string[] {
 export function useActiveStreamIds(teamId: string | null): string[] {
   return useSyncExternalStore(
     subscribe,
-    () => stableActiveStreamIds(teamId),
+    () => stableFilteredIds(activeStreamIdsCache, teamId, isStreamingPredicate),
     () => []
   );
 }
@@ -91,30 +99,7 @@ export function useActiveStreamCount(teamId: string | null): number {
 }
 
 const unseenCompletionIdsCache = new Map<string | null, string[]>();
-
-function computeUnseenCompletionIds(teamId: string | null): string[] {
-  const out: string[] = [];
-  for (const slice of listSlices().values()) {
-    if (slice.teamId === teamId && slice.hasUnseenCompletion) {
-      out.push(slice.conversationId);
-    }
-  }
-  return out;
-}
-
-function stableUnseenCompletionIds(teamId: string | null): string[] {
-  const cached = unseenCompletionIdsCache.get(teamId);
-  const fresh = computeUnseenCompletionIds(teamId);
-  if (
-    cached &&
-    cached.length === fresh.length &&
-    cached.every((id, i) => id === fresh[i])
-  ) {
-    return cached;
-  }
-  unseenCompletionIdsCache.set(teamId, fresh);
-  return fresh;
-}
+const hasUnseenPredicate: SlicePredicate = (s) => s.hasUnseenCompletion;
 
 /**
  * IDs of conversations in the given workspace whose last stream completed
@@ -123,7 +108,7 @@ function stableUnseenCompletionIds(teamId: string | null): string[] {
 export function useUnseenCompletionIds(teamId: string | null): string[] {
   return useSyncExternalStore(
     subscribe,
-    () => stableUnseenCompletionIds(teamId),
+    () => stableFilteredIds(unseenCompletionIdsCache, teamId, hasUnseenPredicate),
     () => []
   );
 }

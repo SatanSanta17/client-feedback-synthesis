@@ -37,18 +37,22 @@ export function getSlice(id: string): ConversationStreamSlice | undefined {
   return slices.get(id);
 }
 
+/**
+ * Merge a partial update into the slice for `id`. The id is the authoritative
+ * source of `conversationId` — callers don't repeat it in the partial. On the
+ * first call for an id, the partial must include enough fields to hydrate a
+ * full slice (callers spread `IDLE_SLICE_DEFAULTS` on first call).
+ */
 export function setSlice(
   id: string,
-  partial: Partial<ConversationStreamSlice> &
-    Pick<ConversationStreamSlice, "conversationId">
+  partial: Partial<Omit<ConversationStreamSlice, "conversationId">>
 ): void {
   const current = slices.get(id);
-  slices.set(id, { ...current, ...partial } as ConversationStreamSlice);
-  notify();
-}
-
-export function deleteSlice(id: string): void {
-  if (!slices.delete(id)) return;
+  slices.set(id, {
+    ...current,
+    ...partial,
+    conversationId: id,
+  } as ConversationStreamSlice);
   notify();
 }
 

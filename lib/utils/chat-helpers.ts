@@ -23,6 +23,9 @@ export function sseEvent(event: string, data: unknown): string {
 // Follow-up parsing
 // ---------------------------------------------------------------------------
 
+const FOLLOW_UP_COMPLETE_RE = /<!--follow-ups:(\[[\s\S]*?\])-->/;
+const FOLLOW_UP_PARTIAL_RE = /<!--follow-ups:[\s\S]*$/;
+
 /**
  * Parse the follow-up questions from the LLM response.
  * Expected format: <!--follow-ups:["q1","q2","q3"]-->
@@ -32,8 +35,7 @@ export function parseFollowUps(text: string): {
   cleanContent: string;
   followUps: string[];
 } {
-  const pattern = /<!--follow-ups:(\[[\s\S]*?\])-->/;
-  const match = text.match(pattern);
+  const match = text.match(FOLLOW_UP_COMPLETE_RE);
 
   if (!match) {
     return { cleanContent: text, followUps: [] };
@@ -47,7 +49,7 @@ export function parseFollowUps(text: string): {
     ) {
       return { cleanContent: text, followUps: [] };
     }
-    const cleanContent = text.replace(pattern, "").trimEnd();
+    const cleanContent = text.replace(FOLLOW_UP_COMPLETE_RE, "").trimEnd();
     return { cleanContent, followUps };
   } catch {
     return { cleanContent: text, followUps: [] };
@@ -148,9 +150,6 @@ export function parseSSEChunk(buffer: string): {
 // ---------------------------------------------------------------------------
 // Follow-up block stripping (streaming-time)
 // ---------------------------------------------------------------------------
-
-const FOLLOW_UP_COMPLETE_RE = /<!--follow-ups:(\[[\s\S]*?\])-->/;
-const FOLLOW_UP_PARTIAL_RE = /<!--follow-ups:[\s\S]*$/;
 
 /**
  * Strip a complete `<!--follow-ups:...-->` block OR a trailing partial one
