@@ -18,6 +18,7 @@ import { cn } from "@/lib/utils";
 import { SynthesiserLogo } from "@/components/layout/synthesiser-logo";
 import { WorkspaceSwitcher } from "@/components/layout/workspace-switcher";
 import { UserMenu } from "@/components/layout/user-menu";
+import { NotificationBell } from "@/components/notifications/notification-bell";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -267,6 +268,12 @@ function SidebarContent({
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
+
+        {/* Notifications bell (PRD-029 Part 2) */}
+        <NotificationBell
+          collapsed={!showLabels}
+          onOpenChange={onDropdownOpenChange}
+        />
 
         {/* User menu */}
         <UserMenu side="top" collapsed={!showLabels} onOpenChange={onDropdownOpenChange} />
