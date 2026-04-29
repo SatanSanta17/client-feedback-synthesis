@@ -79,14 +79,15 @@ export function AuthProvider({ children }: AuthProviderProps) {
       if (session?.user) {
         fetchCanCreateTeam(supabase, session.user.id, setCanCreateTeam);
       } else {
+        // Mirror signOut's full cleanup on any session-null transition
+        // (PRD-024 P5.R4) — token expiry, multi-tab sign-out, server-side
+        // revoke. Without this, the streaming store + workspace cookie +
+        // activeTeamId would carry from user A into user B's session on
+        // the same browser. Idempotent with signOut's existing calls.
         setCanCreateTeam(false);
-        // Defensive cleanup (PRD-024 P5.R4) — clear streaming store on any
-        // session-null transition, not only the explicit signOut path. This
-        // covers token expiry, multi-tab sign-out, and server-side revoke,
-        // each of which fires onAuthStateChange with session=null without
-        // going through this tab's signOut. Idempotent with signOut's
-        // existing call.
+        clearActiveTeamCookie();
         clearAllStreams();
+        setActiveTeamId(null);
       }
     });
 

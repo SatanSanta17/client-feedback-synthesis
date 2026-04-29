@@ -263,7 +263,7 @@ synthesiser/
 │   │   └── table-shell.tsx      # Shared bordered table wrapper (TableShell) + standardised header cell (TableHeadCell)
 │   ├── layout/
 │   │   ├── app-footer.tsx       # Footer — public routes only (developer contact + theme toggle)
-│   │   ├── app-sidebar.tsx      # Instagram-style hover-to-expand sidebar — icon-only at rest, overlay on hover, mobile drawer via Sheet; nav links (Dashboard, Capture, Chat, Settings), workspace switcher, more menu, user menu
+│   │   ├── app-sidebar.tsx      # Instagram-style hover-to-expand sidebar — icon-only at rest, overlay on hover, mobile drawer via Sheet; nav links (Dashboard, Capture, Chat, Settings), workspace switcher, more menu, user menu; renders brand-accent indicator dot on Chat nav icon — pulsating when any workspace stream is active, solid when only unseen completions exist (PRD-024 P5.R2); aria-label on the Chat link extends to include state
 │   │   ├── authenticated-layout.tsx # Auth-aware layout wrapper — sidebar + margin for authenticated routes, footer-only for public routes
 │   │   ├── create-team-dialog.tsx # Controlled team creation dialog (opened from workspace switcher)
 │   │   ├── page-header.tsx      # Shared header component with title and description
@@ -742,7 +742,7 @@ Stores AI-generated headline insight cards displayed above the dashboard widget 
 
 **Shared auth context:**
 
-- **AuthProvider** (`components/providers/auth-provider.tsx`) wraps the app in `layout.tsx`. It reads the initial session on mount, subscribes to `onAuthStateChange`, and exposes `user`, `isAuthenticated`, `isLoading`, `canCreateTeam`, `activeTeamId`, `setActiveTeam`, and `signOut` via React context. `signOut()` calls `supabase.auth.signOut()` and then `clearActiveTeamCookie()` so workspace context doesn't leak to the next session on the same machine.
+- **AuthProvider** (`components/providers/auth-provider.tsx`) wraps the app in `layout.tsx`. It reads the initial session on mount, subscribes to `onAuthStateChange`, and exposes `user`, `isAuthenticated`, `isLoading`, `canCreateTeam`, `activeTeamId`, `setActiveTeam`, and `signOut` via React context. `signOut()` calls `supabase.auth.signOut()`, `clearActiveTeamCookie()`, and `clearAllStreams()` (PRD-024) so workspace context, streaming state, and the user identity don't leak to the next session on the same machine. The `onAuthStateChange` listener mirrors the same cleanup on any session-null transition (token expiry, multi-tab sign-out, server-side revoke) — not just the explicit `signOut` path (PRD-024 P5.R4).
 - **UserMenu** consumes the auth context. Shows a loading skeleton while `isLoading`, a "Sign in" link when unauthenticated, and the user's avatar + email with a sign-out dropdown when authenticated.
 
 **Invite acceptance flow:**
