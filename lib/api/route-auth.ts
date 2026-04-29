@@ -135,6 +135,50 @@ export function requireTeamOwner(
 }
 
 // ---------------------------------------------------------------------------
+// requireWorkspaceAdmin — admin gate that handles both team and personal
+// workspaces. Resolves the active workspace from the cookie, requires the
+// admin role on team workspaces, and treats personal workspaces as
+// implicitly admin (the user is the only data owner).
+//
+// Used by surfaces that gate "manage workspace settings" capabilities and
+// are exposed in both contexts — e.g., /settings/themes (PRD-026 Part 2).
+// ---------------------------------------------------------------------------
+
+export interface WorkspaceAdminContext extends AuthContext {
+  workspace: { teamId: string | null; userId: string };
+  /** Populated only for team workspaces. */
+  team?: TeamRow;
+  member?: TeamMemberRow;
+  teamRepo?: TeamRepository;
+}
+
+export async function requireWorkspaceAdmin(
+  user: User,
+  forbiddenMessage?: string
+): Promise<WorkspaceAdminContext | NextResponse> {
+  const teamId = await getActiveTeamId();
+
+  if (teamId === null) {
+    const supabase = await createClient();
+    const serviceClient = createServiceRoleClient();
+    return {
+      user,
+      supabase,
+      serviceClient,
+      workspace: { teamId: null, userId: user.id },
+    };
+  }
+
+  const ctx = await loadTeamContext(teamId, user, "admin", forbiddenMessage);
+  if (ctx instanceof NextResponse) return ctx;
+
+  return {
+    ...ctx,
+    workspace: { teamId, userId: user.id },
+  };
+}
+
+// ---------------------------------------------------------------------------
 // requireSessionAccess — verify the current user can access a session.
 // Wraps the framework-agnostic checkSessionAccess in HTTP framing via
 // the existing mapAccessError utility.

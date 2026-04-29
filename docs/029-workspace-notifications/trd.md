@@ -1738,10 +1738,198 @@ This audit closes Part 2.
 
 ---
 
-## Parts 3–5
+## Part 3: Event-Type Catalogue & Renderers
 
-> Specified after Part 2 lands and at least one renderer (PRD-026 P4's `theme.merged`) ships in production via Part 3. Each subsequent part will append a "Part N" section here, mirroring the structure above, and must respect the data shapes locked in by Parts 1 and 2 (`workspace_notifications` schema, `NOTIFICATION_EVENTS` registry, `NotificationRepository` interface, `notification-service` public API, the four `/api/notifications/*` routes, the renderer interface).
+> Implements **P3.R1–P3.R5** from PRD-029.
 
-- **Part 3 — Renderer catalogue.** Populates `NOTIFICATION_RENDERERS` from Part 2 with entries for the three initial event types (`theme.merged`, `supersession.proposed`, `bulk_re_extract.completed`). Each entry: icon component, title-template function (typed payload → string), deep-link function (typed payload → string | null). One file change per event type when adding more.
+### Overview
+
+Fill the empty `NOTIFICATION_RENDERERS` map from Part 2. One entry per registered event type — `theme.merged`, `supersession.proposed`, `bulk_re_extract.completed` — each supplying an icon component, a title-template function (typed payload → string), and a deep-link function (typed payload → string | null). After Part 3 lands, the bell stops showing "Workspace activity" placeholders and starts rendering specific, actionable rows for every event type the platform can emit.
+
+The footprint is one file: `lib/notifications/renderers.ts` gains three entries in the registry, three lucide-react icon imports, and a tiny pluralisation helper. Nothing else changes — bell, dropdown, row, hooks, routes, repository, service, schema all stay as Part 2 left them. This is the cleanest part of the PRD precisely because Part 2's scaffolding made it so.
+
+### Forward Compatibility Notes
+
+- **Future event types.** Adding a new event type after Part 3 ships is a sequence of three single-file edits — one in `lib/notifications/events.ts` (registry + Zod schema), one in `lib/notifications/renderers.ts` (renderer entry), and the consumer site that calls `notificationService.emit`. No bell, dropdown, route, or repository change ever needed.
+- **Title-template evolution.** If any title template grows beyond a one-liner (e.g., needs i18n catalogs, complex pluralisation, or actor formatting), extract it into a sibling helper next to the registry. The renderer entry stays a one-line `title: t.themeMerged` reference. Defer until any consumer asks.
+- **Icon library swap.** All three icons are imported from `lucide-react`, the project's existing icon library. If a future design iteration moves to a different library, the swap is N import changes (one per entry) inside this single file. The bell row consumes only `RenderedNotification.icon`, agnostic of source.
+- **Part 4 (Delivery).** Renderers run synchronously inside the row's render path; they do not care whether the underlying notification arrived via polling or Realtime. No Part 4 dependency.
+- **Part 5 (Retention).** Cleanup deletes rows; renderers don't see the deletion. No Part 5 dependency.
+
+### Renderer Entries
+
+The whole change is additive content inside the existing `NOTIFICATION_RENDERERS` map. Below is the full file shape after Part 3, with the new content called out.
+
+#### `lib/notifications/renderers.ts` (extend)
+
+Add three lucide-react icon imports next to the existing `Bell`:
+
+```typescript
+import { Bell, CheckCircle, GitMerge, Inbox } from "lucide-react";
+```
+
+Add a single private pluralisation helper above the registry. Inline because no other call site has the same need; promote to `lib/utils/` only if a second consumer emerges:
+
+```typescript
+/** Tiny pluralisation helper — returns `"1 thing"` or `"N things"`. */
+function pluralize(count: number, singular: string, plural?: string): string {
+  return `${count} ${count === 1 ? singular : (plural ?? `${singular}s`)}`;
+}
+```
+
+Add a `SUPERSESSION_SOURCE_LABEL` constant (one-line per source) so the title-template stays readable:
+
+```typescript
+const SUPERSESSION_SOURCE_LABEL: Record<
+  SupersessionProposedPayload["source"],
+  string
+> = {
+  bulk_re_extract: "a bulk re-extract",
+  single_session_re_extract: "a re-extract",
+  inline_dialog_timeout: "a deferred review",
+};
+```
+
+(The `SupersessionProposedPayload` import comes from `lib/notifications/events.ts` — already exported alongside its schema.)
+
+Replace the empty `NOTIFICATION_RENDERERS` map with the three entries:
+
+```typescript
+export const NOTIFICATION_RENDERERS: Partial<RendererRegistry> = {
+  "theme.merged": {
+    icon: GitMerge,
+    title: (payload) =>
+      `Theme "${payload.archivedThemeName}" merged into "${payload.canonicalThemeName}"`,
+    // /settings/themes is the admin-gated home for the merge surface
+    // (PRD-026 §P2.R7); members reaching it via deep-link see the
+    // recent-merges audit log even when they cannot merge themselves.
+    deepLink: () => "/settings/themes",
+  },
+  "supersession.proposed": {
+    icon: Inbox,
+    title: (payload) =>
+      `${pluralize(payload.proposalCount, "supersession proposal")} from ${SUPERSESSION_SOURCE_LABEL[payload.source]}`,
+    deepLink: () => "/improvements/inbox",
+  },
+  "bulk_re_extract.completed": {
+    icon: CheckCircle,
+    title: (payload) =>
+      payload.errorCount > 0
+        ? `Bulk re-extraction finished: ${pluralize(payload.sessionsProcessed, "session")}, ${pluralize(payload.errorCount, "error")}`
+        : `Bulk re-extraction finished: ${pluralize(payload.sessionsProcessed, "session")} processed`,
+    // No first-class bulk-run status page yet; the row is informational
+    // and clicking simply marks it read + closes the dropdown. Wire to a
+    // status surface if/when one ships.
+    deepLink: () => null,
+  },
+};
+```
+
+The `Partial<RendererRegistry>` annotation from Part 2 stays — even with all three entries populated, leaving it `Partial<...>` (rather than tightening to `RendererRegistry`) preserves the deploy-decoupling property: a future event type can be added to `NOTIFICATION_EVENTS` before its renderer ships and the bell still produces the FALLBACK rather than blowing typecheck.
+
+### Title Lengths and Truncation
+
+PRD §P3.R5 sets a soft ceiling of ~80 characters. Worst-case lengths against the registered payloads:
+
+| Event | Template | Worst-case length |
+|---|---|---|
+| `theme.merged` | `Theme "X" merged into "Y"` | 23 + len(X) + len(Y) chars. Theme names up to ~28 chars each → ~80. Beyond that, the row's `flex-1 min-w-0` + `truncate` already on the title span clips the overflow with an ellipsis. |
+| `supersession.proposed` | `N supersession proposals from a bulk re-extract` | ~50 chars. Always within budget. |
+| `bulk_re_extract.completed` | `Bulk re-extraction finished: N sessions, M errors` | ~50 chars. Always within budget. |
+
+No active truncation logic in the renderer — the row's CSS handles overflow. If a workspace genuinely produces theme names long enough to break this assumption, the cleanest fix is in the bell row's class list (`truncate` already there), not the renderer.
+
+### Deep-Link Choices
+
+| Event | Deep-link | Rationale |
+|---|---|---|
+| `theme.merged` | `/settings/themes` | Admin-gated surface (PRD-026 §P2.R7). Non-admin members reaching it via deep-link see the recent-merges audit log; the API enforces the action restriction (admins only confirm new merges). |
+| `supersession.proposed` | `/improvements/inbox` | The pending-review inbox (PRD-028 §P5.R1). Both the actor (bulk-run / re-extract initiator) and other workspace members benefit from landing in the queue. |
+| `bulk_re_extract.completed` | `null` | No first-class bulk-run status page exists today. Clicking the row marks it read and closes the dropdown — purely informational. Wire to a status surface when/if one ships. |
+
+`null` deep-links are handled by the row component's existing branch — if `rendered.deepLink` is null, the row still calls `onClose()` after the optimistic mark-read, but skips `router.push`.
+
+### Files Changed
+
+| File | Action | Purpose |
+|------|--------|---------|
+| `lib/notifications/renderers.ts` | Modify | Three renderer entries, three lucide-react icon imports, one `pluralize` helper, one `SUPERSESSION_SOURCE_LABEL` constant |
+| `ARCHITECTURE.md` | Modify | Update the file-map note for `lib/notifications/renderers.ts` (was "empty in Part 2"; now "three entries"); status line gains "PRD-029 Part 3 (Event-Type Catalogue & Renderers) implemented" |
+| `CHANGELOG.md` | Modify | PRD-029 Part 3 entry |
+
+No new files. No new dependencies. No schema, route, hook, or component change.
+
+### Implementation
+
+#### Increment 3.1 — Populate the registry
+
+**What:** Edit `lib/notifications/renderers.ts` to add three entries plus the supporting helper and constant. Single file, additive content only.
+
+**Steps:**
+
+1. Edit `lib/notifications/renderers.ts`:
+   - Extend the lucide-react import: `Bell, CheckCircle, GitMerge, Inbox`.
+   - Import `SupersessionProposedPayload` from `@/lib/notifications/events` (alongside the existing `payloadSchemaFor` etc.).
+   - Add the `pluralize` helper above the registry.
+   - Add the `SUPERSESSION_SOURCE_LABEL` constant.
+   - Replace the empty `NOTIFICATION_RENDERERS = {}` body with the three entries per §Renderer Entries.
+
+**Verification:**
+
+1. `npx tsc --noEmit` passes. Each renderer's `title` and `deepLink` parameters are statically typed against `z.infer<...payloadSchema>` for the matching event — TS would flag any `payload.archivedTheemId` typo at the call site.
+2. **End-to-end with a seeded row** (against a running dev server):
+   - SQL-insert a `theme.merged` row via the Supabase SQL editor with valid payload (per the §Renderer Entries example):
+     ```sql
+     INSERT INTO workspace_notifications (team_id, user_id, event_type, payload)
+     VALUES (
+       '<your-team-id>',
+       '<your-user-id>',
+       'theme.merged',
+       '{"archivedThemeId":"00000000-0000-0000-0000-000000000001",
+         "archivedThemeName":"API Speed",
+         "canonicalThemeId":"00000000-0000-0000-0000-000000000002",
+         "canonicalThemeName":"API Performance",
+         "actorId":"00000000-0000-0000-0000-000000000003",
+         "actorName":"Test Actor",
+         "signalAssignmentsRepointed":3}'::jsonb
+     );
+     ```
+   - Open the bell. The row renders with the `GitMerge` icon and title `Theme "API Speed" merged into "API Performance"`. Clicking navigates to `/settings/themes`.
+   - Repeat for `supersession.proposed` (any of the three `source` values) — row renders with `Inbox` icon and title like `5 supersession proposals from a bulk re-extract`. Clicking navigates to `/improvements/inbox`.
+   - Repeat for `bulk_re_extract.completed` — row renders with `CheckCircle` icon and a sessions-processed title. Clicking marks read + closes the dropdown without navigating (deepLink is null).
+3. **Malformed-payload smoke** (defence in depth from Part 2 stays intact): SQL-insert a `theme.merged` row whose payload is `'{}'::jsonb` (missing every required field). Open the bell — the row renders the FALLBACK (`Bell` icon + "Workspace activity") and `console.warn` logs `[notification-renderer] payload mismatch for theme.merged ...`. The bell does not crash.
+4. **Pluralisation spot-check:** seed a `supersession.proposed` with `proposalCount: 1`. Title reads `1 supersession proposal from a bulk re-extract` (singular). Seed another with `proposalCount: 2` — title reads `2 supersession proposals` (plural).
+5. Existing `theme.merged` / `supersession.proposed` / `bulk_re_extract.completed` consumer paths (PRD-026 P4, PRD-028 P5.R9, PRD-017 follow-up) — none currently emit, so there is no consumer regression to verify. The renderers will start exercising the moment any consumer wires up.
+
+**Post-increment:** ARCHITECTURE update batched in audit.
+
+---
+
+#### Increment 3.2 — End-of-part audit
+
+Per CLAUDE.md "End-of-part audit" — produces fixes, not a report.
+
+**Checklist:**
+
+1. **SRP:** `renderers.ts` does one thing — render notifications. The pluralisation helper and source-label constant are local concerns, kept private (not exported) to keep the public surface tight.
+2. **DRY:** confirm the `payloadSchemaFor(eventType).safeParse` re-validation in `renderNotification` (Part 2) still wraps every renderer call — no duplicate parsing inside individual title functions. The `SUPERSESSION_SOURCE_LABEL` constant prevents source-string duplication across the title template.
+3. **Design tokens:** N/A — Part 3 introduces no styling.
+4. **Logging:** payload mismatches still log under `[notification-renderer]` (Part 2 path); renderer entries themselves are pure functions with no logging needs.
+5. **Dead code:** confirm the `pluralize` helper has at least two call sites (otherwise inline it). At Part 3 ship: `theme.merged` doesn't use it; `supersession.proposed` uses it once; `bulk_re_extract.completed` uses it twice (in the if branch) or once (in the else branch). Three call sites total — extraction justified.
+6. **Convention compliance:** named exports only; kebab-case file names; PascalCase types; const helpers in camelCase (`pluralize`); UPPER_SNAKE_CASE for the `SUPERSESSION_SOURCE_LABEL` constant.
+7. **Type tightening:** zero `any` leaks. Each renderer's `payload` parameter is automatically narrowed by `RendererFor<E>` to the corresponding `z.infer<...payloadSchema>` — TS errors at the call site if a renderer reaches for a non-existent field.
+8. **Title length spot-check:** for each event, sample worst-case payload lengths and confirm titles are at most ~80 chars in typical cases (per PRD §P3.R5). Document any genuinely-overflowing template; the row's CSS truncation absorbs the overflow but the renderer should still aim for the budget.
+9. **ARCHITECTURE.md update:** the file-map line for `lib/notifications/renderers.ts` currently reads "empty in Part 2; Part 3 fills entries" — update to "three registered entries — `theme.merged` (GitMerge → /settings/themes), `supersession.proposed` (Inbox → /improvements/inbox), `bulk_re_extract.completed` (CheckCircle → null)". Status line gains "PRD-029 Part 3 (Event-Type Catalogue & Renderers) implemented".
+10. **CHANGELOG.md:** PRD-029 Part 3 entry covering all P3.R1–P3.R5 requirements, the three registered events with their icons + deep-links + title templates, the architectural choices (kept registry as `Partial<RendererRegistry>`, inlined `pluralize`, `null` deep-link for `bulk_re_extract.completed`), and the audit's actual findings.
+11. **Verify:** `npx tsc --noEmit` passes; the three end-to-end smoke tests from Increment 3.1 still pass; the malformed-payload fallback path still falls through to FALLBACK.
+
+This audit closes Part 3.
+
+---
+
+## Parts 4–5
+
+> Specified after Part 3 lands and at least one consumer (PRD-026 P4 / PRD-028 P5.R9 / PRD-017 follow-up) has emitted in production. Each subsequent part will append a "Part N" section here, mirroring the structure above, and must respect the data shapes locked in by Parts 1, 2, and 3 (`workspace_notifications` schema, `NOTIFICATION_EVENTS` registry, `NotificationRepository` interface, `notification-service` public API, the four `/api/notifications/*` routes, the renderer interface, the three registered renderers).
+
 - **Part 4 — Delivery mechanism.** Picks Supabase Realtime / polling-only / hybrid. The hooks from Part 2 (`use-unread-count.ts` and `use-notifications.ts`) get their internal implementations swapped or augmented; their public return shapes do not change. The latency bar from PRD §P4.R1 is the measurable acceptance.
 - **Part 5 — Retention & cleanup.** Schedules a job (cron / edge function / pg_cron) calling `repo.deleteExpired` on a cadence. Configurable retention windows (read shorter than unread); per-row `expires_at` already supported by Part 1's schema and repository contract.

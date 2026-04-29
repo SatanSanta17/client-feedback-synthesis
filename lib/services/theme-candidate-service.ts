@@ -87,6 +87,11 @@ export interface RefreshResult {
   elapsedMs: number;
 }
 
+export interface ListCandidatesResult {
+  items: ThemeCandidateWithThemes[];
+  hasMore: boolean;
+}
+
 /** Surfaced to the API layer — translated to 404. */
 export class CandidateNotFoundError extends Error {
   constructor(message: string) {
@@ -225,13 +230,20 @@ export async function refreshCandidates(input: {
   }
 }
 
-/** Read top-N candidates ordered by combined_score, joined with theme metadata. */
+/**
+ * Read top-N candidates ordered by combined_score, joined with theme metadata.
+ *
+ * Pagination uses a fetch-`limit + 1` pattern: if the repository returns more
+ * than `limit` rows, we know there is at least one more page and trim the
+ * extra row before returning. This avoids a second `count(*)` query and
+ * matches the notification-repository pattern used elsewhere.
+ */
 export async function listCandidates(input: {
   workspace: WorkspaceCtx;
   candidateRepo: ThemeCandidateRepository;
   limit?: number;
   offset?: number;
-}): Promise<ThemeCandidateWithThemes[]> {
+}): Promise<ListCandidatesResult> {
   const { workspace, candidateRepo } = input;
 
   const requestedLimit = input.limit ?? readTopNFromEnv();
@@ -242,10 +254,17 @@ export async function listCandidates(input: {
     `${LOG} listCandidates — teamId: ${workspace.teamId} | userId: ${workspace.userId} | limit: ${limit} | offset: ${offset}`
   );
 
-  return candidateRepo.listByWorkspace(workspace.teamId, workspace.userId, {
-    limit,
-    offset,
-  });
+  const rows = await candidateRepo.listByWorkspace(
+    workspace.teamId,
+    workspace.userId,
+    { limit: limit + 1, offset }
+  );
+
+  const hasMore = rows.length > limit;
+  return {
+    items: hasMore ? rows.slice(0, limit) : rows,
+    hasMore,
+  };
 }
 
 /**
