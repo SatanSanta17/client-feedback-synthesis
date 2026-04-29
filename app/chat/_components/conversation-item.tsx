@@ -13,6 +13,10 @@ import { Pin } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import { formatRelativeTime } from "@/lib/utils/format-relative-time";
+import {
+  useHasUnseenCompletion,
+  useIsStreaming,
+} from "@/lib/streaming";
 import { ConversationContextMenu } from "./conversation-context-menu";
 import type { Conversation } from "@/lib/types/chat";
 
@@ -53,6 +57,25 @@ export const ConversationItem = memo(function ConversationItem({
   onArchive,
   onUnarchive,
 }: ConversationItemProps) {
+  // -------------------------------------------------------------------------
+  // Streaming-state subscription (PRD-024 P4.R1, P4.R2)
+  // -------------------------------------------------------------------------
+  // Both hooks use primitive selectors over the streaming store, so this
+  // entry doesn't re-render on deltas in OTHER conversations.
+
+  const isStreaming = useIsStreaming(conversation.id);
+  const hasUnseenCompletion = useHasUnseenCompletion(conversation.id);
+  const showDot = isStreaming || hasUnseenCompletion;
+
+  // Cohesive screen-reader announcement (P4.R5): the dot is decorative
+  // (aria-hidden); the entry's aria-label carries the state so the row
+  // reads as one logical thing instead of fragmenting title + status.
+  const ariaLabel = isStreaming
+    ? `${conversation.title}, generating response`
+    : hasUnseenCompletion
+      ? `${conversation.title}, new unread response`
+      : conversation.title;
+
   // -------------------------------------------------------------------------
   // Inline rename state
   // -------------------------------------------------------------------------
@@ -113,6 +136,7 @@ export const ConversationItem = memo(function ConversationItem({
     <div
       role="button"
       tabIndex={0}
+      aria-label={ariaLabel}
       onClick={isEditing ? undefined : onSelect}
       onKeyDown={(e) => {
         if (isEditing) return;
@@ -131,6 +155,20 @@ export const ConversationItem = memo(function ConversationItem({
       {/* Pin indicator */}
       {conversation.isPinned && (
         <Pin className="size-3 shrink-0 text-muted-foreground" aria-hidden="true" />
+      )}
+
+      {/* Streaming / unseen-completion indicator (PRD-024 P4.R1, R2).
+          Single element with conditional pulsing — when the slice transitions
+          streaming → idle (with hasUnseenCompletion), the dot doesn't
+          unmount/remount, it just loses animate-pulse. */}
+      {showDot && (
+        <span
+          aria-hidden="true"
+          className={cn(
+            "size-2 shrink-0 rounded-full bg-primary",
+            isStreaming && "animate-pulse"
+          )}
+        />
       )}
 
       {/* Title + timestamp */}
