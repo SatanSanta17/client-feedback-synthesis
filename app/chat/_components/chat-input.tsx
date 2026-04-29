@@ -15,10 +15,7 @@ import { ArchiveRestore, ArrowUp, Square } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
-import {
-  MAX_CONCURRENT_STREAMS,
-  useActiveStreamCount,
-} from "@/lib/streaming";
+import { MAX_CONCURRENT_STREAMS } from "@/lib/streaming";
 import type { StreamState } from "@/lib/types/chat";
 
 // ---------------------------------------------------------------------------
@@ -37,11 +34,14 @@ interface ChatInputProps {
   /** Current streaming state — controls send vs stop button. */
   streamState: StreamState;
   /**
-   * Active workspace — NULL = personal. Used to scope the concurrent-stream
-   * cap (PRD-024 P3.R3) so a user can have up to MAX_CONCURRENT_STREAMS
-   * running per workspace independently.
+   * True when the workspace's active-stream count is at or above
+   * MAX_CONCURRENT_STREAMS (PRD-024 P3.R3). Computed by the parent
+   * (chat-area) so all input surfaces — this component, starter
+   * questions, follow-up chips — share one source of truth and gate
+   * consistently. Disables Send + renders the inline blocking banner
+   * when this is true and not currently streaming this conversation.
    */
-  teamId: string | null;
+  capReached: boolean;
   /** Whether the conversation is archived (disables input). */
   isArchived: boolean;
   /** Text to inject into the textarea (e.g. from follow-up chip click).
@@ -63,7 +63,7 @@ interface ChatInputProps {
 
 export function ChatInput({
   streamState,
-  teamId,
+  capReached,
   isArchived,
   suggestedText,
   onSendMessage,
@@ -75,12 +75,13 @@ export function ChatInput({
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const isStreaming = streamState === "streaming";
 
-  // Per-workspace cap (PRD-024 P3.R3). Only blocks NEW streams — when this
-  // conversation is already streaming, the user can still cancel via Stop.
-  const activeStreamCount = useActiveStreamCount(teamId);
-  const isAtCap =
-    !isStreaming && activeStreamCount >= MAX_CONCURRENT_STREAMS;
-  const canSend = value.trim().length > 0 && !isStreaming && !isAtCap;
+  // The cap-blocked banner only renders when the workspace is at cap AND
+  // this conversation isn't currently streaming. When this conversation is
+  // streaming, the user already has a Stop button — no need to show the
+  // cap message.
+  const showCapBanner = !isStreaming && capReached;
+  const canSend =
+    value.trim().length > 0 && !isStreaming && !capReached;
 
   // Populate textarea when suggestedText changes (e.g. follow-up chip click)
   const prevSuggestedTsRef = useRef(0);
@@ -118,7 +119,12 @@ export function ChatInput({
 
   const handleSend = useCallback(() => {
     const trimmed = value.trim();
-    if (!trimmed || isStreaming) return;
+    // Gate by cap as well as stream state — the Send button is visually
+    // disabled, but Enter (handleKeyDown) calls handleSend directly,
+    // bypassing the button's disabled attribute. Without this, pressing
+    // Enter at cap would clear the textarea and the streaming module's
+    // defensive guard would silently refuse the send (orphaned UX).
+    if (!trimmed || isStreaming || capReached) return;
 
     setValue("");
     // Reset textarea height after clearing
@@ -132,7 +138,7 @@ export function ChatInput({
       const msg = err instanceof Error ? err.message : "Unknown error";
       console.error("[ChatInput] send failed:", msg);
     });
-  }, [value, isStreaming, onSendMessage]);
+  }, [value, isStreaming, capReached, onSendMessage]);
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -178,7 +184,7 @@ export function ChatInput({
 
   return (
     <div className={cn("border-t border-border px-4 py-3", className)}>
-      {isAtCap && (
+      {showCapBanner && (
         <div
           role="status"
           aria-live="polite"

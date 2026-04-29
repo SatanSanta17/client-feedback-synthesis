@@ -12,6 +12,10 @@ import { useState, useCallback, useMemo, useEffect } from "react";
 import { FileQuestion, MessageSquare } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import {
+  MAX_CONCURRENT_STREAMS,
+  useActiveStreamCount,
+} from "@/lib/streaming";
 import { ChatHeader } from "./chat-header";
 import { ChatSearchBar } from "./chat-search-bar";
 import { MessageThread } from "./message-thread";
@@ -122,6 +126,14 @@ export function ChatArea(props: ChatAreaProps) {
   const isFreshChat = activeConversationId === null;
   const hasMessages = messages.length > 0 || streamState === "streaming";
   const isStreaming = streamState === "streaming";
+
+  // Workspace-scoped concurrent-stream cap (PRD-024 P3.R3). Owned here so
+  // every input surface — chat-input, starter questions — gates against
+  // the same source of truth. Without this, follow-up paths to
+  // onSendMessage (Enter key, starter-question click) would bypass any
+  // cap state local to chat-input.
+  const activeStreamCount = useActiveStreamCount(teamId);
+  const capReached = activeStreamCount >= MAX_CONCURRENT_STREAMS;
 
   // -------------------------------------------------------------------------
   // In-conversation search state
@@ -284,7 +296,7 @@ export function ChatArea(props: ChatAreaProps) {
           </div>
           <StarterQuestions
             onSendMessage={onSendMessage}
-            disabled={isStreaming}
+            disabled={isStreaming || capReached}
           />
         </div>
       ) : (
@@ -317,7 +329,7 @@ export function ChatArea(props: ChatAreaProps) {
       {!isConversationNotFound && (
         <ChatInput
           streamState={streamState}
-          teamId={teamId}
+          capReached={capReached}
           isArchived={isArchived}
           suggestedText={suggestedText}
           onSendMessage={onSendMessage}

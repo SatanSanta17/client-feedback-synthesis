@@ -131,9 +131,9 @@ synthesiser/
 │   ├── chat/
 │   │   ├── page.tsx             # Chat tab — server component with metadata, renders ChatPageContent
 │   │   └── _components/
-│   │       ├── chat-area.tsx               # Main chat area — composes header, search bar, message thread, input, error banner; manages in-conversation search state
+│   │       ├── chat-area.tsx               # Main chat area — composes header, search bar, message thread, input, error banner; manages in-conversation search state; owns per-workspace cap state (useActiveStreamCount(teamId) + MAX_CONCURRENT_STREAMS) and gates BOTH chat-input and starter-questions consistently against one source of truth (PRD-024 Part 3)
 │   │       ├── chat-header.tsx             # Conversation title bar — sidebar toggle, mobile menu, search toggle
-│   │       ├── chat-input.tsx              # Auto-expanding textarea (1–6 rows) with send/stop buttons, Enter/Shift+Enter, archived unarchive bar
+│   │       ├── chat-input.tsx              # Auto-expanding textarea (1–6 rows) with send/stop buttons, Enter/Shift+Enter, archived unarchive bar; receives capReached: boolean from chat-area and renders the inline blocking banner (role=status, aria-live=polite) when capReached && !isStreaming; handleSend gates on capReached so Enter doesn't bypass the disabled Send button (PRD-024 Part 3)
 │   │       ├── chat-page-content.tsx       # Client coordinator — wires useConversations + useChat, manages active conversation, sidebar state
 │   │       ├── chat-search-bar.tsx         # In-conversation search — input, match count, prev/next navigation, keyboard shortcuts
 │   │       ├── citation-chips.tsx          # Pill-shaped citation chips with client name · date, opens CitationPreviewDialog
@@ -407,9 +407,9 @@ synthesiser/
 │   │   └── team-service.ts      # Team CRUD + canUserCreateTeam() + getTeamMembersWithProfiles(), getTeamsWithRolesForUser() — accepts TeamRepository (and ProfileRepository for canUserCreateTeam)
 │   ├── streaming/                # Client-side streaming-state module (PRD-024 Part 1) — module-level store keyed by conversationId, useSyncExternalStore-backed hooks, SSE loop. No consumers wired yet (legacy useChat still owns chat behavior)
 │   │   ├── index.ts              # Public API barrel — types + actions + hooks
-│   │   ├── streaming-types.ts    # ConversationStreamSlice, StartStreamArgs, IDLE_SLICE_DEFAULTS
+│   │   ├── streaming-types.ts    # ConversationStreamSlice, StartStreamArgs, IDLE_SLICE_DEFAULTS, MAX_CONCURRENT_STREAMS (=5, PRD-024 P3.R3)
 │   │   ├── streaming-store.ts    # Module-level Map<conversationId, slice> + listener Set + AbortController map; subscribe/getSlice/setSlice/listSlices/clearAll — framework-agnostic
-│   │   ├── streaming-actions.ts  # startStream (SSE loop, writes to slice), cancelStream (preserves partial content as cancelled bubble), markConversationViewed, clearAllStreams
+│   │   ├── streaming-actions.ts  # startStream (SSE loop, writes to slice; defensive cap guard refuses if at MAX_CONCURRENT_STREAMS), cancelStream (preserves partial content as cancelled bubble), markConversationViewed, markFinalMessageConsumed, clearAllStreams
 │   │   └── streaming-hooks.ts    # useStreamingSlice, useIsStreaming, useActiveStreamIds, useActiveStreamCount, useUnseenCompletionIds, useHasAnyUnseenCompletion — useSyncExternalStore-backed; aggregate hooks cache by teamId for stable refs
 │   ├── utils/
 │   │   ├── chat-helpers.ts        # Pure utilities — SSE encoding, follow-up parsing/strip, SSE chunk decoder, source mapping and deduplication (PRD-020 + PRD-024 Part 1: parseSSEChunk + stripFollowUpBlock extracted from use-chat.ts)
