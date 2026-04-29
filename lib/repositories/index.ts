@@ -78,3 +78,14 @@ export type {
   ListForBellResult,
   DeleteExpiredOptions,
 } from "./notification-repository";
+export type {
+  ThemeCandidateRepository,
+  ThemeCandidatePairsRepository,
+  ThemeCandidateInsert,
+  ListCandidatesOptions,
+} from "./theme-candidate-repository";
+export type {
+  ThemeDismissalRepository,
+  ThemeDismissalInsert,
+} from "./theme-dismissal-repository";
+export { pairKey } from "./theme-dismissal-repository";
