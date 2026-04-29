@@ -139,8 +139,8 @@ synthesiser/
 │   │       ├── citation-chips.tsx          # Pill-shaped citation chips with client name · date, opens CitationPreviewDialog
 │   │       ├── citation-preview-dialog.tsx # Dialog showing source chunk text, metadata, "View full session" link
 │   │       ├── conversation-context-menu.tsx # Right-click context menu — rename, pin, archive/unarchive, delete
-│   │       ├── conversation-item.tsx       # Single conversation row — title, date, pin/archive badges, context menu
-│   │       ├── conversation-sidebar.tsx    # Collapsible sidebar — search, active/archived lists, new chat button, desktop panel + mobile Sheet
+│   │       ├── conversation-item.tsx       # Single conversation row — title, date, pin/archive badges, context menu; renders pulsating brand-accent dot when streaming, solid dot when conversation has unseen completed response (PRD-024 P4); aria-label extends to include state for cohesive screen-reader announcement
+│   │       ├── conversation-sidebar.tsx    # Collapsible sidebar — search, active/archived lists, new chat button, desktop panel + mobile Sheet; aggregate streaming-status footer text via useActiveStreamCount(teamId) with templated singular/plural and aria-live="polite" (PRD-024 P4.R4)
 │   │       ├── follow-up-chips.tsx         # Clickable follow-up question pills with Sparkles icon
 │   │       ├── highlighted-text.tsx        # Search highlight — splits text by regex, wraps matches in <mark>; exports highlightChildren() recursive utility
 │   │       ├── memoized-markdown.tsx       # React.memo'd ReactMarkdown with remark-gfm, search highlighting via component overrides
@@ -410,7 +410,7 @@ synthesiser/
 │   │   ├── streaming-types.ts    # ConversationStreamSlice, StartStreamArgs, IDLE_SLICE_DEFAULTS, MAX_CONCURRENT_STREAMS (=5, PRD-024 P3.R3)
 │   │   ├── streaming-store.ts    # Module-level Map<conversationId, slice> + listener Set + AbortController map; subscribe/getSlice/setSlice/listSlices/clearAll — framework-agnostic
 │   │   ├── streaming-actions.ts  # startStream (SSE loop, writes to slice; defensive cap guard refuses if at MAX_CONCURRENT_STREAMS), cancelStream (preserves partial content as cancelled bubble), markConversationViewed, markFinalMessageConsumed, clearAllStreams
-│   │   └── streaming-hooks.ts    # useStreamingSlice, useIsStreaming, useActiveStreamIds, useActiveStreamCount, useUnseenCompletionIds, useHasAnyUnseenCompletion — useSyncExternalStore-backed; aggregate hooks cache by teamId for stable refs
+│   │   └── streaming-hooks.ts    # useStreamingSlice, useIsStreaming, useHasUnseenCompletion, useActiveStreamIds, useActiveStreamCount, useUnseenCompletionIds, useHasAnyUnseenCompletion — useSyncExternalStore-backed; per-conversation hooks (useIsStreaming, useHasUnseenCompletion) use primitive selectors so subscribers to A don't re-render on deltas in B; aggregate hooks cache by teamId for stable refs
 │   ├── utils/
 │   │   ├── chat-helpers.ts        # Pure utilities — SSE encoding, follow-up parsing/strip, SSE chunk decoder, source mapping and deduplication (PRD-020 + PRD-024 Part 1: parseSSEChunk + stripFollowUpBlock extracted from use-chat.ts)
 │   │   ├── compose-ai-input.ts    # Composes raw notes + attachments into a single AI input string

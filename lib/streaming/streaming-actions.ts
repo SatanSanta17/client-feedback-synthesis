@@ -89,11 +89,20 @@ export function startStream(args: StartStreamArgs): void {
       console.error(
         `${LOG_PREFIX} stream failed conversation=${conversationId}: ${message}`
       );
+      // PRD-024 P4.R2: errored-with-content-persisted is a terminal state that
+      // should produce the solid dot. The server persists the failed message
+      // with whatever content streamed before the error (chat-stream-service
+      // flips status:"failed" with fullText). Mirror that here — set the
+      // unseen flag iff partial content arrived. Pure-failure (no deltas
+      // before error) skips the flag because there's nothing to view.
+      const sliceBeforeClear = getSlice(conversationId);
+      const hadContent = !!sliceBeforeClear?.streamingContent;
       setSlice(conversationId, {
         streamState: "error",
         error: message,
         streamingContent: "",
         statusText: null,
+        hasUnseenCompletion: hadContent,
       });
     })
     .finally(() => {

@@ -287,15 +287,28 @@ export function useChat(options: UseChatOptions): UseChatReturn {
     const completed = slice.finalMessage;
     setMessages((prev) => [...prev, completed]);
     markFinalMessageConsumed(slice.conversationId);
-    // The user is actively viewing this conversation when the fold runs —
-    // clear the unseen flag (set unconditionally at completion-time) so the
-    // sidebar entry doesn't show a stale solid dot. Idempotent with
-    // chat-page-content's navigation-time call.
-    markConversationViewed(slice.conversationId);
     console.log(
       `${LOG_PREFIX} folded finalMessage conversation=${slice.conversationId} messageId=${completed.id} status=${completed.status}`
     );
   }, [slice?.finalMessage, slice?.conversationId]);
+
+  // -------------------------------------------------------------------------
+  // Auto-acknowledge unseen-completion while user is viewing (PRD-024 P4.R2)
+  // -------------------------------------------------------------------------
+  //
+  // Invariant: if useChat is mounted on a conversation, that conversation's
+  // hasUnseenCompletion should always be cleared — the user IS the viewer.
+  // This effect handles all terminal states uniformly: completion (paired
+  // with finalMessage, fold runs alongside), cancellation-with-content
+  // (same), AND errored-with-content (where finalMessage stays null but the
+  // flag is set — without this effect, the fold would skip and the sidebar
+  // would show a stale solid dot on the conversation the user is viewing).
+
+  useLayoutEffect(() => {
+    if (slice?.hasUnseenCompletion && slice.conversationId) {
+      markConversationViewed(slice.conversationId);
+    }
+  }, [slice?.hasUnseenCompletion, slice?.conversationId]);
 
   // -------------------------------------------------------------------------
   // Fetch more messages (infinite scroll upward)
