@@ -157,19 +157,6 @@ export const ConversationItem = memo(function ConversationItem({
         <Pin className="size-3 shrink-0 text-muted-foreground" aria-hidden="true" />
       )}
 
-      {/* Streaming / unseen-completion indicator (PRD-024 P4.R1, R2).
-          Single element with conditional pulsing — when the slice transitions
-          streaming → idle (with hasUnseenCompletion), the dot doesn't
-          unmount/remount, it just loses animate-pulse. */}
-      {showDot && (
-        <span
-          aria-hidden="true"
-          className={cn(
-            "size-2 shrink-0 rounded-full bg-primary",
-            isStreaming && "animate-pulse"
-          )}
-        />
-      )}
 
       {/* Title + timestamp */}
       <div className="min-w-0 flex-1">
@@ -197,6 +184,21 @@ export const ConversationItem = memo(function ConversationItem({
           {formatRelativeTime(conversation.updatedAt)}
         </div>
       </div>
+
+
+      {/* Streaming / unseen-completion indicator (PRD-024 P4.R1, R2).
+          Single element with conditional pulsing — when the slice transitions
+          streaming → idle (with hasUnseenCompletion), the dot doesn't
+          unmount/remount, it just loses animate-pulse. */}
+      {showDot && (
+        <span
+          aria-hidden="true"
+          className={cn(
+            "size-2 shrink-0 rounded-full bg-primary",
+            isStreaming && "animate-pulse"
+          )}
+        />
+      )}
 
       {/* Context menu (visible on hover / focus) */}
       {!isEditing && (
