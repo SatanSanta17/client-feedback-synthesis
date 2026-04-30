@@ -15,6 +15,7 @@ import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { DashboardCard } from "./dashboard-card";
 import { useDashboardFetch } from "./use-dashboard-fetch";
+import { useRecentlyMergedThemes } from "./use-recently-merged-themes";
 import { BRAND_PRIMARY_HEX, formatChunkTypePlural } from "./chart-colours";
 import type { DrillDownContext } from "./drill-down-types";
 
@@ -95,15 +96,7 @@ export function TopThemesWidget({ className, onDrillDown }: TopThemesWidgetProps
   const { data, isLoading, error, refetch } =
     useDashboardFetch<TopThemesData>({ action: "top_themes" });
 
-  // PRD-026 Part 4 — fetch the canonical-theme-id set for the indicator.
-  const { data: recentMergedData } = useDashboardFetch<{
-    themeIds: string[];
-  }>({ action: "recently_merged_themes" });
-
-  const recentlyMergedSet = useMemo(
-    () => new Set(recentMergedData?.themeIds ?? []),
-    [recentMergedData?.themeIds]
-  );
+  const recentlyMergedSet = useRecentlyMergedThemes();
 
   const [showAll, setShowAll] = useState(false);
 

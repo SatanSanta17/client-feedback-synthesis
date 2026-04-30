@@ -11,6 +11,8 @@
 
 import { type SupabaseClient } from "@supabase/supabase-js";
 
+import { readNumericEnv } from "@/lib/utils/env-numeric";
+
 import { LOG_PREFIX } from "../action-metadata";
 import { baseClientQuery } from "../shared/base-query-builder";
 import { dateTrunc } from "../shared/row-helpers";
@@ -29,16 +31,11 @@ import type { QueryFilters } from "../types";
 const DEFAULT_INDICATOR_WINDOW_DAYS = 7;
 
 function readIndicatorWindowDays(): number {
-  const raw = process.env.THEME_MERGE_INDICATOR_WINDOW_DAYS;
-  if (!raw) return DEFAULT_INDICATOR_WINDOW_DAYS;
-  const parsed = parseInt(raw, 10);
-  if (isNaN(parsed) || parsed < 0) {
-    console.warn(
-      `${LOG_PREFIX} THEME_MERGE_INDICATOR_WINDOW_DAYS="${raw}" is invalid (must be non-negative integer) — falling back to ${DEFAULT_INDICATOR_WINDOW_DAYS}`
-    );
-    return DEFAULT_INDICATOR_WINDOW_DAYS;
-  }
-  return parsed;
+  return readNumericEnv(
+    "THEME_MERGE_INDICATOR_WINDOW_DAYS",
+    DEFAULT_INDICATOR_WINDOW_DAYS,
+    { min: 0, kind: "int", logPrefix: LOG_PREFIX }
+  );
 }
 
 /**

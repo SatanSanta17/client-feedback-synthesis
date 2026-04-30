@@ -14,6 +14,7 @@
 
 import { embedTexts } from "@/lib/services/embedding-service";
 import type { Theme } from "@/lib/types/theme";
+import { readNumericEnv } from "@/lib/utils/env-numeric";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -176,17 +177,11 @@ export async function runThemePrevention(input: {
 // ---------------------------------------------------------------------------
 
 function readThresholdFromEnv(): number {
-  const raw = process.env.THEME_PREVENTION_SIMILARITY_THRESHOLD;
-  if (!raw) return DEFAULT_THRESHOLD;
-
-  const parsed = parseFloat(raw);
-  if (isNaN(parsed) || parsed < 0 || parsed > 1) {
-    console.warn(
-      `${LOG} THEME_PREVENTION_SIMILARITY_THRESHOLD="${raw}" is invalid (must be 0..1) — falling back to default ${DEFAULT_THRESHOLD}`
-    );
-    return DEFAULT_THRESHOLD;
-  }
-  return parsed;
+  return readNumericEnv(
+    "THEME_PREVENTION_SIMILARITY_THRESHOLD",
+    DEFAULT_THRESHOLD,
+    { min: 0, max: 1, logPrefix: LOG }
+  );
 }
 
 function findBestMatch(

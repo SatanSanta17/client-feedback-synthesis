@@ -6,6 +6,7 @@ import { cn } from "@/lib/utils";
 import { RecentMergeIndicator } from "@/components/dashboard/recent-merge-indicator";
 import { DashboardCard } from "./dashboard-card";
 import { useDashboardFetch } from "./use-dashboard-fetch";
+import { useRecentlyMergedThemes } from "./use-recently-merged-themes";
 import { BRAND_PRIMARY_RGB, CHART_HIGH_CONTRAST_TEXT_HEX } from "./chart-colours";
 import type { DrillDownContext } from "./drill-down-types";
 
@@ -89,15 +90,7 @@ export function ThemeClientMatrixWidget({
   const { data, isLoading, error, refetch } =
     useDashboardFetch<MatrixData>({ action: "theme_client_matrix" });
 
-  // PRD-026 Part 4 — fetch the canonical-theme-id set for the indicator.
-  const { data: recentMergedData } = useDashboardFetch<{
-    themeIds: string[];
-  }>({ action: "recently_merged_themes" });
-
-  const recentlyMergedSet = useMemo(
-    () => new Set(recentMergedData?.themeIds ?? []),
-    [recentMergedData?.themeIds]
-  );
+  const recentlyMergedSet = useRecentlyMergedThemes();
 
   const [tooltip, setTooltip] = useState<TooltipState>(INITIAL_TOOLTIP);
 

@@ -16,6 +16,7 @@ import { Check, ChevronsUpDown } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { RecentMergeIndicator } from "@/components/dashboard/recent-merge-indicator";
+import { useRecentlyMergedThemes } from "./use-recently-merged-themes";
 import {
   Popover,
   PopoverContent,
@@ -114,15 +115,7 @@ export function ThemeTrendsWidget({ className, onDrillDown }: ThemeTrendsWidgetP
       extraParams: { granularity },
     });
 
-  // PRD-026 Part 4 — fetch the canonical-theme-id set for the indicator.
-  const { data: recentMergedData } = useDashboardFetch<{
-    themeIds: string[];
-  }>({ action: "recently_merged_themes" });
-
-  const recentlyMergedSet = useMemo(
-    () => new Set(recentMergedData?.themeIds ?? []),
-    [recentMergedData?.themeIds]
-  );
+  const recentlyMergedSet = useRecentlyMergedThemes();
 
   const allThemes = data?.themes ?? [];
   const buckets = data?.buckets ?? [];

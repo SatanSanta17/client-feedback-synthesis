@@ -30,6 +30,7 @@ import {
   matchesWorkspace,
   type WorkspaceCtx,
 } from "@/lib/services/workspace-context";
+import { readNumericEnv } from "@/lib/utils/env-numeric";
 
 export type { WorkspaceCtx } from "@/lib/services/workspace-context";
 
@@ -482,29 +483,17 @@ async function fetchThemeStats(
 }
 
 function readCandidateThresholdFromEnv(): number {
-  const raw = process.env.THEME_CANDIDATE_SIMILARITY_THRESHOLD;
-  if (!raw) return DEFAULT_CANDIDATE_THRESHOLD;
-
-  const parsed = parseFloat(raw);
-  if (isNaN(parsed) || parsed < 0 || parsed > 1) {
-    console.warn(
-      `${LOG} THEME_CANDIDATE_SIMILARITY_THRESHOLD="${raw}" is invalid (must be 0..1) — falling back to default ${DEFAULT_CANDIDATE_THRESHOLD}`
-    );
-    return DEFAULT_CANDIDATE_THRESHOLD;
-  }
-  return parsed;
+  return readNumericEnv(
+    "THEME_CANDIDATE_SIMILARITY_THRESHOLD",
+    DEFAULT_CANDIDATE_THRESHOLD,
+    { min: 0, max: 1, logPrefix: LOG }
+  );
 }
 
 function readTopNFromEnv(): number {
-  const raw = process.env.THEME_CANDIDATE_TOP_N;
-  if (!raw) return DEFAULT_TOP_N;
-
-  const parsed = parseInt(raw, 10);
-  if (isNaN(parsed) || parsed < 1) {
-    console.warn(
-      `${LOG} THEME_CANDIDATE_TOP_N="${raw}" is invalid (must be positive integer) — falling back to default ${DEFAULT_TOP_N}`
-    );
-    return DEFAULT_TOP_N;
-  }
-  return parsed;
+  return readNumericEnv("THEME_CANDIDATE_TOP_N", DEFAULT_TOP_N, {
+    min: 1,
+    kind: "int",
+    logPrefix: LOG,
+  });
 }
