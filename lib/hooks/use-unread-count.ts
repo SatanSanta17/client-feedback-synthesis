@@ -33,8 +33,14 @@ export function useUnreadCount(): UseUnreadCountReturn {
   const [count, setCount] = useState<number>(0);
   const cancelledRef = useRef(false);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Fetch-generation counter — incremented per call. Stale fetches (a slow
+  // mount-fetch returning after a fresh Realtime-triggered fetch already
+  // wrote the latest count) are discarded by gen comparison so the badge
+  // never regresses to an older snapshot.
+  const generationRef = useRef(0);
 
   const fetchCount = useCallback(async () => {
+    const myGen = ++generationRef.current;
     try {
       const res = await fetch("/api/notifications/unread-count");
       if (!res.ok) {
@@ -42,7 +48,8 @@ export function useUnreadCount(): UseUnreadCountReturn {
         return;
       }
       const data = (await res.json()) as { count: number };
-      if (!cancelledRef.current) setCount(data.count);
+      if (cancelledRef.current || myGen !== generationRef.current) return;
+      setCount(data.count);
     } catch (err) {
       console.error(`${LOG_PREFIX} fetch failed:`, err);
     }

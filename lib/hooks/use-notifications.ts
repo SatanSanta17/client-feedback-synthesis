@@ -51,9 +51,15 @@ export function useNotifications(): UseNotificationsReturn {
   const [isLoadingMore, setIsLoadingMore] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
   const cancelledRef = useRef(false);
+  // Fetch-generation counter — incremented per call. Stale responses
+  // (e.g., a load-more page-2 append racing a Realtime-triggered refresh
+  // page-1 fetch) are discarded by gen comparison; only the latest fetch
+  // mutates row state.
+  const generationRef = useRef(0);
 
   const fetchPage = useCallback(
     async (pageCursor: NotificationCursor | null): Promise<void> => {
+      const myGen = ++generationRef.current;
       const isFirstPage = pageCursor === null;
       if (isFirstPage) setIsLoading(true);
       else setIsLoadingMore(true);
@@ -69,12 +75,12 @@ export function useNotifications(): UseNotificationsReturn {
         const res = await fetch(`/api/notifications?${params}`);
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = (await res.json()) as ListForBellResult;
-        if (cancelledRef.current) return;
+        if (cancelledRef.current || myGen !== generationRef.current) return;
         setRows((prev) => (isFirstPage ? data.rows : [...prev, ...data.rows]));
         setCursor(data.nextCursor);
         setHasMore(data.nextCursor !== null);
       } catch (err) {
-        if (cancelledRef.current) return;
+        if (cancelledRef.current || myGen !== generationRef.current) return;
         // Log the raw error for debugging; surface a friendly message to the
         // user (raw `err.message` is often "HTTP 500" / "Failed to fetch" —
         // not useful in a dropdown).

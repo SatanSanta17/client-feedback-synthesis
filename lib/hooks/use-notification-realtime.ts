@@ -24,9 +24,12 @@ const CHANNEL_NAME = "workspace-notifications";
  * produced a new `onChange` would trigger a WebSocket round-trip cleanup +
  * reconnect.
  *
- * The channel name is shared across consumers — Supabase JS deduplicates
- * channels by name, so multiple hook callers fan out from one underlying
- * channel rather than each opening a separate WebSocket subscription.
+ * The channel name `"workspace-notifications"` is a convention — multiple
+ * consumers (badge + list) each create their own channel object under this
+ * name; supabase-js multiplexes them onto one underlying WebSocket. Because
+ * each consumer holds its own channel reference, `removeChannel` on cleanup
+ * is unambiguous: it tears down only this consumer's listener, never affects
+ * the other consumer's subscription.
  *
  * Subscription lifecycle is `useEffect` mount/unmount: the channel is torn
  * down when the consumer unmounts. Sign-out flows naturally cascade through
