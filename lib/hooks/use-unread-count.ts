@@ -1,17 +1,26 @@
 "use client";
 
 // ---------------------------------------------------------------------------
-// useUnreadCount — bell-badge polling hook (PRD-029 Part 2)
+// useUnreadCount — bell-badge realtime + polling hook (PRD-029 Parts 2 + 4)
 // ---------------------------------------------------------------------------
-// Polls /api/notifications/unread-count while the tab is visible; pauses when
-// hidden; refetches on focus. Forward-compatible with Part 4: when Realtime
-// lands, this hook's body changes but the public return shape does not.
+// Realtime is the primary signal — the bell refetches the unread count
+// within 1-2 seconds of any change to `workspace_notifications` the user
+// has RLS visibility to. Polling at 5-minute cadence is a safety net for
+// silent WebSocket drops (network blip the client misses, server restart,
+// auth-token-refresh edge cases). Tab-hidden pauses the polling entirely;
+// focus refetches immediately.
 // ---------------------------------------------------------------------------
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
+import { useNotificationRealtime } from "@/lib/hooks/use-notification-realtime";
+
 const LOG_PREFIX = "[useUnreadCount]";
-const POLL_INTERVAL_MS = 30_000;
+// Realtime is primary; polling is the backstop for silent drops. 5 minutes
+// is the bounded staleness window when Realtime fails — short enough that
+// users do not miss notifications for hours, long enough that healthy tabs
+// pay near-zero polling cost.
+const POLL_INTERVAL_MS = 5 * 60 * 1000;
 
 export interface UseUnreadCountReturn {
   count: number;
@@ -38,6 +47,10 @@ export function useUnreadCount(): UseUnreadCountReturn {
       console.error(`${LOG_PREFIX} fetch failed:`, err);
     }
   }, []);
+
+  // Realtime: any INSERT / UPDATE / DELETE on workspace_notifications the
+  // user has RLS visibility to triggers an immediate refetch.
+  useNotificationRealtime(fetchCount);
 
   useEffect(() => {
     cancelledRef.current = false;

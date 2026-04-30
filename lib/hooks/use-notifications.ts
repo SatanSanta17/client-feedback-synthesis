@@ -1,16 +1,20 @@
 "use client";
 
 // ---------------------------------------------------------------------------
-// useNotifications — bell-list management hook (PRD-029 Part 2)
+// useNotifications — bell-list realtime + paginated fetch hook (PRD-029
+// Parts 2 + 4)
 // ---------------------------------------------------------------------------
 // Owns the bell dropdown's row state: paginated fetch from
 // /api/notifications, optimistic local mutations for mark-read, refresh on
-// demand. The bell's NotificationBell lazy-mounts the dropdown content so
-// this hook's effects only run when the user actually opens the popover.
+// demand, Realtime-driven refresh on every change. The bell's
+// NotificationBell lazy-mounts the dropdown content so this hook's effects
+// only run when the user actually opens the popover — Realtime subscription
+// is bell-open-scoped.
 // ---------------------------------------------------------------------------
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
+import { useNotificationRealtime } from "@/lib/hooks/use-notification-realtime";
 import type {
   BellNotificationRow,
   ListForBellResult,
@@ -87,6 +91,12 @@ export function useNotifications(): UseNotificationsReturn {
   );
 
   const refresh = useCallback(() => fetchPage(null), [fetchPage]);
+
+  // Realtime: any change on workspace_notifications the user can see triggers
+  // a fresh page-1 fetch. Subscription is bell-open-scoped — when the dropdown
+  // is closed this hook is unmounted (Part 2 lazy-mount via Radix Portal) and
+  // no subscription exists.
+  useNotificationRealtime(refresh);
 
   const loadMore = useCallback(async () => {
     if (!hasMore || !cursor) return;
