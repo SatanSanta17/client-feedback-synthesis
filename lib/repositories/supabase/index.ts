@@ -22,3 +22,4 @@ export {
   createThemeCandidatePairsRepository,
 } from "./supabase-theme-candidate-repository";
 export { createThemeDismissalRepository } from "./supabase-theme-dismissal-repository";
+export { createThemeMergeRepository } from "./supabase-theme-merge-repository";

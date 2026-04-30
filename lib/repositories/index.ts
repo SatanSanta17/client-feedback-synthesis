@@ -89,3 +89,12 @@ export type {
   ThemeDismissalInsert,
 } from "./theme-dismissal-repository";
 export { pairKey } from "./theme-dismissal-repository";
+export type {
+  ThemeMergeRepository,
+  ListMergesOptions,
+} from "./theme-merge-repository";
+export {
+  MergeValidationError,
+  MergeNotFoundError,
+  MergeRepoError,
+} from "./theme-merge-repository";
