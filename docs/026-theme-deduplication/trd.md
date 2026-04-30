@@ -1143,6 +1143,7 @@ const settingsNavItems = [
 |------|--------|---------|
 | `docs/026-theme-deduplication/003-create-theme-candidates-and-dismissals.sql` | **Create** | Migration — both tables, indexes, RLS |
 | `docs/026-theme-deduplication/004-find-theme-candidate-pairs.sql` | **Create** | RPC — pairwise similarity above threshold for a workspace |
+| `docs/026-theme-deduplication/005-fetch-theme-stats.sql` | **Create** | RPC — per-theme assignment / session / client counts + last-assigned timestamp (added in Increment 2.3 alongside the service that consumes it) |
 | `lib/types/theme-candidate.ts` | **Create** | `ThemeCandidate`, `ThemeSideStats`, `ThemeCandidateWithThemes`, `ThemeDismissal` |
 | `lib/repositories/theme-candidate-repository.ts` | **Create** | `ThemeCandidateRepository` + `ThemeCandidatePairsRepository` interfaces |
 | `lib/repositories/supabase/supabase-theme-candidate-repository.ts` | **Create** | Supabase adapter — bulk insert, scoped delete, list with theme join, getById, deleteById, RPC wrapper |
@@ -1322,6 +1323,637 @@ This audit closes Part 2.
 
 ---
 
-## Parts 3–4
+## Part 3: Admin-Confirmed Theme Merge
 
-> Specified after Part 2 lands and admins have used the candidate surface enough to validate ranking + dismissal. Each subsequent part will append a "Part N" section here, mirroring the structure above, and must respect the data shapes locked in by Parts 1–2 (`themes.embedding`, `themes.merged_into_theme_id`, `theme_merge_candidates`, `theme_merge_dismissals`, `find_theme_candidate_pairs`).
+> Implements **P3.R1–P3.R8** from PRD-026.
+
+### Overview
+
+Lands the actual cleanup action that Parts 1–2 set the stage for. An admin clicks "Merge…" on a candidate row, picks the canonical side, sees a blast-radius preview, and confirms — at which point the entire merge runs server-side as a single Postgres transaction: every `signal_themes` row pointing to the archived theme is re-pointed to the canonical theme, the archived theme is marked archived with a `merged_into_theme_id` pointer, the residual candidate row is removed, and an audit record is written. Five moving pieces:
+
+1. **Schema** — new `theme_merges` audit table + new `merge_themes` Postgres function (the atomic unit of work). The function is the only legitimate write path for merging; the API never calls multiple statements sequentially against `signal_themes` and `themes`.
+2. **Service** — `theme-merge-service.ts` owns two operations: `mergeCandidatePair(candidateId, canonicalThemeId, actorId)` runs the RPC and returns a typed `MergeResult` (the shape Part 4 will hand straight into the `theme.merged` notification payload); `listRecentMerges(workspaceCtx, options)` reads the audit table for the "Recent merges" surface.
+3. **API routes** — `POST /api/themes/candidates/[id]/merge` (admin-gated) wraps `mergeCandidatePair`. `GET /api/themes/merges` (admin-gated) wraps `listRecentMerges`.
+4. **UI** — confirmation dialog with the canonical-flip toggle and blast-radius preview, hosted by `themes-page-content.tsx` so the candidate row stays a thin presentation component. The candidate row's previously-disabled "Merge…" button is wired via `onMerge(candidate)` callback. New `recent-merges-section.tsx` sits below the candidates list on `/settings/themes`.
+5. **Forward-compat for Part 4** — the service's `MergeResult` shape is a strict superset of `themeMergedPayloadSchema` from `lib/notifications/events.ts`. Part 4 imports the service and emits the notification immediately after `mergeCandidatePair` returns; Part 3 does **not** emit (separation of concerns — Part 3 is "do the merge"; Part 4 is "tell the workspace").
+
+The flow on confirmation:
+
+```
+Admin clicks "Merge…" on a candidate row
+   → CandidateRow fires onMerge(candidate)
+   → ThemesPageContent opens MergeDialog with the candidate
+Admin picks canonical (defaults to higher-volume side), reads the preview
+   → MergeDialog computes "X signal assignments will be re-pointed; Y sessions, Z clients affected" from the candidate's snapshot stats
+Admin clicks Confirm
+   → POST /api/themes/candidates/<id>/merge { canonicalThemeId }
+   → server: requireWorkspaceAdmin → service.mergeCandidatePair
+   → service.mergeCandidatePair calls the merge_themes RPC inside one Postgres transaction
+   → RPC: validate → re-point signal_themes (with conflict-aware delete-then-update) → archive → cleanup candidate + dismissal rows → insert audit row → return { auditId, reassignedCount, ...names }
+   → service returns MergeResult to the route
+   → route returns 200 with MergeResult
+Client closes dialog, fires success toast, re-fetches the candidates list (the row is already gone) and the recent-merges list (now has the new entry on top)
+```
+
+### Forward Compatibility Notes
+
+- **Part 4 (Notify Affected Users):** the service's `MergeResult` carries `archivedThemeId / archivedThemeName / canonicalThemeId / canonicalThemeName / signalAssignmentsRepointed` (= `reassignedCount`). Part 4 will additionally resolve `actorName` (from `profiles.email` until a richer profile lands) and call `notificationService.emit({ eventType: "theme.merged", payload: { ...result, actorId, actorName }, teamId, broadcast: true })` as a fire-and-forget chain after a successful merge. The `theme.merged` event type is already registered (see `lib/notifications/events.ts`); the renderer is already populated (`GitMerge` icon, deep-link to `/settings/themes`, title `Theme "X" merged into "Y"`). Part 4 ships zero schema changes — it's a single emit call wired into Part 3's success path.
+- **Backlog (reverse-merge / unmerge):** the archived theme keeps its row + `merged_into_theme_id` pointer + the audit log carries the snapshotted name + reassigned count. A reverse-merge flow would walk the audit row, re-create the archived theme by un-archiving + clearing `merged_into_theme_id`, and re-point the captured `signal_themes` rows back. The data is already there; only the UI + reverse-RPC are missing.
+- **Backlog (bulk merge):** the merge RPC is per-pair. A `merge_themes_bulk(candidate_ids[])` wrapper that calls `merge_themes` inside one outer transaction is an additive RPC — the service's `mergeCandidatePair` contract doesn't change.
+- **Backlog (auto-merge above 0.95):** PRD's backlog item. A scheduled function would call `merge_themes` for any candidate above the auto-threshold whose `combined_score` exceeds X. Same RPC; new caller. Not in scope.
+
+### Technical Decisions
+
+Continuing the numbering from Parts 1–2's decisions.
+
+22. **The merge is one Postgres function (`merge_themes`), not multiple Supabase JS calls.** P3.R5 ("no observable intermediate state") rules out a multi-statement client-side transaction — Supabase JS doesn't expose `BEGIN; ... COMMIT;` cleanly, and round-trip overhead alone makes a multi-step approach slower than a single function call. PL/pgSQL gives us multiple statements inside a single implicit transaction, error handling via `RAISE EXCEPTION`, and `RETURNING` for the audit-id round-trip. Same pattern as `match_session_embeddings` and `find_theme_candidate_pairs` (`SECURITY DEFINER`); same callers (service-role client only). The function is the **single source of truth** for the merge sequence — the service, route, and UI never re-implement the steps.
+
+23. **`signal_themes` re-point uses delete-then-update to satisfy the unique constraint.** The (embedding_id, theme_id) unique index would fire if a single signal already had assignments to *both* sides of the merge (rare but real — can happen when AI extracts the same signal under two near-duplicate themes in different sessions). The function first `DELETE`s `signal_themes` rows where `theme_id = archived_id` AND a row with the same `embedding_id` already exists with `theme_id = canonical_id` — those duplicates resolve in favour of the existing canonical assignment. Then `UPDATE`s every remaining `archived → canonical` row. No conflict can fire post-update; the unique-index invariant holds throughout. The function returns the **post-dedup count** (number of rows actually re-pointed, including the deletes) so the UI's success toast reports the real impact.
+
+24. **`theme_merges` audit row is a snapshot, not a join.** Stores `archived_theme_id`, `canonical_theme_id`, `archived_theme_name`, `canonical_theme_name`, `actor_id`, `reassigned_count`, `distinct_sessions`, `distinct_clients`, `team_id`, `initiated_by`, `merged_at`. The names are snapshotted at merge time so the audit trail is meaningful even after a future rename. There are **no foreign keys** on `archived_theme_id` / `canonical_theme_id` to `themes.id` — the merge spec archives (not deletes) the theme row, but a future hard-delete or workspace cleanup shouldn't cascade-destroy the audit history. This is also why we don't store `theme_id` references that depend on `themes.id` continuing to exist.
+
+25. **Cleanup of `theme_merge_candidates` and `theme_merge_dismissals` happens inside the merge transaction.** After re-point + archive, any candidate row referencing the archived theme is stale (the pair no longer makes sense — one side is archived). Same for any dismissal involving the archived theme. The function `DELETE`s both inside the transaction so the surface is consistent the moment the response returns. If we deferred cleanup to the next refresh, an admin would briefly see candidate rows that reference an archived theme (which would 404 in the UI when clicked).
+
+26. **Canonical default = higher-volume side; admin can flip.** P3.R3. The candidate row's snapshot stats already carry `assignment_count` per side, so the dialog computes the default without an extra round trip. Flipping the toggle re-renders the dialog (different "X will be re-pointed" preview) but doesn't refetch — the same stats apply, just inverted. The route validates that `canonicalThemeId` matches one of the candidate's `theme_a_id` / `theme_b_id`; otherwise 400.
+
+27. **Blast-radius preview reads the candidate snapshot, not a fresh query.** The candidate row already has `theme_*_assignment_count`, `theme_*_distinct_sessions`, `theme_*_distinct_clients` from the last refresh (snapshotted, max 24h stale per Decision 20). Re-querying live stats at dialog-open would double the cost on every Merge click. The dialog explicitly labels the preview "approximately N signals" — and the success toast reports the **actual** post-merge count returned by the RPC. If the dialog showed "~100 signals" and the toast says "97 re-pointed", that's expected and acceptable. P3.R2 requires the disclaimer about chat-history not being modified; that's a literal string in the dialog body.
+
+28. **The merge service does not emit the notification.** Strict Part 3 vs Part 4 separation. The service returns `MergeResult` and exits; Part 4's chain (when shipped) will call `notificationService.emit` with a payload built from `MergeResult` plus the resolved actor name. Until Part 4 lands, merges work end-to-end and the audit log is the visibility mechanism for other workspace members. This means Part 4's diff is **literally one fire-and-forget call** in `mergeCandidatePair` (or a thin wrapper if we want the chain pattern to match `runSessionPostResponseChain`); the service contract does not change.
+
+29. **Three-layer admin gating, identical to Part 2.** Sidebar nav already filters out non-admins (`useIsWorkspaceAdmin` from Part 2). Page server-component already returns the "admin-only" fallback. The new merge + recent-merges API routes use the existing `requireWorkspaceAdmin` helper. No new gating primitives — every layer Part 2 introduced is reused.
+
+30. **Recent merges renders a bounded snapshot, not paginated infinity.** Default top 10 (env-tunable later if needed); "Show more" expands to next 10. Same fetch-`limit + 1` pattern as `listCandidates`. Audit logs grow linearly, but a workspace doesn't merge daily — even a heavy 1-merge-per-week workspace produces 52 rows a year. No archival or partitioning ceremony for Part 3; revisit if workspaces start churning hundreds of merges a year.
+
+### Database Changes
+
+#### Migration: `006-create-theme-merges-and-merge-rpc.sql`
+
+```sql
+-- ============================================================
+-- PRD-026 Part 3: Theme merge audit log + atomic merge RPC.
+-- ============================================================
+
+-- ------------------------------------------------------------
+-- theme_merges (audit log)
+-- ------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS theme_merges (
+  id                       UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  team_id                  UUID REFERENCES teams(id) ON DELETE CASCADE,
+  initiated_by             UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+
+  -- Snapshot ids: NOT FK, so the audit row survives a future hard-delete
+  -- of either theme. Decision 24.
+  archived_theme_id        UUID NOT NULL,
+  canonical_theme_id       UUID NOT NULL,
+  archived_theme_name      TEXT NOT NULL,
+  canonical_theme_name     TEXT NOT NULL,
+
+  actor_id                 UUID NOT NULL REFERENCES auth.users(id),
+  reassigned_count         INTEGER NOT NULL,
+  distinct_sessions        INTEGER NOT NULL,
+  distinct_clients         INTEGER NOT NULL,
+
+  merged_at                TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- Recent-merges read pattern: workspace-scoped, ordered by merged_at DESC.
+CREATE INDEX IF NOT EXISTS theme_merges_team_merged_at_idx
+  ON theme_merges (team_id, merged_at DESC)
+  WHERE team_id IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS theme_merges_personal_merged_at_idx
+  ON theme_merges (initiated_by, merged_at DESC)
+  WHERE team_id IS NULL;
+
+ALTER TABLE theme_merges ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "team members read team merges" ON theme_merges;
+CREATE POLICY "team members read team merges"
+  ON theme_merges FOR SELECT TO authenticated
+  USING (team_id IS NOT NULL AND is_team_member(team_id));
+
+DROP POLICY IF EXISTS "users read own personal merges" ON theme_merges;
+CREATE POLICY "users read own personal merges"
+  ON theme_merges FOR SELECT TO authenticated
+  USING (team_id IS NULL AND initiated_by = auth.uid());
+
+-- INSERTs go through the merge_themes RPC under SECURITY DEFINER; no
+-- INSERT policy is intentionally needed for the authenticated role.
+
+-- ------------------------------------------------------------
+-- merge_themes — the atomic merge function (Decision 22)
+-- ------------------------------------------------------------
+
+CREATE OR REPLACE FUNCTION merge_themes(
+  archived_theme_id  UUID,
+  canonical_theme_id UUID,
+  acting_user_id     UUID
+)
+RETURNS TABLE (
+  audit_id              UUID,
+  reassigned_count      INTEGER,
+  distinct_sessions     INTEGER,
+  distinct_clients      INTEGER,
+  archived_theme_name   TEXT,
+  canonical_theme_name  TEXT,
+  team_id               UUID
+)
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+  v_archived           themes%ROWTYPE;
+  v_canonical          themes%ROWTYPE;
+  v_count              INTEGER;
+  v_distinct_sessions  INTEGER;
+  v_distinct_clients   INTEGER;
+  v_audit_id           UUID;
+BEGIN
+  -- Lock both theme rows up-front to serialise concurrent merges of the
+  -- same pair (rare, but racy). FOR UPDATE blocks any other merge or
+  -- archive of these themes until COMMIT.
+  SELECT * INTO v_archived  FROM themes WHERE id = archived_theme_id  FOR UPDATE;
+  SELECT * INTO v_canonical FROM themes WHERE id = canonical_theme_id FOR UPDATE;
+
+  IF v_archived.id IS NULL OR v_canonical.id IS NULL THEN
+    RAISE EXCEPTION 'theme(s) not found' USING ERRCODE = 'P0002';
+  END IF;
+
+  IF v_archived.id = v_canonical.id THEN
+    RAISE EXCEPTION 'cannot merge a theme into itself' USING ERRCODE = '22023';
+  END IF;
+
+  IF v_archived.is_archived OR v_canonical.is_archived THEN
+    RAISE EXCEPTION 'cannot merge an already-archived theme' USING ERRCODE = '22023';
+  END IF;
+
+  -- Workspace-scope check: both themes must belong to the same workspace.
+  IF v_archived.team_id IS DISTINCT FROM v_canonical.team_id THEN
+    RAISE EXCEPTION 'themes belong to different workspaces' USING ERRCODE = '22023';
+  END IF;
+  IF v_archived.team_id IS NULL
+     AND v_archived.initiated_by IS DISTINCT FROM v_canonical.initiated_by THEN
+    RAISE EXCEPTION 'personal-workspace themes belong to different users'
+      USING ERRCODE = '22023';
+  END IF;
+
+  -- Capture pre-merge stats (Decision 24 — snapshotted on the audit row).
+  SELECT
+    COUNT(*),
+    COUNT(DISTINCT se.session_id),
+    COUNT(DISTINCT (se.metadata->>'client_name'))
+  INTO v_count, v_distinct_sessions, v_distinct_clients
+  FROM signal_themes st
+  INNER JOIN session_embeddings se ON st.embedding_id = se.id
+  WHERE st.theme_id = archived_theme_id;
+
+  -- Re-point signal_themes (Decision 23 — delete-then-update so the
+  -- (embedding_id, theme_id) unique index never fires).
+  DELETE FROM signal_themes
+  WHERE theme_id = archived_theme_id
+    AND embedding_id IN (
+      SELECT embedding_id FROM signal_themes WHERE theme_id = canonical_theme_id
+    );
+
+  UPDATE signal_themes
+  SET theme_id = canonical_theme_id
+  WHERE theme_id = archived_theme_id;
+
+  -- Archive + pointer (P3.R4).
+  UPDATE themes
+  SET is_archived = true,
+      merged_into_theme_id = canonical_theme_id,
+      updated_at = now()
+  WHERE id = archived_theme_id;
+
+  -- Cleanup stale candidates / dismissals (Decision 25).
+  DELETE FROM theme_merge_candidates
+  WHERE theme_a_id IN (archived_theme_id, canonical_theme_id)
+     OR theme_b_id IN (archived_theme_id, canonical_theme_id);
+
+  DELETE FROM theme_merge_dismissals
+  WHERE theme_a_id IN (archived_theme_id, canonical_theme_id)
+     OR theme_b_id IN (archived_theme_id, canonical_theme_id);
+
+  -- Audit row.
+  INSERT INTO theme_merges (
+    team_id, initiated_by,
+    archived_theme_id, canonical_theme_id,
+    archived_theme_name, canonical_theme_name,
+    actor_id, reassigned_count, distinct_sessions, distinct_clients
+  ) VALUES (
+    v_archived.team_id, v_archived.initiated_by,
+    archived_theme_id, canonical_theme_id,
+    v_archived.name, v_canonical.name,
+    acting_user_id, v_count, v_distinct_sessions, v_distinct_clients
+  )
+  RETURNING id INTO v_audit_id;
+
+  audit_id             := v_audit_id;
+  reassigned_count     := v_count;
+  distinct_sessions    := v_distinct_sessions;
+  distinct_clients     := v_distinct_clients;
+  archived_theme_name  := v_archived.name;
+  canonical_theme_name := v_canonical.name;
+  team_id              := v_archived.team_id;
+  RETURN NEXT;
+END;
+$$;
+```
+
+**Why `RAISE EXCEPTION` not Postgres `assert`:** `RAISE EXCEPTION` propagates as a PostgREST error with the SQLSTATE code, which the service maps to a typed error class (see §Service Changes). `assert` aborts the function and returns a generic error.
+
+**Why we lock both theme rows with `FOR UPDATE`:** prevents two concurrent merges from racing. Without the lock, two admins clicking Merge on overlapping pairs could each pass the validation step and both write archive flags, producing an inconsistent post-state. With the lock, the second merge blocks until the first commits, then sees `is_archived = true` and exits with the right error.
+
+### Type Definitions
+
+#### `lib/types/theme-merge.ts`
+
+```typescript
+export interface ThemeMerge {
+  id: string;
+  teamId: string | null;
+  initiatedBy: string;
+  archivedThemeId: string;
+  canonicalThemeId: string;
+  archivedThemeName: string;
+  canonicalThemeName: string;
+  actorId: string;
+  reassignedCount: number;
+  distinctSessions: number;
+  distinctClients: number;
+  mergedAt: string;
+}
+
+/**
+ * Output of the `merge_themes` RPC, surfaced by the service to the route.
+ * A strict superset of `themeMergedPayloadSchema` from
+ * `lib/notifications/events.ts` minus `actorName` (Part 4 will resolve
+ * `actorName` from the profile when emitting the notification).
+ */
+export interface MergeResult {
+  auditId: string;
+  archivedThemeId: string;
+  archivedThemeName: string;
+  canonicalThemeId: string;
+  canonicalThemeName: string;
+  /** Renamed from RPC's `reassigned_count` for the camelCase domain shape;
+   *  same semantics as `themeMergedPayloadSchema.signalAssignmentsRepointed`. */
+  signalAssignmentsRepointed: number;
+  distinctSessions: number;
+  distinctClients: number;
+  teamId: string | null;
+}
+```
+
+### Repository Changes
+
+#### `lib/repositories/theme-merge-repository.ts`
+
+```typescript
+import type { ThemeMerge, MergeResult } from "@/lib/types/theme-merge";
+
+export interface ListMergesOptions {
+  limit: number;
+  offset: number;
+}
+
+export interface ThemeMergeRepository {
+  /**
+   * Calls `merge_themes` RPC. The RPC enforces every workspace-scope and
+   * archive invariant; this method just translates the row to MergeResult
+   * and surfaces typed errors via the SQLSTATE codes raised inside.
+   */
+  executeMerge(input: {
+    archivedThemeId: string;
+    canonicalThemeId: string;
+    actorId: string;
+  }): Promise<MergeResult>;
+
+  /** Read recent merges for a workspace, ordered by mergedAt DESC. */
+  listByWorkspace(
+    teamId: string | null,
+    userId: string,
+    options: ListMergesOptions
+  ): Promise<ThemeMerge[]>;
+}
+```
+
+The Supabase adapter follows the established `[supabase-theme-merge-repo]` log-prefix convention. The `executeMerge` adapter inspects `error.code` from the RPC failure to throw typed errors — `MergeValidationError` (`22023`) for "themes not found / same theme / cross-workspace / already archived"; `MergeNotFoundError` (`P0002`) for missing themes specifically. Anything else surfaces as a generic `MergeRepoError`.
+
+### Service Changes
+
+#### `lib/services/theme-merge-service.ts`
+
+```typescript
+const LOG = "[theme-merge-service]";
+const DEFAULT_RECENT_TOP_N = 10;
+const MAX_RECENT_TOP_N = 100;
+
+/** Surfaces to the route layer — translated to 404. */
+export class CandidateNotFoundForMergeError extends Error {
+  constructor(message: string) { super(message); this.name = "CandidateNotFoundForMergeError"; }
+}
+
+/** Surfaces to the route layer — translated to 400. */
+export class InvalidCanonicalChoiceError extends Error {
+  constructor(message: string) { super(message); this.name = "InvalidCanonicalChoiceError"; }
+}
+
+export interface ListRecentMergesResult {
+  items: ThemeMerge[];
+  hasMore: boolean;
+}
+
+/**
+ * Runs the merge transaction for one candidate pair.
+ *
+ * 1. Looks up the candidate to derive the archived side (the one the admin
+ *    didn't pick as canonical) and to validate workspace ownership.
+ * 2. Calls executeMerge on the RPC. The RPC handles the atomic re-point +
+ *    archive + cleanup.
+ * 3. Returns MergeResult — caller (Part 4) will use this to emit the
+ *    `theme.merged` notification once that part lands.
+ *
+ * Note: the candidate row is removed by the RPC's cleanup (Decision 25),
+ * not by an explicit second call. Keeping the cleanup inside the
+ * transaction means the candidate disappears atomically with the merge.
+ */
+export async function mergeCandidatePair(input: {
+  candidateId: string;
+  canonicalThemeId: string;
+  workspace: WorkspaceCtx;
+  actorId: string;
+  candidateRepo: ThemeCandidateRepository;
+  mergeRepo: ThemeMergeRepository;
+}): Promise<MergeResult> {
+  // 1. Load candidate; verify it belongs to this workspace (defense in
+  //    depth — the API already gated, but a misrouted call could land here).
+  // 2. Derive archivedThemeId from the candidate's theme_a_id/theme_b_id.
+  //    Validate canonicalThemeId is one of the two; otherwise throw
+  //    InvalidCanonicalChoiceError.
+  // 3. Call mergeRepo.executeMerge(...).
+  // 4. Log the result; return.
+}
+
+export async function listRecentMerges(input: {
+  workspace: WorkspaceCtx;
+  mergeRepo: ThemeMergeRepository;
+  limit?: number;
+  offset?: number;
+}): Promise<ListRecentMergesResult> {
+  // Fetch limit+1 → derive hasMore → return.
+}
+```
+
+### API Routes
+
+```
+POST /api/themes/candidates/[id]/merge
+  body: { canonicalThemeId: string }
+  returns: MergeResult
+  errors: 400 (invalid canonical), 403 (non-admin), 404 (candidate gone),
+          409 (RPC validation — already archived, cross-workspace, etc.),
+          500 (unexpected)
+
+GET /api/themes/merges?limit=&offset=
+  returns: { items: ThemeMerge[], hasMore: boolean }
+  errors: 401, 403, 500
+```
+
+Both admin-gated via the existing `requireWorkspaceAdmin` helper. Zod validation:
+- `[id]` UUID
+- `canonicalThemeId` UUID, must match one of the candidate's two ids (validated in service)
+- `limit` integer 1..100 (clamped), `offset` integer ≥ 0
+
+Logging mirrors the Part 2 routes (`[api/themes/candidates/[id]/merge]`, `[api/themes/merges]` prefixes; entry/exit/error). Routes do not duplicate the service's `[theme-merge-service]` logs.
+
+### UI Changes
+
+```
+app/settings/themes/_components/
+├── merge-dialog.tsx                # NEW — confirmation dialog with
+│                                     canonical-flip toggle, blast-radius
+│                                     preview, P3.R2 disclaimer text,
+│                                     Confirm + Cancel
+├── recent-merges-section.tsx       # NEW — sibling section below the
+│                                     candidates list; fetches GET /merges,
+│                                     renders rows, "Show more"
+├── candidate-row.tsx               # MODIFY — wire onMerge(candidate)
+│                                     callback; remove disabled state on
+│                                     "Merge…" button
+├── themes-page-content.tsx         # MODIFY — host MergeDialog open state,
+│                                     pass onMerge into rows, on success
+│                                     re-fetch candidates + recent-merges
+```
+
+**`merge-dialog.tsx`** uses the project's existing `Dialog` primitive (`@/components/ui/dialog`). The canonical-flip is a controlled radio (default = side with higher `assignmentCount`); the preview reads the candidate's snapshot (Decision 27) and shows live "X signal assignments will be re-pointed; Y sessions, Z clients affected" computed on each toggle. The disclaimer ("Past chat messages won't be rewritten — only future chat queries will use the canonical name.") is a literal string in the dialog body. Confirm button shows a loading state during the POST; Cancel is disabled during the POST so the admin can't double-click.
+
+**`recent-merges-section.tsx`** renders each merge as a single-line item: `{archivedThemeName} → {canonicalThemeName}` with a smaller caption `{reassignedCount} signal assignments · {distinctSessions} sessions · {distinctClients} clients · {relativeTime(mergedAt)}`. Bounded N=10 with "Show more". Uses the same status tokens as the candidate row.
+
+**`candidate-row.tsx`** modification is small: add an `onMerge?: (candidate: ThemeCandidateWithThemes) => void` prop, change the "Merge…" button from `disabled` to wired (`onClick={() => onMerge?.(candidate)}`), drop the `aria-label="Merge — coming in Part 3"` placeholder copy.
+
+**`themes-page-content.tsx`** modification: `useState` for `dialogCandidate: ThemeCandidateWithThemes | null`; `onMerge` opens the dialog by setting state; `onMergeConfirmed` runs the POST, on success refetches `listCandidates` + recent-merges and closes the dialog; on error shows toast + keeps the dialog open. The recent-merges section hooks its own `refresh` callback into the post-merge re-fetch.
+
+### Files Changed
+
+| File | Action | Purpose |
+|------|--------|---------|
+| `docs/026-theme-deduplication/006-create-theme-merges-and-merge-rpc.sql` | **Create** | Migration — `theme_merges` audit table + indexes + RLS + `merge_themes` RPC |
+| `lib/types/theme-merge.ts` | **Create** | `ThemeMerge`, `MergeResult` |
+| `lib/repositories/theme-merge-repository.ts` | **Create** | `ThemeMergeRepository` interface, `ListMergesOptions`, typed errors `MergeValidationError`, `MergeNotFoundError`, `MergeRepoError` |
+| `lib/repositories/supabase/supabase-theme-merge-repository.ts` | **Create** | Supabase adapter — RPC wrapper for `executeMerge`, `listByWorkspace` join-free read with workspace scope |
+| `lib/services/theme-merge-service.ts` | **Create** | `mergeCandidatePair`, `listRecentMerges`, typed errors `CandidateNotFoundForMergeError`, `InvalidCanonicalChoiceError` |
+| `app/api/themes/candidates/[id]/merge/route.ts` | **Create** | `POST` — admin-gated merge confirmation |
+| `app/api/themes/merges/route.ts` | **Create** | `GET` — admin-gated recent merges |
+| `app/settings/themes/_components/merge-dialog.tsx` | **Create** | Confirmation dialog with flip toggle + preview + disclaimer |
+| `app/settings/themes/_components/recent-merges-section.tsx` | **Create** | Sibling section below candidates list |
+| `app/settings/themes/_components/candidate-row.tsx` | Modify | Wire `onMerge` callback; drop the disabled-placeholder state |
+| `app/settings/themes/_components/themes-page-content.tsx` | Modify | Host dialog open state; coordinate re-fetch on success |
+| `lib/repositories/index.ts` + `lib/repositories/supabase/index.ts` | Modify | Barrel re-exports |
+| `ARCHITECTURE.md` | Modify | New table, new RPC, file map for the new repo/service/UI components, status line, new architecture-decision entry |
+| `CHANGELOG.md` | Modify | PRD-026 Part 3 entry |
+
+### Implementation
+
+#### Increment 3.1 — Schema + RPC
+
+**What:** Land migration `006`. `theme_merges` table + `merge_themes` PL/pgSQL function + RLS.
+
+**Steps:**
+
+1. Create `docs/026-theme-deduplication/006-create-theme-merges-and-merge-rpc.sql` containing the table, indexes, RLS policies, and the function (idempotent: `CREATE TABLE IF NOT EXISTS`, `DROP POLICY IF EXISTS` + `CREATE POLICY`, `CREATE OR REPLACE FUNCTION`).
+2. Apply to Supabase (dev first).
+3. Smoke-check the function:
+   - Pick a workspace with two themes that have signal assignments.
+   - Call `SELECT * FROM merge_themes('<archived>', '<canonical>', '<actor>')` directly.
+   - Verify: archived theme has `is_archived = true` and `merged_into_theme_id = <canonical>`; `signal_themes` rows previously pointing at archived now point at canonical; `theme_merges` has one new row; affected `theme_merge_candidates` and `theme_merge_dismissals` rows are gone.
+   - Re-call with the same archived id → should `RAISE EXCEPTION 'cannot merge an already-archived theme'`.
+   - Call with `archived = canonical` → should raise.
+   - Call with cross-workspace ids → should raise.
+
+**Verification:**
+
+- `\d theme_merges` shows all columns + indexes + RLS on.
+- `SELECT proname FROM pg_proc WHERE proname = 'merge_themes';` returns one row.
+- All four error paths raise the correct SQLSTATE.
+
+**Post-increment:** None. ARCHITECTURE batched in 3.6.
+
+---
+
+#### Increment 3.2 — Types + repository
+
+**What:** `lib/types/theme-merge.ts`, the interface, the Supabase adapter.
+
+**Steps:**
+
+1. Create `lib/types/theme-merge.ts` with `ThemeMerge` and `MergeResult`.
+2. Create `lib/repositories/theme-merge-repository.ts` with the interface + typed error classes.
+3. Create `lib/repositories/supabase/supabase-theme-merge-repository.ts`:
+   - `executeMerge` calls `serviceClient.rpc("merge_themes", { archived_theme_id, canonical_theme_id, acting_user_id })`. On error, inspects `error.code` and throws `MergeValidationError` for `22023`, `MergeNotFoundError` for `P0002`, `MergeRepoError` otherwise. On success, maps the single row to `MergeResult`.
+   - `listByWorkspace` selects `*` with workspace scope, ordered by `merged_at DESC`, range pagination.
+4. Wire into `lib/repositories/index.ts` and `lib/repositories/supabase/index.ts` barrel re-exports.
+
+**Verification:**
+
+1. `npx tsc --noEmit` passes.
+2. From a Node REPL: instantiate `createThemeMergeRepository(serviceClient)` and call `executeMerge` against a dev workspace. Verify the result shape matches `MergeResult`.
+
+**Post-increment:** None.
+
+---
+
+#### Increment 3.3 — Service: `mergeCandidatePair` + `listRecentMerges`
+
+**What:** Implement the two service operations.
+
+**Steps:**
+
+1. Create `lib/services/theme-merge-service.ts`:
+   - Imports the candidate repo (for the candidate-id lookup), merge repo, types, errors.
+   - `mergeCandidatePair`:
+     1. `candidateRepo.getById(candidateId)` → if null, throw `CandidateNotFoundForMergeError`.
+     2. Verify candidate.workspace matches the input workspace (defence in depth; API also checks).
+     3. Validate `canonicalThemeId` ∈ {`themeAId`, `themeBId`}; otherwise throw `InvalidCanonicalChoiceError`.
+     4. Compute `archivedThemeId` as the other side.
+     5. `mergeRepo.executeMerge({ archivedThemeId, canonicalThemeId, actorId })`.
+     6. Log the result; return.
+   - `listRecentMerges`: clamp limit to `[1, MAX_RECENT_TOP_N]`; fetch `limit + 1`; derive `hasMore`; return.
+2. Add typed errors and `ListRecentMergesResult` interface.
+
+**Verification:**
+
+1. `npx tsc --noEmit` passes.
+2. REPL test: call `mergeCandidatePair` against a dev candidate. Verify success + the candidate row is gone (Decision 25).
+3. Call again with a stale candidate id → `CandidateNotFoundForMergeError`.
+4. Call with `canonicalThemeId` that's neither side → `InvalidCanonicalChoiceError`.
+
+---
+
+#### Increment 3.4 — API routes
+
+**What:** The two route handlers + Zod validation.
+
+**Steps:**
+
+1. Create `app/api/themes/candidates/[id]/merge/route.ts`:
+   - Zod validate `[id]` (UUID) at the param level + body `{ canonicalThemeId: UUID }`.
+   - `requireAuth` → `requireWorkspaceAdmin` (forbidden message: "Only workspace admins can merge themes").
+   - Build `candidateRepo` + `mergeRepo`.
+   - `mergeCandidatePair(...)` inside try/catch:
+     - `CandidateNotFoundForMergeError` → 404
+     - `InvalidCanonicalChoiceError` → 400
+     - `MergeValidationError` → 409 (the merge can't proceed: already archived, cross-workspace, etc.)
+     - `MergeNotFoundError` → 404 (themes vanished between candidate refresh and merge)
+     - `MergeRepoError` / unexpected → 500
+   - Return 200 with `MergeResult`.
+2. Create `app/api/themes/merges/route.ts`:
+   - Zod validate `?limit=&offset=`.
+   - `requireAuth` → `requireWorkspaceAdmin`.
+   - Build `mergeRepo`.
+   - `listRecentMerges(...)`; return `{ items, hasMore }`.
+
+**Verification:**
+
+1. `npx tsc --noEmit` passes.
+2. `curl` round trips for the happy path and each error path. Non-admin team members → 403.
+
+---
+
+#### Increment 3.5 — UI: dialog + recent-merges + wiring
+
+**What:** Build the four UI changes.
+
+**Steps:**
+
+1. Create `app/settings/themes/_components/merge-dialog.tsx`:
+   - Props: `candidate: ThemeCandidateWithThemes | null`, `onCancel: () => void`, `onConfirmed: (result: MergeResult) => void`.
+   - Internal state: `canonicalThemeId` (defaults to higher-volume side), `isPending`.
+   - Renders only when `candidate !== null`; reads from candidate snapshot for the preview.
+   - On Confirm: POST → success → `onConfirmed(result)`; failure → toast + keep dialog open.
+2. Create `app/settings/themes/_components/recent-merges-section.tsx`:
+   - Self-contained: fetches `GET /api/themes/merges?limit=10`. Tracks `limit` for "Show more".
+   - Re-export a `refresh()` imperative handle (via `useImperativeHandle` on a `ref` from the parent) so `themes-page-content` can re-fetch after a confirmed merge.
+3. Modify `candidate-row.tsx`:
+   - Add `onMerge?: (candidate: ThemeCandidateWithThemes) => void` prop.
+   - Replace `disabled` + `aria-label="Merge — coming in Part 3"` + `title="Coming soon"` on the "Merge…" button with `onClick={() => onMerge?.(candidate)}`.
+4. Modify `themes-page-content.tsx`:
+   - Add `dialogCandidate` state.
+   - Add `recentMergesRef` (ref forwarded to `RecentMergesSection`).
+   - `onMerge(candidate)` opens the dialog by setting state.
+   - `onMergeConfirmed(result)` closes the dialog, fires `toast.success("Merged ${result.archivedThemeName} → ${result.canonicalThemeName} (${result.signalAssignmentsRepointed} signals)")`, refetches `listCandidates` and triggers `recentMergesRef.current?.refresh()`.
+   - Pass `onMerge` into `<CandidateList />` → `<CandidateRow />`.
+   - Render `<RecentMergesSection ref={recentMergesRef} />` below the candidates list.
+
+**Verification:**
+
+1. `npx tsc --noEmit` passes.
+2. Smoke test in browser:
+   - Click "Merge…" on a candidate → dialog opens with default canonical = higher-volume side.
+   - Toggle canonical → preview "X signals will be re-pointed" updates.
+   - Confirm → loading state → dialog closes → success toast → candidate row gone → recent-merges section shows the new entry on top.
+   - Cancel → dialog closes; candidate row still there.
+   - Sign in as non-admin → no Themes nav entry; direct `/api/themes/candidates/<id>/merge` POST returns 403.
+3. Mobile width: dialog renders cleanly; recent-merges rows wrap.
+4. Dark mode: status pills and disclaimer text legible.
+
+---
+
+#### Increment 3.6 — End-of-part audit
+
+Per CLAUDE.md "End-of-part audit" — produces fixes, not a report.
+
+**Checklist:**
+
+1. **SRP:** `merge-dialog.tsx` does only "show + confirm"; `recent-merges-section.tsx` does only "fetch + render"; the service's two functions don't share state; the RPC is the only place that touches `signal_themes` for a merge.
+2. **DRY:** the candidate-snapshot stats power both the dialog preview and the candidate-row footer — single source. No duplicated workspace-membership check between API and service (both go through `requireWorkspaceAdmin` / `matchesWorkspace`). The audit log query reuses `pairKey` semantics where applicable.
+3. **Design tokens:** every new colour/spacing on the dialog and the recent-merges section uses CSS custom properties / Tailwind tokens (matching the Part 2 audit's status-token convention).
+4. **Logging:** API + service log entry/exit/error; route prefixes are distinct (`[api/themes/candidates/[id]/merge]`, `[api/themes/merges]`); the RPC errors carry SQLSTATE so production grep on `[supabase-theme-merge-repo]` can surface them.
+5. **Dead code:** none. The pre-existing "Coming in Part 3" placeholder copy on the Merge button is replaced, not commented out.
+6. **Convention compliance:** kebab-case files, PascalCase types, UPPER_SNAKE constants, named exports only, import order per CLAUDE.md.
+7. **Database review:** `theme_merges` RLS is read-only for members; INSERT goes through the SECURITY DEFINER RPC; concurrent-merge race is prevented by `FOR UPDATE` on both theme rows.
+8. **Error paths:** force the RPC to fail mid-transaction (e.g., temporarily drop a column) and confirm the database is unchanged afterwards (P3.R5 atomic invariant).
+9. **ARCHITECTURE.md:**
+   - Add `theme_merges` to the data-model section.
+   - Add `merge_themes` to the RPC list.
+   - File-map entries for the new repo/service/types/UI components.
+   - Status line append: "PRD-026 Part 3 (Admin-Confirmed Theme Merge) implemented".
+   - New architecture-decision entry covering the atomic-transaction design + the candidates/dismissals cleanup-on-merge invariant + the audit-log-as-snapshot design.
+10. **CHANGELOG.md:** new PRD-026 Part 3 entry under `[Unreleased]`.
+11. **Verify file references in docs still resolve.**
+12. **Re-run flows touched by Part 3:**
+    - Capture → AI extraction → background chain (Parts 1–2 paths unchanged).
+    - Admin opens `/settings/themes` → list renders → Merge → dialog → Confirm → row gone → recent-merges populated.
+    - Dashboard widget that previously surfaced the archived theme now surfaces the canonical one (the `is_archived = false` filter excludes archived rows; signal_themes joins now resolve to canonical).
+    - Chat history: previous messages still mention the archived name verbatim; a new chat query for the same topic resolves to the canonical name (P3.R4 verification).
+13. **Final:** `npx tsc --noEmit`.
+
+This audit closes Part 3.
+
+---
+
+## Part 4
+
+> Specified after Part 3 lands and at least one merge has produced a real audit row. Part 4 is intentionally a thin layer on top of Part 3 — a single notification emit call wired into the merge service's success path — and must respect the data shapes locked in by Parts 1–3 (`themes.embedding`, `themes.merged_into_theme_id`, `theme_merge_candidates`, `theme_merge_dismissals`, `theme_merges`, `merge_themes` RPC, `MergeResult`).
