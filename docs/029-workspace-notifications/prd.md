@@ -205,6 +205,8 @@ Subscription setup, polling, and resync all happen in the background. A slow or 
 
 ## Part 5 — Retention & Cleanup
 
+> **Status:** **Deferred to backlog (2026-04-30).** Parts 1–4 close PRD-029. Cleanup is hygiene, not correctness — the bell remains correct without it (RLS scopes reads, cursor pagination caps queries, Realtime is per-event). At expected emit rates the table grows ~20MB/year; revisit when actual size or query latency starts mattering. The spec below stays for reference when implementation resumes; the per-row `expires_at` column from Part 1 is unused until then.
+
 Notifications are not an audit log. They expire.
 
 ### Requirements
@@ -238,6 +240,7 @@ The `expires_at` column on `workspace_notifications` allows a specific row to be
 
 Items intentionally deferred — real follow-ups, not load-bearing on the first ship.
 
+- **Retention & cleanup (originally Part 5).** Deferred 2026-04-30 — cleanup is hygiene, not correctness. The bell stays correct without it; table growth is ~20MB/year at expected scale. Full spec is in the Part 5 section above (and TRD-029 §"Part 5: Retention & Cleanup") for when implementation resumes. Per-row `expires_at` column from Part 1 is unused until then.
 - **Email digest.** Daily or weekly summary of unread notifications via email. Useful for users who don't open the app for a few days. Out of scope until in-app delivery proves itself.
 - **Per-user notification preferences.** Mute event types ("don't notify me about merges"), mute workspaces, set quiet hours. Build only when users ask.
 - **Browser push notifications.** Native browser notifications via the Push API. Opt-in only; needs a service worker. Deferred.

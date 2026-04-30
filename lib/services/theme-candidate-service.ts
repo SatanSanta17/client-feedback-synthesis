@@ -26,6 +26,12 @@ import type {
   ThemeCandidateWithThemes,
   ThemeSideStats,
 } from "@/lib/types/theme-candidate";
+import {
+  matchesWorkspace,
+  type WorkspaceCtx,
+} from "@/lib/services/workspace-context";
+
+export type { WorkspaceCtx } from "@/lib/services/workspace-context";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -72,11 +78,6 @@ const LOG = "[theme-candidate-service]";
 // ---------------------------------------------------------------------------
 // Public types + errors
 // ---------------------------------------------------------------------------
-
-export interface WorkspaceCtx {
-  teamId: string | null;
-  userId: string;
-}
 
 export interface RefreshResult {
   workspace: WorkspaceCtx;
@@ -372,18 +373,6 @@ function buildCandidateInsert(args: {
     shared_keywords: extractSharedKeywords(themeA, themeB),
     refresh_batch_id: refreshBatchId,
   };
-}
-
-function matchesWorkspace(
-  candidate: { teamId: string | null; initiatedBy: string },
-  workspace: WorkspaceCtx
-): boolean {
-  if (workspace.teamId !== null) {
-    return candidate.teamId === workspace.teamId;
-  }
-  // Personal workspace — both the team_id NULL check and the user-ownership
-  // check must hold.
-  return candidate.teamId === null && candidate.initiatedBy === workspace.userId;
 }
 
 function combinedScore(sim: number, vol: number, rec: number): number {

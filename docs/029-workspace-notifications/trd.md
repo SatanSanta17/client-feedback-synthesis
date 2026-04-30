@@ -2214,7 +2214,9 @@ This audit closes Part 4.
 
 ## Part 5: Retention & Cleanup
 
-> Implements **P5.R1–P5.R5** from PRD-029.
+> **Status:** **Deferred to backlog (2026-04-30).** Parts 1–4 close PRD-029 in production. Cleanup is hygiene, not correctness — the bell remains correct without it. The full spec below stays for reference when implementation resumes; in the meantime, no work in this section is scheduled and the per-row `expires_at` column from Part 1 is unused until cleanup ships.
+>
+> Implements **P5.R1–P5.R5** from PRD-029 (when resumed).
 
 ### Overview
 
@@ -2550,9 +2552,9 @@ This audit closes Part 5 and PRD-029.
 
 ---
 
-## End-of-PRD audit (after Part 5 closes)
+## End-of-PRD audit (after Part 4 closes — Part 5 deferred)
 
-Per CLAUDE.md, an end-of-PRD audit runs the full end-of-part checklist across every file the PRD touched. PRD-029 ships across:
+Per CLAUDE.md, an end-of-PRD audit runs the full end-of-part checklist across every file the PRD touched. PRD-029 closes with Parts 1–4; Part 5 is deferred to backlog and **not** in scope of this audit. PRD-029 ships across:
 
 - **Schema:** `workspace_notifications` table + 4 indexes + 2 RLS policies + Realtime publication entry.
 - **Domain primitives:** `lib/notifications/events.ts` (registry), `lib/notifications/renderers.ts` (registry), `lib/types/notification.ts`.
