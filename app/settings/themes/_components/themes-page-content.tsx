@@ -120,7 +120,7 @@ export function ThemesPageContent() {
             volume, and recency. Dismiss the ones that aren&rsquo;t real
             duplicates.
           </p>
-          <p className="mt-1 text-xs text-[var(--text-tertiary)]">
+          <p className="mt-1 text-xs text-[var(--text-muted)]">
             {formatLastRefreshed(data?.lastRefreshedAt ?? null)}
           </p>
         </div>

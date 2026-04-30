@@ -24,7 +24,7 @@ export function CandidateRow({ candidate, onDismissed }: CandidateRowProps) {
   const { themeA, themeB, themeAStats, themeBStats, sharedKeywords } = candidate;
 
   return (
-    <article className="rounded-lg border border-[var(--border-subtle)] bg-[var(--surface-card)] p-4 sm:p-5">
+    <article className="rounded-lg border border-[var(--border-default)] bg-[var(--surface-raised)] p-4 sm:p-5">
       <header className="flex flex-wrap items-center justify-between gap-2">
         <SimilarityPill score={candidate.similarityScore} />
         {sharedKeywords.length > 0 && (
@@ -48,7 +48,7 @@ export function CandidateRow({ candidate, onDismissed }: CandidateRowProps) {
         />
       </div>
 
-      <footer className="mt-4 flex flex-wrap items-center justify-end gap-2 border-t border-[var(--border-subtle)] pt-3">
+      <footer className="mt-4 flex flex-wrap items-center justify-end gap-2 border-t border-[var(--border-default)] pt-3">
         <Button
           variant="outline"
           size="sm"
@@ -64,7 +64,7 @@ export function CandidateRow({ candidate, onDismissed }: CandidateRowProps) {
         />
       </footer>
 
-      <p className="mt-2 text-[11px] uppercase tracking-wide text-[var(--text-tertiary)]">
+      <p className="mt-2 text-[11px] uppercase tracking-wide text-[var(--text-muted)]">
         {`Similarity ${candidate.similarityScore.toFixed(3)} · volume ${candidate.volumeScore.toFixed(2)} · recency ${candidate.recencyScore.toFixed(2)}`}
       </p>
     </article>
@@ -89,15 +89,16 @@ function SimilarityPill({ score }: { score: number }) {
 
 /**
  * Tier mapping mirrors the bands referenced in the TRD: ≥0.92 strong,
- * 0.85–0.92 moderate, <0.85 looser. Tailwind utility classes are kept here
- * so a future design-token migration is one file to update.
+ * 0.85–0.92 moderate, <0.85 looser. Reuses the project-wide status tokens
+ * (matching `structured-signal-view.tsx` and the dashboard insight cards)
+ * so a global theme tweak flows through here automatically.
  */
 function pillClassFor(score: number): string {
   if (score >= 0.92) {
-    return "bg-emerald-500/15 text-emerald-700 dark:text-emerald-400";
+    return "bg-[var(--status-success-light)] text-[var(--status-success)] border border-[var(--status-success-border)]";
   }
   if (score >= 0.85) {
-    return "bg-amber-500/15 text-amber-700 dark:text-amber-400";
+    return "bg-[var(--status-warning-light)] text-[var(--status-warning-text)] border border-[var(--status-warning-border)]";
   }
   return "bg-muted text-muted-foreground";
 }
@@ -119,7 +120,7 @@ function ThemeSide({ name, description, stats }: ThemeSideProps) {
           {description}
         </p>
       ) : (
-        <p className="text-sm italic text-[var(--text-tertiary)]">
+        <p className="text-sm italic text-[var(--text-muted)]">
           No description
         </p>
       )}
