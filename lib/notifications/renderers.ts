@@ -1,4 +1,4 @@
-import { Bell } from "lucide-react";
+import { Bell, CheckCircle, GitMerge, Inbox } from "lucide-react";
 import type { ComponentType } from "react";
 import type { z } from "zod";
 
@@ -6,6 +6,7 @@ import {
   NOTIFICATION_EVENTS,
   payloadSchemaFor,
   type NotificationEventType,
+  type SupersessionProposedPayload,
 } from "@/lib/notifications/events";
 import type { WorkspaceNotification } from "@/lib/types/notification";
 
@@ -32,13 +33,60 @@ export type RendererRegistry = {
   [E in NotificationEventType]: RendererFor<E>;
 };
 
+/** Tiny pluralisation helper — returns `"1 thing"` or `"N things"`. Adds
+ *  `s` for the plural form; if a future event needs irregular plurals
+ *  (e.g., "person" / "people") add a third arg then. */
+function pluralize(count: number, singular: string): string {
+  return `${count} ${count === 1 ? singular : `${singular}s`}`;
+}
+
+const SUPERSESSION_SOURCE_LABEL: Record<
+  SupersessionProposedPayload["source"],
+  string
+> = {
+  bulk_re_extract: "a bulk re-extract",
+  single_session_re_extract: "a re-extract",
+  inline_dialog_timeout: "a deferred review",
+};
+
 /**
- * Part 2 ships an empty registry. Part 3 populates each event type. The
- * `Partial<...>` cast is intentional: a deploy that lands a new event type
- * before its renderer ships still produces a working (fallback) UI rather
- * than a typecheck failure that blocks the event-type change.
+ * Per-event renderer registry (PRD-029 Part 3).
+ *
+ * Typed `Partial<RendererRegistry>` rather than the total `RendererRegistry`
+ * so a future event type can be registered in `NOTIFICATION_EVENTS` *before*
+ * its renderer ships here without breaking the typecheck — the bell falls
+ * through to FALLBACK in that window.
+ *
+ * Adding a new event type = add an entry below, ship.
  */
-export const NOTIFICATION_RENDERERS: Partial<RendererRegistry> = {};
+export const NOTIFICATION_RENDERERS: Partial<RendererRegistry> = {
+  "theme.merged": {
+    icon: GitMerge,
+    title: (payload) =>
+      `Theme "${payload.archivedThemeName}" merged into "${payload.canonicalThemeName}"`,
+    // /settings/themes is the admin-gated home for the merge surface
+    // (PRD-026 §P2.R7); members reaching it via deep-link see the
+    // recent-merges audit log even when they cannot merge themselves.
+    deepLink: () => "/settings/themes",
+  },
+  "supersession.proposed": {
+    icon: Inbox,
+    title: (payload) =>
+      `${pluralize(payload.proposalCount, "supersession proposal")} from ${SUPERSESSION_SOURCE_LABEL[payload.source]}`,
+    deepLink: () => "/improvements/inbox",
+  },
+  "bulk_re_extract.completed": {
+    icon: CheckCircle,
+    title: (payload) =>
+      payload.errorCount > 0
+        ? `Bulk re-extraction finished: ${pluralize(payload.sessionsProcessed, "session")}, ${pluralize(payload.errorCount, "error")}`
+        : `Bulk re-extraction finished: ${pluralize(payload.sessionsProcessed, "session")} processed`,
+    // No first-class bulk-run status page yet; the row is informational and
+    // clicking simply marks it read + closes the dropdown. Wire to a status
+    // surface if/when one ships.
+    deepLink: () => null,
+  },
+};
 
 // ---------------------------------------------------------------------------
 // Public consumption surface
@@ -75,6 +123,13 @@ export function renderNotification(
 ): RenderedNotification {
   const renderer = NOTIFICATION_RENDERERS[notification.eventType];
   if (!renderer) {
+    // After Part 3, every registered event has a renderer. A miss here is
+    // either a registered-but-unrendered event (deploy window where the
+    // event registration shipped without its renderer entry) or a
+    // deprecated event_type lingering in the DB. Both are worth observing.
+    console.warn(
+      `[notification-renderer] no renderer for event type "${notification.eventType}" (id: ${notification.id}); using fallback.`
+    );
     return FALLBACK;
   }
   const schema = payloadSchemaFor(notification.eventType);
