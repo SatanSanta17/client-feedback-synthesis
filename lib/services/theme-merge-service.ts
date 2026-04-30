@@ -17,10 +17,7 @@
 import type {
   ThemeCandidateRepository,
 } from "@/lib/repositories/theme-candidate-repository";
-import type {
-  ListMergesOptions,
-  ThemeMergeRepository,
-} from "@/lib/repositories/theme-merge-repository";
+import type { ThemeMergeRepository } from "@/lib/repositories/theme-merge-repository";
 import type { MergeResult, ThemeMerge } from "@/lib/types/theme-merge";
 import {
   matchesWorkspace,
@@ -163,11 +160,10 @@ export async function listRecentMerges(input: {
     `${LOG} listRecentMerges — teamId: ${workspace.teamId} | userId: ${workspace.userId} | limit: ${limit} | offset: ${offset}`
   );
 
-  const fetched: ListMergesOptions = { limit: limit + 1, offset };
   const rows = await mergeRepo.listByWorkspace(
     workspace.teamId,
     workspace.userId,
-    fetched
+    { limit: limit + 1, offset }
   );
 
   const hasMore = rows.length > limit;

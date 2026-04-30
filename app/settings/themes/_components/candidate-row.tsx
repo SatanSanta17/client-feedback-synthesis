@@ -3,6 +3,7 @@
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+import { pluralize } from "@/lib/utils/plural";
 import type { ThemeCandidateWithThemes } from "@/lib/types/theme-candidate";
 
 import { DismissAction } from "./dismiss-action";
@@ -128,14 +129,10 @@ function ThemeSide({ name, description, stats }: ThemeSideProps) {
         </p>
       )}
       <p className="text-xs text-[var(--text-secondary)]">
-        {`${stats.assignmentCount} ${plural("signal", stats.assignmentCount)} · `}
-        {`${stats.distinctSessions} ${plural("session", stats.distinctSessions)} · `}
-        {`${stats.distinctClients} ${plural("client", stats.distinctClients)}`}
+        {`${stats.assignmentCount} ${pluralize("signal", stats.assignmentCount)} · `}
+        {`${stats.distinctSessions} ${pluralize("session", stats.distinctSessions)} · `}
+        {`${stats.distinctClients} ${pluralize("client", stats.distinctClients)}`}
       </p>
     </div>
   );
-}
-
-function plural(word: string, count: number): string {
-  return count === 1 ? word : `${word}s`;
 }

@@ -9,6 +9,8 @@ import {
 } from "react";
 
 import { Button } from "@/components/ui/button";
+import { formatRelativeTime } from "@/lib/utils/format-relative-time";
+import { pluralize } from "@/lib/utils/plural";
 import type { ThemeMerge } from "@/lib/types/theme-merge";
 
 const PAGE_SIZE = 10;
@@ -126,25 +128,14 @@ function MergeListItem({ merge }: { merge: ThemeMerge }) {
         <span className="font-semibold">{merge.canonicalThemeName}</span>
       </p>
       <p className="mt-1 text-xs text-[var(--text-secondary)]">
-        {merge.reassignedCount} signal assignments ·{" "}
-        {merge.distinctSessions} sessions ·{" "}
-        {merge.distinctClients} clients ·{" "}
+        {merge.reassignedCount}{" "}
+        {pluralize("signal assignment", merge.reassignedCount)} ·{" "}
+        {merge.distinctSessions}{" "}
+        {pluralize("session", merge.distinctSessions)} ·{" "}
+        {merge.distinctClients}{" "}
+        {pluralize("client", merge.distinctClients)} ·{" "}
         {formatRelativeTime(merge.mergedAt)}
       </p>
     </li>
   );
-}
-
-function formatRelativeTime(iso: string): string {
-  const ts = new Date(iso).getTime();
-  if (isNaN(ts)) return "";
-  const ageMs = Date.now() - ts;
-  const minutes = Math.round(ageMs / 60_000);
-  if (minutes < 1) return "just now";
-  if (minutes < 60) return `${minutes}m ago`;
-  const hours = Math.round(minutes / 60);
-  if (hours < 24) return `${hours}h ago`;
-  const days = Math.round(hours / 24);
-  if (days < 30) return `${days}d ago`;
-  return new Date(iso).toLocaleDateString();
 }

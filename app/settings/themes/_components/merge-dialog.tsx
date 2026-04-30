@@ -13,6 +13,7 @@ import {
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+import { pluralize } from "@/lib/utils/plural";
 import type { ThemeCandidateWithThemes } from "@/lib/types/theme-candidate";
 import type { MergeResult } from "@/lib/types/theme-merge";
 
@@ -230,8 +231,12 @@ function CanonicalChoice({
         </span>
       )}
       <span className="text-xs text-[var(--text-secondary)]">
-        {side.stats.assignmentCount} signals · {side.stats.distinctSessions}{" "}
-        sessions · {side.stats.distinctClients} clients
+        {side.stats.assignmentCount}{" "}
+        {pluralize("signal", side.stats.assignmentCount)} ·{" "}
+        {side.stats.distinctSessions}{" "}
+        {pluralize("session", side.stats.distinctSessions)} ·{" "}
+        {side.stats.distinctClients}{" "}
+        {pluralize("client", side.stats.distinctClients)}
       </span>
     </label>
   );
@@ -251,9 +256,12 @@ function BlastRadiusPreview({
         re-pointed to <strong>{canonical.name}</strong>.
       </p>
       <p className="mt-2 text-xs text-[var(--text-secondary)]">
-        Approximately {archived.stats.assignmentCount} signal assignments
-        will be re-pointed across {archived.stats.distinctSessions} sessions
-        and {archived.stats.distinctClients} clients.
+        Approximately {archived.stats.assignmentCount}{" "}
+        {pluralize("signal assignment", archived.stats.assignmentCount)} will
+        be re-pointed across {archived.stats.distinctSessions}{" "}
+        {pluralize("session", archived.stats.distinctSessions)} and{" "}
+        {archived.stats.distinctClients}{" "}
+        {pluralize("client", archived.stats.distinctClients)}.
       </p>
     </div>
   );
