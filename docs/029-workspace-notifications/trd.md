@@ -2212,8 +2212,357 @@ This audit closes Part 4.
 
 ---
 
-## Part 5
+## Part 5: Retention & Cleanup
 
-> Specified after Part 4 lands and Realtime delivery has run in production for at least one observable cycle (latency log review, no silent-drop incidents). Part 5's section will append here, mirroring the structure above, and must respect the data shapes locked in by Parts 1–4 (`workspace_notifications` schema, `NOTIFICATION_EVENTS` registry, `NotificationRepository` interface — including `deleteExpired` from Part 1, `notification-service` public API, the four `/api/notifications/*` routes, the renderer registry, the Realtime subscription).
+> Implements **P5.R1–P5.R5** from PRD-029.
 
-- **Part 5 — Retention & cleanup.** Schedules a job (Vercel cron / Supabase pg_cron / GitHub Actions) calling `repo.deleteExpired` on a cadence. Configurable retention windows (read shorter than unread); per-row `expires_at` already supported by Part 1's schema and repository contract. The bell's read paths transparently see the smaller table. No subscription change — Realtime publishes DELETE events too, but the bell already refetches on every event so deletions appear without bespoke handling.
+### Overview
+
+Schedule a daily cron run that calls `repo.deleteExpired()` (the interface method Part 1 already locked) with read and unread retention cutoffs. Vercel Cron hits a new `/api/cron/notifications-cleanup` route handler; the handler authenticates the call via `CRON_SECRET`, instantiates the repository against the service-role client, and delegates to a new service function `runNotificationCleanup`. Two new env vars (`NOTIFICATION_RETENTION_READ_DAYS`, `NOTIFICATION_RETENTION_UNREAD_DAYS`) with sensible defaults (30 / 90 days) make the windows tunable without code changes.
+
+P5.R4 (bounded dropdown query) is structurally already satisfied by Part 2's cursor pagination + 100-row API cap; this part adds nothing on the read path. P5.R5 (per-row `expires_at` override) is structurally already satisfied by Part 1's schema column + `deleteExpired`'s two-phase implementation; same — nothing to add.
+
+The work is one new route handler, one new service function, one new entry in `vercel.json`, two new optional env vars in `.env.example`, and the standard ARCHITECTURE / CHANGELOG updates. No schema change. No bell change. No subscription change — Realtime publishes DELETE events to subscribers, and the bell already refetches on every event from Part 4, so cleanup-driven row removals surface without bespoke handling.
+
+### Forward Compatibility Notes
+
+- **First cron route in the project.** Pattern this part introduces (`/api/cron/<name>` + `Bearer ${CRON_SECRET}` auth + service-role-instantiated service function) is reusable for future scheduled jobs across the codebase. PRD-025 (purge run) will likely fit this pattern when it lands.
+- **Configurable cadence.** `vercel.json`'s cron schedule (`0 3 * * *` — daily at 03:00 UTC) is the entire cadence configuration. Tuning is one-line.
+- **Configurable windows.** `NOTIFICATION_RETENTION_READ_DAYS` and `NOTIFICATION_RETENTION_UNREAD_DAYS` env vars override the 30 / 90 defaults. A workspace that wants stricter retention sets the env var; no code change.
+- **Idempotent re-run.** `deleteExpired` is naturally idempotent — re-running deletes nothing new because the windows already passed. Safe for Vercel's automatic retry-on-failure.
+- **Failure mode.** If the cron run fails partway, Vercel returns 500 and the next day's run catches up. Phase 1 (date-based delete) and phase 2 (`expires_at`-based delete) inside `deleteExpired` are independent — one phase failing leaves the other's deletions committed, but neither phase is destructive of un-expired data.
+- **Future event types do not need a Part 5 change.** Cleanup operates on the `workspace_notifications` table generically. Adding a new event type (Parts 1+3) gets cleanup for free.
+- **Future external delivery channels (email digest, browser push) — backlog.** They run on their own cadence (likely separate Vercel Cron or pg_cron job) and operate on the same `workspace_notifications` rows. No conflict with Part 5's cleanup as long as their job runs *before* the cleanup of any row they want to digest. Email digest is the closest scheduled-job neighbour — when it lands, it can reuse the `/api/cron/<name>` pattern Part 5 introduces.
+
+### Why Vercel Cron (Not pg_cron, Not GitHub Actions)
+
+Three options were on the table.
+
+- **pg_cron.** DB-side scheduling via Supabase's `pg_cron` extension. Pros: zero HTTP round-trip; runs even if the app deploy is broken. Cons: scheduling lives in SQL outside the app codebase; logging routes through Postgres logs, not the app's `[notification-cleanup]` prefix; harder to extend with cross-cutting concerns (alerting, future emit-on-completion notifications). Rejected — locality wins for this use case.
+- **GitHub Actions cron.** External CI hits the route. Pros: agnostic to deploy platform. Cons: extra repo to maintain credentials; runs as an outside HTTP caller; if the GitHub-side state goes weird the job stops and we don't know. Rejected — adds a dependency that buys nothing for our deploy stack.
+- **Vercel Cron** (chosen). Pros: lives in `vercel.json` next to the existing config; hits a Next.js route handler we control with full app access (service-role client, `lib/services/`, env vars); same deploy lifecycle as the rest of the app; free at our tier. Cons: requires the app to be deployed to Vercel (already true). Picks itself.
+
+The Vercel Cron auth header (`Authorization: Bearer ${CRON_SECRET}`) is what gates the endpoint. Without it, the route is publicly reachable — and while `deleteExpired` is naturally idempotent and only deletes rows that have already passed their retention window, the principle of "don't expose ops endpoints unauthenticated" still holds.
+
+### Why 30 / 90 Days as Default Retention
+
+Read notifications are evidence the user already saw the event. Their value drops sharply past a few days; at 30 days they are pure noise. Unread notifications represent something the user hasn't yet seen — they deserve more grace, especially across vacations and PTO. 90 days is roughly one quarter of unread budget — long enough that a user returning from extended leave still sees what happened, short enough that the table doesn't grow unboundedly.
+
+The asymmetric retention is exactly what PRD §P5.R2 calls for. Both values are env-tunable; ops can tighten (or loosen) without a deploy.
+
+### Database Changes
+
+None. Part 1's `workspace_notifications` schema already has `expires_at` and the indexes Part 5 needs. Part 1's `deleteExpired` interface method already exists. Part 5 just calls it on a schedule.
+
+### New Service Function
+
+#### `lib/services/notification-service.ts` (extend)
+
+Add `runNotificationCleanup` alongside the existing emit / list / mark functions:
+
+```typescript
+const DEFAULT_READ_RETENTION_DAYS = 30;
+const DEFAULT_UNREAD_RETENTION_DAYS = 90;
+
+export interface CleanupResult {
+  deleted: number;
+  cutoffs: {
+    read: string;
+    unread: string;
+  };
+  elapsedMs: number;
+}
+
+/**
+ * Runs the notification cleanup pass — deletes read rows older than
+ * `NOTIFICATION_RETENTION_READ_DAYS` (default 30) and unread rows older than
+ * `NOTIFICATION_RETENTION_UNREAD_DAYS` (default 90), plus any rows past
+ * their per-row `expires_at` override. Idempotent — re-running deletes
+ * nothing new.
+ *
+ * Called by `/api/cron/notifications-cleanup` on Vercel Cron's daily
+ * schedule. Service-role client only — anon RLS denies DELETE.
+ */
+export async function runNotificationCleanup(
+  repo: NotificationRepository
+): Promise<CleanupResult> {
+  const start = Date.now();
+  const readDays = readPositiveIntEnv(
+    "NOTIFICATION_RETENTION_READ_DAYS",
+    DEFAULT_READ_RETENTION_DAYS
+  );
+  const unreadDays = readPositiveIntEnv(
+    "NOTIFICATION_RETENTION_UNREAD_DAYS",
+    DEFAULT_UNREAD_RETENTION_DAYS
+  );
+
+  const olderThan = isoFromDaysAgo(unreadDays);
+  const olderThanRead = isoFromDaysAgo(readDays);
+
+  console.log(
+    `${LOG_PREFIX} runNotificationCleanup — readCutoff: ${olderThanRead} (${readDays}d), unreadCutoff: ${olderThan} (${unreadDays}d)`
+  );
+
+  try {
+    const { deleted } = await repo.deleteExpired({ olderThan, olderThanRead });
+    const elapsedMs = Date.now() - start;
+    console.log(
+      `${LOG_PREFIX} runNotificationCleanup — deleted: ${deleted}, elapsed: ${elapsedMs}ms`
+    );
+    return {
+      deleted,
+      cutoffs: { read: olderThanRead, unread: olderThan },
+      elapsedMs,
+    };
+  } catch (err) {
+    console.error(
+      `${LOG_PREFIX} runNotificationCleanup — failed after ${Date.now() - start}ms:`,
+      err
+    );
+    throw err;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Private helpers
+// ---------------------------------------------------------------------------
+
+function readPositiveIntEnv(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (!raw) return fallback;
+  const parsed = Number(raw);
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    console.warn(
+      `${LOG_PREFIX} env "${name}" is not a positive integer ("${raw}") — using fallback ${fallback}`
+    );
+    return fallback;
+  }
+  return parsed;
+}
+
+function isoFromDaysAgo(days: number): string {
+  return new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+}
+```
+
+**Why two private helpers (`readPositiveIntEnv`, `isoFromDaysAgo`):** small, focused, and likely to be reused by future scheduled jobs (PRD-025 purge, email digest, etc.). Promote to `lib/utils/` only if a second consumer outside `notification-service.ts` shows up. Defer.
+
+**Why the env-parse warns rather than throws:** an ops typo in `NOTIFICATION_RETENTION_READ_DAYS` shouldn't take down the entire cleanup run — falling back to the default keeps the job resilient. The warn surfaces the misconfiguration in logs without breaking the run.
+
+**Why `CleanupResult` includes the cutoff timestamps:** observability. Reading the cron run's response lets ops verify which window was applied (vs. inferring from elapsed time and assumed defaults). Useful for post-mortem when a tuning env var was set wrong and unread notifications got cleaned up too aggressively.
+
+### New API Route
+
+#### `app/api/cron/notifications-cleanup/route.ts` (new)
+
+```typescript
+import { NextResponse } from "next/server";
+
+import { createNotificationRepository } from "@/lib/repositories/supabase/supabase-notification-repository";
+import { runNotificationCleanup } from "@/lib/services/notification-service";
+import { createServiceRoleClient } from "@/lib/supabase/server";
+
+const LOG_PREFIX = "[api/cron/notifications-cleanup]";
+
+/**
+ * POST /api/cron/notifications-cleanup — Vercel Cron entry point
+ *
+ * Authenticates via the `Authorization: Bearer ${CRON_SECRET}` header that
+ * Vercel Cron sends. Without the secret, returns 401 — the endpoint is on
+ * the public internet so an attacker could otherwise hit it (and while
+ * `deleteExpired` is naturally idempotent and only deletes rows past their
+ * retention window, exposing ops endpoints unauthenticated is bad hygiene).
+ *
+ * Schedule: daily at 03:00 UTC, configured in `vercel.json`.
+ */
+export async function POST(request: Request) {
+  const auth = request.headers.get("authorization");
+  if (auth !== `Bearer ${process.env.CRON_SECRET}`) {
+    console.warn(`${LOG_PREFIX} POST — unauthorized`);
+    return NextResponse.json({ message: "Unauthorized" }, { status: 401 });
+  }
+
+  console.log(`${LOG_PREFIX} POST — starting cleanup`);
+
+  try {
+    const serviceClient = createServiceRoleClient();
+    const repo = createNotificationRepository(serviceClient);
+    const result = await runNotificationCleanup(repo);
+    console.log(
+      `${LOG_PREFIX} POST — completed: ${result.deleted} rows deleted in ${result.elapsedMs}ms`
+    );
+    return NextResponse.json(result);
+  } catch (err) {
+    console.error(
+      `${LOG_PREFIX} POST error:`,
+      err instanceof Error ? err.message : err
+    );
+    // Non-200 to Vercel so the run is marked failed; next day's run catches up.
+    return NextResponse.json(
+      { message: "Cleanup failed" },
+      { status: 500 }
+    );
+  }
+}
+```
+
+**Why service-role client (not anon):** `deleteExpired` requires DELETE on `workspace_notifications`; RLS denies anon DELETE by design from Part 1. Service-role bypasses RLS and is the only way to run cleanup. The `CRON_SECRET` auth gates this — without it, the route returns 401 before instantiating the service-role client.
+
+**Why no Zod body validation:** the route takes no body. The auth header is the only input.
+
+**Why return non-200 on failure:** Vercel Cron uses the response status to decide success/failure. Non-200 marks the run as failed in Vercel's dashboard and triggers retry on the next scheduled run (the cleanup is idempotent, so retry is safe).
+
+### Configuration
+
+#### `vercel.json` (modify or create)
+
+Add a `crons` array entry. If `vercel.json` already exists at the project root with other config, add to its `crons` array; otherwise create the file:
+
+```json
+{
+  "crons": [
+    {
+      "path": "/api/cron/notifications-cleanup",
+      "schedule": "0 3 * * *"
+    }
+  ]
+}
+```
+
+`0 3 * * *` is a cron expression for "daily at 03:00 UTC." Low-traffic window globally; the cleanup pass runs against a small table and finishes in under a second per worst-case estimates (a single `DELETE WHERE created_at < cutoff` against the partial-indexed table).
+
+#### `.env.example` (modify)
+
+```dotenv
+# Vercel Cron authentication — required for /api/cron/* routes
+CRON_SECRET=
+
+# Notification retention windows (optional)
+# Defaults: read=30, unread=90. Ops can tune per workspace policy.
+NOTIFICATION_RETENTION_READ_DAYS=30
+NOTIFICATION_RETENTION_UNREAD_DAYS=90
+```
+
+`CRON_SECRET` is server-only (no `NEXT_PUBLIC_` prefix). Generated as a random string (e.g., `openssl rand -hex 32`) and set in Vercel's environment-variable UI for both Production and Preview deployments. The same value is configured under `vercel.json`'s cron job by Vercel automatically — Vercel sends the secret in the `Authorization` header.
+
+The two retention env vars are optional; absent or invalid values fall back to defaults via `readPositiveIntEnv` (with a warn log so misconfigurations are observable).
+
+### Files Changed
+
+| File | Action | Purpose |
+|------|--------|---------|
+| `lib/services/notification-service.ts` | Modify | Add `runNotificationCleanup`, `CleanupResult`, `DEFAULT_*_RETENTION_DAYS`, private `readPositiveIntEnv` + `isoFromDaysAgo` helpers |
+| `app/api/cron/notifications-cleanup/route.ts` | **Create** | POST handler — auth via `CRON_SECRET`, instantiates service-role repo, delegates to `runNotificationCleanup` |
+| `vercel.json` | Modify (or create) | `crons` entry — daily 03:00 UTC schedule pointing at the cron route |
+| `.env.example` | Modify | Document `CRON_SECRET`, `NOTIFICATION_RETENTION_READ_DAYS`, `NOTIFICATION_RETENTION_UNREAD_DAYS` |
+| `ARCHITECTURE.md` | Modify | API Routes section gains a new "Cron" subsection (or extends an existing one); file map adds the new route file; status line gains "PRD-029 Part 5 (Retention & Cleanup) implemented"; Environment Variables section documents the three new env vars |
+| `CHANGELOG.md` | Modify | PRD-029 Part 5 entry |
+
+No new dependencies. No new repository methods (Part 1 already shipped `deleteExpired`).
+
+### Implementation
+
+#### Increment 5.1 — Service function
+
+**What:** Add `runNotificationCleanup` to `notification-service.ts` along with `CleanupResult`, the two retention defaults, and the two private helpers. No callers wired yet.
+
+**Steps:**
+
+1. Edit `lib/services/notification-service.ts`:
+   - Add the two `DEFAULT_*_RETENTION_DAYS` constants.
+   - Add the `CleanupResult` interface.
+   - Add `runNotificationCleanup(repo)` per §New Service Function.
+   - Add the `readPositiveIntEnv` and `isoFromDaysAgo` private helpers.
+
+**Verification:**
+
+1. `npx tsc --noEmit` passes.
+2. **Unit-style smoke** (REPL or throwaway script with a service-role client):
+   - Insert several test notifications with varied `created_at` and `read_at` values:
+     - Row A: `created_at = now() - 100 days, read_at = NULL` (should delete — past unread cutoff)
+     - Row B: `created_at = now() - 100 days, read_at = now() - 60 days` (should delete — past read cutoff AND past unread cutoff)
+     - Row C: `created_at = now() - 50 days, read_at = NULL` (should keep — within unread window)
+     - Row D: `created_at = now() - 50 days, read_at = now() - 5 days` (should delete — past read cutoff)
+     - Row E: `created_at = now() - 5 days, read_at = NULL` (should keep)
+     - Row F: `created_at = now(), expires_at = now() - 1 hour` (should delete — past per-row override)
+   - Call `runNotificationCleanup(repo)`. Verify `deleted >= 4` (rows A, B, D, F). Rows C, E remain.
+   - Re-run the cleanup. `deleted = 0` (idempotent).
+3. **Env-var override smoke:** set `NOTIFICATION_RETENTION_READ_DAYS=1` in env. Re-insert row D and re-run. With the tighter window, row D is deleted at any `read_at` older than 1 day.
+4. **Bad-value fallback smoke:** set `NOTIFICATION_RETENTION_READ_DAYS=abc` (invalid). Run cleanup. Verify the warn log fires and the default (30) is used.
+
+**Post-increment:** none.
+
+---
+
+#### Increment 5.2 — API route + Vercel Cron config + env vars
+
+**What:** Wire the cron route, the `vercel.json` schedule, and the env-var documentation. After this increment, Vercel runs the cleanup daily.
+
+**Steps:**
+
+1. Create `app/api/cron/notifications-cleanup/route.ts` per §New API Route.
+2. Modify (or create) `vercel.json` at the project root with the `crons` entry per §Configuration.
+3. Modify `.env.example` to document the three new env vars per §Configuration.
+4. **Set `CRON_SECRET` in Vercel's environment-variable UI** for Production (and Preview if cron is intended to fire there — typically not). Generate the value with `openssl rand -hex 32` or similar.
+
+**Verification:**
+
+1. `npx tsc --noEmit` passes.
+2. **Local cURL smoke (against a running dev server):**
+   - `curl -X POST http://localhost:3000/api/cron/notifications-cleanup` → 401 Unauthorized.
+   - `curl -X POST -H "Authorization: Bearer wrong" http://localhost:3000/api/cron/notifications-cleanup` → 401.
+   - `curl -X POST -H "Authorization: Bearer ${CRON_SECRET}" http://localhost:3000/api/cron/notifications-cleanup` → 200 with `{ deleted, cutoffs, elapsedMs }`.
+3. **Vercel deployment smoke:**
+   - Deploy to Production. Verify Vercel's "Cron Jobs" tab in the project dashboard lists `/api/cron/notifications-cleanup` with the daily schedule.
+   - Use Vercel's "Run Now" button to trigger the cron manually. Verify the run logs show the `[notification-cleanup]` lines and the response includes `deleted`.
+   - Wait for the next scheduled run (or trigger manually) and confirm a successful 200 response in Vercel's cron history.
+4. **Bad-secret smoke from outside:** anyone hitting the production endpoint without the secret should get 401 — verify with `curl -X POST https://<your-domain>/api/cron/notifications-cleanup`.
+
+**Post-increment:** none. ARCHITECTURE / CHANGELOG batched in audit.
+
+---
+
+#### Increment 5.3 — End-of-part audit
+
+Per CLAUDE.md "End-of-part audit" — produces fixes, not a report.
+
+**Checklist:**
+
+1. **SRP:** `runNotificationCleanup` does one thing — orchestrate the cleanup pass with logging. The route handler does one thing — auth + delegation. The two helpers are single-purpose.
+2. **DRY:** the date-cutoff math (`Date.now() - days * 24 * 60 * 60 * 1000`) lives once in `isoFromDaysAgo`. The env parsing lives once in `readPositiveIntEnv`. If a second cron job emerges (PRD-025 purge), promote both helpers to `lib/utils/` then.
+3. **Design tokens:** N/A.
+4. **Logging:** every method on the cleanup path emits entry + outcome under `[notification-service]` (service) and `[api/cron/notifications-cleanup]` (route). Errors include elapsed ms and full context. Bad env vars warn rather than throw.
+5. **Dead code:** no leftover scaffolding. Both helpers (`readPositiveIntEnv`, `isoFromDaysAgo`) are used by `runNotificationCleanup` — no orphans.
+6. **Convention:** route file is kebab-case; service function is camelCase; constants are UPPER_SNAKE_CASE; named exports only.
+7. **API route hygiene:** auth check is the first thing the handler does; status codes per project convention (401 for missing/wrong secret, 500 on internal failure, 200 on success); JSON body always includes a `message` field on errors.
+8. **Type tightening:** zero `any`. `runNotificationCleanup`'s return type is `CleanupResult`; the route's response is the same shape.
+9. **Env-var hygiene:** `CRON_SECRET` is server-only (no `NEXT_PUBLIC_` prefix). The retention env vars are documented in `.env.example` with their defaults and intent.
+10. **No regressions:** Parts 1–4's bell, dropdown, row, hooks, routes, and Realtime subscription are unaffected. Cleanup runs server-side and the bell already refetches on every Realtime event so deletions surface naturally — no bespoke handling.
+11. **ARCHITECTURE.md updates:**
+    - Status line: append "PRD-029 Part 5 (Retention & Cleanup) implemented".
+    - File map: add `app/api/cron/notifications-cleanup/route.ts` under `app/api/cron/` (creating the cron section if it does not exist).
+    - API Routes: add a new "Cron" subsection (or extend an existing one) with the `/api/cron/notifications-cleanup` row.
+    - Environment Variables section: document `CRON_SECRET`, `NOTIFICATION_RETENTION_READ_DAYS`, `NOTIFICATION_RETENTION_UNREAD_DAYS`.
+12. **CHANGELOG.md:** PRD-029 Part 5 entry covering all P5.R1–P5.R5 requirements, the architectural choices (Vercel Cron over pg_cron / GH Actions; 30 / 90-day defaults; warn-on-bad-env), the increment narrative, and the audit's actual findings.
+13. **Final:** `npx tsc --noEmit`.
+
+This audit closes Part 5 and PRD-029.
+
+---
+
+## End-of-PRD audit (after Part 5 closes)
+
+Per CLAUDE.md, an end-of-PRD audit runs the full end-of-part checklist across every file the PRD touched. PRD-029 ships across:
+
+- **Schema:** `workspace_notifications` table + 4 indexes + 2 RLS policies + Realtime publication entry.
+- **Domain primitives:** `lib/notifications/events.ts` (registry), `lib/notifications/renderers.ts` (registry), `lib/types/notification.ts`.
+- **Repository:** `lib/repositories/notification-repository.ts` + `lib/repositories/supabase/supabase-notification-repository.ts` (interface re-exports in both index barrels).
+- **Service:** `lib/services/notification-service.ts` (emit / list / mark / cleanup).
+- **API surface:** four `/api/notifications/*` routes (Part 2) + one `/api/cron/notifications-cleanup` route (Part 5).
+- **Hooks:** `use-unread-count`, `use-notifications`, `use-mark-notification-read`, `use-notification-realtime`.
+- **UI:** five components under `components/notifications/`.
+- **Layout integration:** `app-sidebar.tsx` mount.
+- **Configuration:** `vercel.json` cron entry + three new env vars.
+- **Documentation:** ARCHITECTURE schema entry + file map + status line + Environment Variables; CHANGELOG entries for Parts 1–5.
+
+The end-of-PRD audit produces fixes (not a report) for any cross-part inconsistency surfaced after every part has its individual audit. Examples to look for: stale TRD claims that are no longer accurate after later-part decisions (e.g., Part 2's TRD Renderer Scaffolding section's discussion of `NOTIFICATION_RENDERERS = {}` should reference Part 3's now-populated state); ARCHITECTURE.md status line that has accumulated multiple amendments and could be tightened; CHANGELOG entries that reference deferred items now actually delivered; type-system holes that bridge across parts. Run when Part 5 lands.
