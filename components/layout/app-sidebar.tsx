@@ -32,6 +32,7 @@ import {
   useHasAnyUnseenCompletion,
 } from "@/lib/streaming";
 import { useTheme } from "@/lib/hooks/use-theme";
+import { useIsWorkspaceAdmin } from "@/lib/hooks/use-workspace-admin";
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -69,10 +70,13 @@ const NAV_ITEMS: NavItem[] = [
   },
 ];
 
-const SETTINGS_ITEMS: { label: string; href: string }[] = [
+const BASE_SETTINGS_ITEMS: { label: string; href: string }[] = [
   { label: "Team Management", href: "/settings/team" },
   { label: "Extraction Prompt", href: "/settings/prompts" },
 ];
+
+/** PRD-026 Part 2 — admin-only settings entry. */
+const ADMIN_SETTINGS_ITEM = { label: "Themes", href: "/settings/themes" };
 
 /* ------------------------------------------------------------------ */
 /*  Shared sidebar content                                             */
@@ -101,6 +105,14 @@ function SidebarContent({
   const isDark = theme === "dark";
   const ThemeIcon = isDark ? Sun : Moon;
   const isSettingsRouteActive = pathname.startsWith("/settings");
+
+  // PRD-026 Part 2 — admin-only "Themes" settings entry. While the role
+  // resolves, we keep the entry hidden (better than flashing it visible
+  // and then hiding it for non-admins).
+  const { isAdmin: isWorkspaceAdmin } = useIsWorkspaceAdmin();
+  const settingsItems = isWorkspaceAdmin
+    ? [...BASE_SETTINGS_ITEMS, ADMIN_SETTINGS_ITEM]
+    : BASE_SETTINGS_ITEMS;
 
   // Workspace-scoped streaming indicator state for the Chat nav icon
   // (PRD-024 P5.R2). Pulsating when any stream is active in the current
@@ -214,7 +226,7 @@ function SidebarContent({
 
           {settingsOpen && showLabels && (
             <div className="mt-1 flex flex-col gap-0.5 pl-5">
-              {SETTINGS_ITEMS.map((item) => {
+              {settingsItems.map((item) => {
                 const isActive = pathname.startsWith(item.href);
                 return (
                   <Link

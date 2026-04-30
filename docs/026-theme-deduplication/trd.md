@@ -596,6 +596,7 @@ Background (no admin click)
 - **Part 3 (Admin-Confirmed Theme Merge):** Reads the same `theme_merge_candidates` rows surfaced here. The merge transaction sets `themes.merged_into_theme_id` (column already added in Part 1's migration), flips `is_archived`, re-points `signal_themes.theme_id`, and deletes the now-resolved candidate row. No schema change introduced here is incompatible — the candidates row carries everything Part 3's merge dialog needs (similarity, signal counts, distinct sessions/clients).
 - **Part 4 (Notify Affected Users):** The merge action emits a `theme.merged` event into PRD-029's notification primitive. Part 2 is read-only on the merge side — it does not emit anything. The `theme.merged` event type is already registered in `lib/notifications/events.ts` from PRD-029 Part 1.
 - **Backlog (LLM-judged candidate filtering):** A second-pass LLM judge slots in between similarity computation and persistence in `refreshCandidates`. The service's input/output contract (`workspaceCtx → void`) doesn't change; only the body grows a filtering step that consumes the in-memory candidate list before the bulk insert.
+- **Backlog (true background cron):** The original TRD specced a Vercel cron sweeping every workspace daily; revised to stale-on-mount in Increment 2.6 to avoid burning compute on workspaces no admin will visit. If telemetry shows admins routinely see day-old data because they don't re-open the surface (or workspace traffic patterns make first-visit refresh feel slow), reinstate a Vercel cron at `app/api/cron/refresh-theme-candidates/route.ts` with `CRON_SECRET`-gated authentication and `Promise.allSettled` over workspaces with `≥ 2` active themes. Schedule pin: `0 3 * * *` UTC. The service contract (`refreshCandidates`) does not change.
 - **Backlog (per-workspace tunable threshold):** `THEME_CANDIDATE_SIMILARITY_THRESHOLD` is a global env var. A per-workspace override would land as a column on `teams` (mirroring the prevention-threshold backlog item from Part 1). Threshold reading is centralised in `theme-candidate-service.ts`.
 - **Backlog (bulk dismiss / bulk merge):** The repository's `dismiss` is currently per-pair. Adding a `bulkDismiss(pairIds[])` method is an additive interface change with no schema impact.
 
@@ -628,7 +629,7 @@ Continuing the numbering from Part 1's decisions.
 
 19. **Token-based "shared keywords" hint in Part 2; LLM-generated rationale deferred.** P2.R3 lets the TRD pick. We extract case-insensitive intersection of word tokens (after a small built-in stop-word list — "the", "a", "of", etc.) from both theme names and descriptions, capped at 3 keywords per pair. Cheap (string ops, no API calls), legible ("Shared: API, performance"), and good enough — the admin reads both names and descriptions on the same row to make the call. An LLM-rationale upgrade is in the PRD's backlog ("LLM-judged candidate filtering"); when it ships, the `shared_keywords` column is a no-op and the new column carries the rationale.
 
-20. **Background refresh via Vercel cron, not Supabase scheduled functions.** Vercel cron is already the runtime for our scheduled work (consistent platform), routes are versioned with the rest of the app, and triggering needs no extra infra. The cron handler authenticates via Vercel's `CRON_SECRET` header check (not user auth), iterates workspaces with `≥ 2` active themes, and calls `refreshCandidates` per workspace inside `Promise.allSettled` so a slow or failing workspace doesn't stall the rest. Schedule pinned at `0 3 * * *` (UTC) — low traffic, before the working day in any major timezone.
+20. **Background refresh via stale-on-mount auto-trigger, not Vercel cron.** Originally specced as a daily Vercel cron sweep across every workspace; revised to a client-driven staleness check during Increment 2.5 scoping. Rationale: the candidate list only changes when (a) themes are added/archived, (b) signal volume on existing themes shifts materially, or (c) admins dismiss a pair. (a) and (b) are coupled to extraction activity, which already produces traffic that an admin's eventual visit will reflect; (c) updates the persisted set synchronously. A daily cron sweeping every workspace mostly does work no admin will look at. The page mount checks `lastRefreshedAt` against a `THEME_CANDIDATE_STALE_HOURS` threshold (default `24`); if stale or null, the client fires a `POST /refresh` then re-fetches the list. Cost shifts from "every workspace, every day" to "first admin visit per workspace per day". A real cron remains a backlog item if telemetry shows admin-perceived staleness becomes a recurring problem.
 
 21. **`/settings/themes` is gated at three layers.** (a) Sidebar nav: the "Themes" entry only renders for admins (membership role check via existing auth context). (b) Page-level: `app/settings/themes/page.tsx` is a server component that returns 403 if the active workspace member's role is not admin/owner. (c) API routes: every endpoint runs `requireTeamAdmin(teamId, user)` (existing helper from PRD-023 Part 2) before doing any work. Defense in depth — losing the nav gating to a client-side bug still leaves the page and API gated.
 
@@ -1151,8 +1152,8 @@ const settingsNavItems = [
 | `app/api/themes/candidates/route.ts` | **Create** | `GET` — admin-gated list endpoint |
 | `app/api/themes/candidates/refresh/route.ts` | **Create** | `POST` — admin-gated on-demand refresh |
 | `app/api/themes/candidates/[id]/dismiss/route.ts` | **Create** | `POST` — admin-gated dismiss |
-| `app/api/cron/refresh-theme-candidates/route.ts` | **Create** | Vercel-cron-triggered background refresh across all workspaces |
-| `vercel.json` | Modify | Register the new cron schedule |
+<!-- Cron route + vercel.json deferred per Decision 20 revision (stale-on-mount auto-refresh in Increment 2.6 instead). -->
+
 | `app/settings/themes/page.tsx` | **Create** | Admin-gated server-component shell |
 | `app/settings/themes/_components/themes-page-content.tsx` | **Create** | Client component — list + refresh wiring |
 | `app/settings/themes/_components/candidate-list.tsx` | **Create** | List rendering + "Show more" |
@@ -1257,23 +1258,9 @@ const settingsNavItems = [
 
 ---
 
-#### Increment 2.5 — Cron route + scheduling
+#### Increment 2.5 — DEFERRED (cron route + scheduling)
 
-**What:** The background-refresh handler + Vercel cron registration.
-
-**Steps:**
-
-1. Create `app/api/cron/refresh-theme-candidates/route.ts` (GET): verify `CRON_SECRET` header (request fails if absent or mismatched), enumerate workspaces with `≥ 2` active themes, `Promise.allSettled(refreshCandidates)`, return summary.
-2. Add the cron entry to `vercel.json`.
-3. Set `CRON_SECRET` env var in Vercel project (out-of-band — note in the changelog).
-4. Logs: per-workspace start/finish/error + overall summary `[cron-refresh-theme-candidates]`.
-
-**Verification:**
-
-1. Local: `curl -H "Authorization: Bearer $CRON_SECRET" http://localhost:3000/api/cron/refresh-theme-candidates` → returns summary.
-2. Wrong secret → 401.
-3. After Vercel deploy: trigger the cron manually from the Vercel dashboard; confirm logs.
-4. Wait for the scheduled run; confirm it fires daily at 03:00 UTC.
+Originally specced as a Vercel cron at `0 3 * * *` UTC sweeping every workspace daily. Revised per Decision 20 — the staleness mechanism moves to the page mount in Increment 2.6 (cheaper, scoped to workspaces an admin actually visits). A real cron remains a backlog item; revisit if production telemetry shows the once-per-admin-visit cadence is insufficient.
 
 ---
 
@@ -1284,7 +1271,7 @@ const settingsNavItems = [
 **Steps:**
 
 1. Create `app/settings/themes/page.tsx`: server component, runs `requireTeamAdmin` (or its equivalent for the Settings parent layout's auth context); returns 403 if non-admin reaches it directly. Renders `<ThemesPageContent />`.
-2. Create `_components/themes-page-content.tsx`: fetches `GET /api/themes/candidates`, renders `<RefreshButton />` and `<CandidateList />`. Tracks loading + error states; toasts on refresh success/failure.
+2. Create `_components/themes-page-content.tsx`: fetches `GET /api/themes/candidates` on mount; if `lastRefreshedAt` is `null` or older than `THEME_CANDIDATE_STALE_HOURS` (default `24`, env-tunable), automatically fires a `POST /api/themes/candidates/refresh` and re-fetches before rendering the list (Decision 20 — stale-on-mount auto-refresh, replaces the deferred cron). The auto-refresh shows the same loading affordance as the manual refresh button so the admin sees a single, coherent loading state on their first visit of the day. Renders `<RefreshButton />` and `<CandidateList />`. Tracks loading + error states; toasts on refresh success/failure.
 3. Create `_components/candidate-list.tsx`: renders rows; "Show more" affordance bumps `limit` and re-fetches.
 4. Create `_components/candidate-row.tsx`: displays per §UI; "Merge…" button has `disabled` (or `aria-label="Coming in Part 3"`) for now.
 5. Create `_components/refresh-button.tsx`: button + loading spinner; success toast updates `lastRefreshedAt`.
