@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import {
   BarChart,
   Bar,
@@ -9,6 +9,7 @@ import {
   Tooltip,
   ResponsiveContainer,
 } from "recharts";
+import { GitMerge } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -16,6 +17,16 @@ import { DashboardCard } from "./dashboard-card";
 import { useDashboardFetch } from "./use-dashboard-fetch";
 import { BRAND_PRIMARY_HEX, formatChunkTypePlural } from "./chart-colours";
 import type { DrillDownContext } from "./drill-down-types";
+
+/**
+ * Suffix appended to Y-axis tick labels when the theme has been the
+ * canonical destination of a merge within the indicator window
+ * (PRD-026 P4.R2). Recharts' Y-axis `tickFormatter` only accepts string
+ * returns, so the BarChart can't host a React indicator component the way
+ * the matrix and trends widgets can — a unicode marker keeps the visual
+ * cue in place; the caption strip below the chart explains its meaning.
+ */
+const RECENTLY_MERGED_SUFFIX = " ⤳";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -84,6 +95,16 @@ export function TopThemesWidget({ className, onDrillDown }: TopThemesWidgetProps
   const { data, isLoading, error, refetch } =
     useDashboardFetch<TopThemesData>({ action: "top_themes" });
 
+  // PRD-026 Part 4 — fetch the canonical-theme-id set for the indicator.
+  const { data: recentMergedData } = useDashboardFetch<{
+    themeIds: string[];
+  }>({ action: "recently_merged_themes" });
+
+  const recentlyMergedSet = useMemo(
+    () => new Set(recentMergedData?.themeIds ?? []),
+    [recentMergedData?.themeIds]
+  );
+
   const [showAll, setShowAll] = useState(false);
 
   const allThemes = data?.themes ?? [];
@@ -92,6 +113,24 @@ export function TopThemesWidget({ className, onDrillDown }: TopThemesWidgetProps
   const displayThemes = showAll
     ? allThemes
     : allThemes.slice(0, DEFAULT_DISPLAY_LIMIT);
+
+  // Build a name → "name + marker" map so the Y-axis tickFormatter is O(1).
+  const tickLabelMap = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const t of allThemes) {
+      m.set(
+        t.themeName,
+        recentlyMergedSet.has(t.themeId)
+          ? `${t.themeName}${RECENTLY_MERGED_SUFFIX}`
+          : t.themeName
+      );
+    }
+    return m;
+  }, [allThemes, recentlyMergedSet]);
+
+  const hasAnyRecentlyMerged = displayThemes.some((t) =>
+    recentlyMergedSet.has(t.themeId)
+  );
 
   // Dynamic height: at least 160px, grow with number of themes
   const chartHeight = Math.max(160, displayThemes.length * 32 + 40);
@@ -123,6 +162,7 @@ export function TopThemesWidget({ className, onDrillDown }: TopThemesWidgetProps
             type="category"
             dataKey="themeName"
             tick={{ fontSize: 12 }}
+            tickFormatter={(value: string) => tickLabelMap.get(value) ?? value}
             width={140}
             axisLine={false}
             tickLine={false}
@@ -144,6 +184,15 @@ export function TopThemesWidget({ className, onDrillDown }: TopThemesWidgetProps
           />
         </BarChart>
       </ResponsiveContainer>
+
+      {hasAnyRecentlyMerged && (
+        <p className="mt-1 inline-flex items-center gap-1 text-[11px] text-[var(--text-muted)]">
+          <GitMerge className="size-3" aria-hidden />
+          <span>
+            <span aria-hidden>⤳</span> indicates a recently merged theme.
+          </span>
+        </p>
+      )}
 
       {hasMore && (
         <div className="mt-2 text-center">

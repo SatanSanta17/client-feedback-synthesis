@@ -16,9 +16,45 @@ import { baseClientQuery } from "../shared/base-query-builder";
 import { dateTrunc } from "../shared/row-helpers";
 import {
   fetchActiveThemeMap,
+  fetchRecentlyMergedThemeIds,
   fetchSignalThemeRows,
 } from "../shared/theme-helpers";
 import type { QueryFilters } from "../types";
+
+// ---------------------------------------------------------------------------
+// Recently merged themes (PRD-026 Part 4)
+// ---------------------------------------------------------------------------
+
+/** Default window — 7 days, env-tunable. TRD Decision 28. */
+const DEFAULT_INDICATOR_WINDOW_DAYS = 7;
+
+function readIndicatorWindowDays(): number {
+  const raw = process.env.THEME_MERGE_INDICATOR_WINDOW_DAYS;
+  if (!raw) return DEFAULT_INDICATOR_WINDOW_DAYS;
+  const parsed = parseInt(raw, 10);
+  if (isNaN(parsed) || parsed < 0) {
+    console.warn(
+      `${LOG_PREFIX} THEME_MERGE_INDICATOR_WINDOW_DAYS="${raw}" is invalid (must be non-negative integer) — falling back to ${DEFAULT_INDICATOR_WINDOW_DAYS}`
+    );
+    return DEFAULT_INDICATOR_WINDOW_DAYS;
+  }
+  return parsed;
+}
+
+/**
+ * Returns the canonical theme ids that have been merged into within the
+ * configured window, scoped to the current workspace. Consumed by the
+ * dashboard theme widgets to render the "Recently merged" indicator
+ * (PRD-026 P4.R2).
+ */
+export async function handleRecentlyMergedThemes(
+  supabase: SupabaseClient,
+  filters: QueryFilters
+): Promise<Record<string, unknown>> {
+  const windowDays = readIndicatorWindowDays();
+  const ids = await fetchRecentlyMergedThemeIds(supabase, filters, windowDays);
+  return { themeIds: Array.from(ids), windowDays };
+}
 
 export async function handleTopThemes(
   supabase: SupabaseClient,

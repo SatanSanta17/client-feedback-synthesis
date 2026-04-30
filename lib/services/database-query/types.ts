@@ -22,6 +22,8 @@ export type QueryAction =
   | "top_themes"
   | "theme_trends"
   | "theme_client_matrix"
+  // Theme merge indicator (PRD-026 Part 4)
+  | "recently_merged_themes"
   // Drill-down actions (PRD-021 Part 4)
   | "drill_down"
   | "session_detail"

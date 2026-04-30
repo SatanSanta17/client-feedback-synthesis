@@ -3,6 +3,7 @@
 import { useMemo, useState } from "react";
 
 import { cn } from "@/lib/utils";
+import { RecentMergeIndicator } from "@/components/dashboard/recent-merge-indicator";
 import { DashboardCard } from "./dashboard-card";
 import { useDashboardFetch } from "./use-dashboard-fetch";
 import { BRAND_PRIMARY_RGB, CHART_HIGH_CONTRAST_TEXT_HEX } from "./chart-colours";
@@ -87,6 +88,16 @@ export function ThemeClientMatrixWidget({
 }: ThemeClientMatrixWidgetProps) {
   const { data, isLoading, error, refetch } =
     useDashboardFetch<MatrixData>({ action: "theme_client_matrix" });
+
+  // PRD-026 Part 4 — fetch the canonical-theme-id set for the indicator.
+  const { data: recentMergedData } = useDashboardFetch<{
+    themeIds: string[];
+  }>({ action: "recently_merged_themes" });
+
+  const recentlyMergedSet = useMemo(
+    () => new Set(recentMergedData?.themeIds ?? []),
+    [recentMergedData?.themeIds]
+  );
 
   const [tooltip, setTooltip] = useState<TooltipState>(INITIAL_TOOLTIP);
 
@@ -196,10 +207,13 @@ export function ThemeClientMatrixWidget({
               <tr key={theme.id}>
                 <td className="sticky left-0 z-10 bg-[var(--surface-page)] p-2 font-medium text-[var(--text-primary)]">
                   <span
-                    className="block max-w-[120px] truncate"
+                    className="flex max-w-[120px] items-center gap-1"
                     title={theme.name}
                   >
-                    {theme.name}
+                    <span className="truncate">{theme.name}</span>
+                    {recentlyMergedSet.has(theme.id) && (
+                      <RecentMergeIndicator className="shrink-0" />
+                    )}
                   </span>
                 </td>
                 {clients.map((client) => {

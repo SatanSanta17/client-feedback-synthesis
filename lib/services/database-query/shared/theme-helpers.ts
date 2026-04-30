@@ -70,6 +70,49 @@ export function applyThemeJoinFilters(query: any, filters: QueryFilters): any {
 }
 
 /**
+ * Fetches the set of canonical theme ids that have been the destination of
+ * a merge within the last `windowDays`. Powers the dashboard "Recently
+ * merged" indicator (PRD-026 Part 4 P4.R2). Workspace-scoped — uses the
+ * existing `(team_id, merged_at DESC)` partial indexes on `theme_merges`.
+ *
+ * Returns a `Set<string>` so widget call sites can use O(1) `.has()` checks
+ * during render.
+ */
+export async function fetchRecentlyMergedThemeIds(
+  supabase: SupabaseClient,
+  filters: QueryFilters,
+  windowDays: number
+): Promise<Set<string>> {
+  const cutoffIso = new Date(
+    Date.now() - windowDays * 24 * 60 * 60 * 1000
+  ).toISOString();
+
+  let query = supabase
+    .from("theme_merges")
+    .select("canonical_theme_id")
+    .gte("merged_at", cutoffIso);
+
+  if (filters.teamId) {
+    query = query.eq("team_id", filters.teamId);
+  } else {
+    query = query.is("team_id", null);
+  }
+
+  const { data, error } = await query;
+
+  if (error) {
+    console.error(
+      `${LOG_PREFIX} fetchRecentlyMergedThemeIds error:`,
+      error.message
+    );
+    throw new Error("Failed to fetch recently merged themes");
+  }
+
+  const rows = (data ?? []) as Array<{ canonical_theme_id: string }>;
+  return new Set(rows.map((r) => r.canonical_theme_id));
+}
+
+/**
  * Fetches all active (non-archived) themes for a workspace and returns a
  * Map of id → name. Used by all 3 theme widget handlers.
  */

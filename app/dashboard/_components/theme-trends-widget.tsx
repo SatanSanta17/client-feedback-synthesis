@@ -15,6 +15,7 @@ import { Check, ChevronsUpDown } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
+import { RecentMergeIndicator } from "@/components/dashboard/recent-merge-indicator";
 import {
   Popover,
   PopoverContent,
@@ -112,6 +113,16 @@ export function ThemeTrendsWidget({ className, onDrillDown }: ThemeTrendsWidgetP
       action: "theme_trends",
       extraParams: { granularity },
     });
+
+  // PRD-026 Part 4 — fetch the canonical-theme-id set for the indicator.
+  const { data: recentMergedData } = useDashboardFetch<{
+    themeIds: string[];
+  }>({ action: "recently_merged_themes" });
+
+  const recentlyMergedSet = useMemo(
+    () => new Set(recentMergedData?.themeIds ?? []),
+    [recentMergedData?.themeIds]
+  );
 
   const allThemes = data?.themes ?? [];
   const buckets = data?.buckets ?? [];
@@ -287,11 +298,17 @@ export function ThemeTrendsWidget({ className, onDrillDown }: ThemeTrendsWidgetP
             labelFormatter={(label) => String(label)}
           />
           <Legend
-            formatter={(value) => (
-              <span className="text-xs">
-                {nameMap.get(String(value)) ?? String(value)}
-              </span>
-            )}
+            formatter={(value) => {
+              const themeId = String(value);
+              const name = nameMap.get(themeId) ?? themeId;
+              const isMerged = recentlyMergedSet.has(themeId);
+              return (
+                <span className="inline-flex items-center gap-1 text-xs">
+                  {name}
+                  {isMerged && <RecentMergeIndicator />}
+                </span>
+              );
+            }}
           />
           {Array.from(visibleIds).map((tid, idx) => (
             <Line

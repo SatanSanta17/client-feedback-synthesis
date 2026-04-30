@@ -31,6 +31,7 @@ import {
   handleSessionsOverTime,
 } from "./domains/sessions";
 import {
+  handleRecentlyMergedThemes,
   handleThemeClientMatrix,
   handleThemeTrends,
   handleTopThemes,
@@ -60,6 +61,8 @@ const ACTION_MAP: Record<
   top_themes: handleTopThemes,
   theme_trends: handleThemeTrends,
   theme_client_matrix: handleThemeClientMatrix,
+  // Theme merge indicator (PRD-026 Part 4)
+  recently_merged_themes: handleRecentlyMergedThemes,
   // Drill-down actions (PRD-021 Part 4)
   drill_down: handleDrillDown,
   session_detail: handleSessionDetail,

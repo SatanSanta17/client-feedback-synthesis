@@ -1,21 +1,28 @@
-import { NextRequest, NextResponse } from "next/server";
+import { after, NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 
 import {
   requireAuth,
   requireWorkspaceAdmin,
 } from "@/lib/api/route-auth";
+import { createNotificationRepository } from "@/lib/repositories/supabase/supabase-notification-repository";
 import { createThemeCandidateRepository } from "@/lib/repositories/supabase/supabase-theme-candidate-repository";
 import { createThemeMergeRepository } from "@/lib/repositories/supabase/supabase-theme-merge-repository";
 import {
   MergeNotFoundError,
   MergeValidationError,
 } from "@/lib/repositories/theme-merge-repository";
+import { emit as emitNotification } from "@/lib/services/notification-service";
 import {
   CandidateNotFoundForMergeError,
   InvalidCanonicalChoiceError,
   mergeCandidatePair,
 } from "@/lib/services/theme-merge-service";
+
+// Keep the function instance alive past the JSON response until the after()
+// callback resolves; raises the Hobby-tier ceiling from 10s. Same pattern as
+// runSessionPostResponseChain (PRD-023 Part 3 / TRD Decision 25 of Part 4).
+export const maxDuration = 60;
 
 const LOG_PREFIX = "[api/themes/candidates/[id]/merge]";
 
@@ -92,6 +99,40 @@ export async function POST(request: NextRequest, context: RouteContext) {
     console.log(
       `${LOG_PREFIX} POST — done | audit: ${result.auditId} | reassigned: ${result.signalAssignmentsRepointed}`
     );
+
+    // PRD-026 P4.R1 — broadcast a `theme.merged` notification to the team.
+    // Personal-workspace merges are skipped per Decision 26 (no other
+    // members to notify; workspace_notifications.team_id is NOT NULL anyway).
+    // Wrapped in try/catch so a failed emit logs but doesn't surface as a
+    // merge failure — the merge already committed.
+    if (result.teamId !== null) {
+      const teamId = result.teamId;
+      after(async () => {
+        try {
+          const notificationRepo = createNotificationRepository(
+            wsAdmin.serviceClient
+          );
+          await emitNotification(notificationRepo, {
+            eventType: "theme.merged",
+            teamId,
+            payload: {
+              archivedThemeId: result.archivedThemeId,
+              archivedThemeName: result.archivedThemeName,
+              canonicalThemeId: result.canonicalThemeId,
+              canonicalThemeName: result.canonicalThemeName,
+              actorId: auth.user.id,
+              actorName: auth.user.email ?? "unknown",
+              signalAssignmentsRepointed: result.signalAssignmentsRepointed,
+            },
+          });
+        } catch (err) {
+          console.error(
+            `${LOG_PREFIX} POST — notification emit failed (merge succeeded):`,
+            err instanceof Error ? err.message : err
+          );
+        }
+      });
+    }
 
     return NextResponse.json(result);
   } catch (err) {

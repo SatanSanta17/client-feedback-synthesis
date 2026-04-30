@@ -1954,6 +1954,289 @@ This audit closes Part 3.
 
 ---
 
-## Part 4
+## Part 4: Notify Affected Users of Merges
 
-> Specified after Part 3 lands and at least one merge has produced a real audit row. Part 4 is intentionally a thin layer on top of Part 3 — a single notification emit call wired into the merge service's success path — and must respect the data shapes locked in by Parts 1–3 (`themes.embedding`, `themes.merged_into_theme_id`, `theme_merge_candidates`, `theme_merge_dismissals`, `theme_merges`, `merge_themes` RPC, `MergeResult`).
+> Implements **P4.R1–P4.R4** from PRD-026.
+
+### Overview
+
+Closes the merge-deduplication arc by telling the workspace what just happened. Two user-visible changes; one structural promise that requires no work.
+
+1. **Notification emit on every merge** — the merge route fires a `theme.merged` event into PRD-029's notification primitive after a successful merge. Members see the bell badge, open the dropdown, and read "Theme \"X\" merged into \"Y\"" with a deep-link to `/settings/themes` (renderer is already populated from PRD-029 Part 3).
+2. **Recent-merge indicator on theme widgets** — `top_themes`, `theme_trends`, and `theme_client_matrix` show a small `GitMerge` icon next to themes that have been the canonical destination of a merge in the last `THEME_MERGE_INDICATOR_WINDOW_DAYS` (default `7`). Tooltip reads "Recently merged"; the audit detail lives one click away in the "Recent merges" section of `/settings/themes`.
+3. **Chat history not modified** — already true post-Part 3 (the merge transaction touches `signal_themes` and `themes`, not `messages`). P4.R3 is verified, not implemented.
+
+The flow on a confirmed merge:
+
+```
+Admin clicks Confirm → POST /api/themes/candidates/[id]/merge
+   → mergeCandidatePair → executeMerge RPC
+   → route returns 200 with MergeResult
+   → after() schedules: notificationService.emit({ eventType: "theme.merged",
+                                                    payload: ...result,
+                                                    teamId,
+                                                    broadcast })
+   → background: insert workspace_notifications row → Realtime broadcast
+   → other members' bells: badge increments, dropdown shows the new row
+```
+
+The flow when a member opens the dashboard the next morning:
+
+```
+GET /dashboard
+   → widgets fetch their data + GET /api/dashboard?action=recently-merged-themes
+   → recently-merged-themes returns Set<canonicalThemeId>
+   → top_themes / theme_trends / theme_client_matrix render a GitMerge
+     indicator on the rows whose ids appear in the set
+   → user mouses over → "Recently merged" tooltip → optionally clicks
+     /settings/themes for the audit detail
+```
+
+### Forward Compatibility Notes
+
+Part 4 is the closing part of PRD-026. No further parts queued. Backlog items the spec deliberately defers:
+
+- **Per-user notification preferences (mute, unsubscribe).** Out of scope; PRD-029 hasn't shipped the preference primitive yet. When it does, `theme.merged` consumes it without a service-shape change.
+- **Dashboard indicator with merge details inline (e.g., "Recently merged from 'API Speed'").** First ship: simple `GitMerge` + "Recently merged" tooltip. The audit log on `/settings/themes` is the authoritative source for "what merged into what". Promote to inline detail only if user feedback shows the round trip to settings is friction.
+- **Re-extract chat conversations to use canonical names.** PRD-026 P4.R3 explicitly says past chat messages are not rewritten. A future "re-run this conversation" feature would naturally produce canonical names (chat queries read from non-archived themes); not a Part 4 deliverable.
+- **Notification suppression for the actor.** Per the existing notification-service shape, broadcasts go to every team member including the actor. Showing the actor a notification about their own action is mildly redundant but harmless. PRD-029's bell already visually deprioritises read rows; a self-suppression filter is a backlog item if it becomes friction.
+
+### Technical Decisions
+
+Continuing the numbering from Parts 1–3's decisions.
+
+25. **Emit happens in the merge route via `after()`, not inside the service.** Service contract for Part 3 was deliberately frozen so Part 4's diff is a single call site (Decision 28 of Part 3 documented this). The route is the right home: it already owns request lifecycle (auth, role check, request → response framing); adding a "fire after response" side effect there matches the `runSessionPostResponseChain` pattern. Service stays focused on "do the merge"; route owns "do the merge AND notify". No service-shape change; `mergeCandidatePair` is unchanged.
+
+26. **Skip emit for personal workspaces.** PRD-029's `workspace_notifications.team_id NOT NULL` schema rules it out anyway, and notifying a personal-workspace owner about their own action has no value (they're the only member). Personal-workspace merges still write the `theme_merges` audit row + the dashboard indicator works (the indicator query is workspace-scoped, not team-scoped). Code-wise: a `if (result.teamId !== null)` guard around the `after()` schedule.
+
+27. **Actor name = `auth.user.email`.** The current `profiles` table carries `{ id, email, is_admin, can_create_team }` — no display name field. Email is the closest human-readable identifier we have, and it's already in `auth.user.email` from `requireAuth` (no additional query). When the project ships a richer profile (display name, avatar URL), this resolves to one line: replace `auth.user.email` with the resolved display name. The notification renderer's `theme.merged` title doesn't surface `actorName` today (it shows "Theme \"X\" merged into \"Y\"" — the actor is the bell row's implicit context); the field is in the payload for future-renderer consumption.
+
+28. **Indicator window: 7 days default, env-tunable via `THEME_MERGE_INDICATOR_WINDOW_DAYS`.** Long enough that a user returning Monday still sees Friday's merge; short enough that the dashboard doesn't accumulate permanent visual noise. The env var is a single-line override for workspaces with different cadences. Tunable from production telemetry without a code deploy.
+
+29. **Indicator data shape: `Set<canonicalThemeId>` from a single workspace-scoped query.** Reads `theme_merges` filtered by workspace + `merged_at >= NOW() - INTERVAL X DAYS`. The `(team_id, merged_at DESC)` index from Part 3 supports it. One query per dashboard load, returns ≤ a handful of ids in any realistic workspace. Map<canonical, archivedNames[]> deferred — the audit log on `/settings/themes` is the detailed source of truth; the dashboard's only job is "this theme had recent merges, click to investigate".
+
+30. **Indicator UI: `GitMerge` lucide icon with "Recently merged" tooltip.** Same icon the notification renderer already uses for `theme.merged` events (cross-surface consistency). Sized at 14px; muted-foreground colour; positioned inline-end of the theme name in each widget. Subtle (doesn't change the theme's primary visual treatment); discoverable (tooltip explains what the icon means). Emoji or "RECENTLY MERGED" pill considered and rejected — too visually loud for a workspace that might have several recent merges.
+
+31. **Indicator-fetching shared via a single dashboard query action, not per-widget.** New `recently-merged-themes` action on `/api/dashboard`. The widgets' existing `useDashboardFetch` hook handles the round trip. One fetch per dashboard render, three consumers — simpler than per-widget fetches that would each independently hit the same query. The action returns `{ themeIds: string[] }`; the widget code derives `Set<string>` for membership testing.
+
+### Database Changes
+
+**None.** Part 4 reads from the existing `theme_merges` table (added in Part 3) and writes to `workspace_notifications` (added in PRD-029 Part 1) via the existing `notificationService.emit` API. No new tables, no new RPCs, no schema migrations.
+
+### Type Definitions
+
+**No new domain types.** `theme.merged`'s payload type (`ThemeMergedPayload`) and the `WorkspaceNotification` shape are already exported from `@/lib/notifications/events` and `@/lib/types/notification` respectively.
+
+A small dashboard-action type addition for the new query action — already implied by the existing `QueryAction` registry pattern in `lib/services/database-query/action-metadata.ts`.
+
+### Service Changes
+
+**No new service file.** Part 4 reuses two existing services:
+
+- `lib/services/notification-service.ts` (PRD-029 Part 1) — `emit({ eventType, payload, teamId, userId? })`.
+- `lib/services/theme-merge-service.ts` (Part 3) — unchanged.
+
+A new query helper lives in:
+
+- `lib/services/database-query/shared/theme-helpers.ts` — adds `fetchRecentlyMergedThemeIds(serviceClient, workspaceCtx, windowDays)`. Returns `Promise<Set<string>>` of canonical theme ids merged within the window. Uses the existing `(team_id, merged_at DESC)` index. Co-located with the existing theme-helper functions for cohesion.
+
+### API Route Changes
+
+#### Modify: `app/api/themes/candidates/[id]/merge/route.ts`
+
+After `mergeCandidatePair` resolves, schedule the notification emit via `next/server`'s `after()`:
+
+```typescript
+import { after } from "next/server";
+import { createNotificationRepository } from "@/lib/repositories/supabase/supabase-notification-repository";
+import { emit as emitNotification } from "@/lib/services/notification-service";
+
+// After existing mergeCandidatePair success path, before NextResponse.json:
+if (result.teamId !== null) {
+  after(async () => {
+    try {
+      const notificationRepo = createNotificationRepository(wsAdmin.serviceClient);
+      await emitNotification(notificationRepo, {
+        eventType: "theme.merged",
+        teamId: result.teamId,
+        // userId omitted → broadcast to all team members.
+        payload: {
+          archivedThemeId: result.archivedThemeId,
+          archivedThemeName: result.archivedThemeName,
+          canonicalThemeId: result.canonicalThemeId,
+          canonicalThemeName: result.canonicalThemeName,
+          actorId: auth.user.id,
+          actorName: auth.user.email ?? "unknown",
+          signalAssignmentsRepointed: result.signalAssignmentsRepointed,
+        },
+      });
+    } catch (err) {
+      console.error(
+        `${LOG_PREFIX} POST — notification emit failed (merge succeeded):`,
+        err instanceof Error ? err.message : err
+      );
+    }
+  });
+}
+```
+
+**Why a try/catch around the emit:** the notification is a side effect of the merge, not a precondition. A failed emit must not surface as a merge failure to the user; the merge already committed and the audit row is the durable record. Logging the failure server-side gives observability without affecting UX.
+
+**Why `if (result.teamId !== null)`:** Decision 26.
+
+**Why `auth.user.email ?? "unknown"`:** `User.email` is technically `string | undefined` per Supabase's types, though in practice every authenticated user has one. The `?? "unknown"` is a defensive fallback; the renderer's title doesn't show `actorName` today, so the value only ever surfaces if a future renderer change adds it.
+
+Add `export const maxDuration = 60` to the route file (matches `runSessionPostResponseChain`'s pattern from PRD-023 — keeps the function instance alive past the JSON response until the `after()` callback resolves; raises the Hobby-tier ceiling from 10s).
+
+#### Modify: `lib/services/database-query/action-metadata.ts` and the executor
+
+Add a `recently-merged-themes` action:
+- Input: workspace scope (already standard).
+- Output: `{ themeIds: string[] }`.
+- Implementation: calls `fetchRecentlyMergedThemeIds` from `theme-helpers.ts`.
+
+The chat tool surface should NOT expose this action — it's a dashboard-only thing; the `ACTION_METADATA` registry's `chatExposed: false` flag (or equivalent) keeps it off the LLM tool surface.
+
+### UI Changes
+
+```
+app/dashboard/_components/widgets/
+├── top-themes-widget.tsx                 # MODIFY — render GitMerge icon
+│                                            inline-end of each theme row
+│                                            whose id is in recentlyMergedSet
+├── theme-trends-widget.tsx               # MODIFY — same indicator on each
+│                                            line's legend label
+└── theme-client-matrix-widget.tsx        # MODIFY — same indicator on the
+                                             theme row label
+
+components/dashboard/
+└── recent-merge-indicator.tsx            # NEW (small) — shared GitMerge +
+                                             tooltip wrapper used by all
+                                             three widgets so the visual
+                                             treatment stays consistent
+```
+
+`recent-merge-indicator.tsx` exports a single `<RecentMergeIndicator />` component:
+- Renders a 14px `GitMerge` icon from `lucide-react`.
+- Wrapped in a tooltip ("Recently merged") using the project's existing tooltip primitive (or a `title` attribute as a minimum).
+- Uses `text-muted-foreground` so it doesn't compete with the theme name.
+
+Each widget receives the `recentlyMergedSet` (a `Set<string>` of canonical theme ids) — either via prop drilling from a dashboard-level fetch, or by each widget independently calling the new `recently-merged-themes` action via `useDashboardFetch`. Per Decision 31, the cleaner version is a shared dashboard-level fetch + context provider, but per-widget fetch is acceptable if the implementation cost is comparable.
+
+### Files Changed
+
+| File | Action | Purpose |
+|------|--------|---------|
+| `app/api/themes/candidates/[id]/merge/route.ts` | Modify | Schedule `notificationService.emit` via `after()` on success; skip personal workspaces; `maxDuration = 60` declaration |
+| `lib/services/database-query/shared/theme-helpers.ts` | Modify | Add `fetchRecentlyMergedThemeIds(serviceClient, workspaceCtx, windowDays)` |
+| `lib/services/database-query/action-metadata.ts` | Modify | Register `recently-merged-themes` action |
+| `lib/services/database-query/domains/themes.ts` (or wherever theme-action handlers live) | Modify | Implement the `recently-merged-themes` handler — delegates to the helper |
+| `app/api/dashboard/route.ts` | Modify (only if Zod schema enumerates the action) | Add `recently-merged-themes` to the validated action enum |
+| `components/dashboard/recent-merge-indicator.tsx` | **Create** | Shared `GitMerge` + tooltip wrapper |
+| `app/dashboard/_components/widgets/top-themes-widget.tsx` | Modify | Render `<RecentMergeIndicator />` inline-end of theme rows whose id is in the set |
+| `app/dashboard/_components/widgets/theme-trends-widget.tsx` | Modify | Same — on legend labels |
+| `app/dashboard/_components/widgets/theme-client-matrix-widget.tsx` | Modify | Same — on row labels |
+| `ARCHITECTURE.md` | Modify | RPC list unchanged; status line append; brief note on the Part 4 indicator + emit chain |
+| `CHANGELOG.md` | Modify | PRD-026 Part 4 entry |
+
+### Implementation
+
+#### Increment 4.1 — Emit `theme.merged` from the merge route
+
+**What:** Wire the notification emit into the merge route's success path via `after()`.
+
+**Steps:**
+
+1. Open `app/api/themes/candidates/[id]/merge/route.ts`.
+2. Add imports: `after` from `next/server`, `createNotificationRepository` from the Supabase adapter, `emit as emitNotification` from the notification service.
+3. Add `export const maxDuration = 60` at the top (matching the existing `runSessionPostResponseChain` pattern).
+4. After `mergeCandidatePair` resolves and *before* `NextResponse.json(result)`, schedule the emit per the §API Route Changes snippet, guarded by `if (result.teamId !== null)`.
+5. Wrap the emit in try/catch so a notification failure logs but doesn't surface as a merge failure.
+
+**Verification:**
+
+1. `npx tsc --noEmit` passes.
+2. Smoke test in browser:
+   - Log in as admin in a team workspace; click Merge on a candidate.
+   - Confirm: merge succeeds; bell on a *different* signed-in member's session shows a new unread badge within Realtime's window; opening the dropdown shows "Theme \"X\" merged into \"Y\"" with `GitMerge` icon and `/settings/themes` deep-link.
+3. Personal workspace merge: confirm no `workspace_notifications` row was inserted (the schema rules it out anyway, and the route's guard skips the emit).
+4. Failure mode: temporarily stop the notifications insert (e.g., disable RLS or revoke a policy) and merge. Confirm: merge still succeeds, response returns 200 with `MergeResult`, server logs `[api/themes/candidates/[id]/merge] POST — notification emit failed (merge succeeded):` with the underlying error.
+
+**Post-increment:** None. ARCHITECTURE batched in 4.3.
+
+---
+
+#### Increment 4.2 — Recent-merge indicator on dashboard widgets
+
+**What:** Add the helper, the dashboard action, the shared indicator component, and wire it into the three theme widgets.
+
+**Steps:**
+
+1. Add `fetchRecentlyMergedThemeIds(serviceClient, workspaceCtx, windowDays)` to `lib/services/database-query/shared/theme-helpers.ts`. Reads `theme_merges` filtered by workspace + `merged_at >= NOW() - INTERVAL X DAYS`. Returns `Set<string>` (or `string[]`; widgets can wrap).
+2. Read `THEME_MERGE_INDICATOR_WINDOW_DAYS` env var (default `7`) at the helper's call site (matches `theme-prevention.ts`'s threshold-read pattern with validation + warning fallback).
+3. Register `recently-merged-themes` action in `action-metadata.ts` (with `chatExposed: false` so the LLM tool doesn't see it). Wire the handler to the helper.
+4. Update `app/api/dashboard/route.ts`'s Zod action enum (if the existing pattern uses one).
+5. Create `components/dashboard/recent-merge-indicator.tsx` — small wrapper around `GitMerge` (14px) + tooltip ("Recently merged").
+6. Update each of `top-themes-widget.tsx`, `theme-trends-widget.tsx`, `theme-client-matrix-widget.tsx`:
+   - Fetch the `recently-merged-themes` action's data alongside the widget's primary fetch.
+   - For each theme rendered, conditionally render `<RecentMergeIndicator />` inline-end of the name when the id is in the set.
+
+**Verification:**
+
+1. `npx tsc --noEmit` passes.
+2. Smoke test in browser:
+   - Confirm a merge in a workspace.
+   - Open `/dashboard` — the canonical theme should show the `GitMerge` icon next to its name in `top_themes`, `theme_trends`, and `theme_client_matrix`.
+   - Hover the icon — tooltip reads "Recently merged".
+   - Wait > `THEME_MERGE_INDICATOR_WINDOW_DAYS` (or set the env to `0` for the test) — the indicator disappears on next dashboard load.
+3. Mobile/dark-mode check: the indicator is legible and doesn't break the row layout.
+
+**Post-increment:** None.
+
+---
+
+#### Increment 4.3 — End-of-part audit + ARCHITECTURE.md + CHANGELOG.md
+
+Per CLAUDE.md "End-of-part audit" — produces fixes, not a report. Genuine pass (per Part 3's audit lesson — explicitly grep `lib/utils/` and `lib/api/` before writing new helpers; explicitly check every count-interpolating UI string for `count === 1` correctness).
+
+**Checklist:**
+
+1. **SRP:** the merge route owns "do the merge + schedule notification" (one bounded responsibility). Service unchanged. The dashboard helper does only "fetch recent canonical theme ids". The indicator component does only "render the icon + tooltip".
+2. **DRY:** `RecentMergeIndicator` is the single place that renders the GitMerge icon for the dashboard; the three widgets reuse it. Helper is one function. Env-var read pattern matches Parts 1–2.
+3. **Design tokens:** indicator uses defined CSS vars / shadcn tokens (`text-muted-foreground` or `var(--text-muted)`). No hardcoded colours.
+4. **Logging:** notification emit failure logs at the route level with `[api/themes/candidates/[id]/merge]` prefix. Dashboard helper logs at `[theme-helpers]` (matches existing helper-log convention).
+5. **Dead code:** no unused imports; no commented-out code. Confirm Part 4's diff in the merge route doesn't leave a stub.
+6. **Convention compliance:** kebab-case files, PascalCase types, named exports, import order per CLAUDE.md.
+7. **Database review:** no new schema; the `theme_merges` query uses the existing index. Workspace-scope check is reused.
+8. **Error paths:** verify the emit failure doesn't surface as a 500 to the user; verify a personal-workspace merge doesn't hit the emit at all.
+9. **ARCHITECTURE.md:**
+   - Status line: append "PRD-026 Part 4 (Notify Affected Users of Merges) implemented".
+   - Add a brief description of the indicator + the `theme.merged` emit chain to the dashboard architecture decision (or a new entry).
+   - File map: add `components/dashboard/recent-merge-indicator.tsx` and the new `recently-merged-themes` query action.
+10. **CHANGELOG.md:** new PRD-026 Part 4 entry under `[Unreleased]`.
+11. **Verify file references in docs still resolve.**
+12. **Re-run flows touched by Part 4:**
+    - Capture → AI extraction → background chain (Parts 1–2 paths unchanged).
+    - Admin opens `/settings/themes` → list renders → Merge → dialog → Confirm → row gone → recent-merges populated → other team members see bell badge → bell dropdown shows the rendered notification.
+    - Member opens `/dashboard` → canonical theme shows the GitMerge indicator.
+    - Chat history: previous messages still mention the archived name verbatim; a new chat query for the same topic resolves to the canonical name (P4.R3 verification).
+13. **Final:** `npx tsc --noEmit`.
+
+This audit closes Part 4 and the entirety of PRD-026.
+
+---
+
+## Backlog (PRD-026 closure)
+
+Items the four parts deliberately deferred. Re-evaluate after PRD-026 has been live in production for a full quarter.
+
+- **LLM-judged candidate filtering** (Part 2 backlog).
+- **Automatic merge of very-high-confidence pairs** (Parts 2–3 backlog).
+- **Reverse-merge / unmerge UI** (Part 3 backlog — the data substrate exists; only UI + reverse-RPC missing).
+- **Bulk merge** (Part 3 backlog).
+- **Per-workspace tunable similarity / candidate / indicator thresholds** (Parts 1–4 backlog — three env vars currently global).
+- **True background cron for candidate refresh** (Part 2 backlog — replaced by stale-on-mount in Increment 2.6 per Decision 20).
+- **Theme synonym/topic hierarchy** (PRD-026 backlog).
+- **Cross-workspace theme suggestions** (PRD-026 backlog).
+- **Inline merge details on dashboard indicator** (Part 4 backlog — currently a generic "Recently merged" tooltip).
+- **Notification suppression for the actor** (Part 4 backlog).

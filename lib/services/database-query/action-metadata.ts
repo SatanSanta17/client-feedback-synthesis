@@ -86,6 +86,11 @@ export const ACTION_METADATA: Record<QueryAction, ActionMeta> = {
     description:
       "Theme × client cross-tabulation. Honors `confidenceMin`, `clientIds`, `severity`.",
   },
+  recently_merged_themes: {
+    llmToolExposed: false,
+    description:
+      "(not exposed — used by dashboard theme widgets to render the 'Recently merged' indicator on canonical themes; PRD-026 Part 4)",
+  },
   drill_down: {
     llmToolExposed: false,
     description:
