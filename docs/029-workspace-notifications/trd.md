@@ -1927,9 +1927,293 @@ This audit closes Part 3.
 
 ---
 
-## Parts 4–5
+## Part 4: Delivery Mechanism
 
-> Specified after Part 3 lands and at least one consumer (PRD-026 P4 / PRD-028 P5.R9 / PRD-017 follow-up) has emitted in production. Each subsequent part will append a "Part N" section here, mirroring the structure above, and must respect the data shapes locked in by Parts 1, 2, and 3 (`workspace_notifications` schema, `NOTIFICATION_EVENTS` registry, `NotificationRepository` interface, `notification-service` public API, the four `/api/notifications/*` routes, the renderer interface, the three registered renderers).
+> Implements **P4.R1–P4.R5** from PRD-029.
 
-- **Part 4 — Delivery mechanism.** Picks Supabase Realtime / polling-only / hybrid. The hooks from Part 2 (`use-unread-count.ts` and `use-notifications.ts`) get their internal implementations swapped or augmented; their public return shapes do not change. The latency bar from PRD §P4.R1 is the measurable acceptance.
-- **Part 5 — Retention & cleanup.** Schedules a job (cron / edge function / pg_cron) calling `repo.deleteExpired` on a cadence. Configurable retention windows (read shorter than unread); per-row `expires_at` already supported by Part 1's schema and repository contract.
+### Overview
+
+Move the badge and list from "polling within 30 seconds" to "Realtime within seconds, polling as a 5-minute safety net." Supabase Realtime delivers changes on `workspace_notifications` straight to the user's browser via WebSocket; RLS filters the event stream so each user only sees their own visible rows. The polling fallback survives silent WebSocket drops — when Realtime is healthy it never fires (the hook bumps its own deadline on every event); when Realtime breaks, the badge stays correct within ~5 minutes instead of indefinitely.
+
+This is the project's first use of Supabase Realtime. The `@supabase/supabase-js` client already supports it (the dependency is in tree, just unused). One SQL migration enables Realtime publication on the table; one new shared hook wraps the subscription lifecycle; the two existing fetch hooks (`use-unread-count`, `use-notifications`) call the shared hook and refetch on every emit. Their public return shapes do not change — `NotificationBell` and `NotificationDropdown` consume them unmodified.
+
+### Forward Compatibility Notes
+
+- **Future event types.** Realtime subscribes to the table, not specific event types — every new event registered in Parts 1/3 is delivered automatically. No subscription edit ever needed.
+- **Future delivery channels (email digest, push, etc.) — backlog.** Email/push delivery would land alongside Realtime, not replace it. They consume the same `workspace_notifications` rows; their delivery is server-side cron, not browser-side. No conflict.
+- **Per-user notification preferences (mute event types) — backlog.** The hook stays unchanged; muting becomes a server-side filter in the API routes. The Realtime subscription still receives events for muted types but the API filters them out of `listForBell`/`unreadCount` responses; the bell auto-corrects on next refetch.
+- **Multi-tab consistency.** A user reading a notification in tab A sends a Realtime UPDATE event that tab B receives, triggering tab B's badge to refetch and decrement. No bespoke cross-tab coordination needed (no `BroadcastChannel`, no localStorage events) — the DB is the source of truth and Realtime makes both tabs observe it.
+- **Sign-out handling.** Both hooks unmount when the auth-aware layout swaps to a public route; `useEffect` cleanup tears down the channel. No bespoke sign-out hook needed — same pattern PRD-024 established for streaming subscriptions.
+
+### Why Hybrid (Not Pure Realtime, Not Pure Polling)
+
+Three options were on the table per PRD §P4.R2. Decision is **Realtime + polling fallback at 5-minute cadence**.
+
+- **Pure polling** (current Part 2 state). Pros: simple, no new infra, no WebSocket lifecycle. Cons: 30-second floor on badge latency violates PRD §P4.R1's "within seconds in real-time mode" target. A user receives a theme-merge notification 30 seconds after the actor confirms — long enough that "Alice just told me she merged it" beats the badge.
+- **Pure Realtime.** Pros: sub-second latency, single source of "did something change." Cons: a silent WebSocket drop (network blip the client misses, server restart, auth token expiry the reconnect logic muffs) leaves the badge indefinitely stale. Notifications are user-trust load-bearing; "stale forever" is a worse failure mode than "stale for 5 minutes."
+- **Hybrid** (chosen). Realtime delivers within seconds in the happy path. Polling at 5-minute intervals is the floor — if Realtime broke 30 seconds ago, the badge still corrects within 5 minutes. Polling pauses entirely when the tab is hidden (Page Visibility API, already wired in Part 2) and refetches on focus. Net cost: one extra fetch every 5 minutes per active tab, dwarfed by any single dashboard load.
+
+The chosen interval (5 minutes, vs Part 2's 30 seconds) reflects the Realtime-primary design — polling becomes a backstop, not the main delivery channel. The Realtime subscription is what meets the latency bar; polling exists only because Realtime can fail silently and we want a known-bounded staleness window.
+
+### Why Subscribe Without an Explicit Filter
+
+Supabase Realtime supports a `filter` parameter on `postgres_changes` subscriptions, but only single-equality predicates (`column=eq.value`). Our visibility rule is a disjunction:
+
+```
+user_id = auth.uid()
+OR (user_id IS NULL AND team_id IN <user's teams>)
+```
+
+This cannot be expressed as a Realtime filter. Three alternatives were considered:
+
+- **Subscribe with `user_id=eq.${userId}`** (targeted only). Misses broadcasts. Rejected — broadcasts are half the point.
+- **Subscribe twice** (once for targeted, once unfiltered for broadcasts). Requires de-duplication client-side. Rejected — added complexity without latency benefit.
+- **Subscribe without a filter, rely on RLS.** Supabase Realtime's authorization layer applies the table's RLS policies to filter the event stream per subscriber. The user only receives events for rows their RLS policy lets them SELECT — exactly the visibility rule we want. Chosen.
+
+The trade-off is server-side fanout: Realtime evaluates RLS for every change against every subscribed user. At our notification volume (low, sparse, per-user) this is negligible. If volumes ever climb to the point where this matters, the fix is per-user channels with targeted filters at that point — not premature optimisation now.
+
+### Database Changes
+
+#### Migration: `002-enable-realtime-on-workspace-notifications.sql`
+
+```sql
+-- ============================================================
+-- PRD-029 Part 4: Enable Supabase Realtime on workspace_notifications
+-- ============================================================
+-- Realtime publishes table changes (INSERT/UPDATE/DELETE) over WebSocket
+-- to subscribed clients. RLS policies on the table apply to the event
+-- stream — each subscriber only receives changes for rows they can
+-- SELECT. Part 1's existing SELECT policy gives us per-user filtering
+-- "for free": targeted notifications stream to their `user_id` only;
+-- broadcasts stream to every member of `team_id`.
+-- ============================================================
+
+ALTER PUBLICATION supabase_realtime ADD TABLE workspace_notifications;
+```
+
+**Why no `REPLICA IDENTITY` change:** Postgres' default replica identity (PRIMARY KEY) is sufficient for our use case — we use Realtime events as a "something changed, refetch" trigger, not to reconstruct row state from the event payload. The payload has the primary key plus changed columns; we never read the payload's column values directly.
+
+**Why a separate migration file from Part 1's `001-create-workspace-notifications.sql`:** the publication change is a runtime-affecting operational step; bundling it into the table-creation migration would couple "table exists" with "Realtime publishes." Keeping them split lets ops disable Realtime (drop the publication add) without touching the table — and keeps the audit trail honest about when each capability shipped.
+
+### New Hook
+
+#### `lib/hooks/use-notification-realtime.ts` (new)
+
+A single shared hook that subscribes to `workspace_notifications` change events and invokes a caller-supplied callback on every event. Used by both `use-unread-count` and `use-notifications`.
+
+```typescript
+"use client";
+
+import { useEffect, useRef } from "react";
+
+import { createClient } from "@/lib/supabase/client";
+
+const LOG_PREFIX = "[useNotificationRealtime]";
+const CHANNEL_NAME = "workspace-notifications";
+
+/**
+ * Subscribes to `workspace_notifications` row changes via Supabase Realtime
+ * and invokes `onChange` for every INSERT / UPDATE / DELETE the user has
+ * RLS-visibility to. The callback is held in a ref so changing its identity
+ * across renders does not tear down the subscription.
+ *
+ * The channel name is shared across consumers — Supabase JS deduplicates
+ * channels by name, so multiple hook callers fan out from one underlying
+ * channel rather than each opening a separate WebSocket subscription.
+ *
+ * Subscription lifecycle is `useEffect` mount/unmount: the channel is torn
+ * down when the consumer unmounts. Sign-out flows (`AuthProvider`'s session-
+ * null branch) unmount the bell tree, which cascades the cleanup.
+ */
+export function useNotificationRealtime(onChange: () => void): void {
+  const onChangeRef = useRef(onChange);
+
+  useEffect(() => {
+    onChangeRef.current = onChange;
+  }, [onChange]);
+
+  useEffect(() => {
+    const supabase = createClient();
+    const channel = supabase
+      .channel(CHANNEL_NAME)
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "workspace_notifications",
+        },
+        () => {
+          onChangeRef.current();
+        }
+      )
+      .subscribe((status) => {
+        // Statuses: 'SUBSCRIBED', 'CHANNEL_ERROR', 'TIMED_OUT', 'CLOSED'.
+        // Worth observing transitions so silent drops surface in logs.
+        console.log(`${LOG_PREFIX} subscription status: ${status}`);
+      });
+
+    return () => {
+      void supabase.removeChannel(channel);
+    };
+  }, []);
+}
+```
+
+**Why a `useRef` for the callback:** without it, every parent re-render that produces a new `onChange` identity would tear down and re-mount the subscription — a real cost (WebSocket round trip) for what should be a stable lifecycle. The ref pattern is the standard React idiom for "subscription on mount, latest callback on event."
+
+**Why one shared channel name:** Supabase JS deduplicates channels by name. Two hooks calling `supabase.channel("workspace-notifications")` get the same underlying channel; both `.on(...)` listeners fire on every event. One WebSocket per browser tab regardless of how many bell-related hooks subscribe.
+
+**Why log every status transition:** silent drops are exactly the failure mode the polling fallback exists to compensate for, but observability lets us notice when it's happening so we can investigate. `[useNotificationRealtime] subscription status: CHANNEL_ERROR` in production logs is a clear signal.
+
+### Modifications to Existing Hooks
+
+#### `lib/hooks/use-unread-count.ts` (modify)
+
+Change one constant + add a one-line subscription. The structure of the polling effect stays identical; only the cadence changes.
+
+```typescript
+// before
+const POLL_INTERVAL_MS = 30_000;
+
+// after — Realtime is the primary signal; polling is the fallback safety net
+const POLL_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
+```
+
+Add the subscription inside the function body, immediately after the `fetchCount` declaration:
+
+```typescript
+useNotificationRealtime(fetchCount);
+```
+
+That single line wires Realtime → unread-count refetch. The hook ref-stabilises `fetchCount` internally, so passing it directly is safe even though `useCallback`'s identity is technically stable already.
+
+No other change. The visibility-aware polling loop, the `cancelledRef` guard, the imperative `refetch` return, the `useUnreadCountReturn` shape — all unchanged. Caller (`NotificationBell`) sees identical behaviour, just with sub-second latency in the happy path.
+
+#### `lib/hooks/use-notifications.ts` (modify)
+
+Add the same one-line subscription, calling `refresh()` (which fetches page 1):
+
+```typescript
+useNotificationRealtime(refresh);
+```
+
+The dropdown's `useNotifications` only mounts when the bell opens (Part 2's lazy-mount via Radix Portal), so this subscription is bell-open-scoped — closed bell pays no Realtime cost on the dropdown side. The badge's subscription (in `use-unread-count`) is always active because the bell trigger is always rendered.
+
+No polling fallback added to `use-notifications` — the list refetches on bell open (Part 2 behaviour) and on every Realtime event (Part 4). Tab-hidden + bell-closed = no fetches at all, which is correct.
+
+### Files Changed
+
+| File | Action | Purpose |
+|------|--------|---------|
+| `docs/029-workspace-notifications/002-enable-realtime-on-workspace-notifications.sql` | **Create** | Migration — `ALTER PUBLICATION supabase_realtime ADD TABLE workspace_notifications` |
+| `lib/hooks/use-notification-realtime.ts` | **Create** | Shared subscription hook — `useNotificationRealtime(onChange)`, ref-stabilised callback, status logging |
+| `lib/hooks/use-unread-count.ts` | Modify | Bump `POLL_INTERVAL_MS` from 30s to 5min; add `useNotificationRealtime(fetchCount)` line |
+| `lib/hooks/use-notifications.ts` | Modify | Add `useNotificationRealtime(refresh)` line |
+| `ARCHITECTURE.md` | Modify | File-map entry for the new hook; status line gains "PRD-029 Part 4 (Delivery Mechanism — Realtime + 5-min polling fallback) implemented"; Authentication Flow section may need a one-line note about Realtime authorization riding on the same auth context |
+| `CHANGELOG.md` | Modify | PRD-029 Part 4 entry |
+
+No new env vars (Realtime uses the existing `NEXT_PUBLIC_SUPABASE_URL` + publishable key). No new dependencies (`@supabase/supabase-js` is already in tree).
+
+### Implementation
+
+#### Increment 4.1 — Migration + shared subscription hook
+
+**What:** Land migration `002` and create `use-notification-realtime.ts`. Apply Realtime publication on the dev project. The hook exists but no consumer wires it yet.
+
+**Steps:**
+
+1. Create `docs/029-workspace-notifications/002-enable-realtime-on-workspace-notifications.sql` with the `ALTER PUBLICATION` statement.
+2. Apply on dev project (Supabase SQL editor), then prod after dev verification.
+3. Create `lib/hooks/use-notification-realtime.ts` per §New Hook.
+
+**Verification:**
+
+1. `npx tsc --noEmit` passes.
+2. **Migration smoke (dev project):** in the Supabase Studio Realtime section, confirm `workspace_notifications` appears in the publication list. Or run `SELECT * FROM pg_publication_tables WHERE pubname = 'supabase_realtime' AND tablename = 'workspace_notifications';` — should return one row.
+3. **Subscription smoke** (against a running dev server with auth cookies, before any consumer wiring):
+   - Mount the hook in a temporary `app/dev/realtime-test/page.tsx` with `useNotificationRealtime(() => console.log("event"))`.
+   - Visit the page; browser console should show `[useNotificationRealtime] subscription status: SUBSCRIBED`.
+   - In Supabase SQL editor, insert a test notification row scoped to the logged-in user.
+   - Browser console should log `event` within 1-2 seconds. If it does not appear, RLS is gating the event correctly (the user must be a member of `team_id` for broadcasts, or `user_id` must match for targeted).
+   - Delete the temporary page.
+
+**Post-increment:** none.
+
+---
+
+#### Increment 4.2 — Wire badge + list hooks
+
+**What:** Modify `use-unread-count.ts` and `use-notifications.ts` to subscribe via the shared hook. Bump the badge's polling cadence to 5 minutes.
+
+**Steps:**
+
+1. Edit `lib/hooks/use-unread-count.ts`:
+   - Change `POLL_INTERVAL_MS = 30_000` to `POLL_INTERVAL_MS = 5 * 60 * 1000`.
+   - Import `useNotificationRealtime` from the new hook.
+   - Add `useNotificationRealtime(fetchCount);` inside the function body, after the `fetchCount` declaration.
+2. Edit `lib/hooks/use-notifications.ts`:
+   - Import `useNotificationRealtime`.
+   - Add `useNotificationRealtime(refresh);` inside the function body, after the `refresh` declaration.
+
+**Verification:**
+
+1. `npx tsc --noEmit` passes.
+2. **End-to-end with two browser windows** (both authenticated as the same user, dev server running):
+   - Window A: `/dashboard` (sidebar visible, badge mounted).
+   - Window B: `/capture` (also has the bell mounted).
+   - SQL editor: insert a `theme.merged` row scoped to the logged-in user.
+   - Both windows: badge increments to 1 within 1-2 seconds (no manual refresh).
+3. **Mark-read cross-tab:**
+   - Window A: open the bell, click the row to mark read.
+   - Window B: badge decrements to 0 within 1-2 seconds.
+4. **Polling fallback exercised:**
+   - Block Realtime in dev (e.g., browser devtools network throttling → offline, then re-enable). The badge should reach correct state within 5 minutes via polling. (Optional verification — can be checked manually if Realtime ever drops in production.)
+5. **Tab-visibility:**
+   - Hide the tab (Cmd+Tab away). Insert a notification via SQL editor. Wait 30 seconds. Foreground the tab.
+   - Badge should refetch on focus (Part 2 behaviour) and reflect the new count immediately.
+6. **Existing flows unaffected:**
+   - Sidebar's PRD-024 Chat-icon streaming dot still works (different DOM region, different subscription).
+   - Other routes (`/dashboard`, `/capture`, `/chat`) render normally with no Realtime regression.
+
+**Post-increment:** none.
+
+---
+
+#### Increment 4.3 — End-of-part audit
+
+Per CLAUDE.md "End-of-part audit" — produces fixes, not a report.
+
+**Checklist:**
+
+1. **SRP:** `use-notification-realtime.ts` does one thing — manage the Realtime subscription lifecycle. The two consumer hooks delegate to it; they don't duplicate subscription setup.
+2. **DRY:** subscription setup lives in exactly one place. Both consumers (`use-unread-count`, `use-notifications`) call `useNotificationRealtime(callback)` — the shared channel name + the ref-stabilised callback pattern + the cleanup are not duplicated.
+3. **Design tokens:** N/A — Part 4 is hooks-only, no UI.
+4. **Logging:** `[useNotificationRealtime] subscription status: <STATUS>` covers every state transition. Consumers' existing `[useUnreadCount]` / `[useNotifications]` logs continue unchanged.
+5. **Dead code:** the temporary `app/dev/realtime-test/page.tsx` from Increment 4.1 is deleted. No commented-out 30-second polling constant in `use-unread-count.ts` (the value is just changed in place).
+6. **Convention:** `useX` naming, `LOG_PREFIX`, return shapes unchanged for consumers.
+7. **Type tightening:** zero `any`. The `onChange` callback is typed `() => void` — the hook never inspects the change payload (it's a "something happened, refetch" trigger).
+8. **Connection lifecycle verification:**
+   - Open the bell tree, then sign out. Console should show `[useNotificationRealtime] subscription status: CLOSED` as the cleanup fires. No leftover channel after sign-out.
+   - Sign in again → new `SUBSCRIBED` log. Subsequent events deliver normally.
+   - Auth token refresh (waited out the access-token expiry, ~1 hour): Supabase JS auto-refreshes; verify a notification inserted post-refresh still delivers via Realtime. (Long-running test — operationally verifiable but not blocking for the audit.)
+9. **No regressions:**
+   - Part 2's badge / dropdown / row / mark-read flows behave identically.
+   - PRD-024's streaming subscriptions (separate `lib/streaming/` module) untouched.
+   - Sidebar chrome unchanged.
+10. **ARCHITECTURE.md update:**
+    - File map: add `lib/hooks/use-notification-realtime.ts` to the hooks block. Update `use-unread-count.ts` description to note "Realtime-driven refetch with 5-min polling fallback (PRD-029 Part 4)" and similarly extend `use-notifications.ts`.
+    - Status line: append "PRD-029 Part 4 (Delivery Mechanism — Realtime + 5-min polling fallback) implemented".
+    - One-line note in the Authentication Flow section (or wherever Supabase setup is documented): "Realtime subscriptions on `workspace_notifications` ride on the same auth context — RLS filters the event stream per user."
+11. **CHANGELOG.md:** PRD-029 Part 4 entry covering all P4.R1–P4.R5 requirements, the hybrid-architecture decision, the subscribe-without-filter rationale, the increment narrative, and the audit's actual findings.
+12. **Final:** `npx tsc --noEmit`.
+
+This audit closes Part 4.
+
+---
+
+## Part 5
+
+> Specified after Part 4 lands and Realtime delivery has run in production for at least one observable cycle (latency log review, no silent-drop incidents). Part 5's section will append here, mirroring the structure above, and must respect the data shapes locked in by Parts 1–4 (`workspace_notifications` schema, `NOTIFICATION_EVENTS` registry, `NotificationRepository` interface — including `deleteExpired` from Part 1, `notification-service` public API, the four `/api/notifications/*` routes, the renderer registry, the Realtime subscription).
+
+- **Part 5 — Retention & cleanup.** Schedules a job (Vercel cron / Supabase pg_cron / GitHub Actions) calling `repo.deleteExpired` on a cadence. Configurable retention windows (read shorter than unread); per-row `expires_at` already supported by Part 1's schema and repository contract. The bell's read paths transparently see the smaller table. No subscription change — Realtime publishes DELETE events too, but the bell already refetches on every event so deletions appear without bespoke handling.
