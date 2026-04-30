@@ -10,6 +10,7 @@ interface CandidateListProps {
   hasMore: boolean;
   onShowMore: () => void;
   onCandidateDismissed: () => void;
+  onMerge: (candidate: ThemeCandidateWithThemes) => void;
 }
 
 /**
@@ -22,6 +23,7 @@ export function CandidateList({
   hasMore,
   onShowMore,
   onCandidateDismissed,
+  onMerge,
 }: CandidateListProps) {
   return (
     <div className="space-y-3">
@@ -30,6 +32,7 @@ export function CandidateList({
           key={candidate.id}
           candidate={candidate}
           onDismissed={onCandidateDismissed}
+          onMerge={onMerge}
         />
       ))}
 

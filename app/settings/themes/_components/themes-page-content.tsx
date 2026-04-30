@@ -4,8 +4,14 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 
 import type { ThemeCandidateWithThemes } from "@/lib/types/theme-candidate";
+import type { MergeResult } from "@/lib/types/theme-merge";
 
 import { CandidateList } from "./candidate-list";
+import { MergeDialog } from "./merge-dialog";
+import {
+  RecentMergesSection,
+  type RecentMergesHandle,
+} from "./recent-merges-section";
 import { RefreshButton } from "./refresh-button";
 
 const PAGE_SIZE = 20;
@@ -36,6 +42,14 @@ export function ThemesPageContent() {
   // Auto-refresh runs at most once per page mount — even if the user
   // dismisses pairs and re-fetches, the staleness check should not retrigger.
   const autoRefreshFiredRef = useRef(false);
+
+  // Merge dialog state — non-null candidate = dialog open.
+  const [dialogCandidate, setDialogCandidate] =
+    useState<ThemeCandidateWithThemes | null>(null);
+
+  // Imperative handle so the merge confirmation can re-fetch the audit list
+  // without prop-drilling a refetch trigger through MergeDialog.
+  const recentMergesRef = useRef<RecentMergesHandle | null>(null);
 
   const fetchList = useCallback(async (currentLimit: number) => {
     setIsLoading(true);
@@ -108,6 +122,26 @@ export function ThemesPageContent() {
     fetchList(limit);
   }, [fetchList, limit]);
 
+  const handleMerge = useCallback((candidate: ThemeCandidateWithThemes) => {
+    setDialogCandidate(candidate);
+  }, []);
+
+  const handleMergeCancelled = useCallback(() => {
+    setDialogCandidate(null);
+  }, []);
+
+  const handleMergeConfirmed = useCallback(
+    (result: MergeResult) => {
+      setDialogCandidate(null);
+      toast.success(
+        `Merged "${result.archivedThemeName}" → "${result.canonicalThemeName}" (${result.signalAssignmentsRepointed} signals)`
+      );
+      fetchList(limit);
+      recentMergesRef.current?.refresh();
+    },
+    [fetchList, limit]
+  );
+
   return (
     <section className="mt-8 space-y-6">
       <header className="flex flex-wrap items-end justify-between gap-3">
@@ -152,8 +186,17 @@ export function ThemesPageContent() {
           hasMore={data.hasMore}
           onShowMore={handleShowMore}
           onCandidateDismissed={handleCandidateDismissed}
+          onMerge={handleMerge}
         />
       )}
+
+      <RecentMergesSection ref={recentMergesRef} />
+
+      <MergeDialog
+        candidate={dialogCandidate}
+        onCancel={handleMergeCancelled}
+        onConfirmed={handleMergeConfirmed}
+      />
     </section>
   );
 }

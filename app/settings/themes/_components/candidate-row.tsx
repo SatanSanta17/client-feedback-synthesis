@@ -10,6 +10,7 @@ import { DismissAction } from "./dismiss-action";
 interface CandidateRowProps {
   candidate: ThemeCandidateWithThemes;
   onDismissed: () => void;
+  onMerge: (candidate: ThemeCandidateWithThemes) => void;
 }
 
 /**
@@ -20,7 +21,11 @@ interface CandidateRowProps {
  *   - Shared-keywords hint (when present)
  *   - Dismiss action; "Merge" placeholder reserved for Part 3
  */
-export function CandidateRow({ candidate, onDismissed }: CandidateRowProps) {
+export function CandidateRow({
+  candidate,
+  onDismissed,
+  onMerge,
+}: CandidateRowProps) {
   const { themeA, themeB, themeAStats, themeBStats, sharedKeywords } = candidate;
 
   return (
@@ -50,11 +55,9 @@ export function CandidateRow({ candidate, onDismissed }: CandidateRowProps) {
 
       <footer className="mt-4 flex flex-wrap items-center justify-end gap-2 border-t border-[var(--border-default)] pt-3">
         <Button
-          variant="outline"
+          variant="default"
           size="sm"
-          disabled
-          aria-label="Merge — coming in Part 3"
-          title="Coming soon"
+          onClick={() => onMerge(candidate)}
         >
           Merge…
         </Button>
