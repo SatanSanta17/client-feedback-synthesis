@@ -42,12 +42,17 @@ Every change follows this sequence. No step is skipped.
 
 **End-of-part audit** (last increment of every TRD part):
 
-1. SRP violations — each file, component, and function does one thing
-2. DRY violations — shared patterns extracted, no duplication
-3. Design token adherence — no hardcoded colours, sizes, or spacing; use CSS custom properties or Tailwind tokens
-4. Logging — all API routes and services log entry, exit, and errors
-5. Dead code — no unused imports, variables, or files remain
-6. Convention compliance — naming, exports, import order, TypeScript strictness
+1. SRP — each file, component, and function does one thing
+2. OCP — new behavior added by extension/composition; existing working code not modified to bolt on the new feature
+3. ISP — interfaces are lean; no optional flags or fields only one caller uses
+4. DIP — services depend on repository interfaces, not concrete clients; components consume props, not global state
+5. DRY — shared patterns extracted, no duplication across files
+6. YAGNI — no speculative fields, options, abstractions, or forward-compat hooks without a current consumer
+7. Fail explicitly — no silently swallowed errors; every catch logs before handling
+8. Design token adherence — no hardcoded colours, sizes, or spacing; use CSS custom properties or Tailwind tokens
+9. Logging — all API routes and services log entry, exit, and errors with stack traces
+10. Dead code — no unused imports, variables, files, or interface methods remain
+11. Convention compliance — naming, exports, import order, TypeScript strictness
 
 This increment produces fixes, not a report.
 

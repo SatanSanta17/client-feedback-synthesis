@@ -9,6 +9,9 @@ export interface EmailPayload {
   to: string;
   subject: string;
   html: string;
+  /** Optional reply-to address. When set, recipient replies route here
+   * instead of the EMAIL_FROM address. */
+  replyTo?: string;
 }
 
 interface EmailProvider {
@@ -32,8 +35,14 @@ function createResendProvider(): EmailProvider {
     process.env.EMAIL_FROM ?? "Synthesiser <noreply@synthesiser.app>";
 
   return {
-    async send({ to, subject, html }) {
-      const { error } = await resend.emails.send({ from, to, subject, html });
+    async send({ to, subject, html, replyTo }) {
+      const { error } = await resend.emails.send({
+        from,
+        to,
+        subject,
+        html,
+        ...(replyTo ? { replyTo } : {}),
+      });
       if (error) {
         throw new EmailSendError(`Resend error: ${error.message}`);
       }
@@ -52,13 +61,14 @@ function createBrevoProvider(): EmailProvider {
   const parsed = parseFromAddress(fromRaw);
 
   return {
-    async send({ to, subject, html }) {
+    async send({ to, subject, html, replyTo }) {
       try {
         await brevo.transactionalEmails.sendTransacEmail({
           sender: parsed,
           to: [{ email: to }],
           subject,
           htmlContent: html,
+          ...(replyTo ? { replyTo: { email: replyTo } } : {}),
         });
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
