@@ -2552,6 +2552,428 @@ This audit closes Part 5 and PRD-029.
 
 ---
 
+## Part 6: Session-Scoped Read Filter & Expiry Filter
+
+> Implements **P6.R1–P6.R3** from PRD-029.
+
+### Overview
+
+Two narrow filters layered onto the existing bell read paths from Parts 1, 2, and 4. No schema migration, no new API surface, no Realtime change.
+
+1. **Server-side expiry filter.** `executeKeysetListQuery` and `unreadCount` in `supabase-notification-repository.ts` add `(expires_at IS NULL OR expires_at > now())` to their predicates. The dropdown listing and the badge count both stop returning rows whose emitter has marked them stale via `expires_at` (PRD §P6.R2).
+2. **Client-side session-scoped read filter.** `NotificationBell` captures `sessionStartedAt = Date.now()` once at mount and threads it into `useNotifications`. The hook filters its returned `rows` to those where `readAt === null || new Date(readAt).getTime() >= sessionStartedAt`. Hard reload remounts the bell → fresh `sessionStartedAt` → previously-read rows fall away. Soft Next.js navigation does not remount the sidebar-mounted bell, so the session persists across in-app navigation (PRD §P6.R1).
+
+The change touches three files in `lib/` and one in `components/`. No new env vars, no new types, no new dependencies.
+
+### Forward Compatibility Notes
+
+- **Future per-tab read state (backlog).** If users ever ask for "what I read in another tab should disappear here too," the current shape extends naturally: replace the in-memory `sessionStartedAt` with a `BroadcastChannel`-synced value, or move read-state to `localStorage`. The hook contract (`sessionStartedAt: number`) does not change.
+- **Future server-side session boundary (unlikely).** Were we ever to replace per-tab session with an auth-session boundary (one timestamp per logged-in session, stored on the user row), the server could return only relevant rows and the client filter would become dead code. The repository's expiry filter is independent and stays.
+- **Backlog (notification grouping, mute preferences).** Both compose with this part — grouping operates on the post-filter row set; mute filters apply server-side on top of the expiry predicate. No conflict.
+
+### Why Session = App-Mount Lifetime (Not `sessionStorage`, Not Auth Session)
+
+Three candidate scopes were considered:
+
+| Scope | Reset trigger | Storage | Tradeoff |
+|---|---|---|---|
+| **App-mount lifetime** ✅ | Hard reload, new tab, browser restart | In-memory `useState` | Simplest. Survives soft nav (sidebar bell persists). |
+| Tab session | Tab close (survives in-tab reload) | `sessionStorage` | Reload doesn't reset — counter-intuitive against PRD §P6.R1 ("after the user reloads the app, all previously-read notifications are filtered out"). |
+| Auth session | Logout / login | Server-side or `localStorage` | Requires bridging auth state changes, doesn't reset between page reloads, more code. |
+
+App-mount matches the PRD's spec literally — *"from when the bell first mounts until the next hard reload, new tab, or browser restart."* It's also the only option requiring zero storage and zero auth-state subscription.
+
+### Why Client-Side, Not Server-Side, for the Read Filter
+
+Filtering `read_at >= sessionStartedAt` in the SQL query was rejected for two reasons:
+
+1. **Cursor pagination breaks.** The keyset cursor returned from page N references a row that, on page N+1, may now fall outside the read-recency filter — producing duplicate or missing boundaries when "Load more" fires several seconds after the previous fetch. Client-side filtering keeps the server's returned set stable; the cursor stays valid for the dropdown's lifetime.
+2. **Server doesn't know the client's `sessionStartedAt`.** Passing it as a query param works, but couples server semantics to a UI concern. The current architecture cleanly separates "what data is the user allowed to see" (server, RLS, expiry) from "what data does this UI surface want to render right now" (client). Keeping that boundary makes future surfaces (e.g., a future inbox page that *does* want all read notifications) free.
+
+The expiry filter goes server-side because it's a true visibility rule that every consumer surface should respect — not a UI-specific window.
+
+### Why No `setInterval` / Tick
+
+The session-scoped filter is **static for the session lifetime**. `sessionStartedAt` is captured once and never changes. A row's `readAt` only changes via mark-read flows (which already trigger Realtime refetch + state update). There's no monotonic time threshold ticking past values, so no re-render cadence is needed. This is the key simplification over the originally-considered 15-second-fade design.
+
+### Database Changes
+
+None.
+
+### Repository Changes
+
+Single edit in `lib/repositories/supabase/supabase-notification-repository.ts`. Both shared read paths gain the same expiry predicate; the predicate is hoisted into a small helper for DRY:
+
+```typescript
+/** PRD-029 §P6.R2 — exclude rows whose explicit `expires_at` is past. */
+function applyNotExpiredFilter<Q extends {
+  or: (filters: string) => Q;
+}>(query: Q): Q {
+  return query.or(
+    `expires_at.is.null,expires_at.gt.${new Date().toISOString()}`
+  );
+}
+```
+
+Applied in two places:
+- `executeKeysetListQuery` — after `applyOptionalTeamFilter`, before the cursor predicate.
+- `unreadCount` — after `applyOptionalTeamFilter`, before the count is read.
+
+`deleteExpired` continues to handle the actual row removal; this part only changes what the bell *renders*. The two-layer behaviour (bell hides expired now; cleanup deletes them when Part 5 ships) is intentional and aligned with how `read_at`-based retention works in the deferred Part 5.
+
+**Why `.or()` rather than two separate predicates:** `expires_at IS NULL OR expires_at > now()` is one logical filter. PostgREST's `.or()` is the natural expression. Splitting it would require chaining filters that aren't otherwise composable in the builder.
+
+### Hook Changes
+
+`lib/hooks/use-notifications.ts` accepts a new option:
+
+```typescript
+interface UseNotificationsOptions {
+  /** Session boundary for the read-recency filter (PRD §P6.R1). Captured by
+   *  NotificationBell at mount; passed down. Rows with `readAt < sessionStartedAt`
+   *  are filtered at render time. */
+  sessionStartedAt: number;
+}
+```
+
+The hook continues to fetch and store the full row set internally; it exposes a derived `rows` array filtered by:
+
+```typescript
+const visibleRows = useMemo(
+  () => rows.filter(
+    (r) => r.readAt === null
+        || new Date(r.readAt).getTime() >= sessionStartedAt
+  ),
+  [rows, sessionStartedAt]
+);
+```
+
+Internal `rows` state is unchanged — pagination cursors, Realtime refetches, optimistic mark-read all continue to operate on the unfiltered set so the cursor stays valid even if the rendered set is smaller than `limit`.
+
+`useUnreadCount` does not change. The unread badge is unaffected by the session filter (P6.R1 leaves unread always visible) and the expiry filter is applied server-side via the repository change above.
+
+### Component Changes
+
+`components/notifications/notification-bell.tsx` captures the session timestamp once and passes it to the dropdown:
+
+```typescript
+const [sessionStartedAt] = useState(() => Date.now());
+// ...
+<NotificationDropdown
+  sessionStartedAt={sessionStartedAt}
+  onUnreadCountRefetch={refetch}
+  onClose={() => setOpen(false)}
+/>
+```
+
+`NotificationDropdown` forwards it to `useNotifications`. No other component is touched. No CSS / token changes (per direction: existing read/unread styling is sufficient).
+
+**Why `useState`, not `useRef`:** the value is initialised once with a lazy initialiser and read by descendants. `useState` is the conventional choice for "stable, captured-once value passed via props"; `useRef` would require dereferencing `.current` everywhere it's read for the same effect.
+
+### Files Changed
+
+| File | Action | Notes |
+|---|---|---|
+| `docs/029-workspace-notifications/prd.md` | **Edit** | Part 6 section added before Backlog |
+| `docs/029-workspace-notifications/trd.md` | **Edit** | This section |
+| `lib/repositories/supabase/supabase-notification-repository.ts` | **Edit** | Add `applyNotExpiredFilter` helper; apply in `executeKeysetListQuery` + `unreadCount` |
+| `lib/hooks/use-notifications.ts` | **Edit** | Accept `sessionStartedAt` option; expose filtered `rows` |
+| `components/notifications/notification-bell.tsx` | **Edit** | Capture `sessionStartedAt`, pass to `NotificationDropdown` |
+| `components/notifications/notification-dropdown.tsx` | **Edit** | Forward `sessionStartedAt` to `useNotifications` |
+| `ARCHITECTURE.md` | **Edit** | Status line — note PRD-029 Part 6 implemented |
+| `CHANGELOG.md` | **Edit** | Entry under PRD-029 Part 6 |
+
+### Implementation
+
+One increment (the entire change is small enough that splitting it adds friction):
+
+**Increment 6.1 — Filters & wiring.** Apply the repository edits, hook edits, component edits, doc updates in one pass. Verify locally:
+1. Hard reload with one read + one unread row → only unread renders. ✓ P6.R1.
+2. Mark unread row read → still renders until reload. ✓ P6.R1.
+3. Click sidebar nav item → reads remain. ✓ P6.R1 soft-nav.
+4. Insert a row with `expires_at = now() - 1h` via SQL → not visible in dropdown, not in badge count. ✓ P6.R2.
+5. Insert a row with `expires_at = now() + 1h` → visible normally. ✓ P6.R2.
+6. Two browser tabs: mark read in Tab A, observe Realtime greys it in Tab B, observe it stays in Tab B until reload. ✓ P6.R3.
+
+End-of-part audit then runs across the four touched code files plus the two doc files — same checklist as every other part.
+
+---
+
+## Part 7: Per-User Fan-Out & Actor Suppression
+
+> Implements **P7.R1–P7.R6** from PRD-029.
+
+### Overview
+
+Restructure notifications from one-row-per-event to one-row-per-recipient. Three coordinated changes:
+
+1. **Database migration.** `team_id` becomes nullable; `user_id` becomes NOT NULL; existing `user_id IS NULL` rows are deleted (per PRD P7.R5); RLS simplifies to `user_id = auth.uid()` for both SELECT and UPDATE; the `team_id`-based partial indexes are dropped (no consumer left); the `user_id`-based indexes drop their partial WHERE clauses since `user_id` is now non-null on every row.
+2. **Service emit reshape.** `emit()` gains a recipient-resolution step. For a targeted emit (`userId` provided), one row is written. For a broadcast emit (`teamId` provided, no `userId`), the service looks up the team's active members, optionally filters the actor, and bulk-inserts one row per remaining member. Personal-workspace targeted emits work natively because `team_id` is now nullable.
+3. **Actor suppression.** A new top-level `actorId?: string | null` field on `EmitInput` (additive, optional). When present on a broadcast emit, the recipient set excludes that user. Targeted emits ignore `actorId` — they're explicitly addressed, the actor *is* the audience by design (P7.R3).
+
+After this, broadcast notifications are conceptually "fan out to N recipients now" rather than "one row visible via RLS to N users." Read state, retention, expiry, and the bell's existing filters all work per-row, which means per-user, by construction.
+
+### Forward Compatibility Notes
+
+- **Future sub-group fan-out (e.g., "admins of team X only").** The recipient-resolution step is the natural extension point. Adding `audience: "admins" | "all"` to the broadcast emit shape is a single-function change; no schema or read-path change.
+- **Future external delivery channels (email digest, push).** They consume per-recipient rows directly — no aggregation step needed. Each row already names its single audience member.
+- **Part 5 (deferred retention).** Cleanup operates per-row regardless of model; fan-out makes the per-user retention asymmetry (read 30d, unread 90d) work correctly per-user without further change.
+- **Future actor-included broadcasts.** If we ever want a "system action" broadcast that *should* notify everyone including the trigger (e.g., "workspace renamed"), the call site simply omits `actorId`. The default is "include everyone matching the audience"; actor suppression is opt-in.
+
+### Why Fan-Out (Not a Side Table)
+
+Considered three storage shapes:
+
+| Shape | Read state | Storage | Migration |
+|---|---|---|---|
+| **Per-recipient row (fan-out)** ✅ | Per-row → per-user trivially | N rows per broadcast (N = team size) | Drop user_id IS NULL rows; flip RLS |
+| Side table `notification_reads(notification_id, user_id, read_at)` | Sparse — only writes when read | 1 + sparse | Add table; rewrite read paths to left-join |
+| Per-row JSONB `read_by[]` | Append actor on read | 1 + grow | No schema change but locks every read-update |
+
+Fan-out wins because:
+- **Read paths are unchanged.** `markRead`, `unreadCount`, the `read_at IS NULL` partial index, `useNotifications`'s session filter — all of them already key by row. They become per-user automatically.
+- **RLS simplifies dramatically.** Drop the broadcast policy; keep `user_id = auth.uid()`. One predicate, one index path.
+- **Realtime per-user filtering already works** via RLS. No subscription change needed.
+- **Write amplification is small.** Workspace size is single-digit to low-double-digit users. A team of 20 × a handful of merges per day is dozens of rows — lost in the noise.
+- **The TRD's original Decision 1 rejecting fan-out cited "no consumer needs sub-group fan-out."** That rationale doesn't apply to per-user read isolation, which *is* a real consumer requirement.
+
+The side table was rejected because every read path would need to LEFT JOIN it (especially the `unreadCount` query), Realtime would require subscribing to two tables instead of one, and it doesn't fix the personal-workspace `team_id NOT NULL` problem on its own.
+
+### Why Drop Existing Broadcast Rows (Not Fan Them Out)
+
+Three reasons:
+1. **Reconstructing recipient sets is brittle.** A row written when team membership was {A, B, C} but viewed today when membership is {A, B, D} creates ambiguity — fan out to historical or current members? Each choice is wrong for some case.
+2. **Ephemeral semantics.** Notifications are designed to be short-lived (PRD §Constraint 5; Part 5 retention is 30/90 days). Losing a few in-flight notifications during the cutover is consistent with the surface's design.
+3. **Implementation cost.** A correct fan-out migration would need a one-shot script, defensive handling for archived/deleted teams, and a runbook. Drop is a single `DELETE`. The savings are real and not worth re-litigating later.
+
+### Why Explicit `actorId`, Not Payload-Derived
+
+`actorId` already lives inside `theme.merged`'s payload. The service could read it from there, avoiding the new top-level field. Rejected because:
+- **Coupling.** The service would need to know which event types have an actor and which don't — the registry stops being a closed-box and starts being introspected for special fields.
+- **Renderer ownership.** `payload` belongs to the renderer (Part 3) — the bell row title says "X merged Y by ActorName". Moving routing logic into payload conflates "what's shown" with "who sees it." Promoting `actorId` to top level keeps `payload` purely a renderer concern.
+- **Optionality.** Some emitters (system actions, scheduled jobs) don't have an actor at all. Top-level `actorId?: string | null` makes that absence explicit; payload-shaped optionality would be one more thing each event schema has to encode.
+
+The cost is one new line per emit call site (`actorId: auth.user.id`). One. Across the entire emitter set today.
+
+### Database Changes
+
+New migration `003-fan-out-and-actor-suppression.sql`:
+
+```sql
+-- ============================================================
+-- PRD-029 Part 7: Per-user fan-out + actor suppression
+-- ============================================================
+-- Restructures the table from one-row-per-event to
+-- one-row-per-recipient. Existing broadcast rows (user_id IS NULL)
+-- are dropped (PRD-029 §P7.R5).
+-- ============================================================
+
+-- 1. Drop in-flight broadcast rows.
+DELETE FROM workspace_notifications WHERE user_id IS NULL;
+
+-- 2. Schema changes: team_id → NULLABLE, user_id → NOT NULL.
+ALTER TABLE workspace_notifications ALTER COLUMN team_id DROP NOT NULL;
+ALTER TABLE workspace_notifications ALTER COLUMN user_id SET NOT NULL;
+
+-- 3. Drop old policies.
+DROP POLICY IF EXISTS "Users can read their own and broadcast notifications"
+  ON workspace_notifications;
+DROP POLICY IF EXISTS "Users can mark visible notifications as read"
+  ON workspace_notifications;
+
+-- 4. New simplified policies — visibility purely by user_id.
+CREATE POLICY "Users read their own notifications"
+  ON workspace_notifications
+  FOR SELECT
+  USING (user_id = auth.uid());
+
+CREATE POLICY "Users mark their own notifications as read"
+  ON workspace_notifications
+  FOR UPDATE
+  USING (user_id = auth.uid());
+
+-- 5. Indexes — drop the now-unused team_id partials and replace the
+--    user_id partials with full indexes (user_id is NOT NULL).
+DROP INDEX IF EXISTS workspace_notifications_team_recent_idx;
+DROP INDEX IF EXISTS workspace_notifications_user_recent_idx;
+DROP INDEX IF EXISTS workspace_notifications_user_unread_idx;
+
+CREATE INDEX workspace_notifications_user_recent_idx
+  ON workspace_notifications (user_id, created_at DESC);
+
+CREATE INDEX workspace_notifications_user_unread_idx
+  ON workspace_notifications (user_id)
+  WHERE read_at IS NULL;
+
+-- expires_at index is unchanged.
+```
+
+After this runs, every row has exactly one recipient and per-user read isolation is the default.
+
+### Service Changes (`lib/services/notification-service.ts`)
+
+Three changes:
+
+**1. `EmitInput` gains optional `actorId`.**
+
+```typescript
+interface EmitInputBase {
+  /** Workspace anchor. Null/omitted = personal workspace. */
+  teamId?: string | null;
+  /** Targeted emit — explicit recipient. When omitted on a team emit, the
+   *  service fans out to team members. */
+  userId?: string | null;
+  /** Per-row retention override. */
+  expiresAt?: string | null;
+  /** PRD-029 §P7.R3 — when set on a broadcast emit, this user is excluded
+   *  from the recipient set. Ignored on targeted emits (the named user is
+   *  the audience by design). */
+  actorId?: string | null;
+}
+```
+
+`teamId` becomes optional/nullable to support personal-workspace targeted emits. `actorId` is new, additive.
+
+**2. Recipient resolution + bulk insert.**
+
+```typescript
+async function resolveRecipients(
+  repo: NotificationRepository,
+  input: EmitInput
+): Promise<string[]> {
+  // Targeted emit — one recipient, no actor suppression.
+  if (input.userId) {
+    return [input.userId];
+  }
+  // Broadcast emit — fan out to team members, optionally minus actor.
+  if (input.teamId) {
+    const members = await repo.listActiveTeamMemberIds(input.teamId);
+    return input.actorId
+      ? members.filter((id) => id !== input.actorId)
+      : members;
+  }
+  // No teamId, no userId — invalid emit.
+  throw new InvalidEmitTargetError(
+    `emit() requires either userId or teamId (got neither)`
+  );
+}
+
+export async function emit(repo, input: EmitInput): Promise<...> {
+  // ... existing event-type + payload validation ...
+
+  const recipients = await resolveRecipients(repo, input);
+  if (recipients.length === 0) {
+    console.log(`${LOG_PREFIX} emit — no recipients; skipping insert`);
+    return [];
+  }
+
+  return repo.bulkInsert(
+    recipients.map((userId) => ({
+      team_id: input.teamId ?? null,
+      user_id: userId,
+      event_type: input.eventType,
+      payload: validatedPayload,
+      expires_at: input.expiresAt ?? null,
+    }))
+  );
+}
+```
+
+`emit` returns `WorkspaceNotification[]` instead of a single row (the merge route currently doesn't read the return value, so this is non-breaking; if it ever does, the array shape is more accurate anyway).
+
+**3. New error type — `InvalidEmitTargetError`.** Prevents a silent no-op when neither `userId` nor `teamId` is supplied.
+
+### Repository Changes (`lib/repositories/notification-repository.ts`)
+
+Two new methods:
+
+```typescript
+export interface NotificationRepository {
+  // ... existing methods ...
+
+  /** Service-role: bulk-insert one row per recipient. Used by `emit`'s
+   *  fan-out path. Returns the inserted rows in the order supplied. */
+  bulkInsert(rows: NotificationInsert[]): Promise<WorkspaceNotification[]>;
+
+  /** Service-role: list active member ids for a team (for fan-out
+   *  recipient resolution). Returns user ids only — the service does not
+   *  need richer member metadata for emit. */
+  listActiveTeamMemberIds(teamId: string): Promise<string[]>;
+}
+```
+
+The Supabase implementation of `listActiveTeamMemberIds` queries `team_members WHERE team_id = $1 AND removed_at IS NULL` — the same filter used everywhere else in the codebase.
+
+`insert` (singular) stays — used internally and by tests; no need to remove.
+
+### RLS Implications
+
+After migration:
+- **SELECT** — `user_id = auth.uid()`. The bell sees the user's own rows; cross-user leakage is structurally impossible.
+- **UPDATE** — same predicate. Users can only mark their own rows read.
+- **INSERT / DELETE** — no policy = service-role only, unchanged.
+
+### Emitter Call-Site Updates
+
+The single existing emit call (`app/api/themes/candidates/[id]/merge/route.ts`) is updated to:
+
+```typescript
+await emitNotification(notificationRepo, {
+  eventType: "theme.merged",
+  teamId,                  // existing
+  actorId: auth.user.id,   // NEW — opts into actor suppression
+  payload: { /* unchanged */ },
+});
+```
+
+One added line. The personal-workspace skip guard (`if (result.teamId !== null)`) is removed — the service handles personal workspaces natively now (it'll resolve to the actor as recipient, then suppress them, resulting in zero recipients = no insert, which is the correct behaviour for self-actions in personal workspaces).
+
+Future emitters (PRD-028 supersession, PRD-017 bulk re-extract, etc.) follow the same shape — pass `actorId` when they have one, omit when they don't.
+
+### Hooks / UI Changes
+
+None. The bell, dropdown, hooks, renderers, and Realtime subscription all already operate per-row; per-row is now per-user, so they work correctly without modification.
+
+The `BellNotificationRow.teamName` join (Part 2) gains a defensive null path because `team_id` can now be null. The `BELL_COLUMNS` definition becomes `teams(name)` (no `!inner`) so personal-workspace rows return `teams: null`; the mapper falls back to "(personal)" or empty string for `teamName`. The cross-workspace label suppression logic in `notification-dropdown.tsx` already handles per-row label visibility — no further change.
+
+### Files Changed
+
+| File | Action | Notes |
+|---|---|---|
+| `docs/029-workspace-notifications/003-fan-out-and-actor-suppression.sql` | **Create** | Migration: drop broadcasts, alter columns, swap policies, rebuild indexes |
+| `docs/029-workspace-notifications/prd.md` | **Edit (done)** | Part 7 section |
+| `docs/029-workspace-notifications/trd.md` | **Edit** | This section |
+| `lib/repositories/notification-repository.ts` | **Edit** | Add `bulkInsert` + `listActiveTeamMemberIds` to the interface |
+| `lib/repositories/supabase/supabase-notification-repository.ts` | **Edit** | Implement the two new methods; relax `BELL_COLUMNS` to nullable team join; update `toBellNotification` mapper |
+| `lib/services/notification-service.ts` | **Edit** | `EmitInput` gains `actorId`; `resolveRecipients` + bulk-insert flow; new `InvalidEmitTargetError`; `emit` returns array |
+| `app/api/themes/candidates/[id]/merge/route.ts` | **Edit** | Drop `if (result.teamId !== null)` guard; pass `actorId: auth.user.id`; remove `teamId` non-null narrowing |
+| `lib/types/notification.ts` | **Edit** | `WorkspaceNotification.teamId` → `string \| null`; `WorkspaceNotification.userId` → `string` (drop the null) |
+| `database.types.ts` (Supabase generated) | **Regenerate** | Reflect the column nullability flip |
+| `ARCHITECTURE.md` | **Edit** | Status line — note PRD-029 Part 7 implemented + the schema change |
+| `CHANGELOG.md` | **Edit** | Entry under PRD-029 Part 7 |
+
+### Implementation
+
+Two increments — the migration is independent enough that landing it before the code change makes the cutover safer.
+
+**Increment 7.1 — Migration.** Apply `003-fan-out-and-actor-suppression.sql` against the dev database. Regenerate `database.types.ts`. Verify in SQL: `team_id` is nullable, `user_id` is NOT NULL, the new policies exist, the old indexes are gone, the new indexes are in place, broadcast rows are zero. The bell will be temporarily empty (broadcasts dropped, no fan-out path yet) — acceptable and short-lived.
+
+**Increment 7.2 — Service + emitter wiring.**
+1. Add the two repository methods + Supabase implementations.
+2. Update `EmitInput` with `actorId`; implement `resolveRecipients` + bulk-insert.
+3. Update the merge route call site (one new line, drop one guard).
+4. Update `lib/types/notification.ts` to match new column nullability; update mapper for nullable `teamName`.
+5. Verify locally:
+   - Team workspace — user A merges, user B's bell shows it; user A's does not. ✓ P7.R1, P7.R3.
+   - Team workspace — user B marks read; user A's bell unaffected (and A doesn't see the row at all anyway, but if a non-actor C exists, C's bell is unaffected by B's read). ✓ P7.R1.
+   - Personal workspace — user merges a theme, no notification (actor === only recipient → suppressed → zero rows inserted). ✓ P7.R3.
+   - Personal workspace, future targeted-emit case — when a `bulk_re_extract.completed` style event fires for a personal-workspace user, the user sees it (targeted emit, actor not suppressed). ✓ P7.R2.
+   - Direct SQL: confirm fan-out wrote N rows per emit (N = team size − 1).
+
+End-of-part audit then runs across the migration, the repository edits, the service edits, the call-site edit, the type edits, and the doc updates.
+
+---
+
 ## End-of-PRD audit (after Part 4 closes — Part 5 deferred)
 
 Per CLAUDE.md, an end-of-PRD audit runs the full end-of-part checklist across every file the PRD touched. PRD-029 closes with Parts 1–4; Part 5 is deferred to backlog and **not** in scope of this audit. PRD-029 ships across:

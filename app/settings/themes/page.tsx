@@ -57,7 +57,7 @@ export default async function ThemesSettingsPage() {
   }
 
   return (
-    <div className="flex flex-1 flex-col p-6 w-full max-w-5xl">
+    <div className="flex flex-1 flex-col p-6 w-full max-w-4xl mx-auto">
       <PageHeader
         title="Themes"
         description="Review and clean up duplicate themes across your workspace."

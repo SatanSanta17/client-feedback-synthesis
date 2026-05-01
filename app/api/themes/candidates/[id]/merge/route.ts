@@ -100,39 +100,39 @@ export async function POST(request: NextRequest, context: RouteContext) {
       `${LOG_PREFIX} POST — done | audit: ${result.auditId} | reassigned: ${result.signalAssignmentsRepointed}`
     );
 
-    // PRD-026 P4.R1 — broadcast a `theme.merged` notification to the team.
-    // Personal-workspace merges are skipped per Decision 26 (no other
-    // members to notify; workspace_notifications.team_id is NOT NULL anyway).
+    // PRD-026 P4.R1 — broadcast a `theme.merged` notification.
+    // PRD-029 §P7 reshape: the service handles fan-out + actor suppression,
+    // so personal-workspace and team-workspace merges share one call site.
+    // For personal merges the only candidate recipient is the actor, who is
+    // suppressed → zero rows inserted, which is the correct behaviour.
     // Wrapped in try/catch so a failed emit logs but doesn't surface as a
     // merge failure — the merge already committed.
-    if (result.teamId !== null) {
-      const teamId = result.teamId;
-      after(async () => {
-        try {
-          const notificationRepo = createNotificationRepository(
-            wsAdmin.serviceClient
-          );
-          await emitNotification(notificationRepo, {
-            eventType: "theme.merged",
-            teamId,
-            payload: {
-              archivedThemeId: result.archivedThemeId,
-              archivedThemeName: result.archivedThemeName,
-              canonicalThemeId: result.canonicalThemeId,
-              canonicalThemeName: result.canonicalThemeName,
-              actorId: auth.user.id,
-              actorName: auth.user.email ?? "unknown",
-              signalAssignmentsRepointed: result.signalAssignmentsRepointed,
-            },
-          });
-        } catch (err) {
-          console.error(
-            `${LOG_PREFIX} POST — notification emit failed (merge succeeded):`,
-            err instanceof Error ? err.message : err
-          );
-        }
-      });
-    }
+    after(async () => {
+      try {
+        const notificationRepo = createNotificationRepository(
+          wsAdmin.serviceClient
+        );
+        await emitNotification(notificationRepo, {
+          eventType: "theme.merged",
+          teamId: result.teamId,
+          actorId: auth.user.id,
+          payload: {
+            archivedThemeId: result.archivedThemeId,
+            archivedThemeName: result.archivedThemeName,
+            canonicalThemeId: result.canonicalThemeId,
+            canonicalThemeName: result.canonicalThemeName,
+            actorId: auth.user.id,
+            actorName: auth.user.email ?? "unknown",
+            signalAssignmentsRepointed: result.signalAssignmentsRepointed,
+          },
+        });
+      } catch (err) {
+        console.error(
+          `${LOG_PREFIX} POST — notification emit failed (merge succeeded):`,
+          err instanceof Error ? err.message : err
+        );
+      }
+    });
 
     return NextResponse.json(result);
   } catch (err) {

@@ -57,17 +57,44 @@ export class InvalidPayloadError extends Error {
   }
 }
 
+/** Thrown when `emit` receives neither a `userId` (targeted) nor a `teamId`
+ *  (broadcast). PRD-029 §P7 — every emit must resolve to at least one
+ *  candidate recipient; an emit with neither shape is a programmer error. */
+export class InvalidEmitTargetError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "InvalidEmitTargetError";
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
-/** Common emit fields shared by every event variant. */
+/** Common emit fields shared by every event variant.
+ *
+ *  PRD-029 §P7 reshape:
+ *  - Targeted emit: pass `userId` (the recipient). `teamId` is optional —
+ *    null for personal-workspace targets.
+ *  - Broadcast emit: pass `teamId` and omit `userId`. The service fans out
+ *    to active members of the team. Pass `actorId` to suppress that user
+ *    from the recipient set (P7.R3).
+ *
+ *  Either `userId` or `teamId` MUST be provided; an emit with neither raises
+ *  `InvalidEmitTargetError`. */
 interface EmitInputBase {
-  teamId: string;
-  /** Omit or pass null for a broadcast notification (visible to every team member). */
+  /** Workspace anchor. Null/omitted = personal workspace (no team). */
+  teamId?: string | null;
+  /** Targeted recipient. When omitted on a team emit, the service fans out
+   *  to active team members. */
   userId?: string | null;
   /** Optional per-row override for retention (Part 5). */
   expiresAt?: string | null;
+  /** PRD-029 §P7.R3 — suppresses this user from a broadcast emit's recipient
+   *  set. Ignored on targeted emits (the named user is the audience by
+   *  design). Some emitters (system actions, scheduled jobs) have no actor
+   *  and should leave this null/omitted. */
+  actorId?: string | null;
 }
 
 /**
@@ -84,16 +111,49 @@ export type EmitInput = {
 }[NotificationEventType];
 
 /**
+ * Resolve the recipient set for an emit.
+ *
+ *  - Targeted emit (`userId` set): single recipient, no actor suppression.
+ *    Targeted emits are explicitly addressed; the actor IS the audience by
+ *    design (e.g., "your bulk re-extract finished").
+ *  - Broadcast emit (`teamId` set, no `userId`): active team members,
+ *    optionally minus the actor.
+ *  - Neither: programmer error → `InvalidEmitTargetError`.
+ */
+async function resolveRecipients(
+  repo: NotificationRepository,
+  input: EmitInput
+): Promise<string[]> {
+  if (input.userId) {
+    return [input.userId];
+  }
+  if (input.teamId) {
+    const members = await repo.listActiveTeamMemberIds(input.teamId);
+    return input.actorId
+      ? members.filter((id) => id !== input.actorId)
+      : members;
+  }
+  throw new InvalidEmitTargetError(
+    `emit() requires either userId or teamId; received neither for event "${input.eventType}"`
+  );
+}
+
+/**
  * Emit a workspace notification.
  *
  * Validates the event type against the closed registry, parses the payload
- * against that event's Zod schema, and writes a row through the supplied
- * repository (which must be backed by a service-role client).
+ * against that event's Zod schema, resolves the recipient set, and writes
+ * one row per recipient via bulk insert (PRD-029 §P7 fan-out).
  *
  * Throws:
  *   - `UnknownEventTypeError` if the event is not registered.
  *   - `InvalidPayloadError` if the payload fails Zod validation.
+ *   - `InvalidEmitTargetError` if neither `userId` nor `teamId` is set.
  *   - Any error the repository raises (logged and rethrown).
+ *
+ * Returns the inserted rows. An empty array is returned (and no insert is
+ * issued) when the resolved recipient set is empty — for example, a personal-
+ * workspace emit where the only candidate is the actor and `actorId` matches.
  *
  * Callers should not swallow these errors silently — an emit that fails is
  * a missed notification, which is exactly the failure mode this PRD exists
@@ -102,10 +162,10 @@ export type EmitInput = {
 export async function emit(
   repo: NotificationRepository,
   input: EmitInput
-): Promise<WorkspaceNotification> {
+): Promise<WorkspaceNotification[]> {
   const start = Date.now();
   console.log(
-    `${LOG_PREFIX} emit — eventType: ${input.eventType}, teamId: ${input.teamId}, userId: ${input.userId ?? "(broadcast)"}`
+    `${LOG_PREFIX} emit — eventType: ${input.eventType}, teamId: ${input.teamId ?? "(personal)"}, userId: ${input.userId ?? "(broadcast)"}, actorId: ${input.actorId ?? "(none)"}`
   );
 
   if (!isNotificationEventType(input.eventType)) {
@@ -128,20 +188,30 @@ export async function emit(
   }
 
   try {
-    const row = await repo.insert({
-      team_id: input.teamId,
-      user_id: input.userId ?? null,
-      event_type: input.eventType,
-      payload: result.data as Record<string, unknown>,
-      expires_at: input.expiresAt ?? null,
-    });
-    console.log(
-      `${LOG_PREFIX} emit — id: ${row.id}, elapsed: ${Date.now() - start}ms`
+    const recipients = await resolveRecipients(repo, input);
+    if (recipients.length === 0) {
+      console.log(
+        `${LOG_PREFIX} emit — recipient set is empty (actor-only personal workspace, empty team, or every member matches actorId); skipping insert (elapsed: ${Date.now() - start}ms)`
+      );
+      return [];
+    }
+
+    const rows = await repo.bulkInsert(
+      recipients.map((userId) => ({
+        team_id: input.teamId ?? null,
+        user_id: userId,
+        event_type: input.eventType,
+        payload: result.data as Record<string, unknown>,
+        expires_at: input.expiresAt ?? null,
+      }))
     );
-    return row;
+    console.log(
+      `${LOG_PREFIX} emit — wrote ${rows.length} row(s), elapsed: ${Date.now() - start}ms`
+    );
+    return rows;
   } catch (err) {
     console.error(
-      `${LOG_PREFIX} emit — repo insert error after ${Date.now() - start}ms:`,
+      `${LOG_PREFIX} emit — failure after ${Date.now() - start}ms:`,
       err
     );
     throw err;

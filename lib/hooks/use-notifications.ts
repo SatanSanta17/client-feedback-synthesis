@@ -12,7 +12,7 @@
 // is bell-open-scoped.
 // ---------------------------------------------------------------------------
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { useNotificationRealtime } from "@/lib/hooks/use-notification-realtime";
 import type {
@@ -23,6 +23,14 @@ import type { NotificationCursor } from "@/lib/types/notification";
 
 const LOG_PREFIX = "[useNotifications]";
 const PAGE_LIMIT = 50;
+
+export interface UseNotificationsOptions {
+  /** PRD-029 §P6.R1 — session boundary for the read-recency filter. Captured
+   *  by NotificationBell once at mount and threaded down. Rows whose `readAt`
+   *  is earlier than this timestamp are filtered from the rendered set; the
+   *  internal row state (used for pagination cursors) is unaffected. */
+  sessionStartedAt: number;
+}
 
 export interface UseNotificationsReturn {
   rows: BellNotificationRow[];
@@ -43,8 +51,11 @@ export interface UseNotificationsReturn {
   markAllRowsReadLocally: () => void;
 }
 
-export function useNotifications(): UseNotificationsReturn {
-  const [rows, setRows] = useState<BellNotificationRow[]>([]);
+export function useNotifications(
+  options: UseNotificationsOptions
+): UseNotificationsReturn {
+  const { sessionStartedAt } = options;
+  const [allRows, setAllRows] = useState<BellNotificationRow[]>([]);
   const [cursor, setCursor] = useState<NotificationCursor | null>(null);
   const [hasMore, setHasMore] = useState<boolean>(false);
   const [isLoading, setIsLoading] = useState<boolean>(false);
@@ -76,7 +87,7 @@ export function useNotifications(): UseNotificationsReturn {
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = (await res.json()) as ListForBellResult;
         if (cancelledRef.current || myGen !== generationRef.current) return;
-        setRows((prev) => (isFirstPage ? data.rows : [...prev, ...data.rows]));
+        setAllRows((prev) => (isFirstPage ? data.rows : [...prev, ...data.rows]));
         setCursor(data.nextCursor);
         setHasMore(data.nextCursor !== null);
       } catch (err) {
@@ -111,7 +122,7 @@ export function useNotifications(): UseNotificationsReturn {
 
   const markRowReadLocally = useCallback((id: string) => {
     const now = new Date().toISOString();
-    setRows((prev) =>
+    setAllRows((prev) =>
       prev.map((r) =>
         r.id === id && r.readAt === null ? { ...r, readAt: now } : r
       )
@@ -120,7 +131,7 @@ export function useNotifications(): UseNotificationsReturn {
 
   const markAllRowsReadLocally = useCallback(() => {
     const now = new Date().toISOString();
-    setRows((prev) =>
+    setAllRows((prev) =>
       prev.map((r) => (r.readAt === null ? { ...r, readAt: now } : r))
     );
   }, []);
@@ -135,6 +146,20 @@ export function useNotifications(): UseNotificationsReturn {
       cancelledRef.current = true;
     };
   }, [refresh]);
+
+  // PRD-029 §P6.R1 — render-time filter. Internal `allRows` keeps the full
+  // server-returned set so the cursor stays valid across pagination; only the
+  // filtered set is exposed to the dropdown. Static for the session — no
+  // setInterval needed (TRD §"Why No setInterval / Tick").
+  const rows = useMemo(
+    () =>
+      allRows.filter(
+        (r) =>
+          r.readAt === null ||
+          new Date(r.readAt).getTime() >= sessionStartedAt
+      ),
+    [allRows, sessionStartedAt]
+  );
 
   return {
     rows,

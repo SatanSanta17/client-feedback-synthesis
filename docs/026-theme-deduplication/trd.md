@@ -2240,3 +2240,5 @@ Items the four parts deliberately deferred. Re-evaluate after PRD-026 has been l
 - **Cross-workspace theme suggestions** (PRD-026 backlog).
 - **Inline merge details on dashboard indicator** (Part 4 backlog — currently a generic "Recently merged" tooltip).
 - **Notification suppression for the actor** (Part 4 backlog).
+
+Note: Side effect to be aware of: an admin who carefully dismissed (Z, Q) yesterday will see (Z, Q) resurface as a candidate after merging X→Z, and may be confused why their dismissal "didn't stick."

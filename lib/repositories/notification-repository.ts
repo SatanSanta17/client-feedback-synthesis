@@ -9,10 +9,12 @@ import type {
 import type { NotificationEventType } from "@/lib/notifications/events";
 
 /** Insert payload — the service has already validated `event_type` and `payload`
- *  shape against the closed event registry. */
+ *  shape against the closed event registry. After PRD-029 Part 7, `user_id`
+ *  is required (every row has exactly one recipient) and `team_id` is
+ *  nullable (personal workspace = no team anchor). */
 export interface NotificationInsert {
-  team_id: string;
-  user_id: string | null;
+  team_id: string | null;
+  user_id: string;
   event_type: NotificationEventType;
   payload: Record<string, unknown>;
   expires_at?: string | null;
@@ -37,7 +39,9 @@ export interface ListForUserResult {
 }
 
 /** Notification row augmented with its workspace name for the bell UI.
- *  Joined server-side so the bell does not need a second round trip. */
+ *  Joined server-side so the bell does not need a second round trip.
+ *  Personal-workspace rows (`teamId === null`) carry an empty `teamName`;
+ *  the dropdown's per-row label suppression handles the visual treatment. */
 export interface BellNotificationRow extends WorkspaceNotification {
   teamName: string;
 }
@@ -60,15 +64,21 @@ export interface DeleteExpiredOptions {
  *
  * Read methods rely on RLS to scope rows visible to the caller. Write methods
  * are split:
- *   - `insert` / `deleteExpired` are service-role only (anon RLS denies INSERT/DELETE).
+ *   - `bulkInsert` / `deleteExpired` are service-role only (anon RLS denies INSERT/DELETE).
  *   - `markRead` / `markAllRead` route through the user's anon client and update
  *     `read_at`; the UPDATE RLS policy enforces row visibility, the service layer
  *     enforces column scope (only `read_at` is mutated).
  */
 export interface NotificationRepository {
-  /** Service-role: insert one row. The service layer has already validated the
-   *  event type and payload — this method writes verbatim. */
-  insert(data: NotificationInsert): Promise<WorkspaceNotification>;
+  /** Service-role: bulk-insert one row per recipient. The single entry point
+   *  for `emit`'s fan-out path (PRD-029 §P7) — accepts one or many rows.
+   *  Returns the inserted rows in input order. */
+  bulkInsert(rows: NotificationInsert[]): Promise<WorkspaceNotification[]>;
+
+  /** Service-role: list active member ids for a team — the recipient set
+   *  for fan-out broadcasts (PRD-029 §P7). Returns user ids only; the
+   *  service does not need richer member metadata at emit time. */
+  listActiveTeamMemberIds(teamId: string): Promise<string[]>;
 
   /** Anon: list rows visible to the user, most-recent first.
    *  RLS scopes the row set; this method scopes by recency, read state, and pagination. */

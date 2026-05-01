@@ -34,6 +34,10 @@ export function NotificationBell({
 }: NotificationBellProps) {
   const [isOpen, setIsOpen] = useState(false);
   const { count, refetch } = useUnreadCount();
+  // PRD-029 §P6.R1 — session boundary captured once on bell mount. The bell
+  // is sidebar-mounted and persists across soft client navigation, so this
+  // value only resets on a hard reload, new tab, or browser restart.
+  const [sessionStartedAt] = useState(() => Date.now());
 
   const handleOpenChange = useCallback(
     (open: boolean) => {
@@ -87,6 +91,7 @@ export function NotificationBell({
       </PopoverTrigger>
       <PopoverContent side="right" align="end" sideOffset={8} className="w-96 p-3">
         <NotificationDropdown
+          sessionStartedAt={sessionStartedAt}
           onUnreadCountRefetch={refetch}
           onClose={close}
         />

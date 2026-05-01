@@ -11,6 +11,10 @@ import { NotificationRow } from "./notification-row";
 import { NotificationSkeleton } from "./notification-skeleton";
 
 interface NotificationDropdownProps {
+  /** PRD-029 §P6.R1 — captured once at NotificationBell mount and forwarded
+   *  through here so the inner `useNotifications` filters reads from prior
+   *  sessions out of the rendered list. */
+  sessionStartedAt: number;
   /** Imperative refetch on the badge counter — called after mark-read mutations. */
   onUnreadCountRefetch: () => Promise<void>;
   /** Close the popover (the bell owns its open state). */
@@ -18,6 +22,7 @@ interface NotificationDropdownProps {
 }
 
 export function NotificationDropdown({
+  sessionStartedAt,
   onUnreadCountRefetch,
   onClose,
 }: NotificationDropdownProps) {
@@ -30,7 +35,7 @@ export function NotificationDropdown({
     loadMore,
     markRowReadLocally,
     markAllRowsReadLocally,
-  } = useNotifications();
+  } = useNotifications({ sessionStartedAt });
   const { markRead, markAllRead } = useMarkNotificationRead();
 
   const hasUnread = useMemo(

@@ -236,6 +236,76 @@ The `expires_at` column on `workspace_notifications` allows a specific row to be
 
 ---
 
+## Part 6 — Session-Scoped Read Filter & Expiry Filter
+
+> **Status:** New section. Adds two render-time filters to the bell dropdown introduced in Part 2 (which currently shows every row in its 30-day window regardless of read state or `expires_at`). No schema change, no migration. Independent of Part 5 (deferred retention) and ships immediately.
+
+The bell today drifts from "what's actionable now" to "everything that has ever happened in the last 30 days" — read notifications from days ago accumulate, and rows that emitters have explicitly marked stale via `expires_at` are still rendered because no fetch path consults that column. This part introduces two filters that keep the dropdown focused without changing how notifications are stored or cleaned up.
+
+### Requirements
+
+**P6.R1 — Read notifications persist within the current session and disappear on the next session.**
+A read notification stays visible in the dropdown for the duration of the user's current app-mount session — i.e., from when the bell first mounts on the page until the next hard reload, new tab, or browser restart. Next.js soft (client-side) navigation does not reset the session; only a fresh page load does. On a fresh load, notifications that were read in any previous session are filtered out on the next render. Unread notifications are unaffected and always visible regardless of session.
+
+**P6.R2 — Expired notifications are never rendered.**
+A notification with `expires_at` set to a past timestamp is not returned by the bell listing query and is not counted by the unread badge. This holds regardless of read state, `created_at`, or session boundary. Notifications with `expires_at = NULL` (the common case) are unaffected.
+
+**P6.R3 — Cross-tab read state follows per-tab session boundaries.**
+A notification marked read in Tab A while Tab B is open remains visible in Tab B (in its read style) until Tab B's session itself ends — i.e., until Tab B is reloaded. Each tab's session boundary is independent. Tracking per-tab read state via storage is explicitly out of scope for this part; the trade is that a notification you read in one tab will linger in another until that other tab reloads, which is acceptable for a glance surface.
+
+### Acceptance Criteria
+
+- [ ] P6.R1 — Given one read row and one unread row in the table, both render in the dropdown. After a hard reload, only the unread row renders. After clicking "Mark all as read", every row remains visible until the user reloads.
+- [ ] P6.R1 — Soft client-side navigation (clicking a sidebar link) does not reset the session; a previously-read row remains visible across the navigation.
+- [ ] P6.R2 — A notification with `expires_at = now() - 1 hour` is absent from the dropdown and absent from the unread-count badge. A notification with `expires_at = now() + 1 hour` renders normally.
+- [ ] P6.R3 — A notification marked read in Tab A renders in read style in Tab B (driven by Realtime refetch), and continues to render in Tab B until Tab B is reloaded.
+
+---
+
+## Part 7 — Per-User Fan-Out & Actor Suppression
+
+> **Status:** New section. Materially changes the storage model: notifications are stored **per recipient**, not per event. Closes two real bugs in the Parts 1–4 model — cross-user read leakage on broadcasts, and personal workspaces never receiving notifications. Also closes the actor-suppression gap (acknowledged but unfilled in PRD-026 Part 4 backlog). Includes a database migration; existing in-flight broadcast notifications are dropped (not fanned out) during the cutover — see P7.R5.
+
+The Parts 1–4 model conflated **storage** with **delivery**: one broadcast event = one row, visible to every team member via RLS. Two consequences emerged in production:
+
+1. **Read state is shared across recipients.** When user X marks a broadcast notification read in their bell, the row's `read_at` is set — and on every other team member's next fetch, the row appears as already read. The bell's read-state is global to the row, not per-user.
+2. **Personal workspaces get nothing.** The schema's `team_id NOT NULL` constraint means broadcast notifications cannot be addressed to a single user with no team — the merge route explicitly skips emit for personal workspaces (PRD-026 Part 4 Decision 26). A user working solo has a permanently empty bell.
+
+A third gap was already documented in the PRD-026 Part 4 backlog ("notification suppression for the actor") — the actor of a broadcast event sees their own action notified back to them. This Part addresses it as part of the same change because the fan-out path is the natural place to filter the actor.
+
+The fix is structural: notifications become per-recipient. At emit time, the service determines the recipient set (team members for a broadcast; the owner for a personal workspace; the explicit user for a targeted emit) and writes **one row per recipient**, each with its own `user_id` and `read_at`. Read state is now genuinely per-user; personal workspaces work; actor suppression is a one-line filter.
+
+### Requirements
+
+**P7.R1 — Read state is per-user.**
+Marking a notification read by one recipient does not affect any other recipient's view of the notification. Two team members opening their bell after a broadcast event see the same notification independently; either marking it read leaves the other's bell counter and read-state unchanged.
+
+**P7.R2 — Personal workspaces receive notifications.**
+A user acting in a personal workspace receives notifications about events in that workspace under the same rules as team workspaces (subject to P7.R3 actor suppression). The bell on a personal-workspace-only account is no longer permanently empty.
+
+**P7.R3 — Actors do not receive notifications about their own actions.**
+When the service emits a notification triggered by user X's action, user X does not receive a row in their bell — even if they would otherwise be a recipient (e.g., the actor is a member of the broadcast team, or the actor is the personal-workspace owner). Targeted emits where user X is the explicit recipient (e.g., "your bulk re-extract finished" addressed to the actor) are unaffected — the actor *is* the audience by intent.
+
+**P7.R4 — Schema supports per-recipient storage.**
+The `workspace_notifications` table is updated to support: a nullable `team_id` (so personal-workspace rows can store `NULL`), a non-nullable `user_id` (every row has exactly one recipient), and read/visibility logic keyed on `user_id` alone. RLS policies are simplified accordingly: a row is visible to a user iff `user_id = auth.uid()`.
+
+**P7.R5 — Existing broadcast rows are dropped at migration time.**
+In-flight broadcast notifications (rows where `user_id IS NULL` under the old model) are deleted as part of the migration. They are not fanned out into per-recipient rows. Justification: notifications are ephemeral by design (Part 5 retention is 30/90 days when it ships); a one-time cutover loss is acceptable and avoids the complexity of reconstructing recipient sets for historical events.
+
+**P7.R6 — Emitters do not change their call sites.**
+Consumers of `notificationService.emit()` (PRD-026 Part 4's merge route, PRD-028's supersession path, PRD-017's bulk re-extract path) do not need code changes for fan-out. The service determines the recipient set internally based on the emit shape (`teamId`, `userId`, `actorId`). Adding a new emitter follows the same pattern.
+
+### Acceptance Criteria
+
+- [ ] P7.R1 — In a team workspace with two members A and B, emit a broadcast notification. Both A and B see it as unread. A marks it read. B's bell still shows it as unread on next fetch.
+- [ ] P7.R2 — A user with no team workspaces (personal-only) sees notifications in their bell after merging a theme in their personal workspace (subject to P7.R3 — i.e., the actor suppression case prevents a self-notification; verify this requirement against an event that doesn't suppress the actor, or with a multi-user personal scenario like an admin-only event reaching a different user).
+- [ ] P7.R3 — In a team workspace, user A merges a theme. User A's bell does not show a `theme.merged` row for that merge; user B's bell does.
+- [ ] P7.R4 — `workspace_notifications.team_id` is nullable; `workspace_notifications.user_id` is NOT NULL after migration. Reading a row through the anon client succeeds when `user_id = auth.uid()` and fails otherwise. The previous broadcast RLS policy is removed.
+- [ ] P7.R5 — Pre-migration broadcast rows (where `user_id IS NULL`) are absent from the table after migration runs. No fan-out is attempted; the rows are deleted.
+- [ ] P7.R6 — Each existing emitter (PRD-026 Part 4 merge route, plus any other registered emit call site at migration time) compiles and runs against the new service signature without per-call-site changes; only the service implementation is changed.
+
+---
+
 ## Backlog
 
 Items intentionally deferred — real follow-ups, not load-bearing on the first ship.

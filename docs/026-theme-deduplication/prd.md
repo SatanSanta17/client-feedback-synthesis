@@ -181,3 +181,5 @@ Items intentionally deferred — real follow-ups, but not load-bearing on closin
 - **Bulk merge.** The current design is one-pair-at-a-time. A "merge all suggested pairs above X confidence" power-user action could land later. Out of scope for the first ship.
 - **Cross-workspace theme suggestions.** "Workspaces like yours have themes named X, Y, Z" as a starting taxonomy. Out of scope; touches privacy + product positioning.
 - **Per-workspace tunable similarity threshold.** Currently a single global value for prevention and a single global value for candidate generation. A larger workspace with finer-grained themes might want them lower; smaller might want them higher. Deferred until a workspace asks.
+
+Note: Side effect to be aware of: an admin who carefully dismissed (Z, Q) yesterday will see (Z, Q) resurface as a candidate after merging X→Z, and may be confused why their dismissal "didn't stick."

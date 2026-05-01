@@ -26,10 +26,11 @@ const COLUMNS =
   "id, team_id, user_id, event_type, payload, read_at, expires_at, created_at";
 
 /** `COLUMNS` plus the joined workspace name for bell rendering. PostgREST
- *  resolves `teams!inner(name)` through the `team_id` FK; the `inner` join
- *  drops orphaned rows defensively (the schema's `team_id NOT NULL` already
- *  prevents these in practice). */
-const BELL_COLUMNS = `${COLUMNS}, teams!inner(name)`;
+ *  resolves `teams(name)` through the `team_id` FK. As of PRD-029 Part 7
+ *  `team_id` is nullable (personal-workspace rows), so the join is a plain
+ *  outer join — personal rows return `teams: null` and the mapper falls back
+ *  to an empty `teamName`. */
+const BELL_COLUMNS = `${COLUMNS}, teams(name)`;
 
 const DEFAULT_LIST_LIMIT = 50;
 const DEFAULT_WINDOW_DAYS = 30;
@@ -51,9 +52,26 @@ function applyOptionalTeamFilter<Q extends { eq: (col: string, val: any) => Q }>
 }
 
 /**
+ * PRD-029 §P6.R2 — exclude rows whose explicit `expires_at` is in the past.
+ * Applied to every read path the bell consumes (listing + unread count) so
+ * emitter-driven expiry takes effect without waiting for the deferred Part 5
+ * cleanup job.
+ */
+function applyNotExpiredFilter<Q extends { or: (filters: string) => Q }>(
+  query: Q
+): Q {
+  return query.or(
+    `expires_at.is.null,expires_at.gt.${new Date().toISOString()}`
+  );
+}
+
+/**
  * Maps a raw Supabase row (snake_case) to a domain `WorkspaceNotification`
  * (camelCase). Warns — but does not throw — when the row's `event_type` is
  * not in the registered registry; renderers (Part 3) handle the fallback path.
+ *
+ * Per PRD-029 Part 7: every row has a recipient (`user_id` is NOT NULL) and
+ * `team_id` is nullable (personal-workspace rows).
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Supabase row types are loosely typed
 function toNotification(row: any): WorkspaceNotification {
@@ -64,8 +82,8 @@ function toNotification(row: any): WorkspaceNotification {
   }
   return {
     id: row.id,
-    teamId: row.team_id,
-    userId: row.user_id ?? null,
+    teamId: row.team_id ?? null,
+    userId: row.user_id,
     eventType: row.event_type,
     payload: row.payload ?? {},
     readAt: row.read_at ?? null,
@@ -74,12 +92,17 @@ function toNotification(row: any): WorkspaceNotification {
   };
 }
 
-/** Bell variant — composes `toNotification` with the joined `teams.name`. */
+/** Bell variant — composes `toNotification` with the joined `teams.name`.
+ *  Personal-workspace rows (`team_id IS NULL`) yield `"Personal"` as the
+ *  label so the dropdown's cross-workspace mode (PRD §P2.R10) renders a
+ *  meaningful workspace label rather than an empty string. The dropdown
+ *  still suppresses the label entirely when every visible row shares the
+ *  same workspace, so personal-only bells stay label-free. */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Supabase row types are loosely typed
 function toBellNotification(row: any): BellNotificationRow {
   return {
     ...toNotification(row),
-    teamName: row.teams?.name ?? "(unknown workspace)",
+    teamName: row.teams?.name ?? "Personal",
   };
 }
 
@@ -116,6 +139,7 @@ async function executeKeysetListQuery<T extends { createdAt: string; id: string 
     .limit(limit + 1);
 
   query = applyOptionalTeamFilter(query, options.teamId);
+  query = applyNotExpiredFilter(query);
 
   if (options.includeRead === false) {
     query = query.is("read_at", null);
@@ -159,39 +183,65 @@ async function executeKeysetListQuery<T extends { createdAt: string; id: string 
 /**
  * Creates a Supabase-backed `NotificationRepository`.
  *
- * Pass a service-role client for `insert` and `deleteExpired` (anon RLS denies
- * INSERT/DELETE). Pass the user's anon client for `listForUser`, `unreadCount`,
- * `markRead`, `markAllRead` — RLS scopes the row set to the user's visible
- * notifications.
+ * Pass a service-role client for `bulkInsert` and `deleteExpired` (anon RLS
+ * denies INSERT/DELETE). Pass the user's anon client for `listForUser`,
+ * `unreadCount`, `markRead`, `markAllRead` — RLS scopes the row set to the
+ * user's visible notifications.
  */
 export function createNotificationRepository(
   supabase: SupabaseClient
 ): NotificationRepository {
   return {
-    async insert(data: NotificationInsert): Promise<WorkspaceNotification> {
+    async bulkInsert(
+      rows: NotificationInsert[]
+    ): Promise<WorkspaceNotification[]> {
+      if (rows.length === 0) return [];
+
       console.log(
-        `${LOG_PREFIX} insert — eventType: ${data.event_type}, teamId: ${data.team_id}, userId: ${data.user_id ?? "(broadcast)"}`
+        `${LOG_PREFIX} bulkInsert — count: ${rows.length}, eventType: ${rows[0].event_type}`
       );
 
-      const { data: row, error } = await supabase
+      const { data, error } = await supabase
         .from("workspace_notifications")
-        .insert({
-          team_id: data.team_id,
-          user_id: data.user_id,
-          event_type: data.event_type,
-          payload: data.payload,
-          expires_at: data.expires_at ?? null,
-        })
-        .select(COLUMNS)
-        .single();
+        .insert(
+          rows.map((r) => ({
+            team_id: r.team_id,
+            user_id: r.user_id,
+            event_type: r.event_type,
+            payload: r.payload,
+            expires_at: r.expires_at ?? null,
+          }))
+        )
+        .select(COLUMNS);
 
       if (error) {
-        console.error(`${LOG_PREFIX} insert error:`, error);
+        console.error(`${LOG_PREFIX} bulkInsert error:`, error);
         throw error;
       }
 
-      console.log(`${LOG_PREFIX} inserted — id: ${row.id}`);
-      return toNotification(row);
+      console.log(`${LOG_PREFIX} bulkInsert — inserted ${data?.length ?? 0} rows`);
+      return (data ?? []).map(toNotification);
+    },
+
+    async listActiveTeamMemberIds(teamId: string): Promise<string[]> {
+      console.log(`${LOG_PREFIX} listActiveTeamMemberIds — teamId: ${teamId}`);
+
+      const { data, error } = await supabase
+        .from("team_members")
+        .select("user_id")
+        .eq("team_id", teamId)
+        .is("removed_at", null);
+
+      if (error) {
+        console.error(`${LOG_PREFIX} listActiveTeamMemberIds error:`, error);
+        throw error;
+      }
+
+      const ids = (data ?? []).map((row) => row.user_id as string);
+      console.log(
+        `${LOG_PREFIX} listActiveTeamMemberIds — ${ids.length} member(s)`
+      );
+      return ids;
     },
 
     listForUser(options: ListForUserOptions): Promise<ListForUserResult> {
@@ -228,6 +278,7 @@ export function createNotificationRepository(
         .is("read_at", null);
 
       query = applyOptionalTeamFilter(query, options.teamId);
+      query = applyNotExpiredFilter(query);
 
       const { count, error } = await query;
       if (error) {
