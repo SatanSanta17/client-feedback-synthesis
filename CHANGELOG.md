@@ -6,6 +6,27 @@ All notable changes to this project are documented here, grouped by PRD and part
 
 ## [Unreleased]
 
+### PRD-032 end-of-PRD audit — 2026-05-03
+
+Cross-PRD audit run after all four parts shipped. CLAUDE.md eleven-point checklist run across the **union** of files touched by Parts 1–4 (~30 files spanning `lib/types/`, `lib/utils/video/`, `lib/hooks/`, `lib/repositories/`, `lib/services/`, `lib/schemas/`, `app/capture/_components/`, `app/api/files/transcribe/`, `app/api/sessions/[id]/attachments/`, plus migrations under `docs/032-video-upload/`, the `scripts/copy-ffmpeg-assets.mjs` postinstall hook, the gitignored `public/ffmpeg/` runtime assets, `next.config.ts`, `package.json`, `.env.example`, `.gitignore`). One real documentation-drift fix surfaced and applied; the union-level lint and tsc passes were clean.
+
+- **Documentation drift on Part 3 follow-up audit.** The PRD-032 Part 3 follow-up audit (2026-05-03, between Part 3 main entry and Part 4 main entry chronologically) applied a real fix — `aria-label="Edit transcript"` added to the `<Textarea>` in `app/capture/_components/transcript-editor.tsx` — but the CHANGELOG never received an entry documenting it. The end-of-PRD audit caught this via cross-checking the conversation history against the CHANGELOG. Added a "PRD-032 Part 3 follow-up audit" entry below the Part 3 main entry to correct the drift retroactively. The code change itself is unchanged; the only edit is an added CHANGELOG paragraph for historical accuracy.
+
+Other audit items clean:
+- **TypeScript:** `npx tsc --noEmit` across the entire codebase returns zero errors.
+- **Lint:** `npx eslint` across all 30 PRD-032-touched files in one pass returns zero warnings beyond the pre-existing react-hook-form `watch()` × React Compiler informational from PRD-013 (one occurrence on `session-capture-form.tsx`'s `watch("rawNotes")` line — not in scope; surfaces on every codebase using react-hook-form with the React Compiler enabled). PRD-031's end-of-PRD audit caught a ternary-as-statement issue this way; PRD-032's union sweep finds nothing equivalent — the per-part 4-step audit pattern (in-band Increment audit → user follow-up audit → end-of-PRD audit) caught everything before this pass.
+- **Production build:** `npm run build` succeeds; both `/api/files/transcribe` (Parts 1–2) and `/api/sessions/[id]/attachments/[attachmentId]` PATCH (Part 3) register correctly as Dynamic functions.
+- **ARCHITECTURE.md file-map completeness:** 20 PRD-032 file paths verified to exist in the codebase AND be referenced in the file map tree (or, for API route files, in the routes table — matches the existing convention: `/api/files/parse` and the `/api/sessions/[id]/attachments*` routes are also routes-table-only, not in the file-map tree). Migration SQL files, `scripts/copy-ffmpeg-assets.mjs`, and `public/ffmpeg/` (the gitignored ffmpeg.wasm runtime assets directory) all referenced.
+- **Routes table completeness:** `/api/files/transcribe` (Parts 1–2 contract + auto-persist branch + full HTTP code matrix), `/api/sessions/[id]/attachments` POST transcript branch (Part 2), `/api/sessions/[id]/attachments/[attachmentId]` PATCH (Part 3). All present with current behaviour.
+- **Data Model:** `session_attachments.storage_path` annotated nullable (Part 2) with the source-format invariant; `session_attachments.last_edited_at` annotated nullable (Part 3) with the editing rule and badge-rendering note; `source_format` value list extended with `video_transcript`.
+- **CHANGELOG entries:** Part 1 (line 89), Part 1 follow-up audit (line 80), Part 2 (line 55), Part 3 (line 31), Part 4 (line 9), plus the new Part 3 follow-up audit entry added in this audit, plus this end-of-PRD audit entry. All five parts and three follow-up audits accounted for. (Parts 2 and 4 follow-up audits found no fixes, which is documented inline in their main entries; only follow-up audits that produced real fixes get separate CHANGELOG entries — convention consistent with PRD-031.)
+- **Closes-PRD marker:** `**Closes PRD-032.**` present in ARCHITECTURE.md Current State paragraph (one occurrence) and CHANGELOG.md Part 4 entry. Both consistent.
+- **Cross-PRD interactions verified:** `composeAIInput` (PRD-013) reads `parsed_content` regardless of `source_format` — edited transcripts (Part 3) automatically feed re-extraction through the existing pipeline. Stale-flag (PRD-014) fires on every persistence write (POST attachments, PATCH attachments, `/api/files/transcribe` auto-persist branch). Structured extraction (PRD-018/031) consumes the same `parsed_content` stream — no special transcript handling. `MAX_ATTACHMENTS` (PRD-013) and `MAX_COMBINED_CHARS` (PRD-031 Part 3) accounting includes video transcripts everywhere they should.
+
+**Two open user actions** (operational, not code work):
+1. Apply [docs/032-video-upload/001-make-storage-path-nullable.sql](docs/032-video-upload/001-make-storage-path-nullable.sql) (Part 2) and [docs/032-video-upload/002-add-transcript-edit-tracking.sql](docs/032-video-upload/002-add-transcript-edit-tracking.sql) (Part 3) via Supabase Dashboard SQL editor. Both one-liners, both reversible.
+2. Browser smoke test against a real video upload with `OPENAI_API_KEY` set — the Whisper round trip, the queue-advance UX, the auto-persist tab-close survival, and the pending-transcript pre-save edit propagation all need a human in front of a real session.
+
 ### PRD-032 Part 4 — Video Upload and Transcription: Edge Cases and Limits — 2026-05-03
 
 The closing-out part. Five of six PRD requirements (P4.R1, P4.R2, P4.R3, P4.R5, P4.R6) were already shipped via Parts 1–3 — Part 4 verifies them via grep + spot-check and adds the genuinely-new pieces: **P4.R4** (sequential video processing — concurrency-1 queue at `<VideoAttachmentSection>` level, with queued items rendered as `Clock`-icon "Waiting…" placeholder cards) and a **heuristic refinement on `mapToVideoUploadError`** to catch `RangeError` and `WebAssembly.RuntimeError` explicitly for OOM detection plus tighter ffmpeg.wasm-specific patterns for codec failures. **Closes PRD-032.**
@@ -27,6 +48,21 @@ The change ships in three increments — intentionally tighter than Parts 2/3 be
 **No migration to apply.** Part 4 is pure-code; no schema changes.
 
 **Closes PRD-032.** All four parts shipped: Part 1 (Client-side audio extraction & upload, 2026-05-03), Part 2 (Server-side transcription & persistence, 2026-05-03), Part 3 (Transcript UX — visual differentiation & editable transcripts, 2026-05-03), Part 4 (Edge cases & limits — sequential processing & heuristic refinement, 2026-05-03).
+
+### PRD-032 Part 3 follow-up audit — 2026-05-03
+
+Stricter cross-file pass after Increment 3.6 closed out. One real fix surfaced and applied:
+
+- **Accessibility gap on the editor textarea.** `app/capture/_components/transcript-editor.tsx`'s `<Textarea>` had `autoFocus` but no `aria-label` or `<label>` element — screen readers would announce an unlabeled edit field. The other Edit/Save/Cancel buttons in the editor have visible text content that screen readers read; the textarea is the only interactive element without semantic labelling. Added `aria-label="Edit transcript"`. One-line fix, no behavioural impact, fully a11y improvement. Increment 3.6's first-pass audit missed it — caught on the user-requested follow-up.
+
+Other audit items clean:
+- **TypeScript:** zero errors across the union of Part 3 files.
+- **Lint:** zero errors; pre-existing react-hook-form `watch()` informational from PRD-013 unchanged.
+- **Cross-cutting `is_edited` propagation across 8 layers** (hook → upload-attachments → form/row payload mapping → POST attachments → service → repo → DB column) verified consistent.
+- **Empty-content rejection message verbatim consistency**: server PATCH 400 message identical to client `<TranscriptEditor>` `<p>` JSX after whitespace normalisation: `"Transcript can't be empty. Use Remove if you want to discard this attachment."`
+- **Three documented edge cases** (recorded for future-part awareness, not fixed in scope): pending-edit + Save Session race (rare; unsaved transcript edit lost on Save Session before Save-Editor); concurrent edits in team workspaces (last-writer-wins via PATCH; no `If-Match` optimistic-concurrency); `<TranscriptEditor>` doesn't react to `initialContent` prop changes mid-edit (controlled-component limitation).
+
+Aria-label naming convention deliberately kept slightly different between saved-list (`Edit ${file_name}` — matches existing Download/Delete pattern) and pending-card (`Edit transcript for ${file_name}` — provides extra context). Either is accessible; not worth churn to sync.
 
 ### PRD-032 Part 3 — Video Upload and Transcription: Transcript UX (Visual Differentiation + Editable Transcripts) — 2026-05-03
 
