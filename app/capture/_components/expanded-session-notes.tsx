@@ -35,6 +35,7 @@ interface ExpandedSessionNotesProps {
   isOverLimit: boolean
   totalAttachmentCount: number
   onSavedAttachmentDeleted: (attachmentId: string) => void
+  onSavedAttachmentEdited: (attachment: SessionAttachment) => void
   onAddPendingAttachment: (attachment: ParsedAttachment) => void
   onRemovePendingAttachment: (index: number) => void
   onVideoSelected: (file: File) => void
@@ -61,6 +62,7 @@ export function ExpandedSessionNotes({
   isOverLimit,
   totalAttachmentCount,
   onSavedAttachmentDeleted,
+  onSavedAttachmentEdited,
   onAddPendingAttachment,
   onRemovePendingAttachment,
   onVideoSelected,
@@ -92,6 +94,7 @@ export function ExpandedSessionNotes({
             canEdit={canEdit}
             hasStructuredNotes={!!structuredNotes}
             onDeleted={onSavedAttachmentDeleted}
+            onEdited={onSavedAttachmentEdited}
           />
         )}
 

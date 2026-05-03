@@ -8,12 +8,15 @@ import {
   ChevronDown,
   ChevronRight,
   Loader2,
+  Pencil,
 } from "lucide-react";
 import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { formatFileSize } from "@/lib/utils/format-file-size";
 import { FILE_ICONS } from "@/lib/constants/file-icons";
 import type { SessionAttachment } from "@/lib/services/attachment-service";
+import { TranscriptEditor } from "./transcript-editor";
+import { EditedBadge } from "./edited-badge";
 
 interface SavedAttachmentListProps {
   attachments: SessionAttachment[];
@@ -21,6 +24,9 @@ interface SavedAttachmentListProps {
   canEdit: boolean;
   hasStructuredNotes: boolean;
   onDeleted: (attachmentId: string) => void;
+  // PRD-032 Part 3 — fires after a successful PATCH to /api/sessions/[id]/attachments/[attachmentId].
+  // Parent updates its `savedAttachments` state with the row from the response.
+  onEdited: (attachment: SessionAttachment) => void;
 }
 
 export function SavedAttachmentList({
@@ -29,11 +35,14 @@ export function SavedAttachmentList({
   canEdit,
   hasStructuredNotes,
   onDeleted,
+  onEdited,
 }: SavedAttachmentListProps) {
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [downloadingId, setDownloadingId] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [savingEditId, setSavingEditId] = useState<string | null>(null);
 
   if (attachments.length === 0) return null;
 
@@ -100,6 +109,43 @@ export function SavedAttachmentList({
     }
   };
 
+  // PRD-032 Part 3 — PATCH the transcript edit. The route validates non-empty
+  // content + combined-char cap server-side; client surfaces the message
+  // verbatim on failure. On success the parent merges the updated row into
+  // savedAttachments via onEdited.
+  const handleSaveEdit = async (
+    attachmentId: string,
+    newContent: string
+  ): Promise<void> => {
+    setSavingEditId(attachmentId);
+
+    try {
+      const res = await fetch(
+        `/api/sessions/${sessionId}/attachments/${attachmentId}`,
+        {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ parsed_content: newContent }),
+        }
+      );
+
+      if (!res.ok) {
+        const data = await res.json().catch(() => null);
+        toast.error(data?.message ?? "Failed to save transcript");
+        return;
+      }
+
+      const { attachment: updated } = await res.json();
+      onEdited(updated);
+      setEditingId(null);
+      toast.success("Transcript saved");
+    } catch {
+      toast.error("Failed to save transcript — please try again");
+    } finally {
+      setSavingEditId(null);
+    }
+  };
+
   return (
     <div className="flex flex-col gap-2">
       {attachments.map((attachment) => {
@@ -108,6 +154,14 @@ export function SavedAttachmentList({
         const isDownloading = downloadingId === attachment.id;
         const isDeleting = deletingId === attachment.id;
         const isConfirming = confirmDeleteId === attachment.id;
+        const isEditing = editingId === attachment.id;
+        const isSavingEdit = savingEditId === attachment.id;
+        const isTranscript = attachment.source_format === "video_transcript";
+        // Hide the "video_transcript" badge — the sub-label + EditedBadge
+        // already communicate it; "video_transcript" as raw text is noisy.
+        const showFormatBadge =
+          attachment.source_format !== "generic" && !isTranscript;
+        const showEditedBadge = isTranscript && attachment.last_edited_at !== null;
 
         return (
           <div
@@ -115,14 +169,24 @@ export function SavedAttachmentList({
             className="rounded-md border border-border bg-muted/30"
           >
             <div
-              className="flex cursor-pointer items-center gap-3 px-3 py-2 transition-colors hover:bg-muted/50"
-              onClick={() =>
-                setExpandedId(isExpanded ? null : attachment.id)
+              className={
+                isEditing
+                  ? "flex items-center gap-3 px-3 py-2"
+                  : "flex cursor-pointer items-center gap-3 px-3 py-2 transition-colors hover:bg-muted/50"
               }
-              role="button"
-              aria-expanded={isExpanded}
+              onClick={
+                isEditing
+                  ? undefined
+                  : () => setExpandedId(isExpanded ? null : attachment.id)
+              }
+              role={isEditing ? undefined : "button"}
+              aria-expanded={isEditing ? undefined : isExpanded}
               aria-label={
-                isExpanded ? "Hide parsed content" : "View parsed content"
+                isEditing
+                  ? undefined
+                  : isExpanded
+                    ? "Hide parsed content"
+                    : "View parsed content"
               }
             >
               <span className="shrink-0 text-muted-foreground">
@@ -135,25 +199,57 @@ export function SavedAttachmentList({
 
               <Icon className="size-4 shrink-0 text-muted-foreground" />
 
-              <span className="min-w-0 flex-1 truncate text-sm text-foreground">
-                {attachment.file_name}
-              </span>
+              <div className="flex min-w-0 flex-1 flex-col">
+                <span className="truncate text-sm text-foreground">
+                  {attachment.file_name}
+                </span>
+                {/* PRD-032 P3.R1 — sub-label only on transcript rows */}
+                {isTranscript && (
+                  <span className="text-xs text-muted-foreground/80">
+                    Transcript only — original video not stored
+                  </span>
+                )}
+              </div>
 
               <span className="shrink-0 text-xs text-muted-foreground">
                 {formatFileSize(attachment.file_size)}
               </span>
 
-              {attachment.source_format !== "generic" && (
+              {showFormatBadge && (
                 <Badge variant="secondary" className="shrink-0 capitalize">
                   {attachment.source_format}
                 </Badge>
               )}
 
-              {/* PRD-032 Part 2 — video transcripts have no original blob */}
-              {attachment.source_format !== "video_transcript" && (
+              {showEditedBadge && (
+                <EditedBadge timestamp={attachment.last_edited_at} />
+              )}
+
+              {/* PRD-032 P3.R7 — Edit button is exclusive to video transcripts */}
+              {isTranscript && canEdit && !isEditing && (
                 <button
                   type="button"
-                  onClick={(e) => { e.stopPropagation(); handleDownload(attachment); }}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setEditingId(attachment.id);
+                    setExpandedId(null);
+                  }}
+                  disabled={isSavingEdit || isDeleting}
+                  className="shrink-0 rounded p-0.5 text-muted-foreground transition-colors hover:text-foreground disabled:opacity-50"
+                  aria-label={`Edit ${attachment.file_name}`}
+                >
+                  <Pencil className="size-3.5" />
+                </button>
+              )}
+
+              {/* PRD-032 Part 2 — video transcripts have no original blob */}
+              {!isTranscript && (
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handleDownload(attachment);
+                  }}
                   disabled={isDownloading}
                   className="shrink-0 rounded p-0.5 text-muted-foreground transition-colors hover:text-foreground disabled:opacity-50"
                   aria-label={`Download ${attachment.file_name}`}
@@ -166,10 +262,13 @@ export function SavedAttachmentList({
                 </button>
               )}
 
-              {canEdit && (
+              {canEdit && !isEditing && (
                 <button
                   type="button"
-                  onClick={(e) => { e.stopPropagation(); handleDeleteClick(attachment.id); }}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handleDeleteClick(attachment.id);
+                  }}
                   disabled={isDeleting}
                   className="shrink-0 rounded p-0.5 text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive disabled:opacity-50"
                   aria-label={`Delete ${attachment.file_name}`}
@@ -206,12 +305,21 @@ export function SavedAttachmentList({
               </div>
             )}
 
-            {isExpanded && (
-              <div className="border-t border-border bg-muted/50 px-3 py-2">
-                <div className="max-h-48 overflow-y-auto rounded bg-background p-2 font-mono text-xs leading-relaxed text-muted-foreground whitespace-pre-wrap">
-                  {attachment.parsed_content}
+            {isEditing ? (
+              <TranscriptEditor
+                initialContent={attachment.parsed_content}
+                isSaving={isSavingEdit}
+                onSave={(newContent) => handleSaveEdit(attachment.id, newContent)}
+                onCancel={() => setEditingId(null)}
+              />
+            ) : (
+              isExpanded && (
+                <div className="border-t border-border bg-muted/50 px-3 py-2">
+                  <div className="max-h-48 overflow-y-auto rounded bg-background p-2 font-mono text-xs leading-relaxed text-muted-foreground whitespace-pre-wrap">
+                    {attachment.parsed_content}
+                  </div>
                 </div>
-              </div>
+              )
             )}
           </div>
         );

@@ -206,6 +206,13 @@ export function ExpandedSessionRow({
   }, [isDirty, onDirtyChange])
 
   // --- Attachment handlers ---
+  // PRD-032 Part 3 — merge the PATCH-updated row into savedAttachments.
+  const handleSavedAttachmentEdited = useCallback((updated: SessionAttachment) => {
+    setSavedAttachments((prev) =>
+      prev.map((a) => (a.id === updated.id ? updated : a))
+    )
+  }, [])
+
   const handleSavedAttachmentDeleted = useCallback((attachmentId: string) => {
     setSavedAttachments((prev) => prev.filter((a) => a.id !== attachmentId))
     setDeletedAttachmentIds((prev) => new Set(prev).add(attachmentId))
@@ -337,7 +344,7 @@ export function ExpandedSessionRow({
     } finally {
       setIsSaving(false)
     }
-  }, [session.id, session.raw_notes, client, sessionDate, rawNotes, structuredNotes, structuredJson, promptVersionId, isFormValid, onSave, savedAttachments, pendingAttachments, deletedAttachmentIds, anyVideoInFlight, resetVideoItems])
+  }, [session.id, session.raw_notes, client, sessionDate, rawNotes, structuredNotes, structuredJson, promptVersionId, isFormValid, onSave, savedAttachments, pendingAttachments, completedTranscripts, deletedAttachmentIds, anyVideoInFlight, resetVideoItems])
 
   useEffect(() => {
     registerSave(handleSave)
@@ -407,6 +414,7 @@ export function ExpandedSessionRow({
           isOverLimit={isOverLimit}
           totalAttachmentCount={totalAttachmentCount}
           onSavedAttachmentDeleted={handleSavedAttachmentDeleted}
+          onSavedAttachmentEdited={handleSavedAttachmentEdited}
           onAddPendingAttachment={handleAddPendingAttachment}
           onRemovePendingAttachment={handleRemovePendingAttachment}
           videoSessionId={videoSessionId}
