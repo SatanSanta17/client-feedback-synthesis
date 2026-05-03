@@ -129,14 +129,26 @@ The `session_attachments.storage_path` column is made nullable to support transc
 
 **P3.R6 — Adding video to existing sessions.** The expanded session view's upload zone accepts video uploads using the same flow as the capture form (extract → transcribe → persist on save). The session-already-saved branch of P2.R7 applies — transcripts auto-attach if the tab closes mid-transcription.
 
+**P3.R7 — Editable video transcripts.** Video transcript attachments include an "Edit" affordance alongside the "View content" toggle. Activating it opens an inline editor (textarea) pre-filled with the current transcript. The user can correct transcription errors (proper nouns, jargon, mishears) and save. Saved edits replace `parsed_content` and are persisted with the session.
+
+Editing is available at any time — before save, after save, before extraction, after extraction. Re-extraction picks up edited transcript content the same way it picks up edited raw notes today.
+
+A small "edited" badge appears on the attachment whenever the transcript has been modified from its original transcription. Hovering the badge shows a tooltip with the last-edited timestamp.
+
+Editability is **exclusive to `source_format = "video_transcript"` attachments**. Parsed content for other formats (PDF, CSV, DOCX, JSON, TXT) remains view-only — users can re-upload a corrected source file for those formats. Video has no equivalent recovery path because the original is intentionally not retained.
+
 ### Acceptance Criteria
 
 - [ ] P3.AC1 — Video transcript attachments show a video icon and "Transcript only" label
 - [ ] P3.AC2 — Video transcript attachments have no download button
-- [ ] P3.AC3 — Transcript is viewable inline via "View content" toggle (read-only)
+- [ ] P3.AC3 — Transcript is viewable inline via "View content" toggle (read-only by default)
 - [ ] P3.AC4 — Past session attachment count includes video transcripts
 - [ ] P3.AC5 — Re-extracting a past session includes transcript content in the AI input
 - [ ] P3.AC6 — Video uploads work from the expanded past session view
+- [ ] P3.AC7 — "Edit" affordance is shown only for `video_transcript` attachments, not for other formats
+- [ ] P3.AC8 — Editing a transcript updates `parsed_content` on save and persists with the session
+- [ ] P3.AC9 — Re-extraction after an edit uses the edited transcript content
+- [ ] P3.AC10 — An "edited" badge with last-edited tooltip appears on modified transcripts
 
 ---
 
@@ -156,6 +168,8 @@ The `session_attachments.storage_path` column is made nullable to support transc
 
 **P4.R5 — Audio-only files not accepted in this PRD.** Audio-only files (`.mp3`, `.m4a`, `.wav`) are NOT accepted in this release. Listed in backlog for a follow-up PRD where the same transcription endpoint can be reused without browser-side extraction.
 
+**P4.R6 — Empty transcript edit.** If the user edits a video transcript and attempts to save it empty or whitespace-only, the save is rejected with an inline error: "Transcript can't be empty. Use Remove if you want to discard this attachment." The edit stays open so the user can either restore content or cancel.
+
 ### Acceptance Criteria
 
 - [ ] P4.AC1 — Out-of-memory failures show a device-specific error message
@@ -163,6 +177,7 @@ The `session_attachments.storage_path` column is made nullable to support transc
 - [ ] P4.AC3 — `MAX_ATTACHMENTS` limit is enforced and counts video transcripts
 - [ ] P4.AC4 — Concurrent video uploads are processed sequentially with a visible queue indicator
 - [ ] P4.AC5 — Audio-only files are rejected as unsupported in this release
+- [ ] P4.AC6 — Empty / whitespace-only transcript edits are rejected with a clear inline error
 
 ---
 
@@ -173,7 +188,7 @@ The `session_attachments.storage_path` column is made nullable to support transc
 - **Speaker diarisation** — identify and label distinct speakers in the transcript ("[Speaker 1]: …" / "[Speaker 2]: …") for richer signal-extraction context.
 - **Multi-threaded browser-side extraction** — switch to the multi-threaded extraction variant (~2× faster) once required cross-origin headers are audited against existing third-party integrations.
 - **Server-side fallback for weak devices** — for users on devices that can't handle browser-side extraction, offer an opt-in server-side audio extraction path (with a different cost model and explicit consent).
-- **Transcript editing** — allow users to correct transcription errors before signal extraction.
+- **Revert edited transcript to original** — preserve the original Whisper output (in a separate column) so users can revert their edits back to the auto-generated transcript. Skipped in v1 to keep the schema clean; add only if users actually request revert.
 - **Cloud meeting integrations** — pull recordings directly from Zoom, Google Meet, and Microsoft Teams via OAuth, removing the manual download/upload step.
 - **In-browser recording** — record meetings directly in the app and transcribe live, instead of uploading after the fact.
 - **Per-team transcription quota** — track minutes-of-video transcribed per team to manage provider API cost.

@@ -165,7 +165,6 @@ export async function POST(request: NextRequest) {
       chatService,
       embeddingRepo,
       anonClient: supabase,
-      userId: user.id,
       teamId,
       conversationId,
       assistantMessageId: assistantMessage.id,

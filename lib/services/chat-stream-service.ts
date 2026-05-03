@@ -56,7 +56,6 @@ export interface ChatStreamDeps {
   embeddingRepo: EmbeddingRepository;
   /** RLS-protected client (carries user cookies) — used for data queries. */
   anonClient: SupabaseClient;
-  userId: string;
   teamId: string | null;
   conversationId: string;
   assistantMessageId: string;
@@ -93,7 +92,6 @@ export function createChatStream(deps: ChatStreamDeps): ReadableStream {
     chatService,
     embeddingRepo,
     anonClient,
-    userId,
     teamId,
     conversationId,
     assistantMessageId,
@@ -186,18 +184,31 @@ export function createChatStream(deps: ChatStreamDeps): ReadableStream {
           }
         }
 
-        // Stream complete — detect step-budget exhaustion (gap E8). When
-        // stopWhen fires mid-tool-calling, finishReason resolves to
-        // "tool-calls" — the model wanted another step but hit the cap.
-        // Append a single-line warning to the streamed content (visible to
-        // the user) and to the persisted message.
+        // Stream complete — detect truncation. Two cases:
+        //   - Step-budget exhaustion (gap E8): stopWhen fires mid-tool-calling,
+        //     finishReason resolves to "tool-calls" — the model wanted another
+        //     step but hit the cap.
+        //   - Length-budget exhaustion (PRD-031 P3.R6): the model emitted up to
+        //     maxOutputTokens and finishReason resolves to "length" — the answer
+        //     ran out of room before the model finished. Same UX pattern: append
+        //     a single-line warning to streamed + persisted content so the user
+        //     sees the truncation and can follow up.
         const finishReason = await result.finishReason;
         const stepCount = (await result.steps).length;
-        const wasTruncated = finishReason === "tool-calls";
+        const usage = await result.usage;
+        const wasStepTruncated = finishReason === "tool-calls";
+        const wasLengthTruncated = finishReason === "length";
 
-        if (wasTruncated) {
+        if (wasStepTruncated) {
           const warning =
             "\n\n_Note: this answer may be incomplete — I reached my reasoning step limit before finishing. Try a follow-up to dig deeper._";
+          fullText += warning;
+          controller.enqueue(
+            encoder.encode(sseEvent("delta", { text: warning }))
+          );
+        } else if (wasLengthTruncated) {
+          const warning =
+            "\n\n_Note: this answer was cut off before completing — try a more focused follow-up to see the rest._";
           fullText += warning;
           controller.enqueue(
             encoder.encode(sseEvent("delta", { text: warning }))
@@ -218,7 +229,7 @@ export function createChatStream(deps: ChatStreamDeps): ReadableStream {
         });
 
         console.log(
-          `${LOG_PREFIX} stream complete — steps: ${stepCount}, finishReason: ${finishReason}, content: ${cleanContent.length} chars, sources: ${uniqueSources.length}, followUps: ${followUps.length}${wasTruncated ? " (truncated)" : ""}`
+          `${LOG_PREFIX} stream complete — steps: ${stepCount}, finishReason: ${finishReason}, usage: input=${usage?.inputTokens ?? "?"}, output=${usage?.outputTokens ?? "?"}, total=${usage?.totalTokens ?? "?"}, content: ${cleanContent.length} chars, sources: ${uniqueSources.length}, followUps: ${followUps.length}${wasStepTruncated ? " (step-truncated)" : wasLengthTruncated ? " (length-truncated)" : ""}`
         );
 
         // Send final events
