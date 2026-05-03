@@ -1,10 +1,11 @@
 "use client";
 
-import { BarChart3, Brain, MessageSquareText, Sparkles } from "lucide-react";
+import { BarChart3, MessageSquareText, Sparkles } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import { useScrollReveal } from "@/lib/hooks/use-scroll-reveal";
+import { LandingChatPreview } from "./landing-chat-preview";
 
 interface FeatureItem {
   icon: LucideIcon;
@@ -31,19 +32,12 @@ const FEATURES: readonly FeatureItem[] = [
     description:
       "Sentiment shifts, urgency spikes, theme trends — your entire client landscape distilled into one interactive view.",
   },
-  {
-    icon: Brain,
-    title: "Ask Your Data",
-    description:
-      "Skip the spreadsheet safari. Ask a question in plain English and get answers grounded in every session your team has ever captured — with citations.",
-  },
 ] as const;
 
 interface FeatureCardProps {
   feature: FeatureItem;
   index: number;
   isVisible: boolean;
-  isHero?: boolean;
   className?: string;
 }
 
@@ -51,15 +45,13 @@ function FeatureCard({
   feature: { icon: Icon, title, description },
   index,
   isVisible,
-  isHero = false,
   className,
 }: FeatureCardProps) {
   return (
     <div
       className={cn(
-        "group relative overflow-hidden rounded-xl border border-[var(--border-default)] bg-[var(--surface-page)] transition-all duration-500 hover:shadow-lg",
-        isHero ? "p-10" : "p-8",
-        className
+        "group relative overflow-hidden rounded-xl border border-[var(--border-default)] bg-[var(--surface-page)] p-8 transition-all duration-500 hover:shadow-lg",
+        className,
       )}
       style={{
         opacity: isVisible ? 1 : 0,
@@ -68,44 +60,15 @@ function FeatureCard({
         transitionDelay: `${index * 120}ms`,
       }}
     >
-      {isHero ? (
-        <div
-          aria-hidden
-          className="pointer-events-none absolute -bottom-16 -right-16 size-64 rounded-full bg-[var(--brand-primary-light)] opacity-50 blur-3xl"
-        />
-      ) : null}
-
-      <div className="relative">
-        <div
-          className={cn(
-            "mb-5 inline-flex rounded-lg bg-[var(--brand-primary-light)]",
-            isHero ? "p-4" : "p-3"
-          )}
-        >
-          <Icon
-            className={cn(
-              "text-[var(--brand-primary)]",
-              isHero ? "size-7" : "size-6"
-            )}
-          />
-        </div>
-        <h3
-          className={cn(
-            "mb-2 font-semibold text-[var(--text-primary)]",
-            isHero ? "text-2xl" : "text-lg"
-          )}
-        >
-          {title}
-        </h3>
-        <p
-          className={cn(
-            "leading-relaxed text-[var(--text-secondary)]",
-            isHero ? "text-base max-w-md" : "text-sm"
-          )}
-        >
-          {description}
-        </p>
+      <div className="mb-5 inline-flex rounded-lg bg-[var(--brand-primary-light)] p-3">
+        <Icon className="size-6 text-[var(--brand-primary)]" />
       </div>
+      <h3 className="mb-2 text-lg font-semibold text-[var(--text-primary)]">
+        {title}
+      </h3>
+      <p className="text-sm leading-relaxed text-[var(--text-secondary)]">
+        {description}
+      </p>
     </div>
   );
 }
@@ -129,13 +92,11 @@ export function LandingFeaturesBento() {
           </p>
         </div>
 
-        <div className="grid grid-cols-1 gap-6 md:grid-cols-3 md:grid-rows-2 lg:gap-8">
+        <div className="grid grid-cols-1 gap-6 md:grid-cols-3 lg:gap-8">
           <FeatureCard
             feature={FEATURES[0]}
             index={0}
             isVisible={isVisible}
-            isHero
-            className="md:row-span-2"
           />
           <FeatureCard
             feature={FEATURES[1]}
@@ -147,11 +108,10 @@ export function LandingFeaturesBento() {
             index={2}
             isVisible={isVisible}
           />
-          <FeatureCard
-            feature={FEATURES[3]}
+          <LandingChatPreview
             index={3}
             isVisible={isVisible}
-            className="md:col-span-2"
+            className="md:col-span-3"
           />
         </div>
       </div>

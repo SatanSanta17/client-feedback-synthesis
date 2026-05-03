@@ -44,7 +44,10 @@ export function LandingProductShowcase() {
   const [showcaseRef, isVisible] = useScrollReveal();
 
   return (
-    <section className="flex min-h-screen items-center border-t border-[var(--border-default)] bg-[var(--surface-page)]">
+    <section
+      id="showcase"
+      className="flex min-h-screen scroll-mt-20 items-center border-t border-[var(--border-default)] bg-[var(--surface-page)]"
+    >
       <div className="mx-auto w-full max-w-6xl px-6 py-24">
         <div className="mb-16 text-center">
           <h2 className="text-2xl font-bold tracking-tight text-[var(--text-primary)] sm:text-3xl lg:text-4xl">

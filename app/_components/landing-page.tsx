@@ -8,6 +8,7 @@ import { Sparkles, ArrowRight, Target } from "lucide-react";
 import { useAuth } from "@/components/providers/auth-provider";
 import { Button } from "@/components/ui/button";
 import { useScrollReveal } from "@/lib/hooks/use-scroll-reveal";
+import { LandingFeedbackSources } from "./landing-feedback-sources";
 import { LandingProductShowcase } from "./landing-product-showcase";
 import { LandingFeaturesBento } from "./landing-features-bento";
 import { LandingPersonas } from "./landing-personas";
@@ -22,17 +23,20 @@ const STEPS = [
   {
     number: "01",
     title: "Capture",
-    description: "Paste notes or upload files after every client call.",
+    description:
+      "Paste notes or drop a Zoom recording after every call. Sales doesn't reformat. CS doesn't restructure. PMs don't chase.",
   },
   {
     number: "02",
     title: "Extract",
-    description: "AI pulls structured signals — themes, sentiment, action items.",
+    description:
+      "AI pulls pain points, requirements, sentiment, and competitive mentions — tagged, themed, and linked to the client who said it.",
   },
   {
     number: "03",
-    title: "Understand",
-    description: "Your dashboard lights up with trends, and Chat answers any question across all your sessions — instantly.",
+    title: "Decide",
+    description:
+      "Your CS lead opens chat 30 minutes before a renewal and pulls every concern this client has ever raised — with quotes.",
   },
 ] as const;
 
@@ -120,13 +124,13 @@ export function LandingPage() {
           {/* Pill badge */}
           <div className="mb-8 inline-flex items-center gap-2 rounded-full border border-[var(--border-default)] bg-[var(--surface-raised)] px-4 py-1.5 text-xs font-medium text-[var(--text-secondary)]">
             <Sparkles className="size-3.5 text-[var(--brand-primary)]" />
-            AI-powered feedback intelligence
+            Customer Feedback Management, powered by AI
           </div>
 
           <h1 className="text-4xl font-extrabold leading-tight tracking-tight text-[var(--text-primary)] sm:text-5xl lg:text-6xl">
-            Turn every client conversation
+            All your client feedback,
             <br />
-            into a{" "}
+            finally{" "}
             <span
               className="inline-block bg-clip-text text-transparent"
               style={{
@@ -134,34 +138,47 @@ export function LandingPage() {
                   "linear-gradient(135deg, var(--brand-primary) 0%, var(--brand-primary-vivid) 50%, var(--brand-primary) 100%)",
               }}
             >
-              product signal
+              answerable
             </span>
+            .
           </h1>
 
           <p className="mx-auto mt-8 max-w-2xl text-lg leading-relaxed text-[var(--text-secondary)] sm:text-xl">
-            Sales calls, CS check-ins, Slack threads — feedback is everywhere and nowhere.
-            Synthesiser captures it all, extracts the signals with AI, and shows your whole team
-            what clients actually need.
+            Synthesiser captures every client conversation — sales calls, CS check-ins, Zoom
+            recordings — extracts the signals with AI, and lets your whole team ask questions
+            across all of it.
           </p>
 
-          <div className="mt-12">
+          <div className="mt-12 flex flex-col items-center justify-center gap-4 sm:flex-row">
             <Link href="/login">
               <Button size="lg" className="cursor-pointer px-10 py-6 text-lg">
                 Try It Yourself
               </Button>
             </Link>
+            <a href="#showcase">
+              <Button
+                size="lg"
+                variant="outline"
+                className="cursor-pointer px-10 py-6 text-lg"
+              >
+                See an example dashboard
+              </Button>
+            </a>
           </div>
         </div>
       </section>
 
+      {/* ---- Feedback sources — the "before" picture ---- */}
+      <LandingFeedbackSources />
+
       {/* ---- Product Showcase (full viewport) ---- */}
       <LandingProductShowcase />
 
-      {/* ---- Features bento (full viewport, scroll-reveal) ---- */}
-      <LandingFeaturesBento />
-
       {/* ---- Built for personas (compact strip) ---- */}
       <LandingPersonas />
+
+      {/* ---- Features bento (full viewport, scroll-reveal) ---- */}
+      <LandingFeaturesBento />
 
       {/* ---- How It Works (full viewport, scroll-reveal) ---- */}
       <section
@@ -231,8 +248,8 @@ export function LandingPage() {
           </h2>
 
           <p className="mx-auto mt-6 max-w-xl text-lg leading-relaxed text-[var(--text-secondary)] sm:text-xl">
-            Your next product decision shouldn&apos;t depend on someone remembering
-            what a client said three weeks ago.
+            Every client conversation your team has — captured, structured, and
+            queryable. The right answer reaches you so that you can make the right decision.
           </p>
 
           <div className="mt-12">

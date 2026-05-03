@@ -42,7 +42,7 @@ export default async function RootLayout({
       className={cn(
         geistSans.variable,
         geistMono.variable,
-        "h-full antialiased",
+        "h-full scroll-smooth antialiased",
         isDark && "dark"
       )}
     >
