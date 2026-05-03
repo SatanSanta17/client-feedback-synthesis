@@ -68,9 +68,20 @@ function renderToolsAndPlatforms(tools: ToolAndPlatform[]): string {
 
 /**
  * Converts an ExtractedSignals object to the markdown format that matches the
- * output structure of the original signal extraction prompt. This keeps the
- * `structured_notes` column backward-compatible while the primary output
- * migrates to JSON (PRD-018 P1.R4).
+ * output structure of the original signal extraction prompt. Originally added
+ * for PRD-018 P1.R4 to keep the legacy `structured_notes` column
+ * backward-compatible during the JSON migration.
+ *
+ * Current consumers (post-PRD-031):
+ * - The master-signal backend's `composeStructuredNotes()` in
+ *   `supabase-master-signal-repository.ts` calls this on demand to derive
+ *   markdown from `structured_json` (PRD-031 Part 1 — extraction stopped
+ *   writing markdown, the master-signal backend renders it on read).
+ * - Pre-PRD-018 legacy sessions that still have `structured_notes` populated
+ *   bypass this renderer entirely; they're read directly from the column.
+ *
+ * The capture-page UI does NOT consume this — it renders from
+ * `structured_json` via `StructuredSignalView`.
  */
 export function renderExtractedSignalsToMarkdown(
   signals: ExtractedSignals

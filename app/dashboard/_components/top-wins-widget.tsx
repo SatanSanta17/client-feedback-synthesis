@@ -103,7 +103,9 @@ export function TopWinsWidget({ className, onDrillDown }: TopWinsWidgetProps) {
 
   const [showAll, setShowAll] = useState(false);
 
-  const allThemes = data?.themes ?? [];
+  // Stabilise reference so downstream useMemo/derived hooks don't re-run on
+  // every render when `data` is still null (eslint react-hooks/exhaustive-deps).
+  const allThemes = useMemo(() => data?.themes ?? [], [data?.themes]);
   const isEmpty = allThemes.length === 0;
   const hasMore = allThemes.length > DEFAULT_DISPLAY_LIMIT;
   const displayThemes = showAll

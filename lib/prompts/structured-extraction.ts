@@ -27,10 +27,15 @@ Sessions are typically discovery, onboarding, or requirements-gathering calls wi
 9. For requirements, always assign a priority: "must" for deal-breakers, "should" for strong preferences, "nice" for aspirational wants that won't block a deal.
 10. For competitiveMentions, capture the competitor name, what was said, and the sentiment toward that competitor specifically (not the overall session sentiment).
 11. For toolsAndPlatforms, classify each entry as "tool" (software/service), "platform" (ad platform, cloud platform), or "competitor" (when the tool is also a competitive alternative).
+12. For positiveSignals: capture statements where the client describes something they are currently experiencing and explicitly likes — praise for the product, the team, onboarding, support, performance; retention drivers; reasons they stayed with the platform. Do NOT use this category for forward-looking wants (those go in aspirations) or for praise of competitors (those go in competitiveMentions with sentiment="positive"). Per Rule 7, do not duplicate the same signal into both summary and positiveSignals — the summary is the overall narrative, positiveSignals are the specific positive statements. Examples:
+    - "Your onboarding flow is genuinely the best I've used" → positiveSignals
+    - "The support team turned around our last bug fix in two hours, that's a major reason we stayed" → positiveSignals
+    - "We'd love a Slack integration to make this easier" → aspirations (forward-looking want, not currently experienced)
+    - "The competitor's reporting suite was excellent" → competitiveMentions with sentiment="positive" (about a competitor, not your product)
 
 ## Schema Version
 
-Always set schemaVersion to 1.`;
+Always set schemaVersion to 2.`;
 
 /**
  * Builds the user message for structured signal extraction.

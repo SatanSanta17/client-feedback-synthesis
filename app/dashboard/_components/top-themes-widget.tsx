@@ -20,6 +20,16 @@ import { BRAND_PRIMARY_HEX, formatChunkTypePlural } from "./chart-colours";
 import type { DrillDownContext } from "./drill-down-types";
 
 /**
+ * NOTE: `top-wins-widget.tsx` is a near-duplicate of this file with four
+ * deliberate differences (filtered query, success bar colour, self-hide on
+ * empty, drill-down chunkTypes forwarding) — PRD-031 P2.R9. When editing the
+ * shared chart structure, tooltip layout, show-all toggle behaviour, or
+ * recently-merged indicator wiring, mirror the change in Top Wins or extract
+ * a shared base component (the latter is on the PRD-031 backlog, gated on a
+ * third chunk-type-filtered widget arriving).
+ */
+
+/**
  * Suffix appended to Y-axis tick labels when the theme has been the
  * canonical destination of a merge within the indicator window
  * (PRD-026 P4.R2). Recharts' Y-axis `tickFormatter` only accepts string
@@ -100,7 +110,9 @@ export function TopThemesWidget({ className, onDrillDown }: TopThemesWidgetProps
 
   const [showAll, setShowAll] = useState(false);
 
-  const allThemes = data?.themes ?? [];
+  // Stabilise reference so downstream useMemo/derived hooks don't re-run on
+  // every render when `data` is still null (eslint react-hooks/exhaustive-deps).
+  const allThemes = useMemo(() => data?.themes ?? [], [data?.themes]);
   const isEmpty = allThemes.length === 0;
   const hasMore = allThemes.length > DEFAULT_DISPLAY_LIMIT;
   const displayThemes = showAll
