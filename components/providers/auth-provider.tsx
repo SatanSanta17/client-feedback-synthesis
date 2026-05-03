@@ -103,9 +103,13 @@ export function AuthProvider({ children }: AuthProviderProps) {
       clearActiveTeamCookie();
     }
     setActiveTeamId(teamId);
-    // Strip URL query params so workspace A's filters don't apply to
-    // workspace B's refetched data — per the P5 filter-persistence contract.
-    router.replace(pathname);
+    // Strip workspace-scoped resource ids from the path so workspace A's
+    // conversation isn't viewable in workspace B (/chat/<uuid> → /chat).
+    // Replacing the path also strips query params, satisfying the P5
+    // filter-persistence contract (workspace A's filters don't apply to
+    // workspace B's refetched data).
+    const targetPath = pathname.startsWith("/chat/") ? "/chat" : pathname;
+    router.replace(targetPath);
     // Re-runs server components (e.g. /settings pages) so they read the new cookie.
     // Client-side fetch effects must include activeTeamId in their deps separately.
     router.refresh();

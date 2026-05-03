@@ -197,6 +197,18 @@ export function ChatPageContent({
     return () => window.removeEventListener("popstate", onPopState);
   }, [clearMessages]);
 
+  // Reset chat state on workspace switch. auth-provider redirects
+  // /chat/<id> → /chat, but React reconciles ChatPageContent as the same
+  // instance across that soft nav, so activeConversationId would otherwise
+  // leak the previous workspace's UUID into the new workspace. Resetting
+  // on activeTeamId is the discriminator. initialConversationId is also a
+  // dep so a route-driven prop change reseeds state. On first mount both
+  // calls are no-ops (messages already [], state already seeded from prop).
+  useEffect(() => {
+    clearMessages();
+    setActiveConversationId(initialConversationId ?? null);
+  }, [activeTeamId, initialConversationId, clearMessages]);
+
   const handleToggleSidebar = useCallback(() => {
     setIsSidebarCollapsed((prev) => !prev);
   }, []);
