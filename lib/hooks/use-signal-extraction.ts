@@ -80,7 +80,11 @@ export function useSignalExtraction({
       if (!response.ok) {
         const errorData = await response.json().catch(() => null)
         const msg = errorData?.message ?? "Failed to extract signals"
-        response.status === 402 ? toast.warning(msg) : toast.error(msg)
+        if (response.status === 402) {
+          toast.warning(msg)
+        } else {
+          toast.error(msg)
+        }
         setExtractionState((prev) =>
           prev === "extracting" && (structuredNotes || structuredJson) ? "done" : "idle"
         )

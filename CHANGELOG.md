@@ -6,6 +6,19 @@ All notable changes to this project are documented here, grouped by PRD and part
 
 ## [Unreleased]
 
+### PRD-031 end-of-PRD audit — 2026-05-03
+
+Cross-PRD audit run after all three parts shipped. CLAUDE.md eleven-point checklist run across the union of files touched by Parts 1–3 (~36 files). One real fix surfaced and applied:
+
+- **`lib/hooks/use-signal-extraction.ts:83`** — pre-existing `@typescript-eslint/no-unused-expressions` warning that the per-part audits missed because they only linted files touched in their own part. The end-of-PRD audit lints across the union and caught it: `response.status === 402 ? toast.warning(msg) : toast.error(msg)` was a ternary used as a statement (the branches' return values discarded), which the linter flags. Fixed by converting to a proper `if/else` block. Functional behaviour unchanged.
+
+Other audit items clean:
+- **TypeScript:** `npx tsc --noEmit` across the entire codebase returns zero errors.
+- **Lint:** `npx eslint` across all 36 PRD-031-touched files returns zero warnings beyond a pre-existing third-party `react-hook-form watch()` informational that the React Compiler emits for any codebase using react-hook-form (not introduced by PRD-031, ignored in scope).
+- **Cross-part interactions:** Part 1 master-signal renderer + Part 2 positiveSignals → mixed-cohort sessions render correctly via defensive `?? []`; Part 1 taint gate + Part 2 v2 schema → post-Part-2 sessions trigger taint via `structured_notes \|\| structured_json`; Part 2 positive_signal embeddings + Part 3 chat → searchInsights retrieves positive chunks via vector search, larger output cap composes comprehensive answers; Part 1 (`[ai-service]`) and Part 3 (`[chat-stream-service]`) telemetry log prefixes are distinct, no production-grep collision; schema version handling clean across all three parts.
+- **ARCHITECTURE.md file map completeness:** verified `top-wins-widget.tsx` (line 204) and `ai-provider-limits.ts` (line 443) both listed; Current State paragraph carries Parts 1–3 entries with **Closes PRD-031** marker; `session_embeddings.chunk_type` valid-values list includes `positive_signal`; `sessions.structured_json` footnote notes the v2 schema bump; dashboard prose mentions Top Wins.
+- **CHANGELOG entries** for all three parts present (Part 1, Part 2, Part 3 — all dated 2026-05-03).
+
 ### PRD-031 Part 3 — Workflow Improvements: Looser Chat Response Limits — 2026-05-03
 
 Three independent knobs on the RAG chat surface, plus observability, plus a defensive provider-compatibility layer. Closes the "answer ran out mid-list" complaint that surfaced repeatedly with the pre-Part-3 4,096-token output cap. **Closes PRD-031.**
