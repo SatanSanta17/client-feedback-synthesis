@@ -232,6 +232,11 @@ async function handleTranscriptUpload(input: HandleTranscriptUploadInput) {
     );
   }
 
+  // PRD-032 Part 3 — when the user edited a pending transcript before
+  // saving, the client sends `is_edited=true`. The repo writes
+  // `last_edited_at = now()` on insert so the badge appears immediately.
+  const isEdited = formData.get("is_edited") === "true";
+
   try {
     const attachment = await createTranscriptAttachment(attachmentRepo, {
       sessionId,
@@ -240,6 +245,7 @@ async function handleTranscriptUpload(input: HandleTranscriptUploadInput) {
       fileType: meta.video_file_type,
       fileSize: meta.video_file_size,
       parsedContent,
+      isEdited,
     });
 
     try {

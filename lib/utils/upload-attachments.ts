@@ -17,6 +17,10 @@ export type PendingAttachmentUpload =
       file_size: number;
       duration_seconds: number;
       parsed_content: string;
+      // PRD-032 Part 3 — set when the user edited the pending transcript
+      // before clicking save. The server stamps last_edited_at = now() on
+      // insert when received.
+      is_edited?: boolean;
     };
 
 export async function uploadAttachmentsToSession(
@@ -40,6 +44,9 @@ export async function uploadAttachmentsToSession(
         formData.append("video_file_type", attachment.file_type);
         formData.append("video_file_size", String(attachment.file_size));
         formData.append("duration_seconds", String(attachment.duration_seconds));
+        if (attachment.is_edited) {
+          formData.append("is_edited", "true");
+        }
       }
 
       const res = await fetch(`/api/sessions/${sessionId}/attachments`, {
