@@ -42,15 +42,18 @@ export async function POST(request: NextRequest) {
   try {
     formData = await request.formData()
   } catch {
+    console.warn("[api/files/transcribe] POST — rejected: invalid form data")
     return NextResponse.json({ message: "Invalid form data" }, { status: 400 })
   }
 
   const audio = formData.get("audio")
   if (!audio || !(audio instanceof File)) {
+    console.warn("[api/files/transcribe] POST — rejected: audio missing")
     return NextResponse.json({ message: "Audio file is required" }, { status: 400 })
   }
 
   if (audio.size === 0) {
+    console.warn("[api/files/transcribe] POST — rejected: empty audio")
     return NextResponse.json(
       { message: "Audio file is empty" },
       { status: 400 },
@@ -58,6 +61,9 @@ export async function POST(request: NextRequest) {
   }
 
   if (audio.size > MAX_AUDIO_BYTES) {
+    console.warn(
+      `[api/files/transcribe] POST — rejected: audio ${audio.size} bytes exceeds ${MAX_AUDIO_BYTES} limit`,
+    )
     return NextResponse.json(
       { message: "Audio payload exceeds the per-request limit" },
       { status: 413 },
@@ -74,6 +80,7 @@ export async function POST(request: NextRequest) {
   if (!metadataParse.success) {
     const message =
       metadataParse.error.issues[0]?.message ?? "Invalid request metadata"
+    console.warn(`[api/files/transcribe] POST — rejected: ${message}`)
     return NextResponse.json({ message }, { status: 400 })
   }
 

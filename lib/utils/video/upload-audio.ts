@@ -33,6 +33,8 @@ export function uploadAudioForTranscription(
     xhr.responseType = "json";
 
     const onAbort = () => xhr.abort();
+    const detachSignalListener = () =>
+      opts.signal?.removeEventListener("abort", onAbort);
 
     xhr.upload.addEventListener("progress", (event) => {
       if (event.lengthComputable && opts.onUploadProgress) {
@@ -41,7 +43,7 @@ export function uploadAudioForTranscription(
     });
 
     xhr.addEventListener("load", () => {
-      opts.signal?.removeEventListener("abort", onAbort);
+      detachSignalListener();
       if (xhr.status >= 200 && xhr.status < 300) {
         resolve(xhr.response as UploadAudioResult);
         return;
@@ -51,17 +53,17 @@ export function uploadAudioForTranscription(
     });
 
     xhr.addEventListener("error", () => {
-      opts.signal?.removeEventListener("abort", onAbort);
+      detachSignalListener();
       reject(new Error("Network error during upload"));
     });
 
     xhr.addEventListener("timeout", () => {
-      opts.signal?.removeEventListener("abort", onAbort);
+      detachSignalListener();
       reject(new Error("Upload timed out"));
     });
 
     xhr.addEventListener("abort", () => {
-      opts.signal?.removeEventListener("abort", onAbort);
+      detachSignalListener();
       reject(new DOMException("Aborted", "AbortError"));
     });
 

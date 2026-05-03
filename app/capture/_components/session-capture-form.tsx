@@ -20,18 +20,12 @@ import { type ParsedAttachment } from "./file-upload-zone"
 import { composeAIInput } from "@/lib/utils/compose-ai-input"
 import { uploadAttachmentsToSession } from "@/lib/utils/upload-attachments"
 import { useSignalExtraction } from "@/lib/hooks/use-signal-extraction"
-import { useWakeLock } from "@/lib/hooks/use-wake-lock"
-import { useBeforeUnloadGuard } from "@/lib/hooks/use-beforeunload-guard"
+import { useVideoItemsState } from "@/lib/hooks/use-video-items-state"
 import { ReextractConfirmDialog } from "@/components/capture/reextract-confirm-dialog"
 import { CaptureAttachmentSection } from "./capture-attachment-section"
 import { ProcessingVideoBanner } from "./processing-video-banner"
 import { StructuredNotesPanel } from "./structured-notes-panel"
 import { ViewPromptDialog } from "./view-prompt-dialog"
-import type {
-  VideoListItem,
-  VideoTranscriptAttachment,
-  VideoUploadError,
-} from "@/lib/types/video-attachment"
 
 function getToday(): string {
   return new Date().toISOString().split("T")[0]
@@ -83,9 +77,20 @@ export function SessionCaptureForm({ onSessionSaved }: SessionCaptureFormProps) 
 
   // File attachments — managed outside react-hook-form
   const [attachments, setAttachments] = useState<ParsedAttachment[]>([])
-  // Video attachments (PRD-032 Part 1) — separate slice. Transcripts are not
-  // persisted on save in Part 1; Part 2 adds the session_attachments row.
-  const [videoItems, setVideoItems] = useState<VideoListItem[]>([])
+
+  // Video attachments — PRD-032 Part 1. Transcripts are not yet persisted
+  // on save (Part 2 work); the hook's reset() runs after a successful save.
+  const {
+    videoItems,
+    anyVideoInFlight,
+    completedTranscripts,
+    transcriptChars,
+    handleVideoSelected,
+    handleVideoCompleted,
+    handleVideoError,
+    handleVideoRemove,
+    reset: resetVideoItems,
+  } = useVideoItemsState("[SessionCaptureForm]")
 
   // View Prompt dialog state (P2.R1)
   const [showPromptDialog, setShowPromptDialog] = useState(false)
@@ -95,23 +100,13 @@ export function SessionCaptureForm({ onSessionSaved }: SessionCaptureFormProps) 
 
   const rawNotes = watch("rawNotes")
   const hasNotes = rawNotes?.trim().length > 0
-  const completedTranscripts = videoItems.flatMap((v) =>
-    v.status === "completed" ? [v.data] : []
-  )
   const hasInput = hasNotes || attachments.length > 0 || completedTranscripts.length > 0
 
   const attachmentChars = attachments.reduce(
     (sum, a) => sum + a.parsed_content.length, 0
   )
-  const transcriptChars = completedTranscripts.reduce(
-    (sum, t) => sum + t.parsed_content.length, 0
-  )
   const totalChars = (rawNotes?.length ?? 0) + attachmentChars + transcriptChars
   const isOverLimit = totalChars > MAX_COMBINED_CHARS
-
-  const anyVideoInFlight = videoItems.some((v) => v.status === "in_flight")
-  useWakeLock(anyVideoInFlight)
-  useBeforeUnloadGuard(anyVideoInFlight)
 
   const getExtractionInput = useCallback(
     () =>
@@ -144,33 +139,15 @@ export function SessionCaptureForm({ onSessionSaved }: SessionCaptureFormProps) 
     setAttachments((prev) => prev.filter((_, i) => i !== index))
   }
 
-  const handleVideoSelected = useCallback((file: File) => {
-    setVideoItems((prev) => [
-      ...prev,
-      { id: crypto.randomUUID(), status: "in_flight", file },
-    ])
-    setInputError(null)
-  }, [])
-
-  const handleVideoCompleted = useCallback(
-    (id: string, attachment: VideoTranscriptAttachment) => {
-      setVideoItems((prev) =>
-        prev.map((v) =>
-          v.id === id ? { id, status: "completed", data: attachment } : v
-        )
-      )
+  // Video select also clears the missing-input error so the toast doesn't
+  // linger after a video is added.
+  const onVideoSelected = useCallback(
+    (file: File) => {
+      handleVideoSelected(file)
+      setInputError(null)
     },
-    []
+    [handleVideoSelected]
   )
-
-  const handleVideoError = useCallback((_id: string, error: VideoUploadError) => {
-    // Card renders the error inline; no parent state change. Logged for ops.
-    console.warn("[SessionCaptureForm] video upload error:", error.code, error.message)
-  }, [])
-
-  const handleVideoRemove = useCallback((id: string) => {
-    setVideoItems((prev) => prev.filter((v) => v.id !== id))
-  }, [])
 
   const onSubmit = async (data: CaptureFormValues) => {
     if (!hasInput) {
@@ -230,7 +207,7 @@ export function SessionCaptureForm({ onSessionSaved }: SessionCaptureFormProps) 
       })
       resetExtraction()
       setAttachments([])
-      setVideoItems([])
+      resetVideoItems()
       onSessionSaved?.()
     } catch (err) {
       console.error(
@@ -310,7 +287,7 @@ export function SessionCaptureForm({ onSessionSaved }: SessionCaptureFormProps) 
           attachments={attachments}
           videoItems={videoItems}
           onFileParsed={handleAddAttachment}
-          onVideoSelected={handleVideoSelected}
+          onVideoSelected={onVideoSelected}
           onRemove={handleRemoveAttachment}
           onVideoCompleted={handleVideoCompleted}
           onVideoError={handleVideoError}

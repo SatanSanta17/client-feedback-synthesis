@@ -116,6 +116,9 @@ export function useVideoAttachment(
           },
         )
 
+        // is_edited is reserved on the type for PRD-032 P3.R7 — omitted here
+        // because Part 1 has no editing surface; the optional field is the
+        // placeholder, no need to populate it with a literal default.
         const completed: VideoTranscriptAttachment = {
           kind: "video_transcript",
           parsed_content: result.parsed_content,
@@ -124,7 +127,6 @@ export function useVideoAttachment(
           file_size: result.file_size,
           duration_seconds: result.duration_seconds,
           source_format: "video_transcript",
-          is_edited: false,
         }
 
         setState({ status: "completed", attachment: completed })

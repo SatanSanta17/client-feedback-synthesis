@@ -1,4 +1,4 @@
-export type VideoCapabilityResult =
+type VideoCapabilityResult =
   | { ok: true }
   | { ok: false; reason: string };
 
