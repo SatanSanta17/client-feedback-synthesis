@@ -7,12 +7,14 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "backfill:theme-embeddings": "tsx scripts/backfill-theme-embeddings.ts"
+    "backfill:theme-embeddings": "tsx scripts/backfill-theme-embeddings.ts",
+    "postinstall": "node scripts/copy-ffmpeg-assets.mjs"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^3.0.66",
     "@ai-sdk/google": "^3.0.56",
     "@ai-sdk/openai": "^3.0.50",
+    "@ffmpeg/core": "^0.12.10",
     "@ffmpeg/ffmpeg": "^0.12.15",
     "@ffmpeg/util": "^0.12.2",
     "@getbrevo/brevo": "^5.0.3",
