@@ -34,12 +34,14 @@ export const VIDEO_EXTENSIONS = [".mp4", ".mov", ".webm"];
 export const MAX_VIDEO_FILE_SIZE_BYTES = 500 * 1024 * 1024;
 export const MAX_VIDEO_DURATION_SECONDS = 2 * 60 * 60;
 
-// Tuned for speech-to-text, not playback. Mono / 16 kHz / 32 kbps keeps a
-// 2-hour session under Whisper's per-request size ceiling without chunking.
+// Tuned for speech-to-text, not playback. Mono / 16 kHz / 24 kbps keeps a
+// 2-hour session under Whisper's 25 MB per-request hard limit without
+// chunking (24 kbps × 7200 s ≈ 22 MB). Bitrate dropped from 32 kbps in PRD-032
+// Part 2 (Increment 2.4) when the real Whisper call replaced the stub.
 export const AUDIO_EXTRACTION_PARAMS = {
   sampleRate: 16_000,
   channels: 1,
-  bitrate: "32k",
+  bitrate: "24k",
   container: "mp3",
   mimeType: "audio/mpeg",
   extension: ".mp3",

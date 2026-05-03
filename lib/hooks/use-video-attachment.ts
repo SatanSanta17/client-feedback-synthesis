@@ -176,6 +176,16 @@ function mapToVideoUploadError(err: unknown): VideoUploadError {
       message: "Could not upload audio for transcription. Please try again.",
     }
   }
+  // Server returns the empty-transcript message verbatim from
+  // TranscriptionEmptyError — match it so the user sees the same wording
+  // rather than the generic fallback. Activates the EMPTY_TRANSCRIPT code
+  // reserved in Part 1's VideoUploadErrorCode enum.
+  if (/no speech could be transcribed/i.test(message)) {
+    return {
+      code: "EMPTY_TRANSCRIPT",
+      message: "No speech could be transcribed from this video.",
+    }
+  }
   return {
     code: "TRANSCRIPTION_FAILED",
     message: "Could not transcribe video — please try again.",

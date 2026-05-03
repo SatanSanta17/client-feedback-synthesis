@@ -2,15 +2,16 @@ import { NextRequest, NextResponse } from "next/server"
 
 import { requireAuth } from "@/lib/api/route-auth"
 import { transcriptVideoMetadataSchema } from "@/lib/schemas/transcript-attachment"
+import {
+  transcribeAudio,
+  TranscriptionEmptyError,
+  AIConfigError,
+} from "@/lib/services/ai-service"
 
-// Server-side hard cap for the audio payload itself (post-extraction).
-// Whisper's per-request ceiling is 25 MB on the OpenAI free tier; 50 MB
-// gives headroom for paid plans without inviting abuse via giant uploads.
-const MAX_AUDIO_BYTES = 50 * 1024 * 1024
+// Whisper's per-request hard limit is 25 MB on the OpenAI API. Reject
+// anything larger before we waste a provider round-trip.
+const MAX_AUDIO_BYTES = 25 * 1024 * 1024
 
-// Endpoint contract is locked here. Part 2 of PRD-032 replaces the mock
-// transcript with a real Whisper / provider-abstracted call without changing
-// the route signature, request shape, or response shape.
 export async function POST(request: NextRequest) {
   const auth = await requireAuth()
   if (auth instanceof NextResponse) return auth
@@ -67,21 +68,51 @@ export async function POST(request: NextRequest) {
     `[api/files/transcribe] POST — audio ${audio.size} bytes, video "${meta.video_file_name}" (${meta.video_file_type}, ${meta.video_file_size} bytes, ${meta.duration_seconds}s)`,
   )
 
-  // Drain the upload — keeps the audio in memory only long enough to confirm
-  // we received it, then drops it. PRD-032 P2.R3 (no retention) holds even
-  // for the Part 1 stub.
-  await audio.arrayBuffer()
+  // PRD-032 P2.R3 — audio is held in memory only. The Buffer goes out of
+  // scope when this handler returns; nothing is written to disk or Storage.
+  const audioBuffer = Buffer.from(await audio.arrayBuffer())
 
-  const mockTranscript = `[mock transcript — Whisper integration pending in Part 2 of PRD-032 — original video: ${meta.video_file_name}, ${Math.round(meta.duration_seconds)}s]`
+  try {
+    const result = await transcribeAudio(audioBuffer)
 
-  console.log("[api/files/transcribe] POST — returning mock transcript")
+    console.log(
+      `[api/files/transcribe] POST — transcribed ${result.text.length} chars in ${result.durationMs}ms (${result.modelLabel})`,
+    )
 
-  return NextResponse.json({
-    parsed_content: mockTranscript,
-    file_name: meta.video_file_name,
-    file_type: meta.video_file_type,
-    file_size: meta.video_file_size,
-    duration_seconds: meta.duration_seconds,
-    source_format: "video_transcript" as const,
-  })
+    return NextResponse.json({
+      parsed_content: result.text,
+      file_name: meta.video_file_name,
+      file_type: meta.video_file_type,
+      file_size: meta.video_file_size,
+      duration_seconds: meta.duration_seconds,
+      source_format: "video_transcript" as const,
+    })
+  } catch (err) {
+    if (err instanceof TranscriptionEmptyError) {
+      console.warn("[api/files/transcribe] POST — rejected: empty transcript")
+      return NextResponse.json({ message: err.message }, { status: 422 })
+    }
+
+    if (err instanceof AIConfigError) {
+      console.error(
+        "[api/files/transcribe] POST — config error:",
+        err.message,
+      )
+      return NextResponse.json(
+        { message: "Transcription service is not configured" },
+        { status: 500 },
+      )
+    }
+
+    // withRetry has already exhausted retries for transient errors. Anything
+    // else is a non-retryable upstream provider failure.
+    console.error(
+      "[api/files/transcribe] POST — transcription failed:",
+      err instanceof Error ? err.message : err,
+    )
+    return NextResponse.json(
+      { message: "Transcription failed — please try again" },
+      { status: 502 },
+    )
+  }
 }
