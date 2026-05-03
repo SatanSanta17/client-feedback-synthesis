@@ -43,6 +43,9 @@ const dashboardParamsSchema = z.object({
   urgency: z.string().optional(),
   granularity: z.enum(["week", "month"]).optional(),
   confidenceMin: z.coerce.number().min(0).max(1).optional(),
+  // PRD-031 Part 2: comma-separated chunk-type pre-filter for theme widget
+  // queries (used by Top Wins to scope top_themes to positive_signal).
+  chunkTypes: z.string().optional(),
   drillDown: z.string().optional(),
   sessionId: z.string().uuid().optional(),
 });
@@ -72,6 +75,7 @@ export async function GET(request: NextRequest) {
     urgency,
     granularity,
     confidenceMin,
+    chunkTypes,
     drillDown,
     sessionId,
   } = parsed.data;
@@ -86,6 +90,11 @@ export async function GET(request: NextRequest) {
     ? clients.split(",").filter((id) => id.trim().length > 0)
     : undefined;
 
+  // Same shape for chunkTypes (PRD-031 Part 2)
+  const chunkTypesArr = chunkTypes
+    ? chunkTypes.split(",").filter((t) => t.trim().length > 0)
+    : undefined;
+
   const filters: QueryFilters = {
     teamId,
     dateFrom,
@@ -95,6 +104,7 @@ export async function GET(request: NextRequest) {
     urgency,
     granularity: granularity as QueryFilters["granularity"],
     confidenceMin,
+    chunkTypes: chunkTypesArr,
     drillDown,
     sessionId,
   };

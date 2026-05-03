@@ -10,6 +10,9 @@ export const BRAND_PRIMARY_RGB = "99, 102, 241";
 /** Foreground colour for chart cells with high background opacity.
  *  White ensures readable contrast against brand-primary fills at opacity > 0.5. */
 export const CHART_HIGH_CONTRAST_TEXT_HEX = "#ffffff";
+/** Top Wins bar colour — green-500. Same hex as `SENTIMENT_COLOURS.positive`
+ *  so the widget reads visually as wins/positive at a glance (PRD-031 P2.R9). */
+export const WIN_BAR_HEX = "#22c55e";
 
 export const SENTIMENT_COLOURS: Record<string, string> = {
   positive: "#22c55e", // green-500

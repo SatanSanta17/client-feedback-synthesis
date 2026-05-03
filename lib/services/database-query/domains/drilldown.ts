@@ -44,6 +44,10 @@ const drillDownSchema = z.discriminatedUnion("type", [
     type: z.literal("theme"),
     themeId: z.string().min(1),
     themeName: z.string().min(1),
+    // PRD-031 Part 2: optional chunk-type narrowing — Top Wins forwards
+    // ["positive_signal"] so the panel scopes to the same chunk types the
+    // widget filtered to.
+    chunkTypes: z.array(z.string().min(1)).optional(),
   }),
   z.object({
     type: z.literal("theme_bucket"),
@@ -210,9 +214,16 @@ export async function handleDrillDown(
         ctx.competitor
       );
       break;
-    case "theme":
-      rows = await fetchThemeDrillDownRows(supabase, filters, ctx.themeId);
+    case "theme": {
+      // PRD-031 Part 2: chunk-type narrowing from the discriminated union
+      // (Top Wins) takes precedence over a URL-level chunkTypes (defensive —
+      // URL filter is dashboard-wide, the context is widget-specific).
+      const themeFilters = ctx.chunkTypes
+        ? { ...filters, chunkTypes: ctx.chunkTypes }
+        : filters;
+      rows = await fetchThemeDrillDownRows(supabase, themeFilters, ctx.themeId);
       break;
+    }
     case "theme_bucket":
       rows = await fetchThemeDrillDownRows(supabase, filters, ctx.themeId, {
         bucket: ctx.bucket,

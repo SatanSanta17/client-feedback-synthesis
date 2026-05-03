@@ -43,6 +43,12 @@ export interface QueryFilters {
   granularity?: "week" | "month";
   // Theme widget filters (PRD-021 Part 3)
   confidenceMin?: number;
+  // PRD-031 Part 2: chunk-type pre-filter on the signal_themes ⨝
+  // session_embeddings join. Used by the Top Wins widget (Increment 5) to
+  // restrict top_themes results to positive_signal contributions, and
+  // forwarded into the theme drill-down via the discriminated union so the
+  // panel scopes to the same chunk types.
+  chunkTypes?: string[];
   // Drill-down filters (PRD-021 Part 4)
   drillDown?: string;
   sessionId?: string;

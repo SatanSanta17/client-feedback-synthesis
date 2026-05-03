@@ -66,6 +66,13 @@ export function applyThemeJoinFilters(query: any, filters: QueryFilters): any {
     q = q.in("session_embeddings.sessions.client_id", filters.clientIds);
   }
 
+  // PRD-031 Part 2: chunk-type pre-filter on session_embeddings — used by the
+  // Top Wins widget to constrain top_themes to positive_signal contributions,
+  // and by Top Wins drill-down via the discriminated union pass-through.
+  if (filters.chunkTypes && filters.chunkTypes.length > 0) {
+    q = q.in("session_embeddings.chunk_type", filters.chunkTypes);
+  }
+
   return q;
 }
 

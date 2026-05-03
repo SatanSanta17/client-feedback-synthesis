@@ -35,6 +35,11 @@ export interface ThemeDrillDown {
   type: "theme";
   themeId: string;
   themeName: string;
+  // PRD-031 Part 2: optional chunk-type narrowing. The Top Wins widget passes
+  // ["positive_signal"] so the drill-down panel scopes to positive signals
+  // for the selected theme. Top Themes (the umbrella widget) omits the field
+  // and the panel surfaces every chunk type contributing to the theme.
+  chunkTypes?: string[];
 }
 
 export interface ThemeBucketDrillDown {
