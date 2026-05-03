@@ -124,6 +124,19 @@ export function chunkStructuredSignals(
     );
   }
 
+  // --- Positive signals (one per item) ---
+  // PRD-031 Part 2: defensive `?? []` because pre-Part-2 structured_json rows
+  // lack this field and reach the chunker via bulk re-extraction (PRD-017)
+  // or the post-response chain on legacy session updates.
+  for (const item of structuredJson.positiveSignals ?? []) {
+    chunks.push(
+      buildChunk(item.text, "positive_signal", {
+        severity: item.severity,
+        client_quote: item.clientQuote,
+      }, sessionMeta)
+    );
+  }
+
   // --- Competitive mentions (one per item) ---
   for (const item of structuredJson.competitiveMentions) {
     chunks.push(

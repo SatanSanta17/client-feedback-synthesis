@@ -117,6 +117,12 @@ export function renderExtractedSignalsToMarkdown(
   lines.push("## Aspirations\n");
   lines.push(renderSignalChunks(signals.aspirations));
 
+  // PRD-031 Part 2: positive signals — defensive `?? []` because pre-Part-2
+  // sessions lack this field; the renderer is consumed by the master-signal
+  // backend's composeStructuredNotes() across mixed cohorts.
+  lines.push("## Positive Signals\n");
+  lines.push(renderSignalChunks(signals.positiveSignals ?? []));
+
   lines.push("## Competitive Mentions\n");
   lines.push(renderCompetitiveMentions(signals.competitiveMentions));
 
