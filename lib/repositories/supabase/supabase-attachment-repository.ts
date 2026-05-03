@@ -1,6 +1,11 @@
 import { type SupabaseClient } from "@supabase/supabase-js";
 
-import type { AttachmentRepository, AttachmentRow, AttachmentInsert } from "../attachment-repository";
+import type {
+  AttachmentRepository,
+  AttachmentRow,
+  AttachmentInsert,
+  TranscriptAttachmentInsert,
+} from "../attachment-repository";
 
 const STORAGE_BUCKET = "SYNTHESISER_FILE_UPLOAD";
 
@@ -77,6 +82,42 @@ export function createAttachmentRepository(
       return data;
     },
 
+    async createTranscript(input: TranscriptAttachmentInsert): Promise<AttachmentRow> {
+      console.log(
+        "[supabase-attachment-repo] createTranscript — session:",
+        input.session_id,
+        "file:",
+        input.file_name,
+        "transcript chars:",
+        input.parsed_content.length,
+      );
+
+      const { data, error } = await supabase
+        .from("session_attachments")
+        .insert({
+          session_id: input.session_id,
+          file_name: input.file_name,
+          file_type: input.file_type,
+          file_size: input.file_size,
+          storage_path: null,
+          parsed_content: input.parsed_content,
+          source_format: "video_transcript",
+          team_id: input.team_id,
+        })
+        .select(
+          "id, session_id, file_name, file_type, file_size, storage_path, parsed_content, source_format, created_at"
+        )
+        .single();
+
+      if (error) {
+        console.error("[supabase-attachment-repo] createTranscript error:", error.message);
+        throw error;
+      }
+
+      console.log("[supabase-attachment-repo] createTranscript success:", data.id);
+      return data;
+    },
+
     async getBySessionId(sessionId: string): Promise<AttachmentRow[]> {
       console.log("[supabase-attachment-repo] getBySessionId — session:", sessionId);
 
@@ -116,7 +157,7 @@ export function createAttachmentRepository(
       return data.storage_path;
     },
 
-    async softDelete(attachmentId: string): Promise<string> {
+    async softDelete(attachmentId: string): Promise<string | null> {
       console.log("[supabase-attachment-repo] softDelete — id:", attachmentId);
 
       // Fetch storage path first

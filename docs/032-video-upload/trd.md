@@ -1,13 +1,13 @@
 # TRD-032: Video Upload and Transcription
 
-> **Status:** Part 1 — Draft
+> **Status:** Part 1 — Implemented (closes-out audit done). Part 2 — Draft.
 >
 > Mirrors **PRD-032**. Each part maps to the corresponding PRD part.
 >
 > **Forward compatibility (full PRD scope):**
-> - **Part 2** (server transcription) needs a stable audio-upload endpoint contract and metadata shape that the Part 1 client already conforms to. Part 1 ships a thin endpoint stub that validates and returns a mock transcript so the client can be exercised end-to-end without waiting for Whisper integration.
-> - **Part 3** (transcript UX, including editing per PRD P3.R7) reuses the same `pending video transcript` client-state shape that Part 1 introduces. Discriminated union with `kind: "video_transcript"` carries `parsed_content`, original-video metadata, and a place for an `is_edited` flag — populated only in Part 3 but reserved in Part 1 typings.
-> - **Part 4** (edge cases) builds on the per-attachment state machine introduced in Part 1. Out-of-memory, codec failures, and sequential video processing all hook into the same state machine surface — Part 4 only adds new transitions, no new architecture.
+> - **Part 2** (server transcription + persistence) replaces the Part 1 stub with a real Whisper call via the AI provider abstraction (`@ai-sdk/openai` `experimental_transcribe`), makes `session_attachments.storage_path` nullable for transcript-only rows, and adds two persistence paths: client-driven on session save, and server-driven auto-persist when the saved session is already known. Wire format from Part 1 is unchanged on the client side.
+> - **Part 3** (transcript UX, including editing per PRD P3.R7) reuses the same `pending video transcript` client-state shape that Part 1 introduces and the `source_format = "video_transcript"` row shape that Part 2 persists. Discriminated union with `kind: "video_transcript"` carries `parsed_content`, original-video metadata, and a place for an `is_edited` flag — populated only in Part 3 but reserved in Part 1 typings. Part 3's edit flow updates `parsed_content` on existing transcript rows via the same `attachment-service` surface Part 2 introduces.
+> - **Part 4** (edge cases) builds on the per-attachment state machine introduced in Part 1 and the retry policy introduced in Part 2. Out-of-memory, codec failures, and sequential video processing all hook into the same state machine surface — Part 4 only adds new transitions, no new architecture. The server-side retry/backoff in Part 2 is the floor that Part 4 may extend (e.g., chunked retry for partial-failure long videos in the backlog).
 
 ---
 
@@ -829,3 +829,804 @@ These are not implemented in Part 1 but the design accounts for them:
 - **Part 3 — re-extraction parity:** `composeAIInput()` (modified in Increment 1.5) treats `video_transcript` rows identically to other parsed content, so the existing `/api/ai/extract-signals` route is unchanged today and will remain unchanged when Part 3's edits flow through `parsed_content`.
 - **Part 4 — edge cases:** `VideoUploadError`'s code enum is the single source of truth for failure UX. Part 4 only refines the heuristics in `mapToVideoUploadError` and adds a sequential-queue policy at the parent (capture form) level — no changes to the state machine or the UI components.
 - **Part 4 — sequential video processing:** Part 1 starts video pipelines in parallel as soon as files are dropped (one state machine each, ffmpeg.wasm is per-instance and runs in its own worker). Part 4 adds a queue at the capture-form level that delays mounting `VideoAttachmentCard` instances beyond a concurrency of 1. The card and hook themselves do not change.
+
+---
+
+## Part 2: Server-side transcription and persistence
+
+> Implements **P2.R1–P2.R8** from PRD-032.
+>
+> References full PRD scope:
+> - The `session_attachments.storage_path` nullable migration introduced here also unblocks Part 3 (editable transcripts continue to live as transcript-only rows; Part 3 layers the `is_edited` flag and edit flow on top of the same shape).
+> - The `createTranscriptAttachment()` service introduced here is the surface Part 3's edit-save will reuse to update `parsed_content` on the same row — Part 3 adds an `updateTranscript()` sibling, no new persistence path.
+> - The `resolveTranscriptionModel()` + `transcribeAudio()` helpers in `ai-service.ts` are the single point of provider/model configuration. Part 4's retry refinements wrap calls to `transcribeAudio()` without changing the resolver. Backlog items (audio-only uploads, long-video chunking) plug into the same helpers — chunking iterates `transcribeAudio()` per segment.
+> - The audio-upload wire format from Part 1 (`POST /api/files/transcribe` multipart contract) is preserved; Part 2 only **adds** an optional `session_id` field. The Part 1 client, if deployed unchanged against a Part 2 server, continues to work — receives a real transcript instead of a mock, no client redeploy required.
+
+### Overview
+
+Replace the Part 1 mock transcript with a real OpenAI Whisper call via the `experimental_transcribe` API in the Vercel AI SDK, behind a `resolveTranscriptionModel()` resolver that mirrors the existing `resolveModel()` pattern. Persist video transcripts as `session_attachments` rows with `storage_path = NULL` via a new `createTranscriptAttachment()` service function. Two persistence paths reflect the PRD's two save scenarios:
+
+- **Manual** (P2.R7 new-session branch). Client receives transcript from `/api/files/transcribe`, holds it in `videoItems` state (Part 1 behaviour), and on session save iterates each completed transcript through the existing `/api/sessions/[id]/attachments` POST route — extended in this part to accept transcript-only payloads (no file Blob when `source_format === "video_transcript"`).
+- **Auto** (P2.R7 saved-session branch). For the expanded-row surface where the session already exists, the client passes `session_id` to `/api/files/transcribe`. The server transcribes AND persists in the same request, before sending the response. The transcript survives client disconnect mid-Whisper because the DB write happens server-side.
+
+The audio bitrate `AUDIO_EXTRACTION_PARAMS.bitrate` is reduced from `"32k"` to `"24k"` so a 2-hour video produces ~22 MB of audio — comfortably under Whisper's 25 MB per-request hard limit. The Part 1 server-side audio cap of 50 MB is tightened to 25 MB to align with Whisper rather than reject downstream.
+
+`SavedAttachmentList` is patched defensively in this part: when `source_format === "video_transcript"`, the download button is hidden because there is no original blob to download (`storage_path` is NULL). The full Part 3 visual differentiation (video icon, "Transcript only" label, edit affordance) ships in Part 3; Part 2 only ships the no-download safety so auto-persisted transcripts do not surface a button that 500s.
+
+### Dependencies (npm)
+
+None new. `@ai-sdk/openai ^3.0.50` is already installed and exports `openai.transcription(modelId)` for the `experimental_transcribe` API. The `ai` package re-exports `experimental_transcribe`.
+
+### Database Changes
+
+#### Migration: `docs/032-video-upload/migrations/001-make-storage-path-nullable.sql`
+
+```sql
+-- PRD-032 Part 2: video transcripts persist as session_attachments rows with
+-- no Storage blob (storage_path = NULL). Existing parsed-file rows are
+-- unaffected — they retain their non-null storage paths.
+ALTER TABLE session_attachments
+  ALTER COLUMN storage_path DROP NOT NULL;
+```
+
+That is the entire migration. No data backfill, no index changes, no RLS changes. Existing parsed-file rows continue to have non-null `storage_path`. New transcript rows get NULL. Application-layer invariant (enforced in `attachment-service.ts`): `storage_path IS NOT NULL` for `source_format !== "video_transcript"`; `storage_path IS NULL` for `source_format === "video_transcript"`. We do **not** add a check constraint — coupling the schema to the source-format vocabulary is brittle (audio transcripts in the backlog would also be NULL-blob), and the application-layer enforcement is sufficient.
+
+#### Generated Supabase types
+
+Run `supabase gen types typescript` after migration. The generated `Database['public']['Tables']['session_attachments']['Row']` will reflect `storage_path: string | null`.
+
+### New Environment Variables
+
+| Var | Default | Purpose |
+|---|---|---|
+| `AI_TRANSCRIPTION_PROVIDER` | `openai` | Provider for the `resolveTranscriptionModel()` resolver. Currently only `openai` is supported. |
+| `AI_TRANSCRIPTION_MODEL` | `whisper-1` | Model ID passed to the resolver. |
+
+Defaults are baked in so most deployments need no change. Documented in `.env.example`. Separate from `AI_PROVIDER`/`AI_MODEL` because transcription support is provider-specific (Whisper is OpenAI-only at the AI SDK layer today; Gemini transcription via `generateText` is a different surface).
+
+### Files Changed
+
+| File | Action | Purpose |
+|------|--------|---------|
+| `docs/032-video-upload/migrations/001-make-storage-path-nullable.sql` | **Create** | Schema migration |
+| `lib/types/database.ts` (or generated equivalent) | **Modify** | Regenerated types — `storage_path: string \| null` |
+| `lib/repositories/attachment-repository.ts` | **Modify** | `AttachmentRow.storage_path: string \| null`; new `createTranscript(input)` method on the interface |
+| `lib/repositories/supabase/supabase-attachment-repository.ts` | **Modify** | Implement `createTranscript()` — DB insert only, no Storage call |
+| `lib/repositories/mock/mock-attachment-repository.ts` (if present) | **Modify** | Mirror the new method for tests |
+| `lib/services/attachment-service.ts` | **Modify** | New `createTranscriptAttachment(repo, input)` service function — companion to `uploadAndCreateAttachment` |
+| `lib/services/ai-service.ts` | **Modify** | Add `resolveTranscriptionModel()`, `transcribeAudio(buffer, opts)`, `TranscriptionEmptyError`, plus a transcription `PROVIDER_MAP` |
+| `lib/constants.ts` | **Modify** | `AUDIO_EXTRACTION_PARAMS.bitrate` `"32k"` → `"24k"` |
+| `app/api/files/transcribe/route.ts` | **Modify** | Replace mock with `transcribeAudio()`; tighten `MAX_AUDIO_BYTES` from 50 MB → 25 MB; accept optional `session_id` for auto-persist; new 422 path for empty transcripts |
+| `app/api/sessions/[id]/attachments/route.ts` | **Modify** | Accept transcript-only payloads — when `source_format === "video_transcript"`, no `file` field required, `parsed_content` + metadata fields drive the insert |
+| `lib/utils/upload-attachments.ts` | **Modify** | Branch on transcript vs file at the call site; transcripts use the same multipart route but a different field shape |
+| `lib/utils/video/upload-audio.ts` | **Modify** | `UploadAudioInput` gains optional `sessionId`; `UploadAudioResult` gains optional `attachment: SessionAttachment` (present when server auto-persisted) |
+| `lib/hooks/use-video-attachment.ts` | **Modify** | Plumb `sessionId` through to `uploadAudioForTranscription`; surface the auto-persisted attachment in the completed state |
+| `lib/hooks/use-video-items-state.ts` | **Modify** | Accept optional `sessionId` and `onAutoPersisted(attachment)` callback; when `sessionId` is set, completed videos are *removed* from `videoItems` (the auto-persisted row replaces them in the parent's `savedAttachments` via `onAutoPersisted`) |
+| `app/capture/_components/session-capture-form.tsx` | **Modify** | New-session save flow: after `POST /api/sessions` returns the new session ID, iterate `completedTranscripts` and POST each as a transcript-only attachment. No `sessionId` passed to the hook (manual path). |
+| `app/capture/_components/expanded-session-row.tsx` | **Modify** | Saved-session flow: pass `session.id` to `useVideoItemsState`; wire `onAutoPersisted` to merge the row into `savedAttachments`. The save-flow branch for video transcripts becomes a no-op (already persisted). |
+| `app/capture/_components/saved-attachment-list.tsx` | **Modify** | Hide download button when `source_format === "video_transcript"` (no blob to download). Defensive Part-2 patch; the full Part 3 visual treatment lands in Part 3. |
+| `.env.example` | **Modify** | Document `AI_TRANSCRIPTION_PROVIDER` + `AI_TRANSCRIPTION_MODEL` |
+
+### Implementation
+
+#### Increment 2.1: Schema migration + repository typing
+
+**What:** Make `storage_path` nullable, regenerate Supabase types, widen the repository row type. No behaviour change yet — Part 1's parsed-file flow continues to write non-null `storage_path`. This increment is independently shippable and reversible (a column being nullable accepts both NULL and non-NULL values; rolling back the migration would only fail if any rows had been NULL'd, which they haven't been by this point).
+
+**Files:**
+
+1. **Create `docs/032-video-upload/migrations/001-make-storage-path-nullable.sql`** with the `ALTER TABLE` shown above. Apply via Supabase Dashboard → SQL editor (matches the operational pattern set by previous PRD migrations).
+
+2. **Run `supabase gen types typescript` and commit the regenerated `lib/types/database.ts`** (or wherever the generated file lives in this codebase). The single change is `storage_path: string` → `storage_path: string | null` on the `session_attachments` row type.
+
+3. **Modify `lib/repositories/attachment-repository.ts`:**
+
+   ```typescript
+   export interface AttachmentRow {
+     id: string;
+     session_id: string;
+     file_name: string;
+     file_type: string;
+     file_size: number;
+     storage_path: string | null;        // was: string
+     parsed_content: string;
+     source_format: string;
+     created_at: string;
+   }
+
+   // Existing AttachmentInsert shape unchanged — parsed-file inserts still
+   // require non-null storage_path; the application layer enforces the
+   // invariant.
+
+   // NEW: transcript-only insert shape. No file Blob, no storage upload.
+   export interface TranscriptAttachmentInsert {
+     session_id: string;
+     file_name: string;          // original video file name
+     file_type: string;          // original video MIME
+     file_size: number;          // original video size
+     duration_seconds: number;   // for future analytics; not on AttachmentRow yet
+     parsed_content: string;
+     team_id: string | null;
+   }
+
+   export interface AttachmentRepository {
+     // ... existing methods unchanged ...
+
+     /** Insert a video transcript row — storage_path = NULL, source_format = 'video_transcript'. */
+     createTranscript(input: TranscriptAttachmentInsert): Promise<AttachmentRow>;
+   }
+   ```
+
+   `duration_seconds` is captured for forward-compat (analytics, search facets) but is not on `AttachmentRow` because the `session_attachments` table doesn't have that column yet — adding it would require a separate migration. For Part 2 the value is logged but not persisted. **YAGNI flag:** if no consumer asks for duration analytics by Part 4, drop the field entirely.
+
+   Actually — re-reading: keeping `duration_seconds` on the insert input but not on the row type means the field is silently dropped on insert. That's confusing. **Decision: drop `duration_seconds` from `TranscriptAttachmentInsert` for Part 2.** The transcribe-route logs include duration; the DB doesn't need it. Add a migration for it only if a Part 3+ consumer requires it.
+
+   So the actual `TranscriptAttachmentInsert` is:
+
+   ```typescript
+   export interface TranscriptAttachmentInsert {
+     session_id: string;
+     file_name: string;
+     file_type: string;
+     file_size: number;
+     parsed_content: string;
+     team_id: string | null;
+   }
+   ```
+
+4. **Modify `lib/repositories/supabase/supabase-attachment-repository.ts`** — implement `createTranscript()`:
+
+   ```typescript
+   async createTranscript(input: TranscriptAttachmentInsert): Promise<AttachmentRow> {
+     const { data, error } = await supabase
+       .from("session_attachments")
+       .insert({
+         session_id: input.session_id,
+         file_name: input.file_name,
+         file_type: input.file_type,
+         file_size: input.file_size,
+         storage_path: null,
+         parsed_content: input.parsed_content,
+         source_format: "video_transcript",
+         team_id: input.team_id,
+       })
+       .select()
+       .single();
+
+     if (error) {
+       throw new Error(`Failed to insert transcript attachment: ${error.message}`);
+     }
+     return data;
+   }
+   ```
+
+   No Storage call. No cleanup branch (nothing to clean up). RLS policies are unchanged — the existing `INSERT to authenticated` policy covers transcript inserts because `team_id` is the only RLS-relevant field and it carries the same ownership semantics.
+
+5. **Modify `lib/repositories/mock/mock-attachment-repository.ts`** (if it exists; create stub if `attachment-service.ts` is unit-tested against a mock) — mirror the new method.
+
+#### Increment 2.2: Transcription service (resolveTranscriptionModel + transcribeAudio)
+
+**What:** Pure infrastructure. Add the provider/model resolver and the wrapper function. No call sites yet — the route handler is updated in Increment 2.4. This increment is independently shippable as dead-but-tested infrastructure; the dead-code linter will not complain because the new exports are referenced by the audit-time route changes in 2.4 within the same PR series.
+
+**Files:**
+
+1. **Modify `lib/services/ai-service.ts`** — add transcription resolver and wrapper:
+
+   ```typescript
+   import { experimental_transcribe as transcribe } from "ai";
+   // ...
+
+   // ---------------------------------------------------------------------------
+   // Transcription provider resolution
+   // ---------------------------------------------------------------------------
+
+   type SupportedTranscriptionProvider = "openai";
+
+   const TRANSCRIPTION_PROVIDER_MAP: Record<
+     SupportedTranscriptionProvider,
+     (modelId: string) => ReturnType<typeof openai.transcription>
+   > = {
+     openai: (modelId) => openai.transcription(modelId),
+   };
+
+   const TRANSCRIPTION_DEFAULTS = {
+     provider: "openai" as const,
+     model: "whisper-1",
+   };
+
+   export function resolveTranscriptionModel(): {
+     model: ReturnType<typeof openai.transcription>;
+     label: string;
+   } {
+     const provider = process.env.AI_TRANSCRIPTION_PROVIDER ?? TRANSCRIPTION_DEFAULTS.provider;
+     const modelId = process.env.AI_TRANSCRIPTION_MODEL ?? TRANSCRIPTION_DEFAULTS.model;
+
+     const factory = TRANSCRIPTION_PROVIDER_MAP[provider as SupportedTranscriptionProvider];
+     if (!factory) {
+       throw new AIConfigError(
+         `Unsupported AI_TRANSCRIPTION_PROVIDER: "${provider}". Supported: ${Object.keys(TRANSCRIPTION_PROVIDER_MAP).join(", ")}`
+       );
+     }
+
+     return { model: factory(modelId), label: `${provider}/${modelId}` };
+   }
+
+   // ---------------------------------------------------------------------------
+   // Transcription wrapper
+   // ---------------------------------------------------------------------------
+
+   export class TranscriptionEmptyError extends Error {
+     constructor() {
+       super("No speech could be transcribed from this video.");
+       this.name = "TranscriptionEmptyError";
+     }
+   }
+
+   export interface TranscribeAudioResult {
+     text: string;
+     durationMs: number;
+     modelLabel: string;
+   }
+
+   /**
+    * Transcribe audio using the configured provider + model. Retries
+    * transient failures (429, 5xx, network) up to MAX_RETRIES with
+    * exponential backoff via withRetry(). Throws TranscriptionEmptyError
+    * when the provider returns empty/whitespace-only text (PRD P2.R8).
+    */
+   export async function transcribeAudio(
+     audio: Buffer,
+   ): Promise<TranscribeAudioResult> {
+     const { model, label } = resolveTranscriptionModel();
+     const start = Date.now();
+
+     const result = await withRetry(`transcribe(${label})`, async (attempt) => {
+       console.log(
+         `[ai-service] transcribe attempt ${attempt + 1}/${MAX_RETRIES + 1} — model: ${label}, audio: ${audio.byteLength} bytes`,
+       );
+       return transcribe({ model, audio });
+     });
+
+     const text = result.text?.trim() ?? "";
+     if (text.length === 0) {
+       throw new TranscriptionEmptyError();
+     }
+
+     return {
+       text,
+       durationMs: Date.now() - start,
+       modelLabel: label,
+     };
+   }
+   ```
+
+   Notes:
+   - Reuses the existing `withRetry()` helper, which already handles 429 / 5xx / network errors per the project's standard retry policy.
+   - Empty-transcript detection happens **after** retry exhaustion. An empty result from a successful Whisper response is not a transient failure; it means the audio genuinely had no speech (silent video, music-only). PRD P2.R8 says reject.
+   - No `signal: AbortSignal` parameter on `transcribeAudio()` for now — Vercel AI SDK's `experimental_transcribe` does not (as of `ai ^6.0.144`) accept an `abortSignal`. Cancellation is handled at the route-handler level (Vercel will terminate the function if the client connection drops; the user-level cancel from Part 1 aborts the audio upload before the server starts the transcribe call).
+
+2. **Modify `.env.example`** — document the new vars near the existing `AI_PROVIDER`/`AI_MODEL` block:
+
+   ```bash
+   # Transcription (PRD-032). Currently only OpenAI Whisper is supported.
+   # Defaults are sane for most deployments — uncomment to override.
+   # AI_TRANSCRIPTION_PROVIDER=openai
+   # AI_TRANSCRIPTION_MODEL=whisper-1
+   ```
+
+#### Increment 2.3: Manual persistence path (extend attachments route + client save flow)
+
+**What:** Wire the transcript-only persistence path through the existing attachments route. Extend `attachment-service.ts` with `createTranscriptAttachment()`. Update `upload-attachments.ts` to branch on transcript vs file. Update both client surfaces' save flows to persist transcripts. After this increment, the system **persists transcripts on save** even though Whisper is still mocked from Increment 1.6 — users see real persistence behaviour without yet seeing real transcript content. This is a deliberate ordering: feature flip happens in 2.4 with real Whisper, but persistence groundwork is in place first so the feature flip is risk-free.
+
+**Files:**
+
+1. **Modify `lib/services/attachment-service.ts`** — add the new service function:
+
+   ```typescript
+   export interface CreateTranscriptInput {
+     sessionId: string;
+     teamId: string | null;
+     fileName: string;          // original video file name
+     fileType: string;          // original video MIME
+     fileSize: number;          // original video size in bytes
+     parsedContent: string;     // the transcript text
+   }
+
+   /**
+    * Persist a video transcript as a session_attachments row.
+    * No Storage upload; storage_path is NULL.
+    */
+   export async function createTranscriptAttachment(
+     repo: AttachmentRepository,
+     input: CreateTranscriptInput,
+   ): Promise<AttachmentRow> {
+     console.log(
+       "[attachment-service] createTranscriptAttachment — session:",
+       input.sessionId,
+       "file:",
+       input.fileName,
+       "transcript chars:",
+       input.parsedContent.length,
+     );
+
+     const row = await repo.createTranscript({
+       session_id: input.sessionId,
+       file_name: input.fileName,
+       file_type: input.fileType,
+       file_size: input.fileSize,
+       parsed_content: input.parsedContent,
+       team_id: input.teamId,
+     });
+
+     console.log("[attachment-service] created transcript attachment:", row.id);
+     return row;
+   }
+   ```
+
+   Pattern matches existing `uploadAndCreateAttachment` for log shape and ergonomics. Single responsibility — no Storage interaction.
+
+2. **Modify `app/api/sessions/[id]/attachments/route.ts`** — extend POST to accept transcript-only payloads.
+
+   The current route accepts `multipart/form-data` with required `file`, `parsed_content`, `source_format`. Extension:
+
+   ```
+   POST /api/sessions/[id]/attachments
+   Content-Type: multipart/form-data
+
+   When source_format === "video_transcript":
+     - file is OMITTED
+     - parsed_content (string, required)
+     - source_format = "video_transcript" (required)
+     - file_name (string, required)            ← original video file name
+     - file_type (string, required)            ← original video MIME (must be in VIDEO_MIME_TYPES)
+     - file_size (string→number, required)     ← original video size
+
+   Otherwise (existing behaviour):
+     - file (File, required)
+     - parsed_content (string, required)
+     - source_format (string, required)
+   ```
+
+   Implementation: branch on `source_format` early. For `"video_transcript"`:
+   1. Validate `file_name` / `file_type` / `file_size` / `parsed_content` (use the same Zod schema shape as `/api/files/transcribe`'s metadata validator — extract to a shared schema in `lib/schemas/transcript-attachment.ts` to honour DRY).
+   2. Enforce per-session `MAX_ATTACHMENTS` via the existing `getCountForSession` call.
+   3. Enforce per-session combined-character limit (sum existing parsed_content + this transcript) — defensive server-side check matching the client's `MAX_COMBINED_CHARS`.
+   4. Call `createTranscriptAttachment()`.
+   5. Return the row at HTTP 201.
+   6. Log entry, exit, errors with `[api/sessions/[id]/attachments]` prefix.
+
+   For the parsed-file branch (existing): unchanged.
+
+3. **Create `lib/schemas/transcript-attachment.ts`** — DRY for the metadata validator shared between `/api/files/transcribe` and `/api/sessions/[id]/attachments` POST:
+
+   ```typescript
+   import { z } from "zod";
+
+   import {
+     MAX_VIDEO_DURATION_SECONDS,
+     MAX_VIDEO_FILE_SIZE_BYTES,
+     VIDEO_MIME_TYPES,
+   } from "@/lib/constants";
+
+   const ALLOWED_VIDEO_TYPES = new Set(Object.keys(VIDEO_MIME_TYPES));
+
+   export const transcriptVideoMetadataSchema = z.object({
+     video_file_name: z.string().min(1).max(512),
+     video_file_type: z.string().refine(
+       (v) => ALLOWED_VIDEO_TYPES.has(v),
+       "Unsupported video type",
+     ),
+     video_file_size: z
+       .number()
+       .int()
+       .positive()
+       .max(MAX_VIDEO_FILE_SIZE_BYTES, "Video file size exceeds the 500 MB limit"),
+     duration_seconds: z
+       .number()
+       .positive()
+       .max(MAX_VIDEO_DURATION_SECONDS, "Video duration exceeds the 2 hour limit"),
+   });
+
+   export type TranscriptVideoMetadata = z.infer<typeof transcriptVideoMetadataSchema>;
+   ```
+
+   `/api/files/transcribe` (Part 1 stub) currently has this schema inline — Part 2 moves it here and imports. The attachments route imports the same schema.
+
+4. **Modify `lib/utils/upload-attachments.ts`** — branch on transcript vs parsed file:
+
+   ```typescript
+   interface ParsedFileAttachment {
+     kind: "parsed";
+     file: File;
+     parsed_content: string;
+     source_format: string;
+   }
+
+   interface TranscriptAttachment {
+     kind: "video_transcript";
+     parsed_content: string;
+     file_name: string;
+     file_type: string;
+     file_size: number;
+     duration_seconds: number;
+   }
+
+   type PendingUpload = ParsedFileAttachment | TranscriptAttachment;
+
+   export async function uploadAttachmentsToSession(
+     sessionId: string,
+     attachments: PendingUpload[],
+   ): Promise<void> {
+     let failCount = 0;
+
+     for (const attachment of attachments) {
+       try {
+         const formData = new FormData();
+         if (attachment.kind === "parsed") {
+           formData.append("file", attachment.file);
+           formData.append("parsed_content", attachment.parsed_content);
+           formData.append("source_format", attachment.source_format);
+         } else {
+           formData.append("source_format", "video_transcript");
+           formData.append("parsed_content", attachment.parsed_content);
+           formData.append("file_name", attachment.file_name);
+           formData.append("file_type", attachment.file_type);
+           formData.append("file_size", String(attachment.file_size));
+           formData.append("duration_seconds", String(attachment.duration_seconds));
+         }
+
+         const res = await fetch(`/api/sessions/${sessionId}/attachments`, {
+           method: "POST",
+           body: formData,
+         });
+
+         if (!res.ok) {
+           failCount++;
+           console.error(
+             `[uploadAttachmentsToSession] upload failed for "${attachment.kind === "parsed" ? attachment.file.name : attachment.file_name}":`,
+             await res.text().catch(() => "unknown error"),
+           );
+         }
+       } catch (err) {
+         failCount++;
+         console.error(/* ... */);
+       }
+     }
+
+     if (failCount > 0) {
+       toast.warning(`${failCount} attachment${failCount > 1 ? "s" : ""} failed to upload. The session was saved.`);
+     }
+   }
+   ```
+
+   Existing parsed-file callers pass `{ kind: "parsed", ... }`; new transcript callers pass `{ kind: "video_transcript", ... }`. The `ParsedAttachment` UI tier type is mapped to `kind: "parsed"` at the call site (capture form / expanded row).
+
+5. **Modify `app/capture/_components/session-capture-form.tsx`** — save flow change:
+
+   In `onSubmit`, after `POST /api/sessions` returns the new session ID:
+
+   ```typescript
+   // Build the unified upload list — parsed files + completed transcripts
+   const pendingUploads: PendingUpload[] = [
+     ...attachments.map((a) => ({ kind: "parsed" as const, file: a.file, parsed_content: a.parsed_content, source_format: a.source_format })),
+     ...completedTranscripts.map((t) => ({
+       kind: "video_transcript" as const,
+       parsed_content: t.parsed_content,
+       file_name: t.file_name,
+       file_type: t.file_type,
+       file_size: t.file_size,
+       duration_seconds: t.duration_seconds,
+     })),
+   ];
+
+   if (pendingUploads.length > 0) {
+     await uploadAttachmentsToSession(session.id, pendingUploads);
+   }
+   ```
+
+   After this completes, the existing `resetVideoItems()` call clears the videoItems state. Net behaviour: transcripts are now persisted as part of save; the UI then resets.
+
+6. **Modify `app/capture/_components/saved-attachment-list.tsx`** — defensive download-button hide:
+
+   ```tsx
+   {attachment.source_format !== "video_transcript" && (
+     <Button onClick={() => handleDownload(attachment)} ...>
+       <Download className="size-3.5" />
+     </Button>
+   )}
+   ```
+
+   For a transcript row, the row still renders the file name + size + the existing "View content" toggle (which works because `parsed_content` is always populated). Just no download button.
+
+#### Increment 2.4: Real transcription (replace mock with Whisper)
+
+**What:** Feature flip. Replace the mock-transcript line in `/api/files/transcribe` with a call to `transcribeAudio()`. Tighten audio-size cap. Reduce client-side bitrate. Empty-transcript handling. After this increment, **users see real transcripts and they persist on save** (because Increment 2.3 already wired persistence). End-to-end working state, no auto-persist yet.
+
+**Files:**
+
+1. **Modify `lib/constants.ts`** — bitrate adjustment:
+
+   ```typescript
+   export const AUDIO_EXTRACTION_PARAMS = {
+     sampleRate: 16_000,
+     channels: 1,
+     bitrate: "24k",          // was "32k" — 2hr × 24kbps = ~22 MB, fits Whisper's 25 MB hard limit
+     container: "mp3",
+     mimeType: "audio/mpeg",
+     extension: ".mp3",
+   } as const;
+   ```
+
+   No code change required at consumer sites; ffmpeg.wasm reads the value at extraction time.
+
+2. **Modify `app/api/files/transcribe/route.ts`** — three coordinated edits:
+
+   a. Tighten `MAX_AUDIO_BYTES` from `50 * 1024 * 1024` to `25 * 1024 * 1024` (Whisper's hard limit). The 413 error message updates accordingly.
+
+   b. Replace the mock-transcript construction with a real `transcribeAudio()` call:
+
+      ```typescript
+      import { transcribeAudio, TranscriptionEmptyError, AIConfigError } from "@/lib/services/ai-service";
+
+      // Inside the handler, after audio + metadata validation:
+      const audioBuffer = Buffer.from(await audio.arrayBuffer());
+
+      try {
+        const result = await transcribeAudio(audioBuffer);
+
+        console.log(
+          `[api/files/transcribe] POST — transcribed ${result.text.length} chars in ${result.durationMs}ms (${result.modelLabel})`,
+        );
+
+        return NextResponse.json({
+          parsed_content: result.text,
+          file_name: meta.video_file_name,
+          file_type: meta.video_file_type,
+          file_size: meta.video_file_size,
+          duration_seconds: meta.duration_seconds,
+          source_format: "video_transcript" as const,
+        });
+      } catch (err) {
+        if (err instanceof TranscriptionEmptyError) {
+          console.warn("[api/files/transcribe] POST — rejected: empty transcript");
+          return NextResponse.json(
+            { message: err.message },
+            { status: 422 },
+          );
+        }
+        if (err instanceof AIConfigError) {
+          console.error("[api/files/transcribe] POST — config error:", err.message);
+          return NextResponse.json(
+            { message: "Transcription service is not configured" },
+            { status: 500 },
+          );
+        }
+        // withRetry has already exhausted retries for transient errors at this point.
+        // Anything else is non-retryable provider failure.
+        console.error(
+          "[api/files/transcribe] POST — transcription failed:",
+          err instanceof Error ? err.message : err,
+        );
+        return NextResponse.json(
+          { message: "Transcription failed — please try again" },
+          { status: 502 },           // 502 Bad Gateway: upstream provider failure
+        );
+      }
+      ```
+
+      The `audioBuffer` lives in memory only inside this handler. Returning or throwing both let it fall out of scope — GC reclaims. PRD P2.R3 (no retention) is preserved.
+
+   c. The `await audio.arrayBuffer()` drain that Part 1 explicitly called for connection-cleanup purposes is now the same call that produces the buffer for Whisper. Single read; no behavioural change for the drain semantics.
+
+3. **Update `lib/types/video-attachment.ts`** — no change needed; `EMPTY_TRANSCRIPT` was reserved in Part 1 with this exact use case in mind. The error mapper in `lib/hooks/use-video-attachment.ts` already treats messages matching the `mapToVideoUploadError` heuristic as `TRANSCRIPTION_FAILED`; for empty-transcript 422s, the server-returned message is "No speech could be transcribed from this video." which doesn't hit any of the existing regex branches, so it falls through to `TRANSCRIPTION_FAILED`. Refine:
+
+   ```typescript
+   function mapToVideoUploadError(err: unknown): VideoUploadError {
+     const message = err instanceof Error ? err.message : "Unknown error";
+     // ... existing branches ...
+
+     // Server returns the empty-transcript message verbatim — match it
+     // exactly so the user sees the same wording, not a generic fallback.
+     if (/no speech could be transcribed/i.test(message)) {
+       return {
+         code: "EMPTY_TRANSCRIPT",
+         message: "No speech could be transcribed from this video.",
+       };
+     }
+
+     return {
+       code: "TRANSCRIPTION_FAILED",
+       message: "Could not transcribe video — please try again.",
+     };
+   }
+   ```
+
+   This is the activation of the `EMPTY_TRANSCRIPT` code reserved in Part 1.
+
+#### Increment 2.5: Auto-persist for saved sessions (sessionId-aware transcribe)
+
+**What:** Honour P2.R7's saved-session branch. The transcribe endpoint accepts an optional `session_id` — when present, the server validates session access and persists the transcript before returning. The expanded-row surface passes `session.id` to `useVideoItemsState`, and on completion the auto-persisted attachment merges into `savedAttachments` (replacing what would otherwise have lingered as a "completed" videoItem).
+
+**Files:**
+
+1. **Modify `app/api/files/transcribe/route.ts`** — add the optional `session_id` field + branch:
+
+   ```typescript
+   // After existing validation, look for session_id
+   const sessionIdRaw = formData.get("session_id");
+   const sessionId =
+     typeof sessionIdRaw === "string" && sessionIdRaw.length > 0
+       ? sessionIdRaw
+       : null;
+
+   if (sessionId) {
+     // Validate session access using the existing route-auth helper.
+     const ctx = await requireSessionAccess(sessionId, auth.user);
+     if (ctx instanceof NextResponse) return ctx;
+
+     // ... transcribe as before ...
+
+     // Persist immediately, before responding. Survives client disconnect.
+     const attachmentRepo = createAttachmentRepository(ctx.supabase, ctx.serviceClient);
+     const attachment = await createTranscriptAttachment(attachmentRepo, {
+       sessionId,
+       teamId: ctx.session.team_id,
+       fileName: meta.video_file_name,
+       fileType: meta.video_file_type,
+       fileSize: meta.video_file_size,
+       parsedContent: result.text,
+     });
+
+     return NextResponse.json({
+       parsed_content: result.text,
+       file_name: attachment.file_name,
+       file_type: attachment.file_type,
+       file_size: attachment.file_size,
+       duration_seconds: meta.duration_seconds,
+       source_format: "video_transcript" as const,
+       attachment,                     // NEW: persisted row, present iff session_id provided
+     });
+   }
+
+   // sessionId absent: stateless response (Part 1/Increment-2.4 contract)
+   return NextResponse.json({ /* ... no attachment field ... */ });
+   ```
+
+   `requireSessionAccess` is the existing helper from `lib/api/route-auth.ts` — same one the attachments POST route uses. Returns 404 for missing sessions, 403 for cross-workspace access, 401 for unauthenticated. The handler short-circuits via the `instanceof NextResponse` pattern.
+
+   Combined char-limit check before the persist (defensive, matches what `/api/sessions/[id]/attachments` POST does in Increment 2.3). If the transcript would push the session over `MAX_COMBINED_CHARS`, return 422 BEFORE the persist (no orphan row).
+
+   Per-session `MAX_ATTACHMENTS` check before persist. Same pattern.
+
+2. **Modify `lib/utils/video/upload-audio.ts`** — extend the input + result shapes:
+
+   ```typescript
+   export interface UploadAudioInput {
+     audio: Blob;
+     audioFileName: string;
+     videoFileName: string;
+     videoFileType: string;
+     videoFileSize: number;
+     durationSeconds: number;
+     sessionId?: string;          // NEW
+   }
+
+   export interface UploadAudioResult {
+     parsed_content: string;
+     file_name: string;
+     file_type: string;
+     file_size: number;
+     duration_seconds: number;
+     source_format: "video_transcript";
+     attachment?: SessionAttachment;   // NEW: present iff sessionId was passed
+   }
+   ```
+
+   Inside `uploadAudioForTranscription`, conditionally append `session_id` to the FormData when `input.sessionId` is set. Otherwise unchanged.
+
+3. **Modify `lib/hooks/use-video-attachment.ts`** — accept `sessionId`, plumb through:
+
+   ```typescript
+   export interface UseVideoAttachmentOptions {
+     sessionId?: string;                                   // NEW
+     onCompleted: (attachment: VideoTranscriptAttachment) => void;
+     onAutoPersisted?: (attachment: SessionAttachment) => void;   // NEW
+     onError: (error: VideoUploadError) => void;
+   }
+   ```
+
+   Inside the run loop, pass `sessionId` to `uploadAudioForTranscription`. After the upload returns:
+   - If `result.attachment` is present (server auto-persisted): call `onAutoPersisted(result.attachment)` instead of `onCompleted(transcript)`. The state machine sets `status: "completed"` so the card unmounts cleanly, but the parent has already moved the row out of `videoItems` via `onAutoPersisted`.
+   - If `result.attachment` is absent: existing flow — call `onCompleted(transcript)`.
+
+4. **Modify `lib/hooks/use-video-items-state.ts`** — accept `sessionId` + `onAutoPersisted`:
+
+   ```typescript
+   export interface UseVideoItemsStateOptions {
+     logPrefix: string;
+     sessionId?: string;
+     onAutoPersisted?: (attachment: SessionAttachment) => void;
+   }
+   ```
+
+   When `sessionId` is set:
+   - The hook still owns `videoItems` state.
+   - When a videoItem's per-attachment hook signals auto-persist (server returned attachment), the hook **removes** that videoItem from its array (no "completed" state; the row is now in the parent's `savedAttachments` instead).
+   - The hook calls the consumer's `onAutoPersisted(attachment)` so the parent can append to `savedAttachments`.
+
+   When `sessionId` is absent: existing Part 1 / Increment 2.3 behaviour — `handleVideoCompleted` transitions to "completed" status, transcript persists on save.
+
+   The `<VideoAttachmentSection>` component does not change — it still renders a completed-state row when one is present. With auto-persist, completed-state rows simply never appear in `videoItems` because the hook removes them.
+
+5. **Modify `app/capture/_components/expanded-session-row.tsx`:**
+
+   ```typescript
+   const {
+     videoItems,
+     anyVideoInFlight,
+     completedTranscripts,
+     transcriptChars,
+     handleVideoSelected,
+     handleVideoCompleted,
+     handleVideoError,
+     handleVideoRemove,
+     reset: resetVideoItems,
+   } = useVideoItemsState({
+     logPrefix: "[ExpandedSessionRow]",
+     sessionId: session.id,                             // NEW
+     onAutoPersisted: (attachment) => {                 // NEW
+       setSavedAttachments((prev) => [...prev, attachment]);
+     },
+   });
+   ```
+
+   The save-flow branch (`uploadAttachmentsToSession` for the row) for video transcripts becomes effectively dead — `completedTranscripts` will always be empty for the saved-session surface because completed rows auto-persisted and were removed. Keep the unified upload list (treat empty as no-op); don't special-case.
+
+   `<ProcessingVideoBanner active={anyVideoInFlight} />` and the rest of the wiring is unchanged.
+
+6. **`app/capture/_components/session-capture-form.tsx`** — no change. New-session surface doesn't pass `sessionId`; the manual save path from Increment 2.3 continues to handle persistence.
+
+7. **`useVideoItemsState`'s public surface evolves:** consumers that want to opt out of auto-persist (today: capture form) call with `{ logPrefix }` only; consumers that want auto-persist (today: expanded row) pass `{ logPrefix, sessionId, onAutoPersisted }`. ISP: optional fields are only paid for by callers that need them.
+
+#### Increment 2.6: End-of-Part audit
+
+**What:** Apply the CLAUDE.md eleven-point end-of-part audit checklist to all files touched in Increments 2.1–2.5. Produces fixes, not a report.
+
+**Audit emphasis specific to this part:**
+
+1. **SRP.** `transcribeAudio()` is a single function with no side effects beyond the AI call + log. `createTranscriptAttachment()` does one DB insert with no Storage interaction. The transcribe route's two branches (auto-persist vs stateless) share validation but diverge cleanly at the persist step.
+2. **OCP.** The transcribe route extends Part 1's contract via an optional field; the attachments route extends via a `source_format`-keyed branch. No Part 1 caller breaks.
+3. **ISP.** `useVideoItemsState`'s new `sessionId` + `onAutoPersisted` are optional; capture-form callers pay nothing for the auto-persist surface.
+4. **DIP.** `createTranscriptAttachment(repo, input)` depends on the `AttachmentRepository` interface, not the Supabase client. Same pattern as `uploadAndCreateAttachment`.
+5. **DRY.** `transcriptVideoMetadataSchema` is shared between `/api/files/transcribe` and `/api/sessions/[id]/attachments`. The `withRetry` helper is reused for transcription. The combined-char-limit check exists in three places (capture form, expanded row, transcribe route auto-persist branch, attachments route) — confirm these all reference `MAX_COMBINED_CHARS` from `lib/constants.ts`, not duplicated literals.
+6. **YAGNI.** Confirm `duration_seconds` was dropped from `TranscriptAttachmentInsert` (decision in Increment 2.1). Confirm no unused exports from `ai-service.ts`'s new transcription block. Confirm `TranscriptionEmptyError` is actually thrown and caught.
+7. **Fail explicitly.** `transcribeAudio()`'s catches log via `withRetry`'s existing telemetry. The route-handler catches log every failure mode.
+8. **Design tokens.** `saved-attachment-list.tsx`'s download-hide branch uses an existing rendering condition; no new tokens introduced.
+9. **Logging.** `/api/files/transcribe` logs entry, audio size, duration, transcript length, model label, exit, every 4xx + 5xx. Service-layer `[attachment-service] createTranscriptAttachment` logs entry + result.
+10. **Dead code.** With Increment 2.5 done, the new-session save path includes a `completedTranscripts` map that — for the expanded-row surface — will always be empty. **Decision:** keep the unified shape (capture form still uses it), don't conditionalise per consumer.
+11. **Convention compliance.** Migration filename matches PRD-019's pattern (`NNN-name.sql`). Schema names lowercase, snake_case (ALTER TABLE follows existing convention).
+
+Run `npx tsc --noEmit` and `npx eslint` across all touched files. Run `npm run build` to catch production-build-only issues. Verify the migration applies cleanly against a fresh Supabase project.
+
+### Summary of Increments
+
+| Increment | Scope | PRD Requirements |
+|-----------|-------|------------------|
+| 2.1 | Schema migration + repository typing | P2.R4 (schema) |
+| 2.2 | `resolveTranscriptionModel` + `transcribeAudio` infrastructure | P2.R2 (provider abstraction), P2.R3 (no retention via memory-only buffer), P2.R8 (empty-transcript error class) |
+| 2.3 | Manual persistence path | P2.R4 (persistence), P2.R5 (combined limit), P2.R7 (new-session branch) |
+| 2.4 | Real Whisper transcription | P2.R1 (real endpoint), P2.R3 (memory-only), P2.R6 (retry via `withRetry`), P2.R8 (empty-transcript 422) |
+| 2.5 | Auto-persist for saved sessions | P2.R7 (saved-session branch) |
+| 2.6 | End-of-Part audit | Convention compliance |
+
+### Forward Compatibility Notes (for Parts 3–4)
+
+These are not implemented in Part 2 but the design accounts for them:
+
+- **Part 3 — Editable transcripts (P3.R7):** `createTranscriptAttachment()` and `AttachmentRepository.createTranscript()` form the insert path. Part 3 adds an `updateTranscript(attachmentId, parsedContent, isEdited)` companion plus an `is_edited` column on `session_attachments` (separate migration). The `parsed_content` column is already-large-enough TEXT; no schema change needed there.
+- **Part 3 — Visual differentiation (P3.R1, P3.R2):** `saved-attachment-list.tsx`'s download-hide branch in Part 2 is the seed — Part 3 expands it with the video icon, "Transcript only" label, and inline edit affordance gated on `source_format === "video_transcript"`. The same condition that hides the download button gates the new visuals.
+- **Part 3 — Re-extraction parity:** `parsed_content` is the single source of truth for AI input regardless of whether it was Whisper-generated or user-edited. The existing `composeAIInput()` (Part 1, Increment 1.5) is unchanged.
+- **Part 4 — Empty audio (P4.R1) / codec failures (P4.R2):** `mapToVideoUploadError`'s heuristic gains the `EMPTY_TRANSCRIPT` activation in Part 2 Increment 2.4. Part 4 refines the OOM / codec heuristics on the client side — server-side behaviour from Part 2 stays.
+- **Part 4 — Sequential video processing:** Auto-persist serialises naturally because each `useVideoAttachment` instance holds its own controller; Part 4's queue policy (mount limit of 1) operates one level above and is orthogonal to Part 2's concerns.
+- **Backlog — Audio-only uploads:** The transcribe endpoint's Whisper call accepts the same audio buffer regardless of source. Adding audio-only support to the upload zone is a UI change that reuses `transcribeAudio()` unchanged.
+- **Backlog — Long-video chunking:** `transcribeAudio()` is a single-shot wrapper; chunking is layered above by splitting audio client-side or server-side and concatenating results. The retry policy applies per chunk; no change to the single-chunk path.

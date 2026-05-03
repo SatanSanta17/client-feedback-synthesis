@@ -8,7 +8,9 @@ export interface AttachmentRow {
   file_name: string;
   file_type: string;
   file_size: number;
-  storage_path: string;
+  // PRD-032 Part 2: nullable to support video-transcript rows that have no
+  // Storage blob. Parsed-file rows continue to carry a non-null path.
+  storage_path: string | null;
   parsed_content: string;
   source_format: string;
   created_at: string;
@@ -25,6 +27,19 @@ export interface AttachmentInsert {
   team_id: string | null;
 }
 
+// PRD-032 Part 2: transcript-only insert. No file Blob, no Storage upload.
+// source_format is fixed to "video_transcript" inside the repository, not
+// callable as a parameter — this prevents callers from inserting transcript
+// rows under a different source_format by accident.
+export interface TranscriptAttachmentInsert {
+  session_id: string;
+  file_name: string;
+  file_type: string;
+  file_size: number;
+  parsed_content: string;
+  team_id: string | null;
+}
+
 export interface AttachmentRepository {
   /** Upload a file to storage. Returns the storage path. */
   uploadToStorage(
@@ -36,17 +51,20 @@ export interface AttachmentRepository {
   /** Remove a file from storage. Best-effort — logs warning on failure. */
   removeFromStorage(storagePath: string): Promise<void>;
 
-  /** Insert attachment metadata into the database. */
+  /** Insert parsed-file attachment metadata into the database. */
   create(input: AttachmentInsert): Promise<AttachmentRow>;
+
+  /** Insert a video-transcript row — storage_path = NULL, source_format = 'video_transcript'. */
+  createTranscript(input: TranscriptAttachmentInsert): Promise<AttachmentRow>;
 
   /** Fetch all non-deleted attachments for a session, ordered by created_at. */
   getBySessionId(sessionId: string): Promise<AttachmentRow[]>;
 
-  /** Fetch a single attachment's storage path by ID (non-deleted only). Returns null if not found. */
+  /** Fetch a single attachment's storage path by ID (non-deleted only). Returns null if not found, or null for transcript rows. */
   getStoragePath(attachmentId: string): Promise<string | null>;
 
-  /** Soft-delete an attachment by ID. Throws if not found. */
-  softDelete(attachmentId: string): Promise<string>;
+  /** Soft-delete an attachment by ID. Returns the storage_path (null for transcripts). Throws if not found. */
+  softDelete(attachmentId: string): Promise<string | null>;
 
   /** Generate a signed download URL for a storage path. */
   getSignedUrl(storagePath: string, expiresInSeconds: number): Promise<string>;

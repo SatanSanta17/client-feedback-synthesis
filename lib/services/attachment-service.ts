@@ -110,7 +110,8 @@ export async function getAttachmentsBySessionId(
 }
 
 /**
- * Soft-delete an attachment and remove its storage blob.
+ * Soft-delete an attachment and remove its storage blob (when one exists).
+ * Video-transcript rows have storage_path = NULL — the storage cleanup is skipped.
  */
 export async function deleteAttachment(
   repo: AttachmentRepository,
@@ -118,7 +119,7 @@ export async function deleteAttachment(
 ): Promise<void> {
   console.log("[attachment-service] deleteAttachment — id:", attachmentId);
 
-  let storagePath: string;
+  let storagePath: string | null;
   try {
     storagePath = await repo.softDelete(attachmentId);
   } catch {
@@ -127,8 +128,9 @@ export async function deleteAttachment(
 
   console.log("[attachment-service] soft-deleted attachment:", attachmentId);
 
-  // Best-effort storage cleanup
-  await repo.removeFromStorage(storagePath);
+  if (storagePath !== null) {
+    await repo.removeFromStorage(storagePath);
+  }
 }
 
 /**
