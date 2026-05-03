@@ -15,14 +15,14 @@ import { type SessionRow } from "./expanded-session-row"
 import { SessionTableRow } from "./session-table-row"
 
 export interface PastSessionsTableProps {
-  refreshKey: number
+  newSession: SessionRow | null
 }
 
 const PAGE_SIZE = 20
 const DEFAULT_FILTERS: SessionFiltersState = { dateFrom: "", dateTo: "" }
 
 export function PastSessionsTable({
-  refreshKey,
+  newSession,
 }: PastSessionsTableProps) {
   const { user, isLoading: isAuthLoading, activeTeamId } = useAuth()
   const filterStorage = useFilterStorage<SessionFiltersState>("capture-sessions")
@@ -136,7 +136,20 @@ export function PastSessionsTable({
     if (isAuthLoading || !user) return
     setOffset(0)
     fetchSessions(0, false)
-  }, [filters, refreshKey, fetchSessions, activeTeamId, isAuthLoading, user?.id])
+  }, [filters, fetchSessions, activeTeamId, isAuthLoading, user?.id])
+
+  // Prepend a freshly-saved session without refetching. The id ref dedupes so
+  // the effect is a no-op on unrelated re-renders (e.g. expanded-row toggles).
+  const lastAppendedIdRef = useRef<string | null>(null)
+  useEffect(() => {
+    if (!newSession) return
+    if (lastAppendedIdRef.current === newSession.id) return
+    lastAppendedIdRef.current = newSession.id
+    setSessions((prev) =>
+      prev.some((s) => s.id === newSession.id) ? prev : [newSession, ...prev]
+    )
+    setTotal((t) => t + 1)
+  }, [newSession])
 
   const handleLoadMore = () => {
     const newOffset = offset + PAGE_SIZE

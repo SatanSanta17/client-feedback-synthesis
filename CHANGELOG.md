@@ -6,6 +6,20 @@ All notable changes to this project are documented here, grouped by PRD and part
 
 ## [Unreleased]
 
+### Trivial fix — Past Sessions table prepends new row instead of refetching — 2026-05-04
+
+The capture page's `Past Sessions` table was running a full `GET /api/sessions?offset=0&limit=20` round-trip every time a session saved — visible in dev logs after every form submit. The mechanism was a `refreshKey` counter bumped by `CapturePageContent` and listed in the table's fetch effect's deps; every bump reset `offset` to 0 and refetched. The earlier optimisation (commit `a40d8b7`, "row doesnt collapse on save and table doesnt re-fetch on updating a session") only covered the **edit** path via `handleExpandedSave(updated)`'s in-place `setSessions(prev => prev.map(...))`; the **create** path was never given the same treatment.
+
+With sessions ordered server-side by `created_at desc` ([supabase-session-repository.ts:37](lib/repositories/supabase/supabase-session-repository.ts#L37)), a freshly-saved session is by definition the newest row, so prepending is structurally correct — no client-side sort-position arithmetic. Filters that would exclude the new row are intentionally **not** evaluated client-side — the user just saved it, hiding it would be worse UX than a momentarily-off filter view; the next filter change reconciles via the existing fetch effect.
+
+- **`session-capture-form.tsx`** — `onSessionSaved`'s signature changed from `() => void` to `(row: SessionRow) => void`. After the awaited POST + attachment upload completes, the form assembles a `SessionRow` from the POST response (id, client_id, session_date, raw_notes, structured_notes, structured_json, created_by, created_at, prompt_version_id, extraction_stale, structured_notes_edited, updated_by) plus the three fields not on the response: `client_name` from the form's `ClientSelection`, `created_by_email` from `useAuth().user?.email`, `attachment_count` from the locally-captured `pendingUploads.length`. All three are in scope at save time — no endpoint change, no second fetch.
+- **`capture-page-content.tsx`** — `refreshKey: number` state replaced with `newSession: SessionRow | null`. The form's `onSessionSaved` is wired straight into `setNewSession` (no callback wrapper needed since identity is now driven by the prop). `useCallback` import dropped.
+- **`past-sessions-table.tsx`** — `PastSessionsTableProps.refreshKey` swapped for `newSession: SessionRow | null`. `refreshKey` removed from the existing fetch effect's deps. New small effect prepends the row and bumps `total` by 1, gated by a `lastAppendedIdRef` so re-renders that don't change the new-session identity (e.g. expanded-row toggles) are no-ops; an additional `prev.some(s => s.id === newSession.id)` guard inside the `setSessions` updater keeps the list duplicate-free if React ever re-runs the effect with the same id.
+
+**Result:** saving a new session no longer fires `GET /api/sessions` — the row appears instantly via local state, `total` increments, and any "Load more" pages the user already loaded plus their scroll position are preserved (the previous refetch was destroying both by resetting `offset` to 0).
+
+`npx tsc --noEmit` clean. No PRD/TRD update required (trivial fix, per CLAUDE.md). No DB schema changes, no new dependencies, no new env vars.
+
 ### PRD-032 end-of-PRD audit — 2026-05-03
 
 Cross-PRD audit run after all four parts shipped. CLAUDE.md eleven-point checklist run across the **union** of files touched by Parts 1–4 (~30 files spanning `lib/types/`, `lib/utils/video/`, `lib/hooks/`, `lib/repositories/`, `lib/services/`, `lib/schemas/`, `app/capture/_components/`, `app/api/files/transcribe/`, `app/api/sessions/[id]/attachments/`, plus migrations under `docs/032-video-upload/`, the `scripts/copy-ffmpeg-assets.mjs` postinstall hook, the gitignored `public/ffmpeg/` runtime assets, `next.config.ts`, `package.json`, `.env.example`, `.gitignore`). One real documentation-drift fix surfaced and applied; the union-level lint and tsc passes were clean.

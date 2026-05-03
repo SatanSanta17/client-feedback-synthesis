@@ -11,12 +11,14 @@ import { Button } from "@/components/ui/button"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import { MAX_COMBINED_CHARS } from "@/lib/constants"
+import { useAuth } from "@/components/providers/auth-provider"
 import {
   ClientCombobox,
   type ClientSelection,
 } from "./client-combobox"
 import { DatePicker } from "./date-picker"
 import { type ParsedAttachment } from "./file-upload-zone"
+import { type SessionRow } from "./expanded-session-row"
 import { composeAIInput } from "@/lib/utils/compose-ai-input"
 import {
   uploadAttachmentsToSession,
@@ -56,10 +58,11 @@ const captureFormSchema = z.object({
 type CaptureFormValues = z.infer<typeof captureFormSchema>
 
 export interface SessionCaptureFormProps {
-  onSessionSaved?: () => void
+  onSessionSaved?: (row: SessionRow) => void
 }
 
 export function SessionCaptureForm({ onSessionSaved }: SessionCaptureFormProps) {
+  const { user } = useAuth()
   const {
     control,
     register,
@@ -222,6 +225,24 @@ export function SessionCaptureForm({ onSessionSaved }: SessionCaptureFormProps) 
         await uploadAttachmentsToSession(session.id, pendingUploads)
       }
 
+      const newRow: SessionRow = {
+        id: session.id,
+        client_id: session.client_id,
+        client_name: client.name,
+        session_date: session.session_date,
+        raw_notes: session.raw_notes,
+        structured_notes: session.structured_notes,
+        structured_json: session.structured_json,
+        created_by: session.created_by,
+        created_at: session.created_at,
+        created_by_email: user?.email,
+        attachment_count: pendingUploads.length,
+        prompt_version_id: session.prompt_version_id,
+        extraction_stale: session.extraction_stale,
+        structured_notes_edited: session.structured_notes_edited,
+        updated_by: session.updated_by,
+      }
+
       toast.success("Session saved")
       reset({
         client: null,
@@ -231,7 +252,7 @@ export function SessionCaptureForm({ onSessionSaved }: SessionCaptureFormProps) 
       resetExtraction()
       setAttachments([])
       resetVideoItems()
-      onSessionSaved?.()
+      onSessionSaved?.(newRow)
     } catch (err) {
       console.error(
         "[SessionCaptureForm] submit error:",

@@ -34,7 +34,6 @@ export function createSessionRepository(
         .from("sessions")
         .select("id, client_id, session_date, raw_notes, structured_notes, structured_json, created_by, created_at, prompt_version_id, extraction_stale, structured_notes_edited, updated_by, clients(name)", { count: "exact" })
         .is("deleted_at", null)
-        .order("session_date", { ascending: false })
         .order("created_at", { ascending: false })
         .range(offset, offset + limit - 1);
 
