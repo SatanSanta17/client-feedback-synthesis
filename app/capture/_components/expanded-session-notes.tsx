@@ -41,6 +41,7 @@ interface ExpandedSessionNotesProps {
   onVideoSelected: (file: File) => void
   onVideoCompleted: (id: string, attachment: VideoTranscriptAttachment) => void
   onVideoAutoPersisted?: (id: string, attachment: SessionAttachment) => void
+  onVideoEdited: (id: string, parsedContent: string) => void
   onVideoError: (id: string, error: VideoUploadError) => void
   onVideoRemove: (id: string) => void
 }
@@ -68,6 +69,7 @@ export function ExpandedSessionNotes({
   onVideoSelected,
   onVideoCompleted,
   onVideoAutoPersisted,
+  onVideoEdited,
   onVideoError,
   onVideoRemove,
 }: ExpandedSessionNotesProps) {
@@ -108,6 +110,7 @@ export function ExpandedSessionNotes({
           sessionId={videoSessionId}
           onCompleted={onVideoCompleted}
           onAutoPersisted={onVideoAutoPersisted}
+          onEdited={onVideoEdited}
           onError={onVideoError}
           onRemove={onVideoRemove}
         />

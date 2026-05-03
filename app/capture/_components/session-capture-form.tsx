@@ -90,6 +90,7 @@ export function SessionCaptureForm({ onSessionSaved }: SessionCaptureFormProps) 
     transcriptChars,
     handleVideoSelected,
     handleVideoCompleted,
+    handleTranscriptEdited,
     handleVideoError,
     handleVideoRemove,
     reset: resetVideoItems,
@@ -213,6 +214,7 @@ export function SessionCaptureForm({ onSessionSaved }: SessionCaptureFormProps) 
           file_size: t.file_size,
           duration_seconds: t.duration_seconds,
           parsed_content: t.parsed_content,
+          is_edited: t.is_edited === true,
         })),
       ]
 
@@ -311,6 +313,7 @@ export function SessionCaptureForm({ onSessionSaved }: SessionCaptureFormProps) 
           onVideoSelected={onVideoSelected}
           onRemove={handleRemoveAttachment}
           onVideoCompleted={handleVideoCompleted}
+          onVideoEdited={handleTranscriptEdited}
           onVideoError={handleVideoError}
           onVideoRemove={handleVideoRemove}
           disabled={extractionState === "extracting" || isSubmitting}

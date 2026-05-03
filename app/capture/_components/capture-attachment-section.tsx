@@ -19,6 +19,7 @@ interface CaptureAttachmentSectionProps {
   onVideoSelected: (file: File) => void
   onRemove: (index: number) => void
   onVideoCompleted: (id: string, attachment: VideoTranscriptAttachment) => void
+  onVideoEdited: (id: string, parsedContent: string) => void
   onVideoError: (id: string, error: VideoUploadError) => void
   onVideoRemove: (id: string) => void
   disabled: boolean
@@ -33,6 +34,7 @@ export function CaptureAttachmentSection({
   onVideoSelected,
   onRemove,
   onVideoCompleted,
+  onVideoEdited,
   onVideoError,
   onVideoRemove,
   disabled,
@@ -58,6 +60,7 @@ export function CaptureAttachmentSection({
         <VideoAttachmentSection
           items={videoItems}
           onCompleted={onVideoCompleted}
+          onEdited={onVideoEdited}
           onError={onVideoError}
           onRemove={onVideoRemove}
         />

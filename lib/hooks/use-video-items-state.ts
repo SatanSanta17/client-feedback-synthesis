@@ -33,6 +33,10 @@ export interface UseVideoItemsStateReturn {
   // Pass to <VideoAttachmentSection onAutoPersisted={...}> only when sessionId
   // is also set; otherwise the auto-persist path is unreachable.
   handleVideoAutoPersisted?: (id: string, attachment: SessionAttachment) => void
+  // PRD-032 Part 3 — pre-save edit on a completed pending transcript.
+  // Mutates the videoItem's data.parsed_content + data.is_edited = true; the
+  // flag rides along on the upload payload at session-save time.
+  handleTranscriptEdited: (id: string, parsedContent: string) => void
   handleVideoError: (id: string, error: VideoUploadError) => void
   handleVideoRemove: (id: string) => void
   reset: () => void
@@ -98,6 +102,26 @@ export function useVideoItemsState(
     []
   )
 
+  const handleTranscriptEdited = useCallback(
+    (id: string, parsedContent: string) => {
+      setVideoItems((prev) =>
+        prev.map((v) =>
+          v.id === id && v.status === "completed"
+            ? {
+                ...v,
+                data: {
+                  ...v.data,
+                  parsed_content: parsedContent,
+                  is_edited: true,
+                },
+              }
+            : v
+        )
+      )
+    },
+    []
+  )
+
   const handleVideoError = useCallback(
     (_id: string, error: VideoUploadError) => {
       console.warn(`${logPrefix} video upload error:`, error.code, error.message)
@@ -122,6 +146,7 @@ export function useVideoItemsState(
     handleVideoSelected,
     handleVideoCompleted,
     handleVideoAutoPersisted: opts.sessionId ? handleVideoAutoPersisted : undefined,
+    handleTranscriptEdited,
     handleVideoError,
     handleVideoRemove,
     reset,

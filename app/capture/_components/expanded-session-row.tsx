@@ -103,6 +103,7 @@ export function ExpandedSessionRow({
     handleVideoSelected,
     handleVideoCompleted,
     handleVideoAutoPersisted,
+    handleTranscriptEdited,
     handleVideoError,
     handleVideoRemove,
     reset: resetVideoItems,
@@ -298,6 +299,7 @@ export function ExpandedSessionRow({
           file_size: t.file_size,
           duration_seconds: t.duration_seconds,
           parsed_content: t.parsed_content,
+          is_edited: t.is_edited === true,
         })),
       ]
 
@@ -421,6 +423,7 @@ export function ExpandedSessionRow({
           onVideoSelected={handleVideoSelected}
           onVideoCompleted={handleVideoCompleted}
           onVideoAutoPersisted={handleVideoAutoPersisted}
+          onVideoEdited={handleTranscriptEdited}
           onVideoError={handleVideoError}
           onVideoRemove={handleVideoRemove}
         />
