@@ -201,6 +201,7 @@ export function createMockSessionRepository(
       return {
         id: s.id,
         structured_notes: s.structured_notes,
+        structured_json: s.structured_json,
         created_by: s.created_by,
         team_id: s.team_id,
       };

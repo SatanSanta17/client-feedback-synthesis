@@ -87,12 +87,6 @@ const createSessionSchema = z
     rawNotes: z
       .string()
       .max(MAX_COMBINED_CHARS, `Notes must be ${MAX_COMBINED_CHARS.toLocaleString()} characters or fewer`),
-    structuredNotes: z
-      .string()
-      .max(100000, "Structured notes must be 100,000 characters or fewer")
-      .nullable()
-      .optional()
-      .default(null),
     structuredJson: z.record(z.string(), z.unknown()).nullable().optional().default(null),
     hasAttachments: z.boolean().optional().default(false),
     promptVersionId: z.string().uuid().nullable().optional().default(null),
@@ -154,7 +148,6 @@ export async function POST(request: NextRequest) {
       clientName: parsed.data.clientName,
       sessionDate: parsed.data.sessionDate,
       rawNotes: parsed.data.rawNotes,
-      structuredNotes: parsed.data.structuredNotes,
       structuredJson: parsed.data.structuredJson,
       promptVersionId: parsed.data.promptVersionId,
     });

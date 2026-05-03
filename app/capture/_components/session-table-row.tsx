@@ -81,7 +81,7 @@ export function SessionTableRow({
                 <span className="text-xs">{session.attachment_count}</span>
               </span>
             )}
-            {session.structured_notes && (
+            {(session.structured_json || session.structured_notes) && (
               <>
                 <Sparkles className="size-3.5 shrink-0 text-primary/60" />
                 {session.extraction_stale && (

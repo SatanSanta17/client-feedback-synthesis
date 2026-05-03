@@ -53,6 +53,7 @@ export interface SessionUpdate {
 export interface SessionDeleteResult {
   id: string;
   structured_notes: string | null;
+  structured_json: Record<string, unknown> | null;
   created_by: string;
   team_id: string | null;
 }

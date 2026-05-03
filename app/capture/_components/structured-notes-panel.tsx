@@ -24,12 +24,16 @@ interface StructuredNotesPanelProps {
  * Renders the extracted signals panel. Branches between two display modes:
  *
  * 1. If `structuredJson` is available → StructuredSignalView (typed UI).
- *    An edit toggle switches to MarkdownPanel for manual markdown edits.
- * 2. If `structuredJson` is null (pre-Part 1 sessions) → MarkdownPanel fallback.
+ *    For legacy sessions that *also* carry markdown (pre-PRD-031 Part 1), an
+ *    edit toggle switches to MarkdownPanel for manual markdown edits.
+ *    Post-PRD-031 fresh extractions have JSON only — no markdown to edit, so
+ *    the toggle is hidden.
+ * 2. If `structuredJson` is null (pre-PRD-018 legacy sessions) → MarkdownPanel
+ *    fallback.
  *
- * Manual edits only update the markdown representation. The JSON column is
- * left unchanged (acceptable pre-launch — structured_notes_edited flag tracks
- * the divergence). See PRD-018 P2.R5, P2.R6.
+ * Manual markdown edits only update the markdown representation. The JSON
+ * column is left unchanged (PRD-018 P2.R5, P2.R6 — structured_notes_edited
+ * flag tracks the divergence).
  */
 export function StructuredNotesPanel({
   structuredNotes,
@@ -46,8 +50,9 @@ export function StructuredNotesPanel({
 
   const hasJson = structuredJson !== null && structuredJson !== undefined
 
-  // Edit toggle button — reused in both heading and standalone positions
-  const editToggle = hasJson && !readOnly ? (
+  // Edit toggle is reachable only when both representations exist (legacy rows).
+  // Post-PRD-031 sessions have JSON only; the toggle is hidden for them.
+  const editToggle = hasJson && !readOnly && structuredNotes ? (
     <Button
       type="button"
       variant="ghost"

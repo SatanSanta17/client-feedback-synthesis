@@ -144,7 +144,6 @@ export function SessionCaptureForm({ onSessionSaved }: SessionCaptureFormProps) 
           clientName: client.name,
           sessionDate: data.sessionDate,
           rawNotes: data.rawNotes,
-          structuredNotes: structuredNotes,
           structuredJson: structuredJson,
           hasAttachments: attachments.length > 0,
           promptVersionId: promptVersionId,

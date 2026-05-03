@@ -10,6 +10,8 @@ interface UseSignalExtractionOptions {
   getInput: () => string
   /** Pre-populate with existing structured notes (e.g. when editing a saved session). */
   initialStructuredNotes?: string | null
+  /** Pre-populate with existing structured JSON (post-PRD-031 sessions where markdown is null). */
+  initialStructuredJson?: Record<string, unknown> | null
   /** When true, always show the re-extract confirmation if structured notes exist (e.g. server-side manual edit flag). */
   forceConfirmOnReextract?: boolean
 }
@@ -17,7 +19,6 @@ interface UseSignalExtractionOptions {
 interface UseSignalExtractionReturn {
   extractionState: ExtractionState
   structuredNotes: string | null
-  lastExtractedNotes: string | null
   /** The prompt version ID returned by the most recent extraction. */
   promptVersionId: string | null
   /** The structured JSON returned by the most recent extraction (opaque passthrough for persistence). */
@@ -35,22 +36,36 @@ interface UseSignalExtractionReturn {
 export function useSignalExtraction({
   getInput,
   initialStructuredNotes = null,
+  initialStructuredJson = null,
   forceConfirmOnReextract = false,
 }: UseSignalExtractionOptions): UseSignalExtractionReturn {
-  const [structuredNotes, setStructuredNotes] = useState<string | null>(
+  const [structuredNotes, setStructuredNotesState] = useState<string | null>(
     initialStructuredNotes
   )
-  const [lastExtractedNotes, setLastExtractedNotes] = useState<string | null>(
-    initialStructuredNotes
-  )
+  // PRD-031 Part 1: initial extractionState must consider JSON because new
+  // sessions have structured_json without legacy markdown.
+  const hasInitialExtraction = initialStructuredNotes !== null || initialStructuredJson !== null
   const [extractionState, setExtractionState] = useState<ExtractionState>(
-    initialStructuredNotes ? "done" : "idle"
+    hasInitialExtraction ? "done" : "idle"
   )
   const [promptVersionId, setPromptVersionId] = useState<string | null>(null)
-  const [structuredJson, setStructuredJson] = useState<Record<string, unknown> | null>(null)
+  const [structuredJson, setStructuredJson] = useState<Record<string, unknown> | null>(
+    initialStructuredJson
+  )
   const [showReextractConfirm, setShowReextractConfirm] = useState(false)
+  // PRD-031 Part 1: extraction no longer returns markdown, so the previous
+  // "compare current markdown to last extracted markdown" dirty test is gone.
+  // We instead track manual edits explicitly: any external setStructuredNotes
+  // call (only reachable via the legacy MarkdownPanel edit toggle) marks dirty;
+  // a fresh extraction clears the flag.
+  const [manualEditMade, setManualEditMade] = useState(false)
 
-  const isStructuredDirty = structuredNotes !== lastExtractedNotes
+  const isStructuredDirty = manualEditMade
+
+  const setStructuredNotes = useCallback((notes: string | null) => {
+    setStructuredNotesState(notes)
+    setManualEditMade(true)
+  }, [])
 
   const performExtraction = useCallback(async () => {
     setExtractionState("extracting")
@@ -73,10 +88,12 @@ export function useSignalExtraction({
       }
 
       const data = await response.json()
-      setStructuredNotes(data.structuredNotes)
-      setLastExtractedNotes(data.structuredNotes)
+      // PRD-031 Part 1: extraction returns JSON only — clear any stale markdown
+      // so the StructuredSignalView (JSON path) is unambiguously the source of truth.
+      setStructuredNotesState(null)
       setPromptVersionId(data.promptVersionId ?? null)
       setStructuredJson(data.structuredJson ?? null)
+      setManualEditMade(false)
       setExtractionState("done")
       toast.success("Signals extracted")
     } catch (err) {
@@ -109,10 +126,10 @@ export function useSignalExtraction({
   }, [])
 
   const resetExtraction = useCallback(() => {
-    setStructuredNotes(null)
-    setLastExtractedNotes(null)
+    setStructuredNotesState(null)
     setPromptVersionId(null)
     setStructuredJson(null)
+    setManualEditMade(false)
     setExtractionState("idle")
     setShowReextractConfirm(false)
   }, [])
@@ -120,7 +137,6 @@ export function useSignalExtraction({
   return {
     extractionState,
     structuredNotes,
-    lastExtractedNotes,
     promptVersionId,
     structuredJson,
     showReextractConfirm,

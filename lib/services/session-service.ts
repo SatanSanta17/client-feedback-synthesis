@@ -64,7 +64,6 @@ export interface CreateSessionInput {
   clientName: string;
   sessionDate: string;
   rawNotes: string;
-  structuredNotes?: string | null;
   structuredJson?: Record<string, unknown> | null;
   promptVersionId?: string | null;
 }
@@ -188,7 +187,7 @@ export async function createSession(
   clientRepo: ClientRepository,
   input: CreateSessionInput
 ): Promise<Session> {
-  const { clientId, clientName, sessionDate, rawNotes, structuredNotes, structuredJson, promptVersionId } = input;
+  const { clientId, clientName, sessionDate, rawNotes, structuredJson, promptVersionId } = input;
 
   console.log(
     "[session-service] createSession — clientId:",
@@ -206,11 +205,14 @@ export async function createSession(
     console.log("[session-service] created new client:", resolvedClientId);
   }
 
+  // PRD-031 Part 1: structured_notes (markdown) is no longer persisted on
+  // create. JSON is the source of truth; the master-signal backend renders
+  // markdown on demand for any consumer that still needs it.
   const row = await sessionRepo.create({
     client_id: resolvedClientId,
     session_date: sessionDate,
     raw_notes: rawNotes,
-    structured_notes: structuredNotes ?? null,
+    structured_notes: null,
     structured_json: structuredJson ?? null,
     prompt_version_id: promptVersionId ?? null,
   });
@@ -268,6 +270,10 @@ export async function updateSession(
   let resolvedPromptVersionId: string | null | undefined;
   let structuredNotesEdited: boolean | undefined;
   let resolvedStructuredJson: Record<string, unknown> | null | undefined;
+  // PRD-031 Part 1: extraction no longer writes markdown. We resolve
+  // structured_notes explicitly per branch so the extraction path forces
+  // null while non-extraction paths preserve any existing legacy markdown.
+  let resolvedStructuredNotes: string | null | undefined;
 
   if (isExtraction) {
     // P1.R5 / P1.R9: Fresh extraction resets everything
@@ -275,21 +281,26 @@ export async function updateSession(
     resolvedPromptVersionId = promptVersionId ?? null;
     structuredNotesEdited = false; // P4.R5: extraction resets manual-edit flag
     resolvedStructuredJson = structuredJson ?? null;
+    resolvedStructuredNotes = null; // PRD-031 Part 1: drop derived markdown
   } else if (structuredNotes === null) {
     // P1.R8: Clearing structured notes resets everything
     extractionStale = false;
     resolvedPromptVersionId = null;
     structuredNotesEdited = false; // P4.R5: no structured notes → nothing edited
     resolvedStructuredJson = null;
+    resolvedStructuredNotes = null;
   } else if (inputChanged) {
     // P1.R4: Raw notes or attachments changed — mark stale
     extractionStale = true;
-    // Don't touch structuredNotesEdited or structuredJson — preserve existing values
+    // Don't touch structuredNotesEdited, structuredJson, or structuredNotes —
+    // preserve existing values so legacy markdown survives.
   } else if (structuredNotes !== undefined) {
-    // P1.R4 / P4.R5: Structured notes manually edited (changed but not via extraction)
+    // P1.R4 / P4.R5: Structured notes manually edited (changed but not via extraction).
+    // Only reachable for legacy sessions where the markdown edit toggle still surfaces.
     extractionStale = true;
     structuredNotesEdited = true;
-    // Don't touch structuredJson — manual markdown edits don't sync back to JSON (Part 3)
+    resolvedStructuredNotes = structuredNotes;
+    // Don't touch structuredJson — manual markdown edits don't sync back to JSON (PRD-018 Part 3)
   }
 
   try {
@@ -297,7 +308,7 @@ export async function updateSession(
       client_id: resolvedClientId,
       session_date: sessionDate,
       raw_notes: rawNotes,
-      structured_notes: structuredNotes,
+      structured_notes: resolvedStructuredNotes,
       structured_json: resolvedStructuredJson,
       prompt_version_id: resolvedPromptVersionId,
       extraction_stale: extractionStale,
@@ -357,7 +368,9 @@ export async function deleteSession(
 
     console.log("[session-service] deleteSession success:", result.id);
 
-    if (result.structured_notes) {
+    // PRD-031 Part 1: a session contributes to the master signal if it has
+    // either legacy markdown OR structured JSON — taint on either presence.
+    if (result.structured_notes || result.structured_json) {
       try {
         await taintLatestMasterSignal(
           masterSignalRepo,

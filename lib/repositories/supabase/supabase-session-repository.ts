@@ -237,7 +237,7 @@ export function createSessionRepository(
         .update({ deleted_at: new Date().toISOString() })
         .eq("id", id)
         .is("deleted_at", null)
-        .select("id, structured_notes, created_by, team_id")
+        .select("id, structured_notes, structured_json, created_by, team_id")
         .single();
 
       if (error) {
@@ -254,6 +254,7 @@ export function createSessionRepository(
       return {
         id: data.id,
         structured_notes: data.structured_notes ?? null,
+        structured_json: data.structured_json ?? null,
         created_by: data.created_by,
         team_id: data.team_id ?? null,
       };

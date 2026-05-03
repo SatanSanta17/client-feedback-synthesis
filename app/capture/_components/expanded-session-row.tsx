@@ -114,6 +114,7 @@ export function ExpandedSessionRow({
   } = useSignalExtraction({
     getInput: getExtractionInput,
     initialStructuredNotes: session.structured_notes,
+    initialStructuredJson: session.structured_json,
     forceConfirmOnReextract: session.structured_notes_edited,
   })
 
@@ -121,12 +122,18 @@ export function ExpandedSessionRow({
   const resolvedStructuredJson = structuredJson ?? session.structured_json
 
   // Derived state
+  // PRD-031 Part 1: post-Part-1 sessions have null markdown, so a fresh
+  // re-extraction shows up only as a structuredJson reference change. We add
+  // a reference check so re-extract enables Save. Stable across non-extraction
+  // edits because the hook is seeded from session.structured_json on mount,
+  // and handleSave preserves the hook's reference into the merged row.
   const isDirty =
     client.id !== session.client_id ||
     client.name !== session.client_name ||
     sessionDate !== session.session_date ||
     rawNotes !== session.raw_notes ||
     structuredNotes !== session.structured_notes ||
+    structuredJson !== session.structured_json ||
     pendingAttachments.length > 0 ||
     deletedAttachmentIds.size > 0
 
@@ -239,8 +246,13 @@ export function ExpandedSessionRow({
       // Build the enriched row to hand back to the parent. The PUT response
       // already includes client_name + creator/updater emails; override
       // attachment_count because attachments were uploaded after the PUT.
+      // Override structured_json with the hook's reference so the post-save
+      // reference-equality dirty check correctly returns to false — server
+      // reparses the JSON over the wire, breaking reference equality despite
+      // identical content (PRD-031 Part 1).
       const merged: SessionRow = {
         ...updatedFromServer,
+        structured_json: structuredJson ?? updatedFromServer.structured_json,
         attachment_count: refreshedAttachments.length,
       }
 
@@ -336,7 +348,7 @@ export function ExpandedSessionRow({
               {session.prompt_version_id && (
                 <PromptVersionBadge promptVersionId={session.prompt_version_id} />
               )}
-              {session.extraction_stale && session.structured_notes && (
+              {session.extraction_stale && (session.structured_json || session.structured_notes) && (
                 <Badge
                   variant="outline"
                   className="text-[10px] px-1.5 py-0 border-[var(--status-warning)] text-[var(--status-warning)]"
