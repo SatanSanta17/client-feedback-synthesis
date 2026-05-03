@@ -1,4 +1,10 @@
-import { generateText, generateObject, APICallError, type LanguageModel } from "ai";
+import {
+  generateText,
+  generateObject,
+  experimental_transcribe as transcribe,
+  APICallError,
+  type LanguageModel,
+} from "ai";
 import { anthropic } from "@ai-sdk/anthropic";
 import { openai } from "@ai-sdk/openai";
 import { google } from "@ai-sdk/google";
@@ -388,6 +394,94 @@ export async function generateConversationTitle(
 }
 
 // ---------------------------------------------------------------------------
+// Transcription (PRD-032 Part 2)
+//
+// Separate from the language-model resolver above because transcription
+// support is provider-specific. Whisper is OpenAI-only at the AI SDK layer
+// today; the existing AI_PROVIDER may be Anthropic. Keeping transcription
+// configuration independent avoids forcing one knob to control both.
+// ---------------------------------------------------------------------------
+
+type SupportedTranscriptionProvider = "openai";
+
+const TRANSCRIPTION_PROVIDER_MAP: Record<
+  SupportedTranscriptionProvider,
+  (modelId: string) => ReturnType<typeof openai.transcription>
+> = {
+  openai: (modelId) => openai.transcription(modelId),
+};
+
+const TRANSCRIPTION_DEFAULTS = {
+  provider: "openai" as const,
+  model: "whisper-1",
+};
+
+/**
+ * Reads AI_TRANSCRIPTION_PROVIDER and AI_TRANSCRIPTION_MODEL from environment
+ * variables (defaults to openai/whisper-1) and returns the corresponding
+ * Vercel AI SDK transcription model instance.
+ */
+export function resolveTranscriptionModel(): {
+  model: ReturnType<typeof openai.transcription>;
+  label: string;
+} {
+  const provider =
+    process.env.AI_TRANSCRIPTION_PROVIDER ?? TRANSCRIPTION_DEFAULTS.provider;
+  const modelId =
+    process.env.AI_TRANSCRIPTION_MODEL ?? TRANSCRIPTION_DEFAULTS.model;
+
+  const factory =
+    TRANSCRIPTION_PROVIDER_MAP[provider as SupportedTranscriptionProvider];
+  if (!factory) {
+    throw new AIConfigError(
+      `Unsupported AI_TRANSCRIPTION_PROVIDER: "${provider}". Supported: ${Object.keys(TRANSCRIPTION_PROVIDER_MAP).join(", ")}`
+    );
+  }
+
+  return { model: factory(modelId), label: `${provider}/${modelId}` };
+}
+
+export interface TranscribeAudioResult {
+  text: string;
+  durationMs: number;
+  modelLabel: string;
+}
+
+/**
+ * Transcribe audio using the configured provider + model. Retries transient
+ * failures (429, 5xx, network) up to MAX_RETRIES with exponential backoff via
+ * the shared withRetry() helper. The AI SDK's built-in maxRetries is set to
+ * 0 to defer all retry behaviour to withRetry — avoids double-retry math.
+ *
+ * Throws TranscriptionEmptyError when the provider returns empty/whitespace-
+ * only text (PRD-032 P2.R8 — silent video, music-only, etc.).
+ */
+export async function transcribeAudio(
+  audio: Buffer
+): Promise<TranscribeAudioResult> {
+  const { model, label } = resolveTranscriptionModel();
+  const start = Date.now();
+
+  const result = await withRetry(`transcribe(${label})`, async (attempt) => {
+    console.log(
+      `[ai-service] transcribe attempt ${attempt + 1}/${MAX_RETRIES + 1} — model: ${label}, audio: ${audio.byteLength} bytes`
+    );
+    return transcribe({ model, audio, maxRetries: 0 });
+  });
+
+  const text = result.text?.trim() ?? "";
+  if (text.length === 0) {
+    throw new TranscriptionEmptyError();
+  }
+
+  return {
+    text,
+    durationMs: Date.now() - start,
+    modelLabel: label,
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Error classes
 // ---------------------------------------------------------------------------
 
@@ -423,5 +517,15 @@ export class AIConfigError extends AIServiceError {
   constructor(message: string) {
     super(message);
     this.name = "AIConfigError";
+  }
+}
+
+// PRD-032 Part 2 — raised when the transcription provider returns empty or
+// whitespace-only text (silent video, music-only, fully unintelligible audio).
+// Routes catch this to return 422 with the user-facing message verbatim.
+export class TranscriptionEmptyError extends AIServiceError {
+  constructor() {
+    super("No speech could be transcribed from this video.");
+    this.name = "TranscriptionEmptyError";
   }
 }
