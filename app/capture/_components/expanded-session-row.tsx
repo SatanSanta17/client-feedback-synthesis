@@ -118,9 +118,6 @@ export function ExpandedSessionRow({
     forceConfirmOnReextract: session.structured_notes_edited,
   })
 
-  // Resolve structuredJson: hook state (fresh extraction) takes precedence over session prop (DB)
-  const resolvedStructuredJson = structuredJson ?? session.structured_json
-
   // Derived state
   // PRD-031 Part 1: post-Part-1 sessions have null markdown, so a fresh
   // re-extraction shows up only as a structuredJson reference change. We add
@@ -389,10 +386,10 @@ export function ExpandedSessionRow({
             <div className="flex items-center justify-center rounded-lg border border-border bg-card py-12">
               <Loader2 className="size-5 animate-spin text-muted-foreground" />
             </div>
-          ) : (structuredNotes || session.structured_notes || resolvedStructuredJson) ? (
+          ) : (structuredNotes || session.structured_notes || structuredJson) ? (
             <StructuredNotesPanel
               structuredNotes={structuredNotes ?? session.structured_notes}
-              structuredJson={resolvedStructuredJson}
+              structuredJson={structuredJson}
               onChange={canEdit ? setStructuredNotes : () => {}}
               readOnly={!canEdit}
               showHeading={false}

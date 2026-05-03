@@ -44,10 +44,10 @@ export async function getLatestMasterSignal(
 }
 
 /**
- * Count sessions that have structured_notes and were updated after the given
- * timestamp.
+ * Count sessions that have extraction output (structured_json or legacy
+ * structured_notes) and were updated after the given timestamp.
  *
- * If `since` is null, counts ALL sessions with structured_notes (useful when
+ * If `since` is null, counts ALL sessions with extraction output (useful when
  * no master signal exists yet).
  */
 export async function getStaleSessionCount(

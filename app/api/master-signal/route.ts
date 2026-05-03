@@ -14,10 +14,10 @@ import { createMasterSignalRepository } from "@/lib/repositories/supabase/supaba
  *
  * Returns:
  * - masterSignal: the latest generated master signal, or null if none exists.
- * - staleCount: number of sessions with structured_notes that were updated
- *   after the master signal was generated. If no master signal exists, this is
- *   the total count of sessions with structured_notes (i.e., how many are
- *   ready to be synthesised).
+ * - staleCount: number of sessions with extraction output (structured_json or
+ *   legacy structured_notes) that were updated after the master signal was
+ *   generated. If no master signal exists, this is the total count of sessions
+ *   with extraction output (i.e., how many are ready to be synthesised).
  */
 export async function GET() {
   console.log("[api/master-signal] GET — fetching current master signal");

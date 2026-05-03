@@ -82,7 +82,7 @@ export function useSignalExtraction({
         const msg = errorData?.message ?? "Failed to extract signals"
         response.status === 402 ? toast.warning(msg) : toast.error(msg)
         setExtractionState((prev) =>
-          prev === "extracting" && structuredNotes ? "done" : "idle"
+          prev === "extracting" && (structuredNotes || structuredJson) ? "done" : "idle"
         )
         return
       }
@@ -106,7 +106,7 @@ export function useSignalExtraction({
         prev === "extracting" && structuredNotes ? "done" : "idle"
       )
     }
-  }, [getInput, structuredNotes])
+  }, [getInput, structuredNotes, structuredJson])
 
   const handleExtractSignals = useCallback(async () => {
     if (extractionState === "done" && (isStructuredDirty || forceConfirmOnReextract)) {

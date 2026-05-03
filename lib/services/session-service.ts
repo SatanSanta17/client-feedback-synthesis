@@ -354,7 +354,8 @@ export async function updateSession(
 /**
  * Soft-delete a session by setting deleted_at.
  * Throws SessionNotFoundError if the session doesn't exist or is already deleted.
- * Taints the latest master signal if the session had structured notes.
+ * Taints the latest master signal if the session contributed to it — i.e. it
+ * had any extraction output (structured_json or legacy structured_notes).
  */
 export async function deleteSession(
   sessionRepo: SessionRepository,
