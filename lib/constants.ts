@@ -19,3 +19,33 @@ export const ACCEPTED_FILE_TYPES: Record<string, string[]> = {
 };
 
 export const ACCEPTED_EXTENSIONS = [".txt", ".pdf", ".csv", ".docx", ".json"];
+
+// Video upload (PRD-032) — kept separate from ACCEPTED_FILE_TYPES because the
+// pipeline (browser-side audio extraction + transcription) does not share the
+// parsed-file flow.
+export const VIDEO_MIME_TYPES: Record<string, string[]> = {
+  "video/mp4": [".mp4"],
+  "video/quicktime": [".mov"],
+  "video/webm": [".webm"],
+};
+
+export const VIDEO_EXTENSIONS = [".mp4", ".mov", ".webm"];
+
+export const MAX_VIDEO_FILE_SIZE_BYTES = 500 * 1024 * 1024;
+export const MAX_VIDEO_DURATION_SECONDS = 2 * 60 * 60;
+
+// Tuned for speech-to-text, not playback. Mono / 16 kHz / 32 kbps keeps a
+// 2-hour session under Whisper's per-request size ceiling without chunking.
+export const AUDIO_EXTRACTION_PARAMS = {
+  sampleRate: 16_000,
+  channels: 1,
+  bitrate: "32k",
+  container: "mp3",
+  mimeType: "audio/mpeg",
+  extension: ".mp3",
+} as const;
+
+// Self-hosted under /public/ffmpeg/ so the WASM core is served from our origin
+// (no third-party CDN at runtime). Copied during postinstall.
+export const FFMPEG_CORE_URL = "/ffmpeg/ffmpeg-core.js";
+export const FFMPEG_WASM_URL = "/ffmpeg/ffmpeg-core.wasm";
