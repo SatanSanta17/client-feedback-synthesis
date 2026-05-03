@@ -20,10 +20,18 @@ import { type ParsedAttachment } from "./file-upload-zone"
 import { composeAIInput } from "@/lib/utils/compose-ai-input"
 import { uploadAttachmentsToSession } from "@/lib/utils/upload-attachments"
 import { useSignalExtraction } from "@/lib/hooks/use-signal-extraction"
+import { useWakeLock } from "@/lib/hooks/use-wake-lock"
+import { useBeforeUnloadGuard } from "@/lib/hooks/use-beforeunload-guard"
 import { ReextractConfirmDialog } from "@/components/capture/reextract-confirm-dialog"
 import { CaptureAttachmentSection } from "./capture-attachment-section"
+import { ProcessingVideoBanner } from "./processing-video-banner"
 import { StructuredNotesPanel } from "./structured-notes-panel"
 import { ViewPromptDialog } from "./view-prompt-dialog"
+import type {
+  VideoListItem,
+  VideoTranscriptAttachment,
+  VideoUploadError,
+} from "@/lib/types/video-attachment"
 
 function getToday(): string {
   return new Date().toISOString().split("T")[0]
@@ -75,6 +83,9 @@ export function SessionCaptureForm({ onSessionSaved }: SessionCaptureFormProps) 
 
   // File attachments — managed outside react-hook-form
   const [attachments, setAttachments] = useState<ParsedAttachment[]>([])
+  // Video attachments (PRD-032 Part 1) — separate slice. Transcripts are not
+  // persisted on save in Part 1; Part 2 adds the session_attachments row.
+  const [videoItems, setVideoItems] = useState<VideoListItem[]>([])
 
   // View Prompt dialog state (P2.R1)
   const [showPromptDialog, setShowPromptDialog] = useState(false)
@@ -82,22 +93,33 @@ export function SessionCaptureForm({ onSessionSaved }: SessionCaptureFormProps) 
   // Inline error for missing input (notes or attachments)
   const [inputError, setInputError] = useState<string | null>(null)
 
-  // Watch rawNotes to enable/disable the extract button
   const rawNotes = watch("rawNotes")
   const hasNotes = rawNotes?.trim().length > 0
-  const hasInput = hasNotes || attachments.length > 0
+  const completedTranscripts = videoItems.flatMap((v) =>
+    v.status === "completed" ? [v.data] : []
+  )
+  const hasInput = hasNotes || attachments.length > 0 || completedTranscripts.length > 0
 
-  // Combined character counter
   const attachmentChars = attachments.reduce(
     (sum, a) => sum + a.parsed_content.length, 0
   )
-  const totalChars = (rawNotes?.length ?? 0) + attachmentChars
+  const transcriptChars = completedTranscripts.reduce(
+    (sum, t) => sum + t.parsed_content.length, 0
+  )
+  const totalChars = (rawNotes?.length ?? 0) + attachmentChars + transcriptChars
   const isOverLimit = totalChars > MAX_COMBINED_CHARS
 
-  // Signal extraction via shared hook
+  const anyVideoInFlight = videoItems.some((v) => v.status === "in_flight")
+  useWakeLock(anyVideoInFlight)
+  useBeforeUnloadGuard(anyVideoInFlight)
+
   const getExtractionInput = useCallback(
-    () => composeAIInput(getValues("rawNotes"), attachments),
-    [getValues, attachments]
+    () =>
+      composeAIInput(getValues("rawNotes"), [
+        ...attachments,
+        ...completedTranscripts,
+      ]),
+    [getValues, attachments, completedTranscripts]
   )
 
   const {
@@ -122,6 +144,34 @@ export function SessionCaptureForm({ onSessionSaved }: SessionCaptureFormProps) 
     setAttachments((prev) => prev.filter((_, i) => i !== index))
   }
 
+  const handleVideoSelected = useCallback((file: File) => {
+    setVideoItems((prev) => [
+      ...prev,
+      { id: crypto.randomUUID(), status: "in_flight", file },
+    ])
+    setInputError(null)
+  }, [])
+
+  const handleVideoCompleted = useCallback(
+    (id: string, attachment: VideoTranscriptAttachment) => {
+      setVideoItems((prev) =>
+        prev.map((v) =>
+          v.id === id ? { id, status: "completed", data: attachment } : v
+        )
+      )
+    },
+    []
+  )
+
+  const handleVideoError = useCallback((_id: string, error: VideoUploadError) => {
+    // Card renders the error inline; no parent state change. Logged for ops.
+    console.warn("[SessionCaptureForm] video upload error:", error.code, error.message)
+  }, [])
+
+  const handleVideoRemove = useCallback((id: string) => {
+    setVideoItems((prev) => prev.filter((v) => v.id !== id))
+  }, [])
+
   const onSubmit = async (data: CaptureFormValues) => {
     if (!hasInput) {
       setInputError("Provide notes or attach files before saving.")
@@ -129,6 +179,10 @@ export function SessionCaptureForm({ onSessionSaved }: SessionCaptureFormProps) 
     }
     if (isOverLimit) {
       toast.error(`Combined input exceeds ${MAX_COMBINED_CHARS.toLocaleString()} characters.`)
+      return
+    }
+    if (anyVideoInFlight) {
+      toast.error("A video is still processing — please wait or cancel it before saving.")
       return
     }
     setInputError(null)
@@ -176,6 +230,7 @@ export function SessionCaptureForm({ onSessionSaved }: SessionCaptureFormProps) 
       })
       resetExtraction()
       setAttachments([])
+      setVideoItems([])
       onSessionSaved?.()
     } catch (err) {
       console.error(
@@ -188,9 +243,13 @@ export function SessionCaptureForm({ onSessionSaved }: SessionCaptureFormProps) 
 
   return (
     <div className="w-full max-w-4xl rounded-lg border border-border bg-card p-6">
-      <h2 className="mb-6 text-lg font-semibold text-foreground">
+      <h2 className="mb-2 text-lg font-semibold text-foreground">
         New Session
       </h2>
+
+      <div className="mb-4">
+        <ProcessingVideoBanner active={anyVideoInFlight} />
+      </div>
 
       <form onSubmit={handleSubmit(onSubmit)} className="flex flex-col gap-5">
         {/* Client field */}
@@ -249,8 +308,13 @@ export function SessionCaptureForm({ onSessionSaved }: SessionCaptureFormProps) 
 
         <CaptureAttachmentSection
           attachments={attachments}
+          videoItems={videoItems}
           onFileParsed={handleAddAttachment}
+          onVideoSelected={handleVideoSelected}
           onRemove={handleRemoveAttachment}
+          onVideoCompleted={handleVideoCompleted}
+          onVideoError={handleVideoError}
+          onVideoRemove={handleVideoRemove}
           disabled={extractionState === "extracting" || isSubmitting}
           totalChars={totalChars}
           isOverLimit={isOverLimit}
@@ -258,12 +322,11 @@ export function SessionCaptureForm({ onSessionSaved }: SessionCaptureFormProps) 
 
         {/* Action buttons */}
         <div className="flex items-center gap-3">
-          {/* Extract Signals button */}
           <Button
             type="button"
             variant="ai"
             size="lg"
-            disabled={!hasInput || isOverLimit || extractionState === "extracting"}
+            disabled={!hasInput || isOverLimit || extractionState === "extracting" || anyVideoInFlight}
             onClick={handleExtractSignals}
           >
             {extractionState === "extracting" ? (
@@ -284,7 +347,6 @@ export function SessionCaptureForm({ onSessionSaved }: SessionCaptureFormProps) 
             )}
           </Button>
 
-          {/* View Prompt button — ai-outline, visually subordinate (P2.R1) */}
           <Button
             type="button"
             variant="ai-outline"
@@ -295,10 +357,9 @@ export function SessionCaptureForm({ onSessionSaved }: SessionCaptureFormProps) 
             View Prompt
           </Button>
 
-          {/* Submit button */}
           <Button
             type="submit"
-            disabled={isSubmitting}
+            disabled={isSubmitting || anyVideoInFlight}
             size="lg"
           >
             {isSubmitting && <Loader2 className="mr-2 size-4 animate-spin" />}
@@ -307,7 +368,6 @@ export function SessionCaptureForm({ onSessionSaved }: SessionCaptureFormProps) 
         </div>
       </form>
 
-      {/* Structured notes panel — visible after extraction */}
       {extractionState === "done" && (
         <StructuredNotesPanel
           structuredNotes={structuredNotes}

@@ -15,11 +15,19 @@ import { composeAIInput } from "@/lib/utils/compose-ai-input"
 import { uploadAttachmentsToSession } from "@/lib/utils/upload-attachments"
 import type { SessionAttachment } from "@/lib/services/attachment-service"
 import { useSignalExtraction } from "@/lib/hooks/use-signal-extraction"
+import { useWakeLock } from "@/lib/hooks/use-wake-lock"
+import { useBeforeUnloadGuard } from "@/lib/hooks/use-beforeunload-guard"
 import { ReextractConfirmDialog } from "@/components/capture/reextract-confirm-dialog"
 import { ExpandedSessionMetadata } from "./expanded-session-metadata"
 import { ExpandedSessionNotes } from "./expanded-session-notes"
 import { ExpandedSessionActions } from "./expanded-session-actions"
+import { ProcessingVideoBanner } from "./processing-video-banner"
 import { PromptVersionBadge } from "./prompt-version-badge"
+import type {
+  VideoListItem,
+  VideoTranscriptAttachment,
+  VideoUploadError,
+} from "@/lib/types/video-attachment"
 
 function structuredJsonEqual(
   a: Record<string, unknown> | null,
@@ -81,6 +89,9 @@ export function ExpandedSessionRow({
   // Attachment state
   const [savedAttachments, setSavedAttachments] = useState<SessionAttachment[]>([])
   const [pendingAttachments, setPendingAttachments] = useState<ParsedAttachment[]>([])
+  // PRD-032 Part 1: video items live in client memory only; transcripts are
+  // not yet persisted to session_attachments (Part 2 work).
+  const [videoItems, setVideoItems] = useState<VideoListItem[]>([])
   const [isLoadingAttachments, setIsLoadingAttachments] = useState(true)
   const [deletedAttachmentIds, setDeletedAttachmentIds] = useState<Set<string>>(new Set())
 
@@ -104,10 +115,23 @@ export function ExpandedSessionRow({
     return () => { cancelled = true }
   }, [session.id])
 
+  const completedTranscripts = videoItems.flatMap((v) =>
+    v.status === "completed" ? [v.data] : []
+  )
+  const anyVideoInFlight = videoItems.some((v) => v.status === "in_flight")
+
+  useWakeLock(anyVideoInFlight)
+  useBeforeUnloadGuard(anyVideoInFlight)
+
   // Signal extraction via shared hook
   const getExtractionInput = useCallback(
-    () => composeAIInput(rawNotes, [...savedAttachments, ...pendingAttachments]),
-    [rawNotes, savedAttachments, pendingAttachments]
+    () =>
+      composeAIInput(rawNotes, [
+        ...savedAttachments,
+        ...pendingAttachments,
+        ...completedTranscripts,
+      ]),
+    [rawNotes, savedAttachments, pendingAttachments, completedTranscripts]
   )
 
   const {
@@ -142,12 +166,14 @@ export function ExpandedSessionRow({
     structuredNotes !== session.structured_notes ||
     !structuredJsonEqual(structuredJson, session.structured_json) ||
     pendingAttachments.length > 0 ||
-    deletedAttachmentIds.size > 0
+    deletedAttachmentIds.size > 0 ||
+    videoItems.length > 0
 
   const hasInput =
     rawNotes.trim().length > 0 ||
     savedAttachments.length > 0 ||
-    pendingAttachments.length > 0
+    pendingAttachments.length > 0 ||
+    completedTranscripts.length > 0
 
   const isFormValid =
     client.name.trim().length > 0 &&
@@ -160,9 +186,12 @@ export function ExpandedSessionRow({
   const pendingAttachmentChars = pendingAttachments.reduce(
     (sum, a) => sum + a.parsed_content.length, 0
   )
-  const totalChars = (rawNotes?.length ?? 0) + savedAttachmentChars + pendingAttachmentChars
+  const transcriptChars = completedTranscripts.reduce(
+    (sum, t) => sum + t.parsed_content.length, 0
+  )
+  const totalChars = (rawNotes?.length ?? 0) + savedAttachmentChars + pendingAttachmentChars + transcriptChars
   const isOverLimit = totalChars > MAX_COMBINED_CHARS
-  const totalAttachmentCount = savedAttachments.length + pendingAttachments.length
+  const totalAttachmentCount = savedAttachments.length + pendingAttachments.length + videoItems.length
 
   useEffect(() => {
     onDirtyChange(isDirty)
@@ -182,9 +211,39 @@ export function ExpandedSessionRow({
     setPendingAttachments((prev) => prev.filter((_, i) => i !== index))
   }, [])
 
+  const handleVideoSelected = useCallback((file: File) => {
+    setVideoItems((prev) => [
+      ...prev,
+      { id: crypto.randomUUID(), status: "in_flight", file },
+    ])
+  }, [])
+
+  const handleVideoCompleted = useCallback(
+    (id: string, attachment: VideoTranscriptAttachment) => {
+      setVideoItems((prev) =>
+        prev.map((v) =>
+          v.id === id ? { id, status: "completed", data: attachment } : v
+        )
+      )
+    },
+    []
+  )
+
+  const handleVideoError = useCallback((_id: string, error: VideoUploadError) => {
+    console.warn("[ExpandedSessionRow] video upload error:", error.code, error.message)
+  }, [])
+
+  const handleVideoRemove = useCallback((id: string) => {
+    setVideoItems((prev) => prev.filter((v) => v.id !== id))
+  }, [])
+
   // --- Save ---
   const handleSave = useCallback(async (): Promise<boolean> => {
     if (!isFormValid) return false
+    if (anyVideoInFlight) {
+      toast.error("A video is still processing — please wait or cancel it before saving.")
+      return false
+    }
 
     setIsSaving(true)
     try {
@@ -235,9 +294,12 @@ export function ExpandedSessionRow({
         await uploadAttachmentsToSession(session.id, pendingAttachments)
       }
 
-      // Row stays expanded after save — reset attachment state to reflect the new server truth
+      // Row stays expanded after save — reset attachment state to reflect the new server truth.
+      // Video transcripts are not yet persisted (PRD-032 Part 2 work); clear them too so the
+      // UI doesn't lie about what was saved.
       setPendingAttachments([])
       setDeletedAttachmentIds(new Set())
+      setVideoItems([])
       let refreshedAttachments: SessionAttachment[] = savedAttachments
       try {
         const attachmentsRes = await fetch(`/api/sessions/${session.id}/attachments`)
@@ -271,7 +333,7 @@ export function ExpandedSessionRow({
     } finally {
       setIsSaving(false)
     }
-  }, [session.id, session.raw_notes, client, sessionDate, rawNotes, structuredNotes, structuredJson, promptVersionId, isFormValid, onSave, savedAttachments, pendingAttachments, deletedAttachmentIds])
+  }, [session.id, session.raw_notes, client, sessionDate, rawNotes, structuredNotes, structuredJson, promptVersionId, isFormValid, onSave, savedAttachments, pendingAttachments, deletedAttachmentIds, anyVideoInFlight])
 
   useEffect(() => {
     registerSave(handleSave)
@@ -313,6 +375,8 @@ export function ExpandedSessionRow({
 
   return (
     <div className="flex flex-col gap-4 p-4 bg-muted/20 border-t border-border">
+      <ProcessingVideoBanner active={anyVideoInFlight} />
+
       <ExpandedSessionMetadata
         canEdit={canEdit}
         client={client}
@@ -330,6 +394,7 @@ export function ExpandedSessionRow({
           sessionId={session.id}
           savedAttachments={savedAttachments}
           pendingAttachments={pendingAttachments}
+          videoItems={videoItems}
           isLoadingAttachments={isLoadingAttachments}
           structuredNotes={structuredNotes}
           extractionState={extractionState}
@@ -340,6 +405,10 @@ export function ExpandedSessionRow({
           onSavedAttachmentDeleted={handleSavedAttachmentDeleted}
           onAddPendingAttachment={handleAddPendingAttachment}
           onRemovePendingAttachment={handleRemovePendingAttachment}
+          onVideoSelected={handleVideoSelected}
+          onVideoCompleted={handleVideoCompleted}
+          onVideoError={handleVideoError}
+          onVideoRemove={handleVideoRemove}
         />
 
         {/* Extracted signals panel */}
@@ -364,7 +433,7 @@ export function ExpandedSessionRow({
                 type="button"
                 variant="ai"
                 size="sm"
-                disabled={!hasInput || isOverLimit || extractionState === "extracting"}
+                disabled={!hasInput || isOverLimit || extractionState === "extracting" || anyVideoInFlight}
                 onClick={handleExtractSignals}
               >
                 {extractionState === "extracting" ? (

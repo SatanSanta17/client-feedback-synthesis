@@ -26,6 +26,10 @@ export type VideoTranscriptAttachment = Extract<
   { kind: "video_transcript" }
 >;
 
+export type VideoListItem =
+  | { id: string; status: "in_flight"; file: File }
+  | { id: string; status: "completed"; data: VideoTranscriptAttachment };
+
 export type VideoAttachmentId = string;
 
 export type VideoUploadState =
