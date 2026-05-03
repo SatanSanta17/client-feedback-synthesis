@@ -1,13 +1,13 @@
 # TRD-032: Video Upload and Transcription
 
-> **Status:** Parts 1–2 — Implemented (closes-out audits done). Part 3 — Draft.
+> **Status:** Parts 1–3 — Implemented (closes-out audits done). Part 4 — Draft.
 >
 > Mirrors **PRD-032**. Each part maps to the corresponding PRD part.
 >
 > **Forward compatibility (full PRD scope):**
 > - **Part 2** (server transcription + persistence) replaces the Part 1 stub with a real Whisper call via the AI provider abstraction (`@ai-sdk/openai` `experimental_transcribe`), makes `session_attachments.storage_path` nullable for transcript-only rows, and adds two persistence paths: client-driven on session save, and server-driven auto-persist when the saved session is already known.
 > - **Part 3** (transcript UX, including editing per PRD P3.R7) **adds a single column** to `session_attachments` (`last_edited_at TIMESTAMPTZ NULL`) and a single new endpoint method (`PATCH` on the existing attachment route) for transcript edits. Most of P3 ships as side-effects of Parts 1–2: P3.R2 (no download button) was the defensive Part 2 patch; P3.R3 (inline view) inherits from PRD-013's "View content" toggle; P3.R4 (past-session paperclip + count) inherits from PRD-013's `attachment_count`; P3.R5 (re-extraction includes transcripts) inherits from `composeAIInput`'s structural compatibility with the transcript shape (Part 1 Increment 1.5); P3.R6 (adding video to existing sessions) inherits from Part 2's auto-persist branch. Only **P3.R1** (visual sub-label) and **P3.R7** (editable transcripts) are genuinely new work.
-> - **Part 4** (edge cases) builds on the per-attachment state machine introduced in Part 1 and the retry policy introduced in Part 2. Out-of-memory, codec failures, sequential video processing all hook into the same state-machine surface; the empty-transcript-edit rejection (P4.R6) is enforced at the editor's save boundary already in Part 3 (server- and client-side) so Part 4 only refines the OOM/codec heuristics on the client side.
+> - **Part 4** (edge cases and limits) is mostly verification of behaviour shipped in Parts 1–3 plus one substantive addition. P4.R1 / P4.R2 (OOM and codec failure messages) ship verbatim in Part 1 via `mapToVideoUploadError`; Part 4 refines the heuristic patterns to recognise `RangeError` and `WebAssembly.RuntimeError` explicitly. P4.R3 (`MAX_ATTACHMENTS`) is enforced from Part 1 (client) and Part 2 (server). P4.R5 (audio-only files rejected) is enforced today via the extension whitelist — no audio extension is in `ACCEPTED_EXTENSIONS` or `VIDEO_EXTENSIONS`, so audio uploads surface the existing "not a supported format" toast. P4.R6 (empty-edit rejection) shipped in Part 3 with verbatim messages on both client and server. The only genuinely-new functional work is **P4.R4 — sequential video processing**: a concurrency-1 limit on actively-running pipelines at the `<VideoAttachmentSection>` level, with queued items rendered as "Waiting…" placeholder cards.
 
 ---
 
@@ -2380,3 +2380,284 @@ Run `npx tsc --noEmit`, `npx eslint` across all touched files, and `npm run buil
 - **Backlog — Revert edited transcript to original:** Would add an `original_parsed_content` column on insert (populated only when the row's `parsed_content` is later edited) plus a "Revert" button alongside Save/Cancel in `TranscriptEditor`. Schema-additive, type-additive, UI-additive — no breaking change. Skipped in v1 because the schema clean-up cost vs. user demand (none yet) is negative.
 - **Backlog — Audio-only file uploads:** When audio-only is added, those rows would also be transcript-only (`source_format = "audio_transcript"` say). The current editing exclusivity check (`source_format === "video_transcript"`) would need to widen to include audio transcripts. Single boolean on `attachment` — `isEditableSourceFormat(source_format)` helper — minor change at that point.
 - **Backlog — Cloud meeting integrations / In-browser recording:** Both feed transcripts through the same `session_attachments` rows as `video_transcript`. The editing UX inherits unchanged.
+
+---
+
+## Part 4: Edge cases and limits
+
+> Implements **P4.R1–P4.R6** from PRD-032.
+>
+> **Already shipped via earlier parts (verified in this part's audit):**
+> - **P4.R1** (OOM error message — `"Your device couldn't process this video. Try a shorter clip or a different device."`) — Part 1 Increment 1.3 wired the verbatim message into `mapToVideoUploadError`'s `EXTRACTION_OOM` branch. Part 4 refines the detection heuristic; the message itself is unchanged.
+> - **P4.R2** (codec/format error message — `"This video format couldn't be processed. Try converting to MP4 or use a different recording."`) — Part 1 Increment 1.3 wired the verbatim message into `mapToVideoUploadError`'s `EXTRACTION_FAILED` branch. Part 4 refines the detection heuristic; the message itself is unchanged.
+> - **P4.R3** (`MAX_ATTACHMENTS` enforcement, video transcripts counted) — Part 1 Increment 1.4 client-side enforcement in `FileUploadZone` (counts both parsed files and video items via `currentCount`), Part 2 Increment 2.3 server-side enforcement in `/api/sessions/[id]/attachments` POST transcript branch, Part 2 Increment 2.5 pre-flight check in `/api/files/transcribe` auto-persist branch.
+> - **P4.R5** (audio-only files rejected as unsupported) — `.mp3`, `.m4a`, `.wav` are not in `ACCEPTED_EXTENSIONS` or `VIDEO_EXTENSIONS`. The `processFiles` loop in `FileUploadZone` rejects with the existing `"\"${fileName}\" is not a supported format. Accepted: ..."` toast. No code change needed; the rejection is structural.
+> - **P4.R6** (empty-edit rejection — `"Transcript can't be empty. Use Remove if you want to discard this attachment."`) — Part 3 Increments 3.2 + 3.3 wired the verbatim message into both the server-side PATCH route (400 response) and the client-side `TranscriptEditor` (inline error gating the Save button).
+>
+> **New work in this part:** P4.R4 (sequential video processing) and a refinement of the OOM/codec heuristics in `mapToVideoUploadError` to catch `RangeError` and `WebAssembly.RuntimeError` explicitly.
+>
+> **References full PRD scope:**
+> - The sequential queue introduced here operates at `<VideoAttachmentSection>` level — gates which `<VideoAttachmentCard>` instances mount based on the current items list. The per-attachment state machine (`useVideoAttachment`) is unchanged; the queue is a parent-level concern, matching the original Part 1 forward-compat note ("Part 4's queue policy operates one level above and is orthogonal to Part 2's concerns"). The auto-persist branch (Part 2) flows through naturally — auto-persisted items are removed from the videoItems list, advancing the queue automatically without any new logic.
+> - Heuristic refinement is confined to `mapToVideoUploadError` in `lib/hooks/use-video-attachment.ts`. The `VideoUploadErrorCode` enum (Part 1 Increment 1.1) is unchanged — Part 4 adds NO new error codes, only better detection of existing ones. Downstream UI (`<VideoAttachmentCard>`'s error rendering) is unchanged.
+> - Backlog items called out in the PRD (audio-only uploads, long-video chunking, multi-threaded ffmpeg.wasm, server-side fallback, revert edited transcript, cloud meeting integrations, in-browser recording, per-team transcription quota) are explicitly out of scope. Each is layered above the architecture this part finalises; none requires a Part 4 hook.
+
+### Overview
+
+Two narrow changes. **Sequential video processing**: `<VideoAttachmentSection>` finds the first `in_flight` item in the items list and only that one gets a fully-mounted `<VideoAttachmentCard>` (which auto-starts its `useVideoAttachment` pipeline on mount). All other `in_flight` items render as inline `Clock`-icon "Waiting…" placeholder cards with file name + size + cancel button. When the active card completes (manual flow → item flips to `completed`; auto-persist flow → item is removed), the parent's state update triggers a re-render and the new "first in_flight" item's card mounts and starts. Errored cards stay rendered (the user sees the inline error and dismisses via Remove); the queue advances on dismissal. The per-attachment state machine and the `<VideoAttachmentCard>` itself are unchanged.
+
+**Heuristic refinement** in `mapToVideoUploadError`: explicit `RangeError` instance check (canonical JS signal for memory exhaustion) and `WebAssembly.RuntimeError` constructor-name check (ffmpeg.wasm surfaces "memory access out of bounds" as a `RuntimeError` when the WASM heap is exhausted) added to the OOM branch. Codec/format regex widened with `invalid (data|argument)`, `unable to find`, `could not decode`, `malformed` patterns to catch the specific ffmpeg.wasm failure modes. Existing message-text regex kept as a fallback. No enum changes; no UI changes; the same `EXTRACTION_OOM` and `EXTRACTION_FAILED` codes map to the same verbatim user messages from P4.R1 / P4.R2.
+
+### Dependencies (npm)
+
+None new.
+
+### Database Changes
+
+None.
+
+### New Environment Variables
+
+None.
+
+### Files Changed
+
+| File | Action | Purpose |
+|------|--------|---------|
+| `app/capture/_components/video-attachment-section.tsx` | **Modify** | Find first `in_flight` item, mount only that card; render other `in_flight` items as inline "Waiting…" placeholders with file name + Cancel button + `Clock` icon. The completed-transcript card and the active card paths are unchanged |
+| `lib/hooks/use-video-attachment.ts` | **Modify** | Refine `mapToVideoUploadError` — add explicit `RangeError` / `WebAssembly.RuntimeError` detection for `EXTRACTION_OOM`; widen codec regex with specific ffmpeg.wasm patterns for `EXTRACTION_FAILED` |
+
+### Implementation
+
+#### Increment 4.1: Sequential video processing (P4.R4)
+
+**What:** Add a concurrency-1 queue at `<VideoAttachmentSection>` level. Find the first `in_flight` item; only that one gets a fully-mounted `<VideoAttachmentCard>`. Other `in_flight` items render as inline "Waiting…" placeholder cards. The queue advances naturally as items transition out of `in_flight` (manual completion / auto-persist removal / cancellation / error-dismissal).
+
+**Files:**
+
+1. **Modify `app/capture/_components/video-attachment-section.tsx`:**
+
+   - Add `Clock` import from `lucide-react`.
+   - Compute `firstInFlightIndex = items.findIndex((i) => i.status === "in_flight")` once per render.
+   - Branch the per-item render:
+     - `completed` items → existing `<CompletedTranscriptCard>` path (unchanged).
+     - `in_flight` items where `index === firstInFlightIndex` → existing `<VideoAttachmentCard>` path (unchanged — pipeline auto-starts on mount).
+     - `in_flight` items where `index !== firstInFlightIndex` → new inline `<QueuedVideoCard>` placeholder.
+   - Add a small `QueuedVideoCard` helper component (file-local, ~20 lines) — `Clock` icon + file-type icon + file name + "Waiting…" sub-label + file size + Cancel (`X`) button.
+
+   The card and the per-attachment hook are not modified — the gating is purely "do we mount the card or not."
+
+   ```tsx
+   const firstInFlightIndex = items.findIndex((i) => i.status === "in_flight")
+
+   return (
+     <div className="flex flex-col gap-2">
+       {items.map((item, index) => {
+         if (item.status === "completed") {
+           return (
+             <CompletedTranscriptCard
+               key={item.id}
+               attachment={item.data}
+               onEdited={onEdited ? (parsedContent) => onEdited(item.id, parsedContent) : undefined}
+               onRemove={() => onRemove(item.id)}
+             />
+           )
+         }
+         // item.status === "in_flight"
+         if (index === firstInFlightIndex) {
+           return (
+             <VideoAttachmentCard
+               key={item.id}
+               file={item.file}
+               sessionId={sessionId}
+               onCompleted={(attachment) => onCompleted(item.id, attachment)}
+               onAutoPersisted={
+                 onAutoPersisted
+                   ? (attachment) => onAutoPersisted(item.id, attachment)
+                   : undefined
+               }
+               onError={(error) => onError(item.id, error)}
+               onCancel={() => onRemove(item.id)}
+             />
+           )
+         }
+         return (
+           <QueuedVideoCard
+             key={item.id}
+             file={item.file}
+             onRemove={() => onRemove(item.id)}
+           />
+         )
+       })}
+     </div>
+   )
+   ```
+
+   `QueuedVideoCard`:
+
+   ```tsx
+   function QueuedVideoCard({ file, onRemove }: { file: File; onRemove: () => void }) {
+     const Icon = FILE_ICONS[file.type] ?? FILE_ICONS["video/mp4"]
+     return (
+       <div className="rounded-md border border-border bg-muted/30">
+         <div className="flex items-center gap-3 px-3 py-2">
+           <Clock className="size-4 shrink-0 text-muted-foreground" />
+           <Icon className="size-4 shrink-0 text-muted-foreground" />
+           <div className="flex min-w-0 flex-1 flex-col">
+             <span className="truncate text-sm text-foreground">{file.name}</span>
+             <span className="text-xs text-muted-foreground">Waiting…</span>
+           </div>
+           <span className="shrink-0 text-xs text-muted-foreground">
+             {formatFileSize(file.size)}
+           </span>
+           <button
+             type="button"
+             onClick={onRemove}
+             className="shrink-0 rounded p-0.5 text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive"
+             aria-label={`Cancel queued upload ${file.name}`}
+           >
+             <X className="size-3.5" />
+           </button>
+         </div>
+       </div>
+     )
+   }
+   ```
+
+   No state, no effects — pure presentational. The Cancel button calls `onRemove` (the parent's videoItem-removal handler), which is the same path active and completed cards use.
+
+**Behavioural notes:**
+
+- **Errored cards block the queue until dismissed.** If the first `in_flight` item enters `error` substate (per the per-attachment hook's state machine), the videoItem stays `in_flight` at the list level — the card displays the inline error with a Remove button. `firstInFlightIndex` still points at it. Queued items don't start. User clicks Remove → onCancel → parent removes the item → re-render → the new "first in_flight" item's card mounts. **This is intentional**: surfaces the error to the user, requires explicit dismissal, no silent failure. Matches the existing per-card error UX from Part 1.
+- **Auto-persisted items don't block the queue.** Part 2's auto-persist branch removes the item from `videoItems` entirely (the `handleVideoAutoPersisted` handler in `useVideoItemsState` does `setVideoItems(prev => prev.filter(...))`). The queue advances naturally on the same render cycle that adds the row to `savedAttachments`.
+- **Cancellation advances the queue immediately.** The active card's Cancel button already calls `cancel()` (hook abort) AND `onCancel()` (parent removal) in the same handler (from Part 1 Increment 1.4). Removing the item triggers a re-render; the next `in_flight` item's card mounts.
+- **No state-shape change.** `VideoListItem` stays as `in_flight | completed`. The queue is purely a render-time decision in the section. The hook (`useVideoItemsState`) doesn't change. The per-attachment state machine doesn't change.
+
+#### Increment 4.2: Heuristic refinement for OOM and codec failures (P4.R1, P4.R2)
+
+**What:** Better detection of OOM and codec failures in `mapToVideoUploadError`. The existing message-regex catches some real cases but misses two specific patterns ffmpeg.wasm produces: `RangeError` (canonical JS memory-exhaustion signal) and `WebAssembly.RuntimeError` ("memory access out of bounds" when the WASM heap is exhausted). Widen the codec/format regex with patterns I have direct evidence of from ffmpeg.wasm error logs: `invalid data`, `invalid argument`, `unable to find`, `could not decode`, `malformed`. Verbatim user messages from P4.R1 / P4.R2 are unchanged — only the detection patterns are refined.
+
+**Files:**
+
+1. **Modify `lib/hooks/use-video-attachment.ts`:**
+
+   ```typescript
+   function mapToVideoUploadError(err: unknown): VideoUploadError {
+     const message = err instanceof Error ? err.message : "Unknown error"
+
+     // OOM detection — RangeError is the canonical JS signal for memory
+     // exhaustion; ffmpeg.wasm WebAssembly RuntimeError surfaces "memory
+     // access out of bounds" when the WASM heap is exhausted. Either, or the
+     // existing message-regex (covers Chrome/Firefox runtime variants).
+     const isRangeError = err instanceof RangeError
+     const isWasmRuntimeError =
+       err instanceof Error && err.constructor.name === "RuntimeError"
+     if (
+       isRangeError ||
+       isWasmRuntimeError ||
+       /memory|oom|allocation|out of bounds|out of memory/i.test(message)
+     ) {
+       return {
+         code: "EXTRACTION_OOM",
+         message:
+           "Your device couldn't process this video. Try a shorter clip or a different device.",
+       }
+     }
+
+     // Codec / format / corrupt-file failures. Patterns refined to catch
+     // the specific shapes ffmpeg.wasm produces: "Invalid data", "Invalid
+     // argument", "Unable to find a suitable output format", etc.
+     if (
+       /ffmpeg|exec|invalid (data|argument)|unsupported|codec|format|unable to find|could not decode|malformed/i.test(
+         message,
+       )
+     ) {
+       return {
+         code: "EXTRACTION_FAILED",
+         message:
+           "This video format couldn't be processed. Try converting to MP4 or use a different recording.",
+       }
+     }
+
+     // Network / upload failures from the XHR. The fetch-level errors don't
+     // come through here (already classified earlier in the run loop).
+     if (/network|timed out/i.test(message)) {
+       return {
+         code: "UPLOAD_FAILED",
+         message: "Could not upload audio for transcription. Please try again.",
+       }
+     }
+
+     // Server returned the empty-transcript message verbatim from
+     // TranscriptionEmptyError — match it so the user sees the same wording
+     // rather than the generic fallback. Activates the EMPTY_TRANSCRIPT code
+     // reserved in Part 1's VideoUploadErrorCode enum.
+     if (/no speech could be transcribed/i.test(message)) {
+       return {
+         code: "EMPTY_TRANSCRIPT",
+         message: "No speech could be transcribed from this video.",
+       }
+     }
+
+     return {
+       code: "TRANSCRIPTION_FAILED",
+       message: "Could not transcribe video — please try again.",
+     }
+   }
+   ```
+
+   The `err.constructor.name === "RuntimeError"` check uses constructor-name string comparison because `WebAssembly.RuntimeError` isn't always exposed as a global (varies by JS runtime). Defensive but cheap.
+
+   No new error codes. No enum change. No UI change. Just better routing of existing errors to existing branches.
+
+#### Increment 4.3: End-of-Part audit + already-shipped verification
+
+**What:** Apply the CLAUDE.md eleven-point audit checklist to the two files touched in 4.1–4.2. Verify the four already-shipped Part 4 requirements (P4.R1, P4.R2, P4.R3, P4.R5, P4.R6) still hold via grep + spot-check. Update `ARCHITECTURE.md` and `CHANGELOG.md`. **Closes PRD-032.**
+
+**Audit emphasis specific to this part:**
+
+1. **SRP.** `<VideoAttachmentSection>`'s render is one decision (which card type) per item. `QueuedVideoCard` is presentational only. `mapToVideoUploadError` is one classification function — no side effects, just a pure mapping.
+2. **OCP.** The queue logic is added as a new render branch in `<VideoAttachmentSection>`; existing card paths (active, completed) are unchanged. The heuristic refinement adds detection patterns; existing message-regex stays as a fallback.
+3. **ISP.** No new props on `<VideoAttachmentSection>`; queue policy is internal. `QueuedVideoCard`'s prop interface is the minimum (file + onRemove).
+4. **DIP.** `mapToVideoUploadError` operates on `unknown` and tests via `instanceof` / regex; doesn't depend on any concrete error class except built-in `RangeError`.
+5. **DRY.** `QueuedVideoCard` reuses the same `FILE_ICONS` map and `formatFileSize` helper as the active card. The Cancel button JSX is similar to the active card's Cancel — three similar lines, below the abstraction threshold.
+6. **YAGNI.** No new error codes (used existing `EXTRACTION_OOM` / `EXTRACTION_FAILED`). No new audio-rejection message — the existing toast satisfies P4.R5. No global "queue indicator" component — the per-card "Waiting…" sub-label IS the queue indicator (the PRD's wording allows this).
+7. **Fail explicitly.** Errored cards still surface inline; user must dismiss to advance the queue. No silent error swallowing.
+8. **Design tokens.** `Clock` icon uses existing `text-muted-foreground`. No new tokens.
+9. **Logging.** No new logs needed in the section render. The error mapper is pure (no logs by design — logging happens at the per-attachment hook's catch block, unchanged).
+10. **Dead code.** `QueuedVideoCard` is consumed by exactly one site (its parent function in the same file). No exports.
+11. **Convention compliance.** File-local helper component pattern matches `CompletedTranscriptCard`'s shape (introduced Part 1).
+
+**Already-shipped verification (grep + spot-check):**
+
+- **P4.R1** — confirm `mapToVideoUploadError`'s `EXTRACTION_OOM` branch returns the verbatim `"Your device couldn't process this video. Try a shorter clip or a different device."`.
+- **P4.R2** — confirm the `EXTRACTION_FAILED` branch returns the verbatim `"This video format couldn't be processed. Try converting to MP4 or use a different recording."`.
+- **P4.R3** — confirm `MAX_ATTACHMENTS = 5` is referenced in `FileUploadZone` (client cap) AND in `/api/sessions/[id]/attachments` POST (server cap, both parsed-file and transcript branches) AND in `/api/files/transcribe` auto-persist pre-flight. The TRD's Part 1 Increment 1.4 + Part 2 Increment 2.3 + 2.5 cover this.
+- **P4.R5** — confirm `.mp3`, `.m4a`, `.wav` are NOT in `ACCEPTED_EXTENSIONS` or `VIDEO_EXTENSIONS`. The `processFiles` loop in `FileUploadZone` rejects with `"\"${fileName}\" is not a supported format. Accepted: ..."`.
+- **P4.R6** — confirm the verbatim `"Transcript can't be empty. Use Remove if you want to discard this attachment."` appears in BOTH `app/api/sessions/[id]/attachments/[attachmentId]/route.ts` (PATCH 400 branch) AND `app/capture/_components/transcript-editor.tsx` (inline `<p>`). Part 3 Increment 3.6's audit cross-checked these — re-confirm in Part 4 audit since strings drift over time.
+
+**Documentation:**
+
+- `ARCHITECTURE.md` — Current State paragraph extended with a brief Part 4 sentence noting the sequential queue + heuristic refinement, with **Closes PRD-032** marker. `<VideoAttachmentSection>` file-map entry annotated with the queue-render note. `mapToVideoUploadError` paragraph in the use-video-attachment description annotated with the refinement.
+- `CHANGELOG.md` — Part 4 entry under `[Unreleased]`. Per-increment breakdown. Behavioural state. Migration: none.
+
+### Summary of Increments
+
+| Increment | Scope | PRD Requirements |
+|-----------|-------|------------------|
+| 4.1 | Sequential video processing — concurrency-1 at `<VideoAttachmentSection>` | P4.R4 |
+| 4.2 | Heuristic refinement in `mapToVideoUploadError` for OOM and codec failures | P4.R1 (detection), P4.R2 (detection) |
+| 4.3 | End-of-Part audit + already-shipped verification + docs | P4.R1, P4.R2, P4.R3, P4.R5, P4.R6 (verification) |
+
+### Forward Compatibility Notes (PRD-032 closes after this part — backlog reference only)
+
+These are explicitly out of scope for Part 4 but shaped to plug in cleanly:
+
+- **Backlog — Audio-only file uploads:** new `AUDIO_EXTENSIONS` constant set, threaded through `FileUploadZone`'s extension check. The route would skip the `extractAudioFromVideo` step (audio is already audio) and go straight to the transcribe POST with the file as `audio`. Would also need to widen `source_format` to support `audio_transcript` (similar shape to `video_transcript` — `storage_path = NULL`, editable per P3.R7). The editing exclusivity check (`source_format === "video_transcript"`) would need a small `isEditableSourceFormat()` helper extracted at that point.
+- **Backlog — Long-video chunking:** `extractAudioFromVideo` becomes a multi-chunk wrapper. Each chunk is transcribed independently via `transcribeAudio`; results are concatenated server-side. The `withRetry` policy applies per chunk; UPLOAD_FAILED on one chunk would currently fail the whole video. Stretch goal: per-chunk progress + partial-failure recovery.
+- **Backlog — Multi-threaded ffmpeg.wasm:** swap `@ffmpeg/core` for `@ffmpeg/core-mt`. Requires `Cross-Origin-Opener-Policy: same-origin` + `Cross-Origin-Embedder-Policy: require-corp` headers on the app (set in `next.config.ts`). Audit any third-party iframes / OAuth popup flows for COOP/COEP compatibility before flipping.
+- **Backlog — Server-side fallback for weak devices:** add an opt-in path where audio extraction happens server-side (e.g., on a Supabase Edge Function or a dedicated worker). Triggered by a user-toggleable preference or auto-detected on `EXTRACTION_OOM` failure with a "retry server-side" affordance. Server-side ffmpeg has its own cost model; gate behind a feature flag.
+- **Backlog — Revert edited transcript to original (PRD-032 P3 backlog):** add `original_parsed_content TEXT NULL` column on `session_attachments`; populated only on first edit; "Revert" affordance in `<TranscriptEditor>` alongside Save/Cancel. Schema-additive, type-additive, UI-additive — no breaking change to anything Part 3 ships.
+- **Backlog — Cloud meeting integrations + In-browser recording:** both feed transcripts through the same `session_attachments` rows as `video_transcript`. The editing UX, the queue, the heuristic mapper all inherit unchanged. New surfaces, same plumbing.
+- **Backlog — Per-team transcription quota:** operational concern (track minutes-of-video transcribed per team) — out of band from the editing/queue work. Would add a counter table and a check in the transcribe route. Unrelated to anything Part 4 changes.
+
+**PRD-032 closes after this part's audit ships.**

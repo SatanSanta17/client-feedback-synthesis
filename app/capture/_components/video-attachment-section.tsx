@@ -1,7 +1,7 @@
 "use client"
 
 import { useState } from "react"
-import { ChevronDown, ChevronRight, Pencil, X } from "lucide-react"
+import { ChevronDown, ChevronRight, Clock, Pencil, X } from "lucide-react"
 
 import { FILE_ICONS } from "@/lib/constants/file-icons"
 import { formatFileSize } from "@/lib/utils/format-file-size"
@@ -42,10 +42,35 @@ export function VideoAttachmentSection({
 }: VideoAttachmentSectionProps) {
   if (items.length === 0) return null
 
+  // PRD-032 P4.R4 — concurrency-1 queue. Only the first in_flight item gets
+  // a fully-mounted VideoAttachmentCard (which auto-starts its pipeline on
+  // mount); subsequent in_flight items render as Waiting placeholders. The
+  // queue advances naturally on transitions out of in_flight: completed →
+  // item flips to "completed" status; auto-persisted → item is removed
+  // entirely; cancelled → item is removed; errored → user dismisses via
+  // Remove. No state-shape change, no hook change — purely a render-time
+  // decision in the section.
+  const firstInFlightIndex = items.findIndex((i) => i.status === "in_flight")
+
   return (
     <div className="flex flex-col gap-2">
-      {items.map((item) => {
-        if (item.status === "in_flight") {
+      {items.map((item, index) => {
+        if (item.status === "completed") {
+          return (
+            <CompletedTranscriptCard
+              key={item.id}
+              attachment={item.data}
+              onEdited={
+                onEdited
+                  ? (parsedContent) => onEdited(item.id, parsedContent)
+                  : undefined
+              }
+              onRemove={() => onRemove(item.id)}
+            />
+          )
+        }
+
+        if (index === firstInFlightIndex) {
           return (
             <VideoAttachmentCard
               key={item.id}
@@ -62,19 +87,47 @@ export function VideoAttachmentSection({
             />
           )
         }
+
         return (
-          <CompletedTranscriptCard
+          <QueuedVideoCard
             key={item.id}
-            attachment={item.data}
-            onEdited={
-              onEdited
-                ? (parsedContent) => onEdited(item.id, parsedContent)
-                : undefined
-            }
+            file={item.file}
             onRemove={() => onRemove(item.id)}
           />
         )
       })}
+    </div>
+  )
+}
+
+interface QueuedVideoCardProps {
+  file: File
+  onRemove: () => void
+}
+
+function QueuedVideoCard({ file, onRemove }: QueuedVideoCardProps) {
+  const Icon = FILE_ICONS[file.type] ?? FILE_ICONS["video/mp4"]
+  return (
+    <div className="rounded-md border border-border bg-muted/30">
+      <div className="flex items-center gap-3 px-3 py-2">
+        <Clock className="size-4 shrink-0 text-muted-foreground" />
+        <Icon className="size-4 shrink-0 text-muted-foreground" />
+        <div className="flex min-w-0 flex-1 flex-col">
+          <span className="truncate text-sm text-foreground">{file.name}</span>
+          <span className="text-xs text-muted-foreground">Waiting…</span>
+        </div>
+        <span className="shrink-0 text-xs text-muted-foreground">
+          {formatFileSize(file.size)}
+        </span>
+        <button
+          type="button"
+          onClick={onRemove}
+          className="shrink-0 rounded p-0.5 text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive"
+          aria-label={`Cancel queued upload ${file.name}`}
+        >
+          <X className="size-3.5" />
+        </button>
+      </div>
     </div>
   )
 }
