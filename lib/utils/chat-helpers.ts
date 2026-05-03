@@ -23,8 +23,8 @@ export function sseEvent(event: string, data: unknown): string {
 // Follow-up parsing
 // ---------------------------------------------------------------------------
 
-const FOLLOW_UP_COMPLETE_RE = /<!--follow-ups:(\[[\s\S]*?\])-->/;
-const FOLLOW_UP_PARTIAL_RE = /<!--follow-ups:[\s\S]*$/;
+const FOLLOW_UP_COMPLETE_RE = /<!--\s*"?follow-ups"?\s*:\s*(\[[\s\S]*?\])\s*-->/;
+const FOLLOW_UP_PARTIAL_RE = /<!--\s*"?follow-ups"?\s*:[\s\S]*$/;
 
 /**
  * Parse the follow-up questions from the LLM response.
