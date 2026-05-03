@@ -11,7 +11,6 @@ import {
   extractionSchema,
   type ExtractedSignals,
 } from "@/lib/schemas/extraction-schema";
-import { renderExtractedSignalsToMarkdown } from "@/lib/utils/render-extracted-signals-to-markdown";
 import {
   MASTER_SIGNAL_COLD_START_SYSTEM_PROMPT,
   MASTER_SIGNAL_INCREMENTAL_SYSTEM_PROMPT,
@@ -77,11 +76,12 @@ export function resolveModel(): { model: LanguageModel; label: string } {
 
 /**
  * Result returned by extractSignals(), including the prompt version ID
- * so the caller can record which prompt produced the extraction (P1.R6).
- * PRD-018 P1.R5: extended with structuredJson (typed schema output).
+ * so the caller can record which prompt produced the extraction.
+ * PRD-031 Part 1: structuredNotes (markdown rendering) is no longer generated
+ * during extraction. The master-signal backend derives markdown on demand
+ * from structured_json for any consumer that still needs it.
  */
 export interface ExtractionResult {
-  structuredNotes: string;
   structuredJson: ExtractedSignals;
   promptVersionId: string | null;
 }
@@ -90,8 +90,7 @@ export interface ExtractionResult {
  * Extract signals from raw session notes via the configured AI model.
  * Uses generateObject() with extractionSchema to produce validated JSON.
  * The user's custom prompt (if active) is appended as extraction guidance —
- * it does not override the system prompt or output format (P1.R3).
- * Returns structured JSON, markdown (derived from JSON), and prompt version ID.
+ * it does not override the system prompt or output format.
  * Retries transient failures (429, 5xx, network) with exponential backoff.
  */
 export async function extractSignals(
@@ -113,11 +112,7 @@ export async function extractSignals(
     operationName: "extractSignals",
   });
 
-  // Derive markdown from JSON for backward compatibility (P1.R4)
-  const structuredNotes = renderExtractedSignalsToMarkdown(structuredJson);
-
   return {
-    structuredNotes,
     structuredJson,
     promptVersionId: activeVersion?.id ?? null,
   };
@@ -327,7 +322,7 @@ export async function callModelObject<T>(
       `[ai-service] ${operationName} — attempt ${attempt + 1}/${MAX_RETRIES + 1}, model: ${label}, mode: generateObject, schema: ${schemaName}`
     );
 
-    const { object } = await generateObject({
+    const { object, usage } = await generateObject({
       model,
       system: systemPrompt,
       prompt: userMessage,
@@ -337,7 +332,7 @@ export async function callModelObject<T>(
     });
 
     console.log(
-      `[ai-service] ${operationName} — success (generateObject/${schemaName})`
+      `[ai-service] ${operationName} — success (generateObject/${schemaName}), usage: input=${usage?.inputTokens ?? "?"}, output=${usage?.outputTokens ?? "?"}, total=${usage?.totalTokens ?? "?"}`
     );
     return object;
   });

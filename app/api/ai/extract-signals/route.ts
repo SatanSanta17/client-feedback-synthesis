@@ -58,13 +58,10 @@ export async function POST(request: NextRequest) {
     const result = await extractSignals(promptRepo, parsed.data.rawNotes);
 
     console.log(
-      "[api/ai/extract-signals] POST — extraction complete,",
-      result.structuredNotes.length,
-      "chars, promptVersionId:",
+      "[api/ai/extract-signals] POST — extraction complete, promptVersionId:",
       result.promptVersionId
     );
     return NextResponse.json({
-      structuredNotes: result.structuredNotes,
       structuredJson: result.structuredJson,
       promptVersionId: result.promptVersionId,
     });
