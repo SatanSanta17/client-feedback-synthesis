@@ -46,9 +46,14 @@ AS $$
     -- Optional chunk type filter
     AND (filter_chunk_types IS NULL
      OR se.chunk_type = ANY(filter_chunk_types))
-    -- Optional client name filter (from metadata jsonb)
+    -- Optional client name filter (from metadata jsonb).
+    -- Case-insensitive + trim-tolerant match: the chat LLM passes whatever the
+    -- user typed (e.g. "feedbackers"), and the embedded metadata stores the
+    -- canonical client name (e.g. "Feedbackers"). An exact = comparison
+    -- silently dropped every result, causing the chat to fall back to
+    -- queryDatabase and report aggregate stats instead of qualitative quotes.
     AND (filter_client_name IS NULL
-     OR se.metadata->>'client_name' = filter_client_name)
+     OR LOWER(TRIM(se.metadata->>'client_name')) = LOWER(TRIM(filter_client_name)))
     -- Optional date range filters (from metadata jsonb)
     AND (filter_date_from IS NULL
      OR (se.metadata->>'session_date')::date >= filter_date_from)
