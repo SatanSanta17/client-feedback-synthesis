@@ -130,9 +130,15 @@ export function renderExtractedSignalsToMarkdown(
 
   // PRD-031 Part 2: positive signals — defensive `?? []` because pre-Part-2
   // sessions lack this field; the renderer is consumed by the master-signal
-  // backend's composeStructuredNotes() across mixed cohorts.
-  lines.push("## Positive Signals\n");
-  lines.push(renderSignalChunks(signals.positiveSignals ?? []));
+  // backend's composeStructuredNotes() across mixed cohorts. Section is gated
+  // on non-empty to mirror the capture UI's hide-empty intent (P2.R6) and to
+  // keep the master-signal LLM input clean for the dominant legacy-cohort
+  // case where positiveSignals is empty for the entire batch.
+  const positiveSignals = signals.positiveSignals ?? [];
+  if (positiveSignals.length > 0) {
+    lines.push("## Positive Signals\n");
+    lines.push(renderSignalChunks(positiveSignals));
+  }
 
   lines.push("## Competitive Mentions\n");
   lines.push(renderCompetitiveMentions(signals.competitiveMentions));

@@ -42,6 +42,9 @@ Synthesised view of deal-breaker requirements. Same format as Pain Points: group
 ## Aspirations
 Synthesised view of forward-looking wants and nice-to-haves. Same format.
 
+## Positive Signals
+Synthesised view of what clients praise across all sessions — things they are currently experiencing and explicitly like (product, team, onboarding, support, performance, retention drivers). Group related wins together (e.g., onboarding praise, support quality, reporting). Attribute to source clients. This is product-strategically the most valuable category for renewal evidence and sales positioning — surface it with the same rigour as Pain Points. Do not conflate with Aspirations (forward-looking wants) or Competitive Landscape (praise of competitors).
+
 ## Competitive Landscape
 Synthesised view of competitive mentions across all clients. Group by competitor where possible (e.g., all mentions of a specific tool together). Note which clients are using, evaluating, or comparing against each competitor.
 
@@ -113,6 +116,7 @@ Produce the same markdown structure as the previous master signal:
 ## Pain Points
 ## Must-Haves / Requirements
 ## Aspirations
+## Positive Signals
 ## Competitive Landscape
 ## Blockers / Dependencies
 ## Platforms & Channels

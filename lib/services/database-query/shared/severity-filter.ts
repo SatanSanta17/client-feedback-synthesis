@@ -2,9 +2,9 @@
 // Database Query — Severity Filter
 // ---------------------------------------------------------------------------
 // One cohesive module owning severity filtering. Severity is per-chunk inside
-// `structured_json` (painPoints / requirements / aspirations / blockers /
-// custom.signals) and is not joinable via SQL — every code path must scan
-// the chunk arrays.
+// `structured_json` (painPoints / requirements / aspirations / positiveSignals /
+// blockers / custom.signals) and is not joinable via SQL — every code path
+// must scan the chunk arrays.
 //
 // Three named exports cover three call patterns:
 //   1. sessionHasSeverity         — sync predicate (one row at a time)
@@ -27,7 +27,8 @@ import { baseSessionQuery } from "./base-query-builder";
  * Returns true if the session's `structured_json` contains at least one
  * signal chunk whose `severity` matches the requested value. Severity is a
  * per-chunk field (not session-level), so this scans the chunk arrays:
- * painPoints, requirements, aspirations, blockers, and custom.signals.
+ * painPoints, requirements, aspirations, positiveSignals, blockers, and
+ * custom.signals.
  */
 export function sessionHasSeverity(
   json: Record<string, unknown> | null,
@@ -39,6 +40,7 @@ export function sessionHasSeverity(
     "painPoints",
     "requirements",
     "aspirations",
+    "positiveSignals",
     "blockers",
   ] as const;
   for (const key of arrayKeys) {

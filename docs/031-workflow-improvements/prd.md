@@ -43,7 +43,7 @@ As a user of Synthesiser — a sales lead, founder, CS manager, or PM — I want
 ### Acceptance criteria
 
 - [ ] New session create stores `structured_json` and does not write `structured_notes` (the column is left untouched for new rows).
-- [ ] Session re-extraction (PUT) replaces `structured_json` and does not touch `structured_notes`.
+- [ ] Session re-extraction (PUT) replaces `structured_json` and clears `structured_notes` to null. Legacy markdown is dropped on re-extract because JSON is the unambiguous source of truth post-extraction; the master-signal backend renders markdown on demand for any surface that still needs it.
 - [ ] The capture page, past sessions list, drill-down dialogs, and dashboard widgets render identically before and after this part for a session captured under this part.
 - [ ] Pre-existing sessions (captured before this part) still display correctly on every surface that previously rendered them.
 - [ ] The master-signal backend (and any other legacy consumer of `structured_notes`) functions correctly for both pre- and post-change sessions.

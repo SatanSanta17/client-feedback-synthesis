@@ -91,12 +91,15 @@ export const extractionSchema = z.object({
   }),
   painPoints: z
     .array(signalChunkSchema)
+    .default([])
     .describe("Pain points — empty array if none"),
   requirements: z
     .array(requirementChunkSchema)
+    .default([])
     .describe("Requirements with priority — empty array if none"),
   aspirations: z
     .array(signalChunkSchema)
+    .default([])
     .describe("Aspirational wants — empty array if none"),
   positiveSignals: z
     .array(signalChunkSchema)
@@ -106,12 +109,15 @@ export const extractionSchema = z.object({
     ),
   competitiveMentions: z
     .array(competitiveMentionSchema)
+    .default([])
     .describe("Competitor mentions — empty array if none"),
   blockers: z
     .array(signalChunkSchema)
+    .default([])
     .describe("Blockers and dependencies — empty array if none"),
   toolsAndPlatforms: z
     .array(toolAndPlatformSchema)
+    .default([])
     .describe("Tools, platforms, and channels — empty array if none"),
   custom: z
     .array(
@@ -124,6 +130,7 @@ export const extractionSchema = z.object({
           .describe("Signal chunks for this category"),
       })
     )
+    .default([])
     .describe(
       "Custom categories from user prompt guidance. Each entry has a category name and its signal chunks. Empty array if no custom categories."
     ),

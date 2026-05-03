@@ -21,6 +21,15 @@ import { ExpandedSessionNotes } from "./expanded-session-notes"
 import { ExpandedSessionActions } from "./expanded-session-actions"
 import { PromptVersionBadge } from "./prompt-version-badge"
 
+function structuredJsonEqual(
+  a: Record<string, unknown> | null,
+  b: Record<string, unknown> | null
+): boolean {
+  if (a === b) return true
+  if (a === null || b === null) return false
+  return JSON.stringify(a) === JSON.stringify(b)
+}
+
 export interface SessionRow {
   id: string
   client_id: string
@@ -120,17 +129,18 @@ export function ExpandedSessionRow({
 
   // Derived state
   // PRD-031 Part 1: post-Part-1 sessions have null markdown, so a fresh
-  // re-extraction shows up only as a structuredJson reference change. We add
-  // a reference check so re-extract enables Save. Stable across non-extraction
-  // edits because the hook is seeded from session.structured_json on mount,
-  // and handleSave preserves the hook's reference into the merged row.
+  // re-extraction shows up only as a structuredJson change. Reference equality
+  // would be wrong here — the parent may hand a freshly-parsed reference back
+  // into this row (refetch-on-focus, optimistic update from another widget,
+  // etc.) and a content-identical re-render would otherwise look dirty. Use
+  // structural equality via JSON.stringify; payloads are small (a few KB).
   const isDirty =
     client.id !== session.client_id ||
     client.name !== session.client_name ||
     sessionDate !== session.session_date ||
     rawNotes !== session.raw_notes ||
     structuredNotes !== session.structured_notes ||
-    structuredJson !== session.structured_json ||
+    !structuredJsonEqual(structuredJson, session.structured_json) ||
     pendingAttachments.length > 0 ||
     deletedAttachmentIds.size > 0
 
@@ -243,13 +253,8 @@ export function ExpandedSessionRow({
       // Build the enriched row to hand back to the parent. The PUT response
       // already includes client_name + creator/updater emails; override
       // attachment_count because attachments were uploaded after the PUT.
-      // Override structured_json with the hook's reference so the post-save
-      // reference-equality dirty check correctly returns to false — server
-      // reparses the JSON over the wire, breaking reference equality despite
-      // identical content (PRD-031 Part 1).
       const merged: SessionRow = {
         ...updatedFromServer,
-        structured_json: structuredJson ?? updatedFromServer.structured_json,
         attachment_count: refreshedAttachments.length,
       }
 

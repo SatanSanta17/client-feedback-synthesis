@@ -496,7 +496,7 @@ function buildSearchInsightsTool(
               .array(z.string())
               .optional()
               .describe(
-                "Filter by chunk types (e.g., pain_point, requirement). OMIT unless the user explicitly asks for a specific chunk category — do NOT pass an empty array."
+                "Filter by chunk types. Valid values: pain_point, requirement, aspiration, positive_signal, blocker, competitive_mention, tool_and_platform, client_profile, custom, raw. OMIT unless the user explicitly asks for a specific chunk category — do NOT pass an empty array."
               ),
           })
           .optional()
