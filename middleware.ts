@@ -104,7 +104,10 @@ export const config = {
      * - _next/static (static files)
      * - _next/image (image optimisation)
      * - favicon.ico, sitemap.xml, robots.txt
+     * - any path with a static-asset extension (images, fonts, css, js, maps)
+     *   so /public files don't get redirected to /login when signed out,
+     *   which breaks Next.js's internal fetch from the image optimiser.
      */
-    "/((?!_next/static|_next/image|favicon\\.ico|sitemap\\.xml|robots\\.txt).*)",
+    "/((?!_next/static|_next/image|favicon\\.ico|sitemap\\.xml|robots\\.txt|.*\\.(?:png|jpg|jpeg|gif|webp|svg|ico|woff2?|ttf|otf|css|js|map)$).*)",
   ],
 };
