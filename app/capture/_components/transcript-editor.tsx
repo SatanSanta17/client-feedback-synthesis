@@ -39,6 +39,7 @@ export function TranscriptEditor({
         className="resize-y font-mono text-xs"
         autoFocus
         disabled={isSaving}
+        aria-label="Edit transcript"
       />
       {isEmpty && (
         <p className="text-xs text-destructive">
