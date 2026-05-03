@@ -16,9 +16,12 @@ export type PendingAttachment =
       file_size: number;
       duration_seconds: number;
       source_format: "video_transcript";
-      // Reserved for PRD-032 Part 3 (P3.R7). Always false in Part 1; Part 3
-      // widens this to boolean when the editing affordance lands.
-      is_edited?: false;
+      // PRD-032 Part 3 — set true when the user edited a pending transcript
+      // on the client before session save. The flag propagates as `is_edited`
+      // on the upload payload; the server stamps `last_edited_at = now()`
+      // on insert when received. Always false / absent for freshly
+      // transcribed pending transcripts.
+      is_edited?: boolean;
     };
 
 export type VideoTranscriptAttachment = Extract<

@@ -1,13 +1,13 @@
 # TRD-032: Video Upload and Transcription
 
-> **Status:** Part 1 — Implemented (closes-out audit done). Part 2 — Draft.
+> **Status:** Parts 1–2 — Implemented (closes-out audits done). Part 3 — Draft.
 >
 > Mirrors **PRD-032**. Each part maps to the corresponding PRD part.
 >
 > **Forward compatibility (full PRD scope):**
-> - **Part 2** (server transcription + persistence) replaces the Part 1 stub with a real Whisper call via the AI provider abstraction (`@ai-sdk/openai` `experimental_transcribe`), makes `session_attachments.storage_path` nullable for transcript-only rows, and adds two persistence paths: client-driven on session save, and server-driven auto-persist when the saved session is already known. Wire format from Part 1 is unchanged on the client side.
-> - **Part 3** (transcript UX, including editing per PRD P3.R7) reuses the same `pending video transcript` client-state shape that Part 1 introduces and the `source_format = "video_transcript"` row shape that Part 2 persists. Discriminated union with `kind: "video_transcript"` carries `parsed_content`, original-video metadata, and a place for an `is_edited` flag — populated only in Part 3 but reserved in Part 1 typings. Part 3's edit flow updates `parsed_content` on existing transcript rows via the same `attachment-service` surface Part 2 introduces.
-> - **Part 4** (edge cases) builds on the per-attachment state machine introduced in Part 1 and the retry policy introduced in Part 2. Out-of-memory, codec failures, and sequential video processing all hook into the same state machine surface — Part 4 only adds new transitions, no new architecture. The server-side retry/backoff in Part 2 is the floor that Part 4 may extend (e.g., chunked retry for partial-failure long videos in the backlog).
+> - **Part 2** (server transcription + persistence) replaces the Part 1 stub with a real Whisper call via the AI provider abstraction (`@ai-sdk/openai` `experimental_transcribe`), makes `session_attachments.storage_path` nullable for transcript-only rows, and adds two persistence paths: client-driven on session save, and server-driven auto-persist when the saved session is already known.
+> - **Part 3** (transcript UX, including editing per PRD P3.R7) **adds a single column** to `session_attachments` (`last_edited_at TIMESTAMPTZ NULL`) and a single new endpoint method (`PATCH` on the existing attachment route) for transcript edits. Most of P3 ships as side-effects of Parts 1–2: P3.R2 (no download button) was the defensive Part 2 patch; P3.R3 (inline view) inherits from PRD-013's "View content" toggle; P3.R4 (past-session paperclip + count) inherits from PRD-013's `attachment_count`; P3.R5 (re-extraction includes transcripts) inherits from `composeAIInput`'s structural compatibility with the transcript shape (Part 1 Increment 1.5); P3.R6 (adding video to existing sessions) inherits from Part 2's auto-persist branch. Only **P3.R1** (visual sub-label) and **P3.R7** (editable transcripts) are genuinely new work.
+> - **Part 4** (edge cases) builds on the per-attachment state machine introduced in Part 1 and the retry policy introduced in Part 2. Out-of-memory, codec failures, sequential video processing all hook into the same state-machine surface; the empty-transcript-edit rejection (P4.R6) is enforced at the editor's save boundary already in Part 3 (server- and client-side) so Part 4 only refines the OOM/codec heuristics on the client side.
 
 ---
 
@@ -1630,3 +1630,753 @@ These are not implemented in Part 2 but the design accounts for them:
 - **Part 4 — Sequential video processing:** Auto-persist serialises naturally because each `useVideoAttachment` instance holds its own controller; Part 4's queue policy (mount limit of 1) operates one level above and is orthogonal to Part 2's concerns.
 - **Backlog — Audio-only uploads:** The transcribe endpoint's Whisper call accepts the same audio buffer regardless of source. Adding audio-only support to the upload zone is a UI change that reuses `transcribeAudio()` unchanged.
 - **Backlog — Long-video chunking:** `transcribeAudio()` is a single-shot wrapper; chunking is layered above by splitting audio client-side or server-side and concatenating results. The retry policy applies per chunk; no change to the single-chunk path.
+
+---
+
+## Part 3: Video transcript UX in sessions
+
+> Implements **P3.R1–P3.R7** from PRD-032.
+>
+> **Already shipped via earlier parts (verified in this part's audit):**
+> - **P3.R2** (no download button for video transcripts) — Part 2 Increment 2.3 added the defensive `attachment.source_format !== "video_transcript"` gate around the download button in `saved-attachment-list.tsx`.
+> - **P3.R3** (inline transcript view) — inherits from PRD-013's existing "View content" chevron toggle in `saved-attachment-list.tsx`. The toggle reads `attachment.parsed_content` regardless of `source_format`; for video transcripts the parsed content is the transcript text.
+> - **P3.R4** (past session display + paperclip count) — inherits from PRD-013's `attachment_count` query in `lib/services/session-service.ts`. The query counts non-deleted rows on `session_attachments`; transcript rows are non-deleted rows with NULL `storage_path`, fully counted.
+> - **P3.R5** (re-extraction includes video transcripts) — Part 1 Increment 1.5 wired `composeAIInput()` to include both `pendingAttachments` and `completedTranscripts` for the new-session flow, and Part 2 added the saved-session auto-persist path that merges transcript rows into `savedAttachments`. `composeAIInput`'s `AttachmentLike` interface (`file_name + source_format + parsed_content`) is structurally compatible with `SessionAttachment` for video transcripts; no signal-extraction code path treats transcripts specially.
+> - **P3.R6** (adding video to existing sessions) — Part 1 added `onVideoSelected` to `FileUploadZone`, used by both `CaptureAttachmentSection` and `ExpandedSessionNotes`. Part 2 Increment 2.5 added the saved-session auto-persist path so videos uploaded from the expanded view persist server-side as soon as Whisper returns.
+>
+> **New work in this part:** P3.R1 (visual sub-label "Transcript only — original video not stored") and P3.R7 (editable transcripts: Edit affordance, inline textarea editor, "edited" badge with last-edited timestamp tooltip, exclusivity to `source_format = "video_transcript"`).
+>
+> **References full PRD scope:**
+> - The `last_edited_at` column added in this part is the persistence side of P3.R7; the application-layer rule remains "transcripts are the only editable attachment kind" (other formats let the user re-upload a corrected source). The column lands on `session_attachments` (the same table Part 2 made nullable on `storage_path`); both schema changes are forward-compatible with each other.
+> - The `is_edited?: false` literal field reserved on `VideoTranscriptAttachment` in Part 1 widens to `is_edited?: boolean` in this part — pending transcripts (capture form, pre-save) carry the flag in client state; the upload-attachments helper propagates it on save; the POST attachments route consumes it to set `last_edited_at = now()` on insert if the user edited the transcript before saving.
+> - The shared inline editor component introduced here (`TranscriptEditor`) is single-purpose for now but is shaped for the BACKLOG "Revert edited transcript to original" item — that backlog work would add a separate "Revert" affordance alongside Save/Cancel and an `original_parsed_content` column. None of that is in v1.
+> - Part 4's empty-edit rejection (P4.R6 — "Transcript can't be empty. Use Remove if you want to discard this attachment.") is enforced at the editor's save boundary in this part already (client validation + server validation); Part 4 only refines client-side OOM/codec heuristics, not the editor.
+
+### Overview
+
+Two threads land together. **Visual polish** for transcript rows in `saved-attachment-list.tsx` — adds the "Transcript only — original video not stored" sub-label below the file name (P3.R1). The video icon (`FileVideo2` from lucide-react) was already wired in Part 1 via `lib/constants/file-icons.ts` so no additional icon work is needed. **Editable transcripts** for both pending and saved transcripts (P3.R7) — a single column added to `session_attachments` (`last_edited_at TIMESTAMPTZ NULL`), a new repository method (`updateTranscript`), a new service function (`updateTranscriptAttachment`), a new method (`PATCH`) on the existing per-attachment route, and a shared `TranscriptEditor` inline component used by both `SavedAttachmentList` (saved transcripts → PATCH) and `VideoAttachmentSection`'s `CompletedTranscriptCard` (pending transcripts → mutate client state, propagate `is_edited` flag on session save). An `EditedBadge` component renders the indicator with an optional last-edited timestamp tooltip; pending transcripts that have been edited but not yet saved show the badge without a timestamp.
+
+The schema change is additive and reversible: existing rows get NULL on `last_edited_at` ("never edited"); the badge shows when the column is non-null. No CHECK constraint, no application-layer invariant beyond "the column is set when an edit happens." Editing is restricted to `source_format = "video_transcript"` rows (P3.R7) — the PATCH route validates this server-side before touching the row; the client gates the Edit button on the same condition. PDFs/CSVs/etc. remain view-only because users can re-upload a corrected source file for those — video has no equivalent recovery path because the original is intentionally not retained.
+
+### Dependencies (npm)
+
+None new.
+
+### Database Changes
+
+#### Migration: `docs/032-video-upload/002-add-transcript-edit-tracking.sql`
+
+```sql
+-- PRD-032 Part 3: track when a video transcript was last edited. NULL means
+-- "never edited" (the default for newly transcribed rows). The "edited" badge
+-- in the UI is shown when this column is non-null; the tooltip shows the
+-- timestamp via the existing format-relative-time helper.
+--
+-- Application-layer rule: editing is exclusive to source_format = 'video_transcript'.
+-- The PATCH route enforces this server-side; the client gates the Edit button
+-- on the same condition. No CHECK constraint — coupling the schema to the
+-- source-format vocabulary would be brittle (audio_transcript rows in the
+-- backlog would also be editable in the same way).
+ALTER TABLE session_attachments
+  ADD COLUMN last_edited_at TIMESTAMPTZ NULL;
+```
+
+That is the entire migration. No backfill, no index changes (the column is read per-row in the UI rather than queried as a filter), no RLS changes.
+
+### New Environment Variables
+
+None.
+
+### Files Changed
+
+| File | Action | Purpose |
+|------|--------|---------|
+| `docs/032-video-upload/002-add-transcript-edit-tracking.sql` | **Create** | Schema migration |
+| `lib/repositories/attachment-repository.ts` | **Modify** | `AttachmentRow.last_edited_at: string \| null`; new `updateTranscript()` method on the interface; existing `createTranscript` insert shape gains optional `last_edited_at` (set when the user edited a pending transcript before save) |
+| `lib/repositories/supabase/supabase-attachment-repository.ts` | **Modify** | Implement `updateTranscript()` — UPDATE `parsed_content` + `last_edited_at = now()`, scoped to non-deleted rows, returns the updated row; widen the SELECT field list on existing methods to include `last_edited_at`; `createTranscript` writes `last_edited_at` from input when set |
+| `lib/services/attachment-service.ts` | **Modify** | New `updateTranscriptAttachment(repo, attachmentId, parsedContent)` service function; `CreateTranscriptInput` (internal) gains optional `isEdited: boolean` |
+| `lib/types/video-attachment.ts` | **Modify** | Widen `VideoTranscriptAttachment.is_edited?: false` to `is_edited?: boolean` |
+| `app/api/sessions/[id]/attachments/[attachmentId]/route.ts` | **Modify** | Add PATCH method — auth via `requireSessionAccess`, fetch the row to verify `source_format === "video_transcript"`, validate non-empty `parsed_content` (P4.R6), enforce `MAX_COMBINED_CHARS` server-side (defensive), delegate to `updateTranscriptAttachment`, log entry/exit/errors. DELETE method unchanged. |
+| `app/api/sessions/[id]/attachments/route.ts` | **Modify** | Transcript branch in POST accepts optional `is_edited` form field; passes through to the service which passes through to the repo's `createTranscript` to set `last_edited_at = now()` on insert when the user edited the pending transcript before save |
+| `lib/utils/upload-attachments.ts` | **Modify** | `PendingAttachmentUpload`'s `video_transcript` variant gains optional `is_edited: boolean`; the FormData builder appends it when set |
+| `lib/hooks/use-video-items-state.ts` | **Modify** | New `handleTranscriptEdited(id, parsedContent)` handler — updates the completed videoItem's `data.parsed_content` and sets `data.is_edited = true`; exposed in the hook return |
+| `app/capture/_components/transcript-editor.tsx` | **Create** | Shared inline editor — controlled textarea pre-filled with the current transcript, Save/Cancel buttons, non-empty validation (P4.R6 inline error), `onSave(newContent)` and `onCancel()` callbacks. ~50 LOC. Used by both saved (PATCH) and pending (client-state mutation) edit paths |
+| `app/capture/_components/edited-badge.tsx` | **Create** | Tiny presentational component — "Edited" pill; optional `timestamp?: string \| null` prop; when set, wraps in a `<Tooltip>` with `formatRelativeTime(timestamp)`; when absent, renders the badge without a tooltip (used for pending transcripts that have been edited but not yet saved) |
+| `app/capture/_components/saved-attachment-list.tsx` | **Modify** | Three additions for transcript rows: (1) "Transcript only — original video not stored" sub-label (P3.R1); (2) Edit button alongside Remove for `source_format === "video_transcript"` when `canEdit`; (3) inline `<TranscriptEditor>` rendered in place of the row when in edit mode; (4) `<EditedBadge>` rendered when `last_edited_at` is non-null |
+| `app/capture/_components/video-attachment-section.tsx` | **Modify** | `CompletedTranscriptCard` gains an Edit button + inline `<TranscriptEditor>` for pending transcripts. On Save, calls a new `onEdited(id, parsedContent)` prop forwarded from `useVideoItemsState`. `<EditedBadge>` rendered when `data.is_edited === true` |
+| `app/capture/_components/expanded-session-notes.tsx` | **Modify** | New `onSavedAttachmentEdited(attachmentId, parsedContent, lastEditedAt)` prop forwarded to `<SavedAttachmentList>`; pass-through wiring |
+| `app/capture/_components/expanded-session-row.tsx` | **Modify** | New `handleSavedAttachmentEdited` callback — updates `savedAttachments` in place with the edited row; passes through to `<ExpandedSessionNotes>` |
+| `app/capture/_components/capture-attachment-section.tsx` | **Modify** | Forward `onTranscriptEdited` prop down to `<VideoAttachmentSection>` |
+
+### Implementation
+
+#### Increment 3.1: Schema migration + repository typing + service plumbing
+
+**What:** Schema column, type widening end-to-end, service helper. Pure infrastructure — no UI or route changes yet. Independently shippable.
+
+**Files:**
+
+1. **Create `docs/032-video-upload/002-add-transcript-edit-tracking.sql`** with the `ALTER TABLE` shown above. Apply via Supabase Dashboard → SQL editor.
+
+2. **Modify `lib/repositories/attachment-repository.ts`:**
+
+   ```typescript
+   export interface AttachmentRow {
+     id: string;
+     session_id: string;
+     file_name: string;
+     file_type: string;
+     file_size: number;
+     storage_path: string | null;
+     parsed_content: string;
+     source_format: string;
+     created_at: string;
+     last_edited_at: string | null;          // NEW (PRD-032 Part 3)
+   }
+
+   // Existing TranscriptAttachmentInsert shape gains optional is_edited;
+   // when true, the repo writes last_edited_at = now() on insert.
+   export interface TranscriptAttachmentInsert {
+     session_id: string;
+     file_name: string;
+     file_type: string;
+     file_size: number;
+     parsed_content: string;
+     team_id: string | null;
+     is_edited?: boolean;                    // NEW
+   }
+
+   export interface AttachmentRepository {
+     // ... existing methods unchanged ...
+
+     /** Update a video transcript's parsed_content. Sets last_edited_at = now().
+      *  Throws if the row is missing or not a transcript. */
+     updateTranscript(
+       attachmentId: string,
+       parsedContent: string
+     ): Promise<AttachmentRow>;
+   }
+   ```
+
+   The other methods' return types automatically widen (since `AttachmentRow.last_edited_at` is added to the row shape).
+
+3. **Modify `lib/repositories/supabase/supabase-attachment-repository.ts`:**
+
+   - Widen the SELECT field list everywhere from
+     ```
+     "id, session_id, file_name, file_type, file_size, storage_path, parsed_content, source_format, created_at"
+     ```
+     to
+     ```
+     "id, session_id, file_name, file_type, file_size, storage_path, parsed_content, source_format, created_at, last_edited_at"
+     ```
+     (4 places: `create`, `createTranscript`, `getBySessionId`, plus the `updateTranscript` impl below).
+   - `createTranscript()` — when `input.is_edited === true`, include `last_edited_at: new Date().toISOString()` in the insert. Else omit (defaults to NULL).
+   - **New `updateTranscript()`:**
+
+     ```typescript
+     async updateTranscript(
+       attachmentId: string,
+       parsedContent: string
+     ): Promise<AttachmentRow> {
+       console.log(
+         "[supabase-attachment-repo] updateTranscript — id:",
+         attachmentId,
+         "chars:",
+         parsedContent.length,
+       );
+
+       const { data, error } = await supabase
+         .from("session_attachments")
+         .update({
+           parsed_content: parsedContent,
+           last_edited_at: new Date().toISOString(),
+         })
+         .eq("id", attachmentId)
+         .eq("source_format", "video_transcript")  // defence-in-depth
+         .is("deleted_at", null)
+         .select(
+           "id, session_id, file_name, file_type, file_size, storage_path, parsed_content, source_format, created_at, last_edited_at"
+         )
+         .single();
+
+       if (error || !data) {
+         console.error(
+           "[supabase-attachment-repo] updateTranscript error:",
+           error?.message ?? "no row returned",
+         );
+         throw new Error(
+           `Transcript ${attachmentId} not found or not editable`,
+         );
+       }
+
+       console.log("[supabase-attachment-repo] updateTranscript success:", data.id);
+       return data;
+     }
+     ```
+
+     The `eq("source_format", "video_transcript")` predicate is defence-in-depth; the route also checks before calling, but a stale client could hypothetically race. The UPDATE matches no row in that case → `error || !data` branch fires → 404 surfaces to the client.
+
+4. **Modify `lib/services/attachment-service.ts`:**
+
+   - `CreateTranscriptInput` (internal — unexported per Part 2 audit) gains optional `isEdited: boolean`.
+   - `createTranscriptAttachment` passes the flag through to `repo.createTranscript({ is_edited: input.isEdited })`.
+   - **New `updateTranscriptAttachment()`:**
+
+     ```typescript
+     export async function updateTranscriptAttachment(
+       repo: AttachmentRepository,
+       attachmentId: string,
+       parsedContent: string,
+     ): Promise<AttachmentRow> {
+       console.log(
+         "[attachment-service] updateTranscriptAttachment — id:",
+         attachmentId,
+         "chars:",
+         parsedContent.length,
+       );
+
+       const row = await repo.updateTranscript(attachmentId, parsedContent);
+
+       console.log("[attachment-service] updateTranscriptAttachment — updated:", row.id);
+       return row;
+     }
+     ```
+
+5. **Modify `lib/types/video-attachment.ts`:**
+
+   ```typescript
+   | {
+       kind: "video_transcript";
+       parsed_content: string;
+       file_name: string;
+       file_type: string;
+       file_size: number;
+       duration_seconds: number;
+       source_format: "video_transcript";
+       // PRD-032 Part 3 — widens from `?: false` (Part 1 reservation). Set
+       // by the editor when the user modifies the pending transcript before
+       // session save; propagated as an `is_edited` flag on the upload
+       // payload so the server sets `last_edited_at = now()` on insert.
+       is_edited?: boolean;
+     };
+   ```
+
+#### Increment 3.2: Route extensions — PATCH endpoint + POST is_edited flag
+
+**What:** New PATCH method on the per-attachment route for transcript edits. Existing POST attachments route's transcript branch accepts an `is_edited` flag to set `last_edited_at` on initial insert when a pending transcript was edited before save. Independently shippable as a "the API supports editing" milestone, ahead of the UI work.
+
+**Files:**
+
+1. **Modify `app/api/sessions/[id]/attachments/[attachmentId]/route.ts`:**
+
+   Add a PATCH method alongside the existing DELETE:
+
+   ```
+   PATCH /api/sessions/[id]/attachments/[attachmentId]
+   Content-Type: application/json
+   Body: { parsed_content: string }
+
+   Response 200: { attachment: SessionAttachment }
+   Response 400: { message: "parsed_content is required" } | { message: "Transcript can't be empty..." } (P4.R6)
+   Response 401: { message: "Authentication required" }
+   Response 403: from requireSessionAccess
+   Response 404: { message: "Transcript not found" } (also fires for parsed-file rows — they're not editable, so 404 is the right negative answer)
+   Response 422: { message: "Combined input exceeds N characters" }
+   Response 500: { message: "Failed to update transcript" }
+   ```
+
+   Implementation:
+
+   ```typescript
+   export async function PATCH(
+     request: NextRequest,
+     { params }: { params: Promise<{ id: string; attachmentId: string }> }
+   ) {
+     const { id: sessionId, attachmentId } = await params;
+
+     console.log(
+       "[api/sessions/[id]/attachments/[attachmentId]] PATCH — session:",
+       sessionId,
+       "attachment:",
+       attachmentId,
+     );
+
+     const auth = await requireAuth();
+     if (auth instanceof NextResponse) return auth;
+
+     const ctx = await requireSessionAccess(sessionId, auth.user);
+     if (ctx instanceof NextResponse) return ctx;
+
+     let body: { parsed_content?: unknown };
+     try {
+       body = await request.json();
+     } catch {
+       return NextResponse.json({ message: "Invalid JSON body" }, { status: 400 });
+     }
+
+     const parsedContent = body.parsed_content;
+     if (typeof parsedContent !== "string") {
+       return NextResponse.json(
+         { message: "parsed_content is required" },
+         { status: 400 },
+       );
+     }
+     // P4.R6 — empty/whitespace-only edits are rejected with the verbatim
+     // message the editor renders inline. Keep the strings aligned.
+     if (parsedContent.trim().length === 0) {
+       return NextResponse.json(
+         {
+           message:
+             "Transcript can't be empty. Use Remove if you want to discard this attachment.",
+         },
+         { status: 400 },
+       );
+     }
+
+     const attachmentRepo = createAttachmentRepository(ctx.supabase, ctx.serviceClient);
+
+     // Defensive: server-side combined-char check (matches the client cap).
+     const existing = await getAttachmentsBySessionId(attachmentRepo, sessionId);
+     const target = existing.find((a) => a.id === attachmentId);
+     if (!target) {
+       return NextResponse.json({ message: "Transcript not found" }, { status: 404 });
+     }
+     if (target.source_format !== "video_transcript") {
+       return NextResponse.json({ message: "Transcript not found" }, { status: 404 });
+     }
+
+     const otherChars = existing.reduce(
+       (sum, a) => (a.id === attachmentId ? sum : sum + a.parsed_content.length),
+       0,
+     );
+     if (otherChars + parsedContent.length > MAX_COMBINED_CHARS) {
+       return NextResponse.json(
+         {
+           message: `Combined input exceeds ${MAX_COMBINED_CHARS.toLocaleString()} characters`,
+         },
+         { status: 422 },
+       );
+     }
+
+     try {
+       const attachment = await updateTranscriptAttachment(
+         attachmentRepo,
+         attachmentId,
+         parsedContent,
+       );
+
+       try {
+         await ctx.sessionRepo.markStale(sessionId, ctx.user.id);
+       } catch (staleErr) {
+         console.error(
+           "[api/sessions/[id]/attachments/[attachmentId]] PATCH — failed to mark stale:",
+           staleErr instanceof Error ? staleErr.message : staleErr,
+         );
+       }
+
+       console.log(
+         "[api/sessions/[id]/attachments/[attachmentId]] PATCH — updated:",
+         attachment.id,
+       );
+       return NextResponse.json({ attachment });
+     } catch (err) {
+       console.error(
+         "[api/sessions/[id]/attachments/[attachmentId]] PATCH error:",
+         err instanceof Error ? err.message : err,
+       );
+       return NextResponse.json(
+         { message: "Failed to update transcript" },
+         { status: 500 },
+       );
+     }
+   }
+   ```
+
+   Imports added: `getAttachmentsBySessionId`, `updateTranscriptAttachment`, `MAX_COMBINED_CHARS`. The "404 for both not-found and not-a-transcript" choice avoids leaking which case is which (would matter if attachmentId enumeration were a concern — it's not really, since RLS scopes session access — but uniform 404 is simpler).
+
+2. **Modify `app/api/sessions/[id]/attachments/route.ts`** (transcript branch):
+
+   In `handleTranscriptUpload`, read an optional `is_edited` form field:
+
+   ```typescript
+   const isEditedRaw = formData.get("is_edited");
+   const isEdited = isEditedRaw === "true";
+   ```
+
+   Pass it through to `createTranscriptAttachment(attachmentRepo, { ..., isEdited })`. The service forwards to the repo, which sets `last_edited_at = now()` on insert when true.
+
+3. **Modify `lib/utils/upload-attachments.ts`:**
+
+   ```typescript
+   export type PendingAttachmentUpload =
+     | { kind: "parsed"; ... }
+     | {
+         kind: "video_transcript";
+         file_name: string;
+         file_type: string;
+         file_size: number;
+         duration_seconds: number;
+         parsed_content: string;
+         is_edited?: boolean;          // NEW
+       };
+   ```
+
+   In the FormData builder, append `is_edited` only when truthy:
+
+   ```typescript
+   if (attachment.is_edited) {
+     formData.append("is_edited", "true");
+   }
+   ```
+
+#### Increment 3.3: Shared `TranscriptEditor` and `EditedBadge` components
+
+**What:** Two presentational components used by both the saved and pending edit paths. No state ownership, no side effects — pure UI primitives. Independently shippable as part of the component library.
+
+**Files:**
+
+1. **Create `app/capture/_components/transcript-editor.tsx`:**
+
+   ```typescript
+   "use client"
+
+   import { useState } from "react"
+   import { Loader2 } from "lucide-react"
+
+   import { Button } from "@/components/ui/button"
+   import { Textarea } from "@/components/ui/textarea"
+
+   interface TranscriptEditorProps {
+     initialContent: string
+     onSave: (newContent: string) => void | Promise<void>
+     onCancel: () => void
+     isSaving?: boolean
+   }
+
+   export function TranscriptEditor({
+     initialContent,
+     onSave,
+     onCancel,
+     isSaving = false,
+   }: TranscriptEditorProps) {
+     const [content, setContent] = useState(initialContent)
+     const trimmed = content.trim()
+     const isEmpty = trimmed.length === 0
+     const isUnchanged = content === initialContent
+     const canSave = !isEmpty && !isUnchanged && !isSaving
+
+     return (
+       <div className="flex flex-col gap-2 border-t border-border bg-muted/50 px-3 py-2">
+         <Textarea
+           value={content}
+           onChange={(e) => setContent(e.target.value)}
+           rows={6}
+           className="resize-y font-mono text-xs"
+           autoFocus
+           disabled={isSaving}
+         />
+         {isEmpty && (
+           <p className="text-xs text-destructive">
+             Transcript can&apos;t be empty. Use Remove if you want to discard this
+             attachment.
+           </p>
+         )}
+         <div className="flex items-center justify-end gap-2">
+           <Button
+             type="button"
+             variant="outline"
+             size="sm"
+             onClick={onCancel}
+             disabled={isSaving}
+           >
+             Cancel
+           </Button>
+           <Button
+             type="button"
+             size="sm"
+             onClick={() => onSave(content)}
+             disabled={!canSave}
+           >
+             {isSaving && <Loader2 className="mr-1.5 size-3.5 animate-spin" />}
+             Save
+           </Button>
+         </div>
+       </div>
+     )
+   }
+   ```
+
+   The component is purely controlled — owns only its in-edit text and gives ownership of save/cancel decisions to the parent. `isSaving` is parent-driven (the parent is responsible for the optimistic update or PATCH-and-wait pattern).
+
+2. **Create `app/capture/_components/edited-badge.tsx`:**
+
+   ```typescript
+   "use client"
+
+   import { Badge } from "@/components/ui/badge"
+   import { formatRelativeTime } from "@/lib/utils/format-relative-time"
+
+   interface EditedBadgeProps {
+     timestamp?: string | null
+   }
+
+   export function EditedBadge({ timestamp }: EditedBadgeProps) {
+     const tooltipText = timestamp
+       ? `Edited ${formatRelativeTime(timestamp)}`
+       : null
+
+     const badge = (
+       <Badge variant="secondary" className="shrink-0 text-[10px]">
+         edited
+       </Badge>
+     )
+
+     if (!tooltipText) return badge
+
+     // Pre-existing pattern in the codebase: native title attribute for
+     // simple text tooltips. The Tooltip primitive isn't installed.
+     return <span title={tooltipText}>{badge}</span>
+   }
+   ```
+
+   Tooltip implementation note: this codebase doesn't have a shadcn `<Tooltip>` primitive installed (verified during Part 1's audit when the same question came up). The native `title` attribute on a wrapping `<span>` is the project's existing pattern for hover-only text tooltips. If the design system later adds `<Tooltip>`, this badge swap is one file.
+
+#### Increment 3.4: Saved-attachment-list — visual differentiation + edit flow
+
+**What:** `SavedAttachmentList` gains the "Transcript only" sub-label (P3.R1), an Edit button for transcripts, the inline editor wired to the PATCH endpoint, and the `<EditedBadge>` for transcripts with non-null `last_edited_at`. The saved-attachment surface ships first because it's where most editing actually happens (auto-persisted transcripts on the expanded session row).
+
+**Files:**
+
+1. **Modify `app/capture/_components/saved-attachment-list.tsx`:**
+
+   New imports:
+   ```typescript
+   import { Pencil } from "lucide-react"
+   import { TranscriptEditor } from "./transcript-editor"
+   import { EditedBadge } from "./edited-badge"
+   ```
+
+   New state:
+   ```typescript
+   const [editingId, setEditingId] = useState<string | null>(null)
+   const [savingEditId, setSavingEditId] = useState<string | null>(null)
+   ```
+
+   New handler:
+   ```typescript
+   const handleSaveEdit = async (
+     attachmentId: string,
+     newContent: string,
+   ): Promise<void> => {
+     setSavingEditId(attachmentId)
+     try {
+       const res = await fetch(
+         `/api/sessions/${sessionId}/attachments/${attachmentId}`,
+         {
+           method: "PATCH",
+           headers: { "Content-Type": "application/json" },
+           body: JSON.stringify({ parsed_content: newContent }),
+         },
+       )
+       if (!res.ok) {
+         const data = await res.json().catch(() => null)
+         toast.error(data?.message ?? "Failed to save transcript")
+         return
+       }
+       const { attachment: updated } = await res.json()
+       onEdited(updated)
+       setEditingId(null)
+       toast.success("Transcript saved")
+     } catch {
+       toast.error("Failed to save transcript — please try again")
+     } finally {
+       setSavingEditId(null)
+     }
+   }
+   ```
+
+   New prop: `onEdited: (attachment: SessionAttachment) => void` — the parent updates `savedAttachments` in place with the row from the PATCH response.
+
+   In the row render, three additions for `attachment.source_format === "video_transcript"`:
+
+   - **Sub-label** below the file name (P3.R1):
+     ```tsx
+     <div className="flex min-w-0 flex-1 flex-col">
+       <span className="truncate text-sm text-foreground">{attachment.file_name}</span>
+       {attachment.source_format === "video_transcript" && (
+         <span className="text-xs text-muted-foreground/80">
+           Transcript only — original video not stored
+         </span>
+       )}
+     </div>
+     ```
+
+   - **EditedBadge** when `last_edited_at` is non-null (alongside the size + format-badge area).
+
+   - **Edit button** alongside Remove for transcripts when `canEdit`:
+     ```tsx
+     {attachment.source_format === "video_transcript" && canEdit && (
+       <button
+         type="button"
+         onClick={(e) => {
+           e.stopPropagation()
+           setEditingId(attachment.id)
+         }}
+         disabled={savingEditId === attachment.id}
+         className="shrink-0 rounded p-0.5 ..."
+         aria-label={`Edit ${attachment.file_name}`}
+       >
+         <Pencil className="size-3.5" />
+       </button>
+     )}
+     ```
+
+   When `editingId === attachment.id`, render the editor in place of the expanded "View content" panel:
+   ```tsx
+   {editingId === attachment.id ? (
+     <TranscriptEditor
+       initialContent={attachment.parsed_content}
+       isSaving={savingEditId === attachment.id}
+       onSave={(newContent) => handleSaveEdit(attachment.id, newContent)}
+       onCancel={() => setEditingId(null)}
+     />
+   ) : (
+     /* existing expand/collapse logic */
+   )}
+   ```
+
+2. **Modify `app/capture/_components/expanded-session-notes.tsx`:**
+
+   New prop `onSavedAttachmentEdited: (attachment: SessionAttachment) => void`, passed to `<SavedAttachmentList onEdited={...} />`.
+
+3. **Modify `app/capture/_components/expanded-session-row.tsx`:**
+
+   ```typescript
+   const handleSavedAttachmentEdited = useCallback(
+     (updated: SessionAttachment) => {
+       setSavedAttachments((prev) =>
+         prev.map((a) => (a.id === updated.id ? updated : a)),
+       )
+     },
+     [],
+   )
+   ```
+
+   Pass `onSavedAttachmentEdited={handleSavedAttachmentEdited}` to `<ExpandedSessionNotes>`.
+
+#### Increment 3.5: Pending-transcript editing (capture form)
+
+**What:** `CompletedTranscriptCard` (the pending-transcript card in `VideoAttachmentSection`) gains the same Edit affordance. On save, the videoItem's `data.parsed_content` is mutated in client state and `data.is_edited = true` is set. The flag propagates through `upload-attachments.ts` to the server, which sets `last_edited_at = now()` on insert.
+
+**Files:**
+
+1. **Modify `lib/hooks/use-video-items-state.ts`:**
+
+   Add a new handler:
+   ```typescript
+   const handleTranscriptEdited = useCallback(
+     (id: string, parsedContent: string) => {
+       setVideoItems((prev) =>
+         prev.map((v) =>
+           v.id === id && v.status === "completed"
+             ? {
+                 ...v,
+                 data: {
+                   ...v.data,
+                   parsed_content: parsedContent,
+                   is_edited: true,
+                 },
+               }
+             : v,
+         ),
+       )
+     },
+     [],
+   )
+   ```
+
+   Expose in the return value alongside the other handlers.
+
+2. **Modify `app/capture/_components/video-attachment-section.tsx`:**
+
+   New prop `onEdited?: (id: string, parsedContent: string) => void` on `<VideoAttachmentSection>`. `CompletedTranscriptCard` accepts an `onEdited` callback prop.
+
+   Inside `CompletedTranscriptCard`:
+   - New local state: `const [isEditing, setIsEditing] = useState(false)`
+   - When `isEditing`, render `<TranscriptEditor>` in place of the chevron-toggled content panel
+   - On save: call `onEdited(attachment.id, newContent)` (synchronous client-state mutation; no `isSaving` flag because this is purely client-side), close the editor
+   - When `attachment.is_edited === true`, render `<EditedBadge timestamp={null} />` (no timestamp because the persistence write hasn't happened yet)
+   - Edit button alongside the existing remove (×) button
+
+3. **Modify `app/capture/_components/capture-attachment-section.tsx`:**
+
+   New prop `onTranscriptEdited?: (id: string, parsedContent: string) => void`, forwarded to `<VideoAttachmentSection onEdited={onTranscriptEdited}>`.
+
+4. **Modify `app/capture/_components/expanded-session-notes.tsx`:**
+
+   New prop `onPendingTranscriptEdited?: (id: string, parsedContent: string) => void`, forwarded to `<VideoAttachmentSection>`.
+
+5. **Modify `app/capture/_components/session-capture-form.tsx`:**
+
+   Pass `onTranscriptEdited={handleTranscriptEdited}` (from the hook) to `<CaptureAttachmentSection>`.
+
+   Update the save flow's transcript-payload mapping to include the flag:
+
+   ```typescript
+   ...completedTranscripts.map<PendingAttachmentUpload>((t) => ({
+     kind: "video_transcript",
+     file_name: t.file_name,
+     file_type: t.file_type,
+     file_size: t.file_size,
+     duration_seconds: t.duration_seconds,
+     parsed_content: t.parsed_content,
+     is_edited: t.is_edited === true,   // NEW
+   })),
+   ```
+
+6. **Modify `app/capture/_components/expanded-session-row.tsx`:**
+
+   Pass `onPendingTranscriptEdited={handleTranscriptEdited}` to `<ExpandedSessionNotes>`. The expanded-row save flow (still has a manual upload path even though most transcripts auto-persist) also propagates the flag.
+
+   For the auto-persist path in Increment 2.5, the user can't have edited the pending transcript before save (it auto-persists immediately). After auto-persist, the row is in `savedAttachments` and edits go through the PATCH path from Increment 3.4. So no change to `useVideoAttachment`'s sessionId-aware branch.
+
+#### Increment 3.6: End-of-Part audit
+
+**What:** Apply the CLAUDE.md eleven-point end-of-part audit checklist to all files touched in Increments 3.1–3.5. Produces fixes, not a report.
+
+**Audit emphasis specific to this part:**
+
+1. **SRP.** `TranscriptEditor` owns only the textarea state; save/cancel decisions belong to the parent. `EditedBadge` is purely presentational. `updateTranscriptAttachment` does one DB UPDATE with no Storage interaction. The PATCH route's two pre-flight checks (existence + source_format) collapse to a single 404 — uniform negative answer.
+2. **OCP.** PATCH is added alongside DELETE on the existing route file; no behaviour change to DELETE. The POST attachments route's transcript branch gains an optional `is_edited` field; the parsed-file branch is untouched.
+3. **ISP.** `TranscriptEditor`'s prop interface (initialContent, onSave, onCancel, isSaving?) is the minimum to do its job — no styling overrides, no validation flags one caller would use.
+4. **DIP.** `updateTranscriptAttachment(repo, ...)` depends on the `AttachmentRepository` interface, not the Supabase client.
+5. **DRY.** `TranscriptEditor` and `EditedBadge` are shared between saved-attachment-list and video-attachment-section's `CompletedTranscriptCard` — no duplicated editor implementation. The "Transcript only — original video not stored" string lives in saved-attachment-list (the shipping copy site for the saved row); `CompletedTranscriptCard` already had the same string from Part 1, so the message is co-located in the only two places where it renders. **Decision:** do not extract to a constant — two call sites with identical content is below the abstraction threshold; if a third surface needs it, extract then.
+6. **YAGNI.** Confirm the PATCH endpoint accepts only `parsed_content` (not `file_name`, `is_edited`, etc.). `last_edited_at` is server-set, not client-set. No `original_parsed_content` column or revert affordance — backlog only.
+7. **Fail explicitly.** PATCH route logs every 4xx + 5xx; service + repo log entry/exit + errors. The empty-content check uses the verbatim P4.R6 message both client-side (in `TranscriptEditor`) and server-side (in PATCH route) — keep them aligned.
+8. **Design tokens.** `TranscriptEditor` uses existing `<Textarea>` and `<Button>` primitives; `EditedBadge` uses the existing `<Badge>` component. No new tokens.
+9. **Logging.** PATCH route, `updateTranscriptAttachment`, and `updateTranscript` repository method all log entry, exit, errors with consistent prefixes.
+10. **Dead code.** With Increment 3.5 done, `is_edited?: boolean` on `VideoTranscriptAttachment` is wired end-to-end. The Part 1 reservation is now live code.
+11. **Convention compliance.** Migration filename `002-add-transcript-edit-tracking.sql` follows the existing `NNN-name.sql` pattern. Schema names lowercase, snake_case.
+
+Run `npx tsc --noEmit`, `npx eslint` across all touched files, and `npm run build`. Verify the migration applies cleanly.
+
+### Summary of Increments
+
+| Increment | Scope | PRD Requirements |
+|-----------|-------|------------------|
+| 3.1 | Schema + repository typing + service plumbing | P3.R7 (data model side) |
+| 3.2 | PATCH endpoint + POST is_edited flag | P3.R7 (API surface), P4.R6 (empty-edit rejection — server side) |
+| 3.3 | Shared `TranscriptEditor` + `EditedBadge` components | P3.R7 (shared primitives) |
+| 3.4 | Saved-attachment-list editing + visual sub-label | P3.R1, P3.R7 (saved path), P4.R6 (empty-edit rejection — client side) |
+| 3.5 | Pending-transcript editing (capture form) | P3.R7 (pending path) |
+| 3.6 | End-of-Part audit | Convention compliance |
+
+### Forward Compatibility Notes (for Part 4)
+
+- **Part 4 — Empty audio (P4.R1) / codec failures (P4.R2):** Client-side error mapper in `useVideoAttachment` is the only refinement target; Part 3 doesn't change the mapper.
+- **Part 4 — Empty-edit rejection (P4.R6):** Already enforced in this part — both the server-side PATCH route (verbatim message) and the client-side `TranscriptEditor` (inline error gates the Save button). Part 4 has nothing to add for P4.R6.
+- **Part 4 — Sequential video processing (P4.R4):** Editing is orthogonal to the queue policy. The queue gates which `VideoAttachmentCard` instances mount; once a card has reached `completed` and become a videoItem (manual flow) or a savedAttachments row (auto-persist flow), the editor is always available.
+- **Backlog — Revert edited transcript to original:** Would add an `original_parsed_content` column on insert (populated only when the row's `parsed_content` is later edited) plus a "Revert" button alongside Save/Cancel in `TranscriptEditor`. Schema-additive, type-additive, UI-additive — no breaking change. Skipped in v1 because the schema clean-up cost vs. user demand (none yet) is negative.
+- **Backlog — Audio-only file uploads:** When audio-only is added, those rows would also be transcript-only (`source_format = "audio_transcript"` say). The current editing exclusivity check (`source_format === "video_transcript"`) would need to widen to include audio transcripts. Single boolean on `attachment` — `isEditableSourceFormat(source_format)` helper — minor change at that point.
+- **Backlog — Cloud meeting integrations / In-browser recording:** Both feed transcripts through the same `session_attachments` rows as `video_transcript`. The editing UX inherits unchanged.

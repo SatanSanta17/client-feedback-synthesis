@@ -14,6 +14,11 @@ export interface AttachmentRow {
   parsed_content: string;
   source_format: string;
   created_at: string;
+  // PRD-032 Part 3: non-null on transcript rows that have been edited
+  // (either pre-save by the user, or via the PATCH route after persistence).
+  // NULL on never-edited rows (the default — including all parsed-file rows,
+  // which are not editable).
+  last_edited_at: string | null;
 }
 
 export interface AttachmentInsert {
@@ -31,6 +36,10 @@ export interface AttachmentInsert {
 // source_format is fixed to "video_transcript" inside the repository, not
 // callable as a parameter — this prevents callers from inserting transcript
 // rows under a different source_format by accident.
+//
+// PRD-032 Part 3: optional `is_edited` flag — when true, the repo writes
+// `last_edited_at = now()` on insert. Set when the user edited the pending
+// transcript on the client side before clicking save.
 export interface TranscriptAttachmentInsert {
   session_id: string;
   file_name: string;
@@ -38,6 +47,7 @@ export interface TranscriptAttachmentInsert {
   file_size: number;
   parsed_content: string;
   team_id: string | null;
+  is_edited?: boolean;
 }
 
 export interface AttachmentRepository {
@@ -56,6 +66,18 @@ export interface AttachmentRepository {
 
   /** Insert a video-transcript row — storage_path = NULL, source_format = 'video_transcript'. */
   createTranscript(input: TranscriptAttachmentInsert): Promise<AttachmentRow>;
+
+  /**
+   * PRD-032 Part 3 — update a video transcript's parsed_content. Sets
+   * last_edited_at = now(). Scoped to non-deleted rows with
+   * source_format = 'video_transcript' (defence-in-depth — the PATCH route
+   * already validates, but a stale client could race). Throws if no such
+   * row exists.
+   */
+  updateTranscript(
+    attachmentId: string,
+    parsedContent: string
+  ): Promise<AttachmentRow>;
 
   /** Fetch all non-deleted attachments for a session, ordered by created_at. */
   getBySessionId(sessionId: string): Promise<AttachmentRow[]>;

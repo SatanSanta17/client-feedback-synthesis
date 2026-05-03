@@ -18,6 +18,10 @@ export interface CreateAttachmentInput {
 // PRD-032 Part 2 — transcript-only persistence. No Storage upload; the row
 // is the only artefact. Called when the client has already received the
 // transcript from /api/files/transcribe and now wants it on the session.
+//
+// PRD-032 Part 3 — `isEdited` flag is set when the user edited the pending
+// transcript on the client before clicking save. The repo writes
+// `last_edited_at = now()` on insert when true.
 interface CreateTranscriptInput {
   sessionId: string;
   teamId: string | null;
@@ -25,6 +29,7 @@ interface CreateTranscriptInput {
   fileType: string;
   fileSize: number;
   parsedContent: string;
+  isEdited?: boolean;
 }
 
 export class AttachmentNotFoundError extends Error {
@@ -125,9 +130,33 @@ export async function createTranscriptAttachment(
     file_size: input.fileSize,
     parsed_content: input.parsedContent,
     team_id: input.teamId,
+    is_edited: input.isEdited,
   });
 
   console.log("[attachment-service] createTranscriptAttachment — created:", row.id);
+  return row;
+}
+
+/**
+ * PRD-032 Part 3 — update a video transcript's parsed_content. Sets
+ * last_edited_at = now() via the repository. Throws if the row is missing
+ * or not a transcript (the repository's defence-in-depth check).
+ */
+export async function updateTranscriptAttachment(
+  repo: AttachmentRepository,
+  attachmentId: string,
+  parsedContent: string
+): Promise<AttachmentRow> {
+  console.log(
+    "[attachment-service] updateTranscriptAttachment — id:",
+    attachmentId,
+    "chars:",
+    parsedContent.length,
+  );
+
+  const row = await repo.updateTranscript(attachmentId, parsedContent);
+
+  console.log("[attachment-service] updateTranscriptAttachment — updated:", row.id);
   return row;
 }
 

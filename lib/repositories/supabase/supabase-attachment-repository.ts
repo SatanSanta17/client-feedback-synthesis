@@ -9,6 +9,12 @@ import type {
 
 const STORAGE_BUCKET = "SYNTHESISER_FILE_UPLOAD";
 
+// PRD-032 Part 3: extracted because four call sites need the same field list
+// (create, createTranscript, updateTranscript, getBySessionId). Adding a new
+// column means updating one constant.
+const ATTACHMENT_ROW_FIELDS =
+  "id, session_id, file_name, file_type, file_size, storage_path, parsed_content, source_format, created_at, last_edited_at";
+
 export function createAttachmentRepository(
   supabase: SupabaseClient,
   serviceClient: SupabaseClient
@@ -68,9 +74,7 @@ export function createAttachmentRepository(
           source_format: input.source_format,
           team_id: input.team_id,
         })
-        .select(
-          "id, session_id, file_name, file_type, file_size, storage_path, parsed_content, source_format, created_at"
-        )
+        .select(ATTACHMENT_ROW_FIELDS)
         .single();
 
       if (error) {
@@ -90,6 +94,7 @@ export function createAttachmentRepository(
         input.file_name,
         "transcript chars:",
         input.parsed_content.length,
+        input.is_edited ? "(pre-edited)" : "",
       );
 
       const { data, error } = await supabase
@@ -103,10 +108,14 @@ export function createAttachmentRepository(
           parsed_content: input.parsed_content,
           source_format: "video_transcript",
           team_id: input.team_id,
+          // PRD-032 Part 3 — pre-save edits stamp the row at insert time so
+          // the "edited" badge appears on first render. Omitted when false
+          // so the column defaults to NULL.
+          ...(input.is_edited
+            ? { last_edited_at: new Date().toISOString() }
+            : {}),
         })
-        .select(
-          "id, session_id, file_name, file_type, file_size, storage_path, parsed_content, source_format, created_at"
-        )
+        .select(ATTACHMENT_ROW_FIELDS)
         .single();
 
       if (error) {
@@ -118,14 +127,47 @@ export function createAttachmentRepository(
       return data;
     },
 
+    async updateTranscript(
+      attachmentId: string,
+      parsedContent: string
+    ): Promise<AttachmentRow> {
+      console.log(
+        "[supabase-attachment-repo] updateTranscript — id:",
+        attachmentId,
+        "chars:",
+        parsedContent.length,
+      );
+
+      const { data, error } = await supabase
+        .from("session_attachments")
+        .update({
+          parsed_content: parsedContent,
+          last_edited_at: new Date().toISOString(),
+        })
+        .eq("id", attachmentId)
+        .eq("source_format", "video_transcript")
+        .is("deleted_at", null)
+        .select(ATTACHMENT_ROW_FIELDS)
+        .single();
+
+      if (error || !data) {
+        console.error(
+          "[supabase-attachment-repo] updateTranscript error:",
+          error?.message ?? "no row returned",
+        );
+        throw new Error(`Transcript ${attachmentId} not found or not editable`);
+      }
+
+      console.log("[supabase-attachment-repo] updateTranscript success:", data.id);
+      return data;
+    },
+
     async getBySessionId(sessionId: string): Promise<AttachmentRow[]> {
       console.log("[supabase-attachment-repo] getBySessionId — session:", sessionId);
 
       const { data, error } = await supabase
         .from("session_attachments")
-        .select(
-          "id, session_id, file_name, file_type, file_size, storage_path, parsed_content, source_format, created_at"
-        )
+        .select(ATTACHMENT_ROW_FIELDS)
         .eq("session_id", sessionId)
         .is("deleted_at", null)
         .order("created_at", { ascending: true });
