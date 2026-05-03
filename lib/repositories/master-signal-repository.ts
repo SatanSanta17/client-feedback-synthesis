@@ -19,15 +19,16 @@ export interface MasterSignalRepository {
   getLatest(): Promise<MasterSignalRow | null>;
 
   /**
-   * Count sessions with structured_notes updated after the given timestamp.
-   * If `since` is null, counts ALL sessions with structured_notes.
+   * Count sessions with extraction output (structured_json or legacy
+   * structured_notes) updated after the given timestamp.
+   * If `since` is null, counts ALL sessions with extraction output.
    */
   getStaleSessionCount(since: string | null): Promise<number>;
 
-  /** Fetch all non-deleted sessions with structured_notes, joined with client names. */
+  /** Fetch all non-deleted sessions with extraction output, joined with client names. */
   getAllSignalSessions(): Promise<SignalSession[]>;
 
-  /** Fetch sessions with structured_notes updated after the given timestamp. */
+  /** Fetch sessions with extraction output updated after the given timestamp. */
   getSignalSessionsSince(since: string): Promise<SignalSession[]>;
 
   /** Persist a new master signal row. Returns the created row. */

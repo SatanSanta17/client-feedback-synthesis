@@ -22,6 +22,9 @@ eval "$(ssh-agent -s)" && ssh-add ~/.ssh/id_ed25519_personal
 - audio clips/video clips
 - org awareness
 - direct jira ticket creation from the platform
+- video upload
+- chat response is too short why?
+- on edit and reextract lets target only the edited section of the notes so that the new response doesnt vary too much 
 
 
 Mental model:

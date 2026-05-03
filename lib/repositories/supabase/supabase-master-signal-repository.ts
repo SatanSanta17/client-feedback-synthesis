@@ -2,7 +2,13 @@ import { type SupabaseClient } from "@supabase/supabase-js";
 
 import type { MasterSignalRepository, MasterSignalRow } from "../master-signal-repository";
 import type { SignalSession } from "@/lib/types/signal-session";
+import type { ExtractedSignals } from "@/lib/schemas/extraction-schema";
+import { renderExtractedSignalsToMarkdown } from "@/lib/utils/render-extracted-signals-to-markdown";
 import { scopeByTeam } from "./scope-by-team";
+
+// Predicate used by every signal-session query: include rows that have either
+// structured_json (post-PRD-031 Part 1) or legacy structured_notes (pre-PRD-031).
+const HAS_EXTRACTION_OUTPUT = "structured_notes.not.is.null,structured_json.not.is.null";
 
 /**
  * Factory for creating a Supabase-backed MasterSignalRepository.
@@ -50,7 +56,7 @@ export function createMasterSignalRepository(
       let query = supabase
         .from("sessions")
         .select("id", { count: "exact", head: true })
-        .not("structured_notes", "is", null)
+        .or(HAS_EXTRACTION_OUTPUT)
         .is("deleted_at", null);
 
       query = scopeByTeam(query, teamId);
@@ -76,8 +82,8 @@ export function createMasterSignalRepository(
 
       let query = supabase
         .from("sessions")
-        .select("id, session_date, structured_notes, updated_at, clients(name)")
-        .not("structured_notes", "is", null)
+        .select("id, session_date, structured_notes, structured_json, updated_at, clients(name)")
+        .or(HAS_EXTRACTION_OUTPUT)
         .is("deleted_at", null)
         .order("session_date", { ascending: true });
 
@@ -100,8 +106,8 @@ export function createMasterSignalRepository(
 
       let query = supabase
         .from("sessions")
-        .select("id, session_date, structured_notes, updated_at, clients(name)")
-        .not("structured_notes", "is", null)
+        .select("id, session_date, structured_notes, structured_json, updated_at, clients(name)")
+        .or(HAS_EXTRACTION_OUTPUT)
         .is("deleted_at", null)
         .gt("updated_at", since)
         .order("session_date", { ascending: true });
@@ -198,6 +204,7 @@ function mapSessionRow(row: {
   id: string;
   session_date: string;
   structured_notes: string | null;
+  structured_json: unknown;
   updated_at: string;
   clients: unknown;
 }): SignalSession {
@@ -206,7 +213,44 @@ function mapSessionRow(row: {
     id: row.id,
     clientName: clientData?.name ?? "Unknown",
     sessionDate: row.session_date,
-    structuredNotes: row.structured_notes ?? "",
+    structuredNotes: composeStructuredNotes(row),
     updatedAt: row.updated_at,
   };
+}
+
+/**
+ * Composes the markdown view of a session for master-signal synthesis.
+ *
+ * - Post-PRD-031 sessions have only `structured_json` — render markdown on demand.
+ * - Pre-PRD-031 (post-PRD-018) sessions have both — prefer JSON (single source of truth).
+ * - Pre-PRD-018 legacy sessions have only `structured_notes` — pass through.
+ *
+ * If JSON rendering throws (malformed shape), fall back to legacy markdown
+ * if available rather than dropping the session from the master signal.
+ */
+function composeStructuredNotes(row: {
+  id: string;
+  structured_notes: string | null;
+  structured_json: unknown;
+}): string {
+  if (row.structured_json !== null && row.structured_json !== undefined) {
+    try {
+      return renderExtractedSignalsToMarkdown(row.structured_json as ExtractedSignals);
+    } catch (err) {
+      console.warn(
+        `[supabase-master-signal-repo] composeStructuredNotes — failed to render structured_json for session ${row.id}, falling back to structured_notes:`,
+        err instanceof Error ? err.message : err
+      );
+    }
+  }
+
+  if (row.structured_notes !== null) {
+    return row.structured_notes;
+  }
+
+  // Defensive — the OR filter on the SELECT prevents this branch in practice.
+  console.warn(
+    `[supabase-master-signal-repo] composeStructuredNotes — session ${row.id} has neither structured_json nor structured_notes`
+  );
+  return "";
 }
