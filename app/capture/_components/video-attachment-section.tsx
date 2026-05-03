@@ -5,6 +5,7 @@ import { ChevronDown, ChevronRight, X } from "lucide-react"
 
 import { FILE_ICONS } from "@/lib/constants/file-icons"
 import { formatFileSize } from "@/lib/utils/format-file-size"
+import type { SessionAttachment } from "@/lib/services/attachment-service"
 import type {
   VideoListItem,
   VideoTranscriptAttachment,
@@ -14,14 +15,21 @@ import { VideoAttachmentCard } from "./video-attachment-card"
 
 interface VideoAttachmentSectionProps {
   items: VideoListItem[]
+  // PRD-032 Part 2 — when set, in-flight cards forward the sessionId so the
+  // server auto-persists the transcript on response. onAutoPersisted then
+  // fires (instead of onCompleted) with the saved attachment row.
+  sessionId?: string
   onCompleted: (id: string, attachment: VideoTranscriptAttachment) => void
+  onAutoPersisted?: (id: string, attachment: SessionAttachment) => void
   onError: (id: string, error: VideoUploadError) => void
   onRemove: (id: string) => void
 }
 
 export function VideoAttachmentSection({
   items,
+  sessionId,
   onCompleted,
+  onAutoPersisted,
   onError,
   onRemove,
 }: VideoAttachmentSectionProps) {
@@ -35,7 +43,13 @@ export function VideoAttachmentSection({
             <VideoAttachmentCard
               key={item.id}
               file={item.file}
+              sessionId={sessionId}
               onCompleted={(attachment) => onCompleted(item.id, attachment)}
+              onAutoPersisted={
+                onAutoPersisted
+                  ? (attachment) => onAutoPersisted(item.id, attachment)
+                  : undefined
+              }
               onError={(error) => onError(item.id, error)}
               onCancel={() => onRemove(item.id)}
             />

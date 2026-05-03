@@ -9,6 +9,7 @@ import {
 import { extractAudioFromVideo } from "@/lib/utils/video/extract-audio"
 import { probeVideoMetadata } from "@/lib/utils/video/probe-video-metadata"
 import { uploadAudioForTranscription } from "@/lib/utils/video/upload-audio"
+import type { SessionAttachment } from "@/lib/services/attachment-service"
 import type {
   VideoTranscriptAttachment,
   VideoUploadError,
@@ -16,7 +17,12 @@ import type {
 } from "@/lib/types/video-attachment"
 
 export interface UseVideoAttachmentOptions {
+  // PRD-032 Part 2 — when set, the server auto-persists the transcript and
+  // the response includes a SessionAttachment row. The hook routes to
+  // onAutoPersisted in that case; onCompleted otherwise.
+  sessionId?: string
   onCompleted: (attachment: VideoTranscriptAttachment) => void
+  onAutoPersisted?: (attachment: SessionAttachment) => void
   onError: (error: VideoUploadError) => void
 }
 
@@ -37,10 +43,14 @@ export function useVideoAttachment(
   // prevents the cleanup from aborting mid-extraction when the parent
   // re-renders with a new opts object.
   const onCompletedRef = useRef(opts.onCompleted)
+  const onAutoPersistedRef = useRef(opts.onAutoPersisted)
   const onErrorRef = useRef(opts.onError)
+  const sessionIdRef = useRef(opts.sessionId)
   useEffect(() => {
     onCompletedRef.current = opts.onCompleted
+    onAutoPersistedRef.current = opts.onAutoPersisted
     onErrorRef.current = opts.onError
+    sessionIdRef.current = opts.sessionId
   })
 
   const cancel = useCallback(() => {
@@ -99,6 +109,7 @@ export function useVideoAttachment(
             videoFileType: file.type,
             videoFileSize: file.size,
             durationSeconds: meta.duration_seconds,
+            sessionId: sessionIdRef.current,
           },
           {
             onUploadProgress: (p) => {
@@ -130,7 +141,14 @@ export function useVideoAttachment(
         }
 
         setState({ status: "completed", attachment: completed })
-        onCompletedRef.current(completed)
+
+        // Server auto-persisted (sessionId path) — surface the saved row.
+        // Otherwise fall back to client-held transcript (manual save flow).
+        if (result.attachment && onAutoPersistedRef.current) {
+          onAutoPersistedRef.current(result.attachment)
+        } else {
+          onCompletedRef.current(completed)
+        }
       } catch (err) {
         if (ctrl.signal.aborted) {
           setState({ status: "cancelled" })

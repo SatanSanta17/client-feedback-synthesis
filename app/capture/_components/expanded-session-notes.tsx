@@ -25,6 +25,8 @@ interface ExpandedSessionNotesProps {
   savedAttachments: SessionAttachment[]
   pendingAttachments: ParsedAttachment[]
   videoItems: VideoListItem[]
+  // PRD-032 Part 2 — when present, video transcripts auto-persist server-side.
+  videoSessionId?: string
   isLoadingAttachments: boolean
   structuredNotes: string | null
   extractionState: "idle" | "extracting" | "done"
@@ -37,6 +39,7 @@ interface ExpandedSessionNotesProps {
   onRemovePendingAttachment: (index: number) => void
   onVideoSelected: (file: File) => void
   onVideoCompleted: (id: string, attachment: VideoTranscriptAttachment) => void
+  onVideoAutoPersisted?: (id: string, attachment: SessionAttachment) => void
   onVideoError: (id: string, error: VideoUploadError) => void
   onVideoRemove: (id: string) => void
 }
@@ -49,6 +52,7 @@ export function ExpandedSessionNotes({
   savedAttachments,
   pendingAttachments,
   videoItems,
+  videoSessionId,
   isLoadingAttachments,
   structuredNotes,
   extractionState,
@@ -61,6 +65,7 @@ export function ExpandedSessionNotes({
   onRemovePendingAttachment,
   onVideoSelected,
   onVideoCompleted,
+  onVideoAutoPersisted,
   onVideoError,
   onVideoRemove,
 }: ExpandedSessionNotesProps) {
@@ -97,7 +102,9 @@ export function ExpandedSessionNotes({
 
         <VideoAttachmentSection
           items={videoItems}
+          sessionId={videoSessionId}
           onCompleted={onVideoCompleted}
+          onAutoPersisted={onVideoAutoPersisted}
           onError={onVideoError}
           onRemove={onVideoRemove}
         />

@@ -1,22 +1,38 @@
 "use client"
 
-import { useCallback, useState } from "react"
+import { useCallback, useRef, useState, useEffect } from "react"
 
 import { useBeforeUnloadGuard } from "@/lib/hooks/use-beforeunload-guard"
 import { useWakeLock } from "@/lib/hooks/use-wake-lock"
+import type { SessionAttachment } from "@/lib/services/attachment-service"
 import type {
   VideoListItem,
   VideoTranscriptAttachment,
   VideoUploadError,
 } from "@/lib/types/video-attachment"
 
+export interface UseVideoItemsStateOptions {
+  logPrefix: string
+  // PRD-032 Part 2 — when set, the per-card pipeline sends sessionId to the
+  // transcribe route, which persists the transcript server-side and returns
+  // the saved row. onAutoPersisted fires with that row; the videoItem is
+  // removed from the list (the parent merges into savedAttachments instead).
+  sessionId?: string
+  onAutoPersisted?: (attachment: SessionAttachment) => void
+}
+
 export interface UseVideoItemsStateReturn {
   videoItems: VideoListItem[]
   anyVideoInFlight: boolean
   completedTranscripts: VideoTranscriptAttachment[]
   transcriptChars: number
+  // Forwarded to <VideoAttachmentSection sessionId={...}> when set.
+  sessionId?: string
   handleVideoSelected: (file: File) => void
   handleVideoCompleted: (id: string, attachment: VideoTranscriptAttachment) => void
+  // Pass to <VideoAttachmentSection onAutoPersisted={...}> only when sessionId
+  // is also set; otherwise the auto-persist path is unreachable.
+  handleVideoAutoPersisted?: (id: string, attachment: SessionAttachment) => void
   handleVideoError: (id: string, error: VideoUploadError) => void
   handleVideoRemove: (id: string) => void
   reset: () => void
@@ -27,7 +43,15 @@ export interface UseVideoItemsStateReturn {
 // guard internally so the side-effects move with the state, not duplicated
 // at every call site. `logPrefix` distinguishes the two consumers in error
 // telemetry without forcing the hook to know about them.
-export function useVideoItemsState(logPrefix: string): UseVideoItemsStateReturn {
+export function useVideoItemsState(
+  options: string | UseVideoItemsStateOptions,
+): UseVideoItemsStateReturn {
+  // Back-compat: original signature was a single `logPrefix` string. The
+  // option-bag form is the new shape; both are accepted to avoid forcing
+  // every consumer to migrate at once.
+  const opts: UseVideoItemsStateOptions =
+    typeof options === "string" ? { logPrefix: options } : options
+
   const [videoItems, setVideoItems] = useState<VideoListItem[]>([])
 
   const completedTranscripts = videoItems.flatMap((v) =>
@@ -41,6 +65,14 @@ export function useVideoItemsState(logPrefix: string): UseVideoItemsStateReturn 
 
   useWakeLock(anyVideoInFlight)
   useBeforeUnloadGuard(anyVideoInFlight)
+
+  // Latest-callback ref so handleVideoAutoPersisted's identity stays stable.
+  const onAutoPersistedRef = useRef(opts.onAutoPersisted)
+  useEffect(() => {
+    onAutoPersistedRef.current = opts.onAutoPersisted
+  })
+
+  const logPrefix = opts.logPrefix
 
   const handleVideoSelected = useCallback((file: File) => {
     setVideoItems((prev) => [
@@ -56,6 +88,18 @@ export function useVideoItemsState(logPrefix: string): UseVideoItemsStateReturn 
           v.id === id ? { id, status: "completed", data: attachment } : v
         )
       )
+    },
+    []
+  )
+
+  // Auto-persist branch — server already saved the transcript. Drop the
+  // videoItem entirely and forward the saved row to the parent for merge
+  // into savedAttachments. Exposed only when opts.sessionId is set so the
+  // section gates the corresponding prop on its presence.
+  const handleVideoAutoPersisted = useCallback(
+    (id: string, attachment: SessionAttachment) => {
+      setVideoItems((prev) => prev.filter((v) => v.id !== id))
+      onAutoPersistedRef.current?.(attachment)
     },
     []
   )
@@ -80,8 +124,10 @@ export function useVideoItemsState(logPrefix: string): UseVideoItemsStateReturn 
     anyVideoInFlight,
     completedTranscripts,
     transcriptChars,
+    sessionId: opts.sessionId,
     handleVideoSelected,
     handleVideoCompleted,
+    handleVideoAutoPersisted: opts.sessionId ? handleVideoAutoPersisted : undefined,
     handleVideoError,
     handleVideoRemove,
     reset,

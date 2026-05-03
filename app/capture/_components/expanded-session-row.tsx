@@ -89,19 +89,30 @@ export function ExpandedSessionRow({
   const [isLoadingAttachments, setIsLoadingAttachments] = useState(true)
   const [deletedAttachmentIds, setDeletedAttachmentIds] = useState<Set<string>>(new Set())
 
-  // Video attachments — PRD-032 Part 1. Transcripts are not yet persisted on
-  // save (Part 2 work); the hook's reset() runs after a successful save.
+  // PRD-032 Part 2 — saved sessions auto-persist transcripts server-side.
+  // sessionId is passed through to the transcribe route; on success the
+  // server creates the session_attachments row and returns it via
+  // onAutoPersisted, which merges it into savedAttachments here. The
+  // videoItem is removed by the hook so no "completed" placeholder lingers.
   const {
     videoItems,
     anyVideoInFlight,
     completedTranscripts,
     transcriptChars,
+    sessionId: videoSessionId,
     handleVideoSelected,
     handleVideoCompleted,
+    handleVideoAutoPersisted,
     handleVideoError,
     handleVideoRemove,
     reset: resetVideoItems,
-  } = useVideoItemsState("[ExpandedSessionRow]")
+  } = useVideoItemsState({
+    logPrefix: "[ExpandedSessionRow]",
+    sessionId: session.id,
+    onAutoPersisted: (attachment) => {
+      setSavedAttachments((prev) => [...prev, attachment])
+    },
+  })
 
   // Fetch saved attachments on mount
   useEffect(() => {
@@ -398,8 +409,10 @@ export function ExpandedSessionRow({
           onSavedAttachmentDeleted={handleSavedAttachmentDeleted}
           onAddPendingAttachment={handleAddPendingAttachment}
           onRemovePendingAttachment={handleRemovePendingAttachment}
+          videoSessionId={videoSessionId}
           onVideoSelected={handleVideoSelected}
           onVideoCompleted={handleVideoCompleted}
+          onVideoAutoPersisted={handleVideoAutoPersisted}
           onVideoError={handleVideoError}
           onVideoRemove={handleVideoRemove}
         />

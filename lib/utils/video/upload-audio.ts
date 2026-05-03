@@ -1,3 +1,5 @@
+import type { SessionAttachment } from "@/lib/services/attachment-service";
+
 export interface UploadAudioInput {
   audio: Blob;
   audioFileName: string;
@@ -5,6 +7,9 @@ export interface UploadAudioInput {
   videoFileType: string;
   videoFileSize: number;
   durationSeconds: number;
+  // PRD-032 Part 2 — when present, the server persists the transcript before
+  // responding. Survives client disconnect mid-Whisper.
+  sessionId?: string;
 }
 
 export interface UploadAudioResult {
@@ -14,6 +19,8 @@ export interface UploadAudioResult {
   file_size: number;
   duration_seconds: number;
   source_format: "video_transcript";
+  // Present iff sessionId was provided AND the server persisted successfully.
+  attachment?: SessionAttachment;
 }
 
 export interface UploadAudioOptions {
@@ -79,6 +86,9 @@ export function uploadAudioForTranscription(
     fd.append("video_file_type", input.videoFileType);
     fd.append("video_file_size", String(input.videoFileSize));
     fd.append("duration_seconds", String(input.durationSeconds));
+    if (input.sessionId) {
+      fd.append("session_id", input.sessionId);
+    }
 
     xhr.send(fd);
   });

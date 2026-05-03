@@ -7,6 +7,7 @@ import { cn } from "@/lib/utils"
 import { FILE_ICONS } from "@/lib/constants/file-icons"
 import { formatFileSize } from "@/lib/utils/format-file-size"
 import { useVideoAttachment } from "@/lib/hooks/use-video-attachment"
+import type { SessionAttachment } from "@/lib/services/attachment-service"
 import type {
   VideoTranscriptAttachment,
   VideoUploadError,
@@ -15,19 +16,27 @@ import type {
 
 interface VideoAttachmentCardProps {
   file: File
+  // PRD-032 Part 2 — when set, the server auto-persists the transcript and
+  // calls onAutoPersisted with the saved row. Otherwise onCompleted fires.
+  sessionId?: string
   onCompleted: (attachment: VideoTranscriptAttachment) => void
+  onAutoPersisted?: (attachment: SessionAttachment) => void
   onError: (error: VideoUploadError) => void
   onCancel: () => void
 }
 
 export function VideoAttachmentCard({
   file,
+  sessionId,
   onCompleted,
+  onAutoPersisted,
   onError,
   onCancel,
 }: VideoAttachmentCardProps) {
   const { state, cancel } = useVideoAttachment(file, {
+    sessionId,
     onCompleted,
+    onAutoPersisted,
     onError,
   })
 
