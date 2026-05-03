@@ -1,8 +1,8 @@
 # TRD-031: Workflow Improvements
 
-> **Status:** Part 1 shipped. Part 2 in progress.
+> **Status:** Part 1 shipped. Part 2 shipped. Part 3 in progress.
 >
-> Mirrors **PRD-031**. Each part maps to the corresponding PRD part. **Part 1** (Drop Markdown Extraction) is detailed below and shipped. **Part 2** (Positive Signal Chunk Type and Hide-Empty Sections) is detailed below. **Part 3** (Looser Chat Response Limits) is stubbed and will be filled in once its PRD part begins implementation. Per the project rule that each TRD part references the entire PRD, forward-compatibility constraints from later parts are noted in earlier parts where relevant.
+> Mirrors **PRD-031**. Each part maps to the corresponding PRD part. **Part 1** (Drop Markdown Extraction) and **Part 2** (Positive Signal Chunk Type, Hide-Empty Sections, and Top Wins Dashboard Widget) are detailed below and shipped. **Part 3** (Looser Chat Response Limits) is detailed below. Per the project rule that each TRD part references the entire PRD, forward-compatibility constraints from later parts are noted in earlier parts where relevant — Part 3 is fully orthogonal to Parts 1 and 2 (no shared files, no shared interfaces).
 
 ---
 
@@ -641,8 +641,242 @@ Eight small, independently shippable PRs. Increments 1–6 ship infrastructure t
 
 > Implements **P3.R1–P3.R6** from PRD-031.
 
-**Status:** Stubbed. Detailed implementation plan to be filled in once Parts 1 and 2 ship and Part 3 begins.
+### Overview
 
-### Forward-compatibility commitments inherited from Part 1
+Three independent knobs on the RAG chat surface, plus observability, plus a defensive provider-compatibility layer. Each knob addresses a different cause of the "answer ran out mid-list" complaint:
 
-None. Part 3 touches `lib/prompts/chat-prompt.ts`, `lib/services/chat-stream-service.ts`, and observability around chat completions — no overlap with Part 1's scope.
+1. **Output cap** (`CHAT_MAX_TOKENS`) raises from 4,096 → 8,192 (P3.R1). This is the highest-impact single change — it's the cap most often hit in practice on broad/list-style questions.
+2. **Tool-call step ceiling** raises from `stepCountIs(5)` → `stepCountIs(10)` (P3.R2). Unblocks legitimately hybrid questions that need multiple tool calls plus a composing pass.
+3. **System prompt brevity bias softened** (P3.R3) — Rule 5's unqualified "Be concise" is replaced with guidance distinguishing conversational answers (where brevity is right) from list-style/synthesis answers (where completeness within the budget is right). Rule 7 ("List ALL items the tool returns") is the floor and is reinforced, not contradicted.
+4. **Conversation-history budget left at 80K** (P3.R4) — the bottleneck on response length is the *output* cap, not the input window. Raising the input budget would not affect the user-visible problem and would increase per-turn cost for no gain.
+5. **Provider-compatibility clamping** (P3.R5) — the new 8K cap is at the upper edge for some configurable providers (Gemini 2.0 Flash hard-caps at 8192 output). A small `clampOutputTokens()` helper looks up the resolved provider/model's known maximum and clamps + warns at runtime if the desired value exceeds it. Defends against ops switching `AI_MODEL` to a smaller-cap variant without remembering to lower the chat cap.
+6. **Output-usage telemetry** (P3.R6) — the existing chat-complete log line is extended with `usage: input=… output=… total=…` plus the existing `finishReason`. Surfaces "are we hitting the new cap?" in production logs from day one. Existing tool-call truncation warning (`finishReason === "tool-calls"`) is mirrored for length-truncation (`finishReason === "length"`) so users still see a "this answer may be incomplete" hint when the new 8K cap *is* hit.
+
+The change is small in code (≤ 3 files modified, 1 file added) but the user-perceived effect is meaningful — broad questions stop truncating mid-list, hybrid questions get more reasoning room, and the team gets the production data needed to know whether to raise the cap further later.
+
+**Forward-compat constraints from Parts 1 and 2.** None — Part 3 is fully orthogonal. No shared files, no shared interfaces, no shared schemas. Output telemetry added to chat is independent from the per-extraction usage telemetry added inside `callModelObject()` in Part 1 (different operations, different log prefixes).
+
+**What Part 3 deliberately does NOT change:**
+- The `DEFAULT_TOKEN_BUDGET = 80_000` history cap in `chat-service.ts::buildContextMessages`. Untouched per P3.R4.
+- The chat tool definitions, filter sanitization, source collection, follow-up parsing — all unchanged.
+- The streaming SSE contract — same event types, same client.
+- The chat data model (`conversations`, `messages`) — no DB changes.
+
+### Dependencies (npm)
+
+None. No new packages, no version bumps.
+
+### Database Changes
+
+**None.** The chat data model is untouched; this is a behaviour-tuning change.
+
+### API Endpoints
+
+**No route changes.** `POST /api/chat/send` request/response shapes unchanged. The streaming response sends the same SSE event types (`status`, `delta`, `sources`, `follow_ups`, `done`, `error`). The only observable client-side difference is response length (longer when the model has more to say) and an additional length-truncation warning text appended via the existing `delta` event mechanism when the new 8K cap is hit (the same pattern the existing tool-call truncation warning uses today).
+
+### Design Token Changes
+
+None.
+
+### Files Changed
+
+| File | Action | Purpose |
+|------|--------|---------|
+| `lib/prompts/chat-prompt.ts` | **Modify** | Bump `CHAT_MAX_TOKENS` from `4096` to `8192` (P3.R1). Soften Rule 5 — replace unqualified "Be concise" with guidance distinguishing conversational answers (concise is right) from list-style/synthesis answers (completeness within the budget is right). Cross-reference Rule 7 as the non-negotiable floor — never silently truncate a list to look concise. (P3.R3) |
+| `lib/services/chat-stream-service.ts` | **Modify** | Bump `stopWhen: stepCountIs(5)` to `stepCountIs(10)` (P3.R2). Wrap the `maxOutputTokens` value in `clampOutputTokens(CHAT_MAX_TOKENS, modelLabel)` so a smaller-cap provider/model gets the safe cap (P3.R5). Add length-truncation warning mirroring the existing `wasTruncated` block — when `finishReason === "length"` append a one-line hint to the streamed content informing the user the answer hit the output cap (parity with the tool-call truncation hint that already exists). Extend the chat-complete log line with `usage` from `result.usage` (input/output/total tokens) so production telemetry can answer "how often is the new 8K cap *itself* being hit" (P3.R6). |
+| `lib/services/ai-provider-limits.ts` | **Create** | New module: `PROVIDER_OUTPUT_CAPS` map (provider/model → known max output tokens) + `clampOutputTokens(desired, modelLabel)` helper that returns `Math.min(desired, knownMax)` with a `console.warn` log when clamping fires. Module is small (≤ 50 lines), framework-agnostic, and the map is a one-line edit when a new provider or larger-output model arrives. |
+
+### Service / Repository Changes
+
+#### `lib/services/ai-provider-limits.ts` (new)
+
+A thin defensive helper. The map starts conservative — every entry is a *known floor* for the listed provider; if a provider/model is unlisted, the helper returns the desired value unchanged (no clamp, no warn). This avoids over-clamping when ops add a new model that has higher caps.
+
+```ts
+const PROVIDER_OUTPUT_CAPS: Record<string, number> = {
+  // provider/model: known max output tokens (conservative floor)
+  "google/gemini-2.0-flash": 8192,
+  "google/gemini-2.0-flash-lite": 8192,
+  "google/gemini-1.5-flash": 8192,
+  // OpenAI gpt-4o family: 16384; not clamped because > our 8192 desired
+  // Anthropic Claude Sonnet/Opus/Haiku 4.x family: ≥ 32768; not clamped
+};
+
+export function clampOutputTokens(
+  desired: number,
+  modelLabel: string  // e.g. "google/gemini-2.0-flash"
+): number {
+  const cap = PROVIDER_OUTPUT_CAPS[modelLabel];
+  if (cap === undefined) return desired;  // unknown — trust ops
+  if (desired <= cap) return desired;
+  console.warn(
+    `[ai-provider-limits] clamping output cap for ${modelLabel}: ${desired} → ${cap}`
+  );
+  return cap;
+}
+```
+
+The map is intentionally provider/model-keyed (matching `resolveModel()`'s `label` shape), not just provider-keyed, because cap varies by model within a provider (Anthropic Opus < Sonnet historically; OpenAI gpt-4o > o1).
+
+The helper is a runtime check that fires once per chat turn — negligible overhead. Idiomatic TypeScript / no async / no I/O.
+
+#### `lib/services/chat-stream-service.ts` (modify)
+
+Three coordinated edits inside `createChatStream`:
+
+1. **`stopWhen: stepCountIs(5)` → `stepCountIs(10)`** (P3.R2). Constants used inline; could be extracted to a named export but not required for one consumer.
+
+2. **`maxOutputTokens: CHAT_MAX_TOKENS` → `maxOutputTokens: clampOutputTokens(CHAT_MAX_TOKENS, modelLabel)`** (P3.R5). The `modelLabel` is already in the deps interface — no new wiring.
+
+3. **Length-truncation user warning** (P3.R6 + UX parity). The existing `wasTruncated` block fires when `finishReason === "tool-calls"` and appends a hint to the streamed content. Extend the same pattern to handle `finishReason === "length"`:
+
+   ```ts
+   const finishReason = await result.finishReason;
+   const stepCount = (await result.steps).length;
+   const usage = await result.usage;
+   const wasStepTruncated = finishReason === "tool-calls";
+   const wasLengthTruncated = finishReason === "length";
+
+   if (wasStepTruncated) {
+     const warning = "\n\n_Note: this answer may be incomplete — I reached my reasoning step limit before finishing. Try a follow-up to dig deeper._";
+     fullText += warning;
+     controller.enqueue(encoder.encode(sseEvent("delta", { text: warning })));
+   } else if (wasLengthTruncated) {
+     const warning = "\n\n_Note: this answer was cut off before completing — try a more focused follow-up to see the rest._";
+     fullText += warning;
+     controller.enqueue(encoder.encode(sseEvent("delta", { text: warning })));
+   }
+   ```
+
+4. **Telemetry log line extension** (P3.R6). Existing log includes `steps`, `finishReason`, `content chars`, `sources`, `followUps`, and the `(truncated)` suffix. Append `usage` so the team can grep for length-finishes and per-turn cost:
+
+   ```ts
+   console.log(
+     `${LOG_PREFIX} stream complete — steps: ${stepCount}, finishReason: ${finishReason}, usage: input=${usage?.inputTokens ?? "?"}, output=${usage?.outputTokens ?? "?"}, total=${usage?.totalTokens ?? "?"}, content: ${cleanContent.length} chars, sources: ${uniqueSources.length}, followUps: ${followUps.length}${wasStepTruncated ? " (step-truncated)" : wasLengthTruncated ? " (length-truncated)" : ""}`
+   );
+   ```
+
+   The pre-existing `(truncated)` literal becomes `(step-truncated)` so the two truncation cases are distinguishable in logs.
+
+#### `lib/prompts/chat-prompt.ts` (modify)
+
+Two coordinated edits:
+
+1. **`export const CHAT_MAX_TOKENS = 4096` → `8192`** (P3.R1). One-line bump.
+
+2. **Rule 5 rewritten** (P3.R3). Current text:
+
+   ```
+   5. **Be concise and actionable.** Users are product managers, sales leads, and team leaders who need answers they can act on — not academic essays.
+   ```
+
+   Replacement:
+
+   ```
+   5. **Match response length to the question type.** For conversational answers (clarifications, single-fact lookups, follow-ups, questions answerable from chat history) keep responses tight — users want a quick answer, not an essay. For list-style or synthesis answers (rankings, summaries spanning many sessions, comparative analysis, "tell me everything about X") prefer completeness within the output budget over brevity — users asked for the full picture, and a half-finished answer is worse than a long one. Rule 7 below is the non-negotiable floor: never silently truncate a list to look concise.
+   ```
+
+   The wording explicitly cross-references Rule 7 ("List ALL items the tool returns. Never silently omit entries.") as the floor — the new Rule 5 gives the model permission to be longer when warranted, but never permission to drop list items. The categorisation language ("conversational" vs "list-style or synthesis") gives the model a concrete decision pivot, not just a vibe.
+
+### Frontend Changes
+
+**None.** The chat client renders whatever `delta` events arrive over SSE. A longer response just means more delta events; a length-truncation warning is rendered the same way as a tool-truncation warning today (markdown emphasis, italics). No client-side code change.
+
+### Observability and Verification
+
+- **Per-turn usage log** (added in Part 3) — every chat completion emits `[chat-stream-service] stream complete — usage: input=… output=… total=… finishReason=…`. Production grep over a representative day after deploy will show:
+  - The distribution of output token counts (are responses *actually* getting longer, or did the prompt softening have no effect?).
+  - The rate of `finishReason === "length"` (are we still hitting the new cap?).
+  - The rate of `finishReason === "tool-calls"` (did raising stepCountIs to 10 reduce step-truncation, as expected?).
+- **Per-extraction usage log** added in Part 1's `callModelObject()` is unrelated and remains separate. Different operations, different log prefixes; the team can filter chat vs extraction independently.
+- **Provider-compat clamp warning** — `[ai-provider-limits] clamping output cap for …` fires only when ops have configured a model whose known cap is below the desired chat cap. In normal operation this should never fire; appearance in logs is a "we configured a model that needs a lower chat cap" signal.
+
+### Test Plan
+
+| Scenario | Verification |
+|---|---|
+| Ask a short conversational question ("hi", "thanks") | Response stays short; finishReason=`stop`; new Rule 5's "match length to question type" doesn't bloat trivial answers |
+| Ask a list-style question that historically truncated at 4096 (e.g. "list everything Acme has said across all sessions") | Response is substantively longer than before; finishReason=`stop`, not `length`; no mid-list truncation; full list returned per Rule 7 |
+| Ask a hybrid question requiring 6+ tool calls (e.g. "for each of our top 3 clients, what are their main pain points and how many sessions") | Reaches 7–8 steps before composing the answer; finishReason=`stop`, not `tool-calls`; no step-truncation warning |
+| Ask a question that needs MORE than 10 tool calls or MORE than 8192 output tokens | finishReason=`tool-calls` → step-truncation warning rendered; OR finishReason=`length` → length-truncation warning rendered. User sees the hint, response is preserved up to the cap |
+| Set `AI_PROVIDER=google` and `AI_MODEL=gemini-2.0-flash` | Runtime log shows `[ai-provider-limits]` no warning (8192 desired ≤ 8192 cap; equal so no clamp fires). Chat works end-to-end |
+| Set `AI_MODEL` to a hypothetically-smaller-cap variant | `[ai-provider-limits] clamping output cap for …: 8192 → N` warning logged. Chat still works at the lower cap. No `length` finish-reason for short answers |
+| Inspect production logs for one day post-deploy | `usage: input=… output=… total=…` line present on every chat completion. Distribution of `output` and rate of `finishReason === "length"` answer the "did the bump help" question |
+| Trigger a chat-tool truncation explicitly (force a complex question) | Existing `(step-truncated)` suffix appears in logs; existing user-visible warning unchanged in wording |
+
+### Implementation Increments
+
+Four small, independently shippable PRs. Increment 1 ships the defensive infrastructure with no user-visible behaviour change. Increment 2 is the actual feature flip. Increment 3 is independent UX/observability work that could ship before or after Increment 2 but doesn't need to. Increment 4 is the audit.
+
+#### Increment 1 — Provider-compatibility infrastructure (P3.R5)
+
+**Goal:** the clamping helper exists and is wired through `chat-stream-service.ts`, but `CHAT_MAX_TOKENS` is still `4096` so the clamp is a no-op in practice for every supported provider/model. Pure infrastructure, deployable on its own.
+
+**Changes:**
+- `lib/services/ai-provider-limits.ts` — create the module with `PROVIDER_OUTPUT_CAPS` map and `clampOutputTokens()` helper.
+- `lib/services/chat-stream-service.ts` — wrap `maxOutputTokens: CHAT_MAX_TOKENS` as `maxOutputTokens: clampOutputTokens(CHAT_MAX_TOKENS, modelLabel)`. `modelLabel` is already in `ChatStreamDeps`; no new wiring.
+
+**Verification:** `npx tsc --noEmit`. Trigger one chat turn against the currently-configured provider; confirm `[ai-provider-limits]` does NOT log a clamp warning (because 4096 ≤ every entry's cap, so no clamp fires). Functional behaviour is byte-equivalent to today.
+
+**Risk:** zero functional change in default config. The clamp helper is an unused safety net at this point.
+
+**Rollback:** `git revert`. No data, no behaviour to undo.
+
+#### Increment 2 — Output-cap and step-ceiling bumps (P3.R1, P3.R2)
+
+**Goal:** the actual feature flip. Output cap raises 4096 → 8192. Step ceiling raises 5 → 10. Behaviour user-visible immediately.
+
+**Changes:**
+- `lib/prompts/chat-prompt.ts` — `CHAT_MAX_TOKENS = 8192`.
+- `lib/services/chat-stream-service.ts` — `stopWhen: stepCountIs(10)`.
+
+**Verification:** functional smoke — issue the test-plan list-style question, confirm response is substantively longer with `finishReason === "stop"`. Issue the test-plan hybrid-tool question, confirm 7–10 steps with `finishReason === "stop"`. The clamping from Increment 1 protects against any provider/model with output cap < 8192 — chat won't error on those configs even if they're untested.
+
+**Risk:** the 8192 cap pushes more output tokens through the provider. Per-turn cost rises proportionally to actual usage; the new telemetry log (Increment 3) makes the cost visible. If post-deploy logs show that >50% of completions hit the new 8K cap, the rule 5 softening from Increment 3 is wrong-direction; consider rolling back rule 5 or the cap. The cap raise is the lever; tune from telemetry.
+
+**Rollback:** `git revert` of this PR alone. Increment 1's clamping infrastructure stays deployed and dormant (4096 ≤ every entry's cap, no clamp fires).
+
+#### Increment 3 — Prompt softening + length-truncation warning + telemetry (P3.R3, P3.R6)
+
+**Goal:** independent UX + observability work that complements Increment 2. Could ship before, after, or simultaneously with Increment 2; sequencing is a reviewability call rather than a correctness call.
+
+**Changes:**
+- `lib/prompts/chat-prompt.ts` — Rule 5 rewritten with the conversational-vs-list-style distinction and the explicit Rule 7 floor cross-reference.
+- `lib/services/chat-stream-service.ts`:
+  - Append the length-truncation warning block (mirrors the existing tool-call truncation block).
+  - Read `result.usage` and add `input/output/total` tokens to the chat-complete log line.
+  - Rename the existing `(truncated)` literal in the log to `(step-truncated)` so the two truncation cases are grep-distinguishable. Add `(length-truncated)` for the new case.
+
+**Verification:** issue the test-plan conversational question, confirm response stays tight (Rule 5 softening doesn't bloat trivial answers). Issue the test-plan list-style question, confirm response is comprehensive (Rule 5 + Rule 7 cooperate). Force a length-truncation by asking a question whose ideal answer exceeds 8K tokens (combine many sessions), confirm warning text renders inline AND log shows `(length-truncated)` suffix. Verify the new `usage:` field is in every chat-complete log line.
+
+**Risk:** prompt regressions. Rule 5's softening could cause the model to bloat short conversational answers (e.g., a "thanks" reply becomes a paragraph). Mitigation: the categorisation in the new wording is explicit; test plan covers the trivial case. If telemetry shows median output tokens roughly doubling for conversational questions, revert just this rule, keep the cap and step bumps.
+
+**Rollback:** `git revert` of this PR. Increment 2's cap+step bumps stay deployed; the model just stops getting the rule-5 nudge to be longer on list questions.
+
+#### Increment 4 — End-of-part audit and documentation update
+
+**Goal:** the CLAUDE.md end-of-part audit checklist plus `ARCHITECTURE.md` and `CHANGELOG.md` updates. Same shape as the Part 1 and Part 2 close-outs.
+
+**Changes:**
+- Run the SOLID + dead-code + design-token + logging + convention checklist file-by-file across every file touched in Increments 1–3. Run `npx eslint` over the modified files (lint sweep — Part 2's audit caught a perf warning this way, so this step is now part of the standard close-out).
+- `ARCHITECTURE.md`:
+  - "Current State" paragraph: append a sentence noting PRD-031 Part 3 is implemented (chat output cap 4096 → 8192, step ceiling 5 → 10, brevity rule softened, provider-compat clamping, per-turn usage telemetry).
+  - The chat surface description (currently lists output cap = 4096 implicitly via `CHAT_MAX_TOKENS`) — add a one-line note that the cap is now 8192 with provider-compat clamping.
+- `CHANGELOG.md`: add a PRD-031 Part 3 entry summarising what shipped (output cap raise, step ceiling raise, prompt softening, length-truncation warning, telemetry, provider-compat clamping). Note that this **closes PRD-031**.
+- Verify file references in docs still resolve.
+- `npx tsc --noEmit`.
+
+**Verification:** the checklist itself; no new functional behaviour.
+
+**Rollback:** documentation-only PR.
+
+### Forward Compatibility Notes
+
+- **Per-conversation or per-user output-cap overrides** — backlog item from PRD-031. The `clampOutputTokens()` helper introduced in Increment 1 is the natural extension point: a future per-conversation override would call `clampOutputTokens(userOverride ?? CHAT_MAX_TOKENS, modelLabel)`. No interface change in Part 3 needed.
+- **Raising the conversation-history budget** — backlog item from PRD-031. `DEFAULT_TOKEN_BUDGET = 80_000` lives in `chat-service.ts::buildContextMessages` as a parameter with default; `chat-stream-service.ts` does not pass an override. A future bump is a one-line constant change in `chat-service.ts`. No structural prep needed.
+- **Multi-model routing** — if a future PRD wants different models for different chat turns (e.g. a faster cheaper model for follow-up clarifications, a stronger model for synthesis), the `clampOutputTokens()` helper handles per-turn `modelLabel` already. No new abstraction needed.
+
+### Open Questions Deferred to Implementation
+
+- **Exact wording of the length-truncation warning** — drafted in the implementation plan above, refined during Increment 3 review based on how the existing tool-call warning reads alongside the new one.
+- **Whether to extract `CHAT_MAX_STEPS` as a named export** — currently `stopWhen: stepCountIs(10)` is inline. If telemetry shows we need to tune this further, extract; otherwise leave inline.

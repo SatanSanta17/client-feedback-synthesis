@@ -20,6 +20,7 @@ import {
 } from "@/lib/utils/chat-helpers";
 import { retrieveRelevantChunks } from "@/lib/services/retrieval-service";
 import { executeQuery } from "@/lib/services/database-query";
+import { clampOutputTokens } from "@/lib/services/ai-provider-limits";
 import { CHAT_SYSTEM_PROMPT, CHAT_MAX_TOKENS } from "@/lib/prompts/chat-prompt";
 
 import type { LanguageModel } from "ai";
@@ -143,8 +144,8 @@ export function createChatStream(deps: ChatStreamDeps): ReadableStream {
               lastUserMessage
             ),
           },
-          stopWhen: stepCountIs(5),
-          maxOutputTokens: CHAT_MAX_TOKENS,
+          stopWhen: stepCountIs(10),
+          maxOutputTokens: clampOutputTokens(CHAT_MAX_TOKENS, modelLabel),
           abortSignal,
         });
 

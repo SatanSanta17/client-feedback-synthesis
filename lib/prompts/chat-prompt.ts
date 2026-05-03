@@ -73,4 +73,9 @@ This block must be the very last thing in your response. Do not add any text aft
 // Constants
 // ---------------------------------------------------------------------------
 
-export const CHAT_MAX_TOKENS = 4096;
+// PRD-031 Part 3 P3.R1: bumped from 4096 to 8192 to give broad/list-style
+// answers room to complete without mid-list truncation. Provider/model caps
+// below this value are clamped at runtime via `clampOutputTokens()` in
+// `lib/services/ai-provider-limits.ts` so a smaller-cap configuration (e.g.
+// Gemini Flash variants at 8192) still works without provider rejection.
+export const CHAT_MAX_TOKENS = 8192;
