@@ -8,6 +8,7 @@ export type ChunkType =
   | "pain_point"
   | "requirement"
   | "aspiration"
+  | "positive_signal"
   | "competitive_mention"
   | "blocker"
   | "tool_and_platform"

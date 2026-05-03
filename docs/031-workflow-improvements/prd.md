@@ -76,6 +76,8 @@ The decision to limit chunk-type expansion to `positive_signal` only — rather 
 
 **P2.R8 — Existing sessions are not retroactively re-extracted.** Sessions captured before this part will have no `positive_signal` entries. They render as if the positive-signal section is empty, which (per P2.R6) means it is hidden. Bulk re-extraction (PRD-017) remains the user's tool to enrich legacy sessions when desired.
 
+**P2.R9 — Top Wins dashboard widget.** The dashboard surfaces a "Top Wins" widget alongside the existing Top Themes widget, ranking the topics that clients most often praise — i.e. the themes with the most `positive_signal` contributions for the current workspace. The widget mirrors the Top Themes widget's visual pattern (horizontal bar chart, click-to-drill-down, response to the global filter bar — clients, date range, severity, urgency, confidenceMin) but with success-themed colouring so the user can read it as wins at a glance. Drill-down into a bar opens the existing drill-down panel showing the actual positive-signal text and client context for that theme. The widget hides itself entirely when no positive-signal data exists in the workspace (consistent with the hide-empty intent of P2.R6), so the dashboard does not show an empty "no wins yet" placeholder before extractions begin producing positives. This is the minimum-viable surfacing of the new category at the top level — fancier variants (wins trend over time, wins-by-client scatter, intensity-weighted ranking) are deferred to the backlog until enough real-workspace data exists to validate the right cuts.
+
 ### Acceptance criteria
 
 - [ ] `positive_signal` is a recognised chunk type in the extraction schema, the embeddings pipeline, the theme assignment pipeline, and the rendering surface.
@@ -83,6 +85,7 @@ The decision to limit chunk-type expansion to `positive_signal` only — rather 
 - [ ] Captured positive signals are embedded, themed, and retrievable via chat (`searchInsights`) and dashboard drill-down identically to other chunks.
 - [ ] On the capture page, sections with zero entries do not render. Sections with entries render unchanged.
 - [ ] On dashboard surfaces that enumerate chunk types (chunk-type breakdown tooltips, theme matrix legend, etc.), `positive_signal` appears with a human-readable label and a visual treatment that reads as positive.
+- [ ] The Top Wins widget renders on the dashboard whenever the workspace has any `positive_signal` data, sits alongside Top Themes, responds to the global filter bar, and supports drill-down identically to Top Themes. It is hidden entirely when the workspace has no positive-signal data.
 - [ ] No regression in extraction success rate or LLM bucket-accuracy on the existing nine chunk types — the new category does not pull signals out of categories where they previously belonged.
 - [ ] A worked example session containing a clear positive client statement, a clear pain point, and a clear aspiration produces one entry in each correct bucket — no cross-contamination.
 
@@ -127,4 +130,4 @@ The following are explicitly out of scope for PRD-031 and parked for later if a 
 - **Raising the conversation-history token budget** — only if production logs show real conversations hitting the 80K cap.
 - **Per-conversation or per-user output-cap overrides** — e.g., a "give me a long answer" toggle. Only worth designing once the static 8,192 cap is shown to be insufficient for a real, recurring question pattern.
 - **Re-extracting legacy sessions to populate `positive_signal`** — bulk re-extraction (PRD-017) already covers this on user demand. No automatic backfill.
-- **Dedicated dashboard widget for positive signals** — a "Wins" widget alongside Pain Points would surface this category at the top level. Worth doing once the data has accumulated for a few weeks across real workspaces.
+- **Fancier variants of the Top Wins widget** — wins trend over time (multi-line chart), wins-by-client scatter, intensity-weighted ranking, "Recent Wins" qualitative quote stream. The minimum-viable Top Wins widget ships in P2.R9; these richer variants are deferred until enough real-workspace data exists to validate the right cuts.

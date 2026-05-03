@@ -4,7 +4,14 @@ import { z } from "zod";
 // Schema version — stored with every extraction for forward-compatible migrations
 // ---------------------------------------------------------------------------
 
-export const EXTRACTION_SCHEMA_VERSION = 1;
+// PRD-031 Part 2: bumped from 1 to 2 with the addition of `positiveSignals`.
+// Old `structured_json` rows in the DB still carry `schemaVersion: 1` and lack
+// the `positiveSignals` field; consumers that read JSON via raw cast must
+// defensive-coalesce missing arrays via `?? []`. Re-validation of v1 rows
+// against this schema is not supported (and not currently performed by any
+// code path); a future re-validation PRD would need to relax the literal or
+// migrate old rows.
+export const EXTRACTION_SCHEMA_VERSION = 2;
 
 // ---------------------------------------------------------------------------
 // Reusable sub-schemas (P1.R2)
@@ -56,7 +63,7 @@ export const requirementChunkSchema = signalChunkSchema.extend({
 export const extractionSchema = z.object({
   schemaVersion: z
     .literal(EXTRACTION_SCHEMA_VERSION)
-    .describe("Schema version — always 1 for this version"),
+    .describe("Schema version — always 2 for this version"),
   summary: z.string().describe("2–3 sentence overview of the session"),
   sentiment: z
     .enum(["positive", "neutral", "negative", "mixed"])
@@ -91,6 +98,12 @@ export const extractionSchema = z.object({
   aspirations: z
     .array(signalChunkSchema)
     .describe("Aspirational wants — empty array if none"),
+  positiveSignals: z
+    .array(signalChunkSchema)
+    .default([])
+    .describe(
+      "Positive client signals — things the client is currently experiencing and explicitly likes (praise, wins, retention drivers, things the client says are working well). Distinct from aspirations, which describe what the client wants but does not yet have. Empty array if none."
+    ),
   competitiveMentions: z
     .array(competitiveMentionSchema)
     .describe("Competitor mentions — empty array if none"),
