@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState, useCallback } from "react";
+import { useMemo, useRef, useState, useCallback } from "react";
 import { Upload } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
@@ -8,8 +8,10 @@ import {
   MAX_FILE_SIZE_BYTES,
   MAX_ATTACHMENTS,
   ACCEPTED_EXTENSIONS,
+  VIDEO_EXTENSIONS,
 } from "@/lib/constants";
 import { formatFileSize } from "@/lib/utils/format-file-size";
+import { canProcessVideoInBrowser } from "@/lib/utils/video/can-process-video";
 
 export interface ParsedAttachment {
   file: File;
@@ -22,23 +24,43 @@ export interface ParsedAttachment {
 
 interface FileUploadZoneProps {
   onFileParsed: (result: ParsedAttachment) => void;
+  // When provided AND the browser supports client-side video processing,
+  // .mp4/.mov/.webm files are routed here instead of /api/files/parse.
+  // Optional so existing callers keep working unchanged.
+  onVideoSelected?: (file: File) => void;
   disabled?: boolean;
   currentCount: number;
 }
 
-function hasValidExtension(fileName: string): boolean {
-  const ext = fileName.slice(fileName.lastIndexOf(".")).toLowerCase();
-  return ACCEPTED_EXTENSIONS.includes(ext);
+function getExtension(fileName: string): string {
+  return fileName.slice(fileName.lastIndexOf(".")).toLowerCase();
 }
 
 export function FileUploadZone({
   onFileParsed,
+  onVideoSelected,
   disabled = false,
   currentCount,
 }: FileUploadZoneProps) {
   const inputRef = useRef<HTMLInputElement>(null);
   const [isDragOver, setIsDragOver] = useState(false);
   const [parsing, setParsing] = useState(0);
+
+  // Capability + caller-opt-in are checked once per mount. The Worker / WASM
+  // / video-element capabilities don't change at runtime.
+  const videoCapability = useMemo(() => {
+    if (!onVideoSelected) return { ok: false as const, reason: "disabled" };
+    return canProcessVideoInBrowser();
+  }, [onVideoSelected]);
+  const videoEnabled = videoCapability.ok;
+
+  const acceptedFormatsLabel = videoEnabled
+    ? "TXT, PDF, CSV, DOCX, JSON — 10 MB · MP4, MOV, WEBM — 500 MB / 2 hr"
+    : "TXT, PDF, CSV, DOCX, JSON — max 10 MB";
+
+  const acceptValue = videoEnabled
+    ? [...ACCEPTED_EXTENSIONS, ...VIDEO_EXTENSIONS].join(",")
+    : ACCEPTED_EXTENSIONS.join(",");
 
   const processFiles = useCallback(
     async (files: FileList | File[]) => {
@@ -58,9 +80,32 @@ export function FileUploadZone({
       }
 
       for (const file of toProcess) {
-        if (!hasValidExtension(file.name)) {
+        const ext = getExtension(file.name);
+        const isVideo = VIDEO_EXTENSIONS.includes(ext);
+
+        if (isVideo) {
+          if (!onVideoSelected) {
+            toast.error(
+              `"${file.name}" is not a supported format. Accepted: ${ACCEPTED_EXTENSIONS.join(", ")}`
+            );
+            continue;
+          }
+          if (!videoEnabled) {
+            // Surfaces the unsupported-browser path even when the user
+            // bypasses the file picker (drag-drop accepts anything).
+            toast.error(
+              "Your browser doesn't support video upload. Use Chrome, Edge, or Firefox on desktop."
+            );
+            continue;
+          }
+          // Hand off — video size + duration caps are enforced inside the pipeline.
+          onVideoSelected(file);
+          continue;
+        }
+
+        if (!ACCEPTED_EXTENSIONS.includes(ext)) {
           toast.error(
-            `"${file.name}" is not a supported format. Accepted: ${ACCEPTED_EXTENSIONS.join(", ")}`
+            `"${file.name}" is not a supported format. Accepted: ${ACCEPTED_EXTENSIONS.join(", ")}${videoEnabled ? `, ${VIDEO_EXTENSIONS.join(", ")}` : ""}`
           );
           continue;
         }
@@ -105,7 +150,7 @@ export function FileUploadZone({
         }
       }
     },
-    [currentCount, onFileParsed]
+    [currentCount, onFileParsed, onVideoSelected, videoEnabled]
   );
 
   const handleDrop = useCallback(
@@ -164,15 +209,20 @@ export function FileUploadZone({
             </span>
           </p>
           <p className="text-xs text-muted-foreground/70">
-            TXT, PDF, CSV, DOCX, JSON — max 10 MB
+            {acceptedFormatsLabel}
           </p>
+          {onVideoSelected && !videoEnabled && (
+            <p className="text-xs text-muted-foreground/70">
+              Video upload requires Chrome, Edge, or Firefox on desktop.
+            </p>
+          )}
         </>
       )}
 
       <input
         ref={inputRef}
         type="file"
-        accept={ACCEPTED_EXTENSIONS.join(",")}
+        accept={acceptValue}
         multiple
         onChange={handleFileChange}
         className="hidden"

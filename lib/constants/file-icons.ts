@@ -3,6 +3,7 @@ import {
   FileSpreadsheet,
   FileJson2,
   FileType2,
+  FileVideo2,
 } from "lucide-react";
 
 export const FILE_ICONS: Record<string, React.ElementType> = {
@@ -12,4 +13,7 @@ export const FILE_ICONS: Record<string, React.ElementType> = {
   "application/json": FileJson2,
   "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
     FileText,
+  "video/mp4": FileVideo2,
+  "video/quicktime": FileVideo2,
+  "video/webm": FileVideo2,
 };
