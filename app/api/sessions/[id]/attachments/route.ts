@@ -2,10 +2,12 @@ import { NextRequest, NextResponse } from "next/server";
 
 import {
   uploadAndCreateAttachment,
+  createTranscriptAttachment,
   getAttachmentCountForSession,
   getAttachmentsBySessionId,
 } from "@/lib/services/attachment-service";
-import { MAX_ATTACHMENTS } from "@/lib/constants";
+import { MAX_ATTACHMENTS, MAX_COMBINED_CHARS } from "@/lib/constants";
+import { transcriptVideoMetadataSchema } from "@/lib/schemas/transcript-attachment";
 import { requireAuth, requireSessionAccess } from "@/lib/api/route-auth";
 import { validateFileUpload } from "@/lib/api/file-validation";
 import { createAttachmentRepository } from "@/lib/repositories/supabase/supabase-attachment-repository";
@@ -77,13 +79,12 @@ export async function POST(
     );
   }
 
-  const file = formData.get("file");
-  const parsedContent = formData.get("parsed_content");
   const sourceFormat = formData.get("source_format");
+  const parsedContent = formData.get("parsed_content");
 
-  if (!(file instanceof File)) {
+  if (typeof sourceFormat !== "string") {
     return NextResponse.json(
-      { message: "No file provided" },
+      { message: "source_format is required" },
       { status: 400 }
     );
   }
@@ -95,9 +96,28 @@ export async function POST(
     );
   }
 
-  if (typeof sourceFormat !== "string") {
+  const attachmentRepo = createAttachmentRepository(supabase, serviceClient);
+
+  // PRD-032 Part 2 — transcript-only path. No file Blob; metadata fields
+  // describe the original video that produced this transcript.
+  if (sourceFormat === "video_transcript") {
+    return handleTranscriptUpload({
+      sessionId,
+      formData,
+      parsedContent,
+      teamId,
+      userId: user.id,
+      attachmentRepo,
+      sessionRepo,
+    });
+  }
+
+  // Existing parsed-file path.
+  const file = formData.get("file");
+
+  if (!(file instanceof File)) {
     return NextResponse.json(
-      { message: "source_format is required" },
+      { message: "No file provided" },
       { status: 400 }
     );
   }
@@ -106,8 +126,6 @@ export async function POST(
   if (!validation.valid) {
     return NextResponse.json({ message: validation.message }, { status: 400 });
   }
-
-  const attachmentRepo = createAttachmentRepository(supabase, serviceClient);
 
   const currentCount = await getAttachmentCountForSession(attachmentRepo, sessionId);
   if (currentCount >= MAX_ATTACHMENTS) {
@@ -154,6 +172,97 @@ export async function POST(
     );
     return NextResponse.json(
       { message: "Failed to upload attachment" },
+      { status: 500 }
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Transcript-only branch (PRD-032 Part 2)
+// ---------------------------------------------------------------------------
+
+interface HandleTranscriptUploadInput {
+  sessionId: string;
+  formData: FormData;
+  parsedContent: string;
+  teamId: string | null;
+  userId: string;
+  attachmentRepo: ReturnType<typeof createAttachmentRepository>;
+  sessionRepo: { markStale: (sessionId: string, userId: string) => Promise<unknown> };
+}
+
+async function handleTranscriptUpload(input: HandleTranscriptUploadInput) {
+  const { sessionId, formData, parsedContent, teamId, userId, attachmentRepo, sessionRepo } = input;
+
+  const metadataParse = transcriptVideoMetadataSchema.safeParse({
+    video_file_name: formData.get("video_file_name"),
+    video_file_type: formData.get("video_file_type"),
+    video_file_size: Number(formData.get("video_file_size")),
+    duration_seconds: Number(formData.get("duration_seconds")),
+  });
+
+  if (!metadataParse.success) {
+    const message =
+      metadataParse.error.issues[0]?.message ?? "Invalid transcript metadata";
+    console.warn(`[api/sessions/[id]/attachments] POST — rejected (transcript): ${message}`);
+    return NextResponse.json({ message }, { status: 400 });
+  }
+
+  const meta = metadataParse.data;
+
+  // Per-session caps. We fetch all attachments once to also compute the
+  // combined-char total; counting alone wouldn't catch the limit case.
+  const existing = await getAttachmentsBySessionId(attachmentRepo, sessionId);
+  if (existing.length >= MAX_ATTACHMENTS) {
+    return NextResponse.json(
+      { message: `Maximum ${MAX_ATTACHMENTS} attachments per session` },
+      { status: 400 }
+    );
+  }
+
+  const combinedChars =
+    existing.reduce((sum, a) => sum + a.parsed_content.length, 0) +
+    parsedContent.length;
+  if (combinedChars > MAX_COMBINED_CHARS) {
+    return NextResponse.json(
+      {
+        message: `Combined input exceeds ${MAX_COMBINED_CHARS.toLocaleString()} characters`,
+      },
+      { status: 422 }
+    );
+  }
+
+  try {
+    const attachment = await createTranscriptAttachment(attachmentRepo, {
+      sessionId,
+      teamId,
+      fileName: meta.video_file_name,
+      fileType: meta.video_file_type,
+      fileSize: meta.video_file_size,
+      parsedContent,
+    });
+
+    try {
+      await sessionRepo.markStale(sessionId, userId);
+    } catch (staleErr) {
+      console.error(
+        "[api/sessions/[id]/attachments] POST — failed to mark stale:",
+        staleErr instanceof Error ? staleErr.message : staleErr
+      );
+    }
+
+    console.log(
+      "[api/sessions/[id]/attachments] POST — created transcript:",
+      attachment.id
+    );
+    return NextResponse.json({ attachment }, { status: 201 });
+  } catch (err) {
+    console.error(
+      "[api/sessions/[id]/attachments] POST transcript error:",
+      err instanceof Error ? err.message : err
+    );
+    return NextResponse.json(
+      { message: "Failed to save transcript" },
       { status: 500 }
     );
   }

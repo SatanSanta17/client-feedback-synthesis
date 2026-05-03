@@ -15,6 +15,18 @@ export interface CreateAttachmentInput {
   teamId: string | null;
 }
 
+// PRD-032 Part 2 — transcript-only persistence. No Storage upload; the row
+// is the only artefact. Called when the client has already received the
+// transcript from /api/files/transcribe and now wants it on the session.
+export interface CreateTranscriptInput {
+  sessionId: string;
+  teamId: string | null;
+  fileName: string;
+  fileType: string;
+  fileSize: number;
+  parsedContent: string;
+}
+
 export class AttachmentNotFoundError extends Error {
   constructor(message: string) {
     super(message);
@@ -85,6 +97,38 @@ export async function uploadAndCreateAttachment(
     await repo.removeFromStorage(storagePath);
     throw new Error("Failed to save attachment metadata");
   }
+}
+
+/**
+ * Persist a video transcript as a session_attachments row. No Storage upload;
+ * storage_path is set NULL by the repository. The repository fixes
+ * source_format = 'video_transcript' so callers can't insert under a
+ * different format by accident.
+ */
+export async function createTranscriptAttachment(
+  repo: AttachmentRepository,
+  input: CreateTranscriptInput
+): Promise<AttachmentRow> {
+  console.log(
+    "[attachment-service] createTranscriptAttachment — session:",
+    input.sessionId,
+    "file:",
+    input.fileName,
+    "transcript chars:",
+    input.parsedContent.length
+  );
+
+  const row = await repo.createTranscript({
+    session_id: input.sessionId,
+    file_name: input.fileName,
+    file_type: input.fileType,
+    file_size: input.fileSize,
+    parsed_content: input.parsedContent,
+    team_id: input.teamId,
+  });
+
+  console.log("[attachment-service] createTranscriptAttachment — created:", row.id);
+  return row;
 }
 
 /**

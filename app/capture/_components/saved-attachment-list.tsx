@@ -149,19 +149,22 @@ export function SavedAttachmentList({
                 </Badge>
               )}
 
-              <button
-                type="button"
-                onClick={(e) => { e.stopPropagation(); handleDownload(attachment); }}
-                disabled={isDownloading}
-                className="shrink-0 rounded p-0.5 text-muted-foreground transition-colors hover:text-foreground disabled:opacity-50"
-                aria-label={`Download ${attachment.file_name}`}
-              >
-                {isDownloading ? (
-                  <Loader2 className="size-3.5 animate-spin" />
-                ) : (
-                  <Download className="size-3.5" />
-                )}
-              </button>
+              {/* PRD-032 Part 2 — video transcripts have no original blob */}
+              {attachment.source_format !== "video_transcript" && (
+                <button
+                  type="button"
+                  onClick={(e) => { e.stopPropagation(); handleDownload(attachment); }}
+                  disabled={isDownloading}
+                  className="shrink-0 rounded p-0.5 text-muted-foreground transition-colors hover:text-foreground disabled:opacity-50"
+                  aria-label={`Download ${attachment.file_name}`}
+                >
+                  {isDownloading ? (
+                    <Loader2 className="size-3.5 animate-spin" />
+                  ) : (
+                    <Download className="size-3.5" />
+                  )}
+                </button>
+              )}
 
               {canEdit && (
                 <button

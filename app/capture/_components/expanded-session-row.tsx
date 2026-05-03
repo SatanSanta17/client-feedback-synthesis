@@ -12,7 +12,10 @@ import { type ClientSelection } from "./client-combobox"
 import { StructuredNotesPanel } from "./structured-notes-panel"
 import { type ParsedAttachment } from "./file-upload-zone"
 import { composeAIInput } from "@/lib/utils/compose-ai-input"
-import { uploadAttachmentsToSession } from "@/lib/utils/upload-attachments"
+import {
+  uploadAttachmentsToSession,
+  type PendingAttachmentUpload,
+} from "@/lib/utils/upload-attachments"
 import type { SessionAttachment } from "@/lib/services/attachment-service"
 import { useSignalExtraction } from "@/lib/hooks/use-signal-extraction"
 import { useVideoItemsState } from "@/lib/hooks/use-video-items-state"
@@ -233,7 +236,11 @@ export function ExpandedSessionRow({
           // Only send structuredJson when this save is an extraction result.
           // Manual edits to markdown don't sync back to JSON (Part 3 scope).
           ...(didExtract ? { structuredJson } : {}),
-          hasAttachments: savedAttachments.length + pendingAttachments.length > 0,
+          hasAttachments:
+            savedAttachments.length +
+              pendingAttachments.length +
+              completedTranscripts.length >
+            0,
           promptVersionId: promptVersionId,
           isExtraction: didExtract,
           inputChanged,
@@ -258,13 +265,31 @@ export function ExpandedSessionRow({
         session: Omit<SessionRow, "attachment_count">
       }
 
-      if (pendingAttachments.length > 0) {
-        await uploadAttachmentsToSession(session.id, pendingAttachments)
+      const pendingUploads: PendingAttachmentUpload[] = [
+        ...pendingAttachments.map<PendingAttachmentUpload>((a) => ({
+          kind: "parsed",
+          file: a.file,
+          file_name: a.file_name,
+          parsed_content: a.parsed_content,
+          source_format: a.source_format,
+        })),
+        ...completedTranscripts.map<PendingAttachmentUpload>((t) => ({
+          kind: "video_transcript",
+          file_name: t.file_name,
+          file_type: t.file_type,
+          file_size: t.file_size,
+          duration_seconds: t.duration_seconds,
+          parsed_content: t.parsed_content,
+        })),
+      ]
+
+      if (pendingUploads.length > 0) {
+        await uploadAttachmentsToSession(session.id, pendingUploads)
       }
 
-      // Row stays expanded after save — reset attachment state to reflect the new server truth.
-      // Video transcripts are not yet persisted (PRD-032 Part 2 work); clear them too so the
-      // UI doesn't lie about what was saved.
+      // Row stays expanded after save — reset attachment state to reflect the
+      // new server truth. Auto-persist (Increment 2.5) will push transcripts
+      // out of videoItems before save lands; for now we reset both paths.
       setPendingAttachments([])
       setDeletedAttachmentIds(new Set())
       resetVideoItems()

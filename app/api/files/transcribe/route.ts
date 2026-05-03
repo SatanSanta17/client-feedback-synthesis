@@ -1,35 +1,12 @@
 import { NextRequest, NextResponse } from "next/server"
-import { z } from "zod"
 
 import { requireAuth } from "@/lib/api/route-auth"
-import {
-  MAX_VIDEO_DURATION_SECONDS,
-  MAX_VIDEO_FILE_SIZE_BYTES,
-  VIDEO_MIME_TYPES,
-} from "@/lib/constants"
+import { transcriptVideoMetadataSchema } from "@/lib/schemas/transcript-attachment"
 
 // Server-side hard cap for the audio payload itself (post-extraction).
 // Whisper's per-request ceiling is 25 MB on the OpenAI free tier; 50 MB
 // gives headroom for paid plans without inviting abuse via giant uploads.
 const MAX_AUDIO_BYTES = 50 * 1024 * 1024
-
-const ALLOWED_VIDEO_TYPES = new Set(Object.keys(VIDEO_MIME_TYPES))
-
-const metadataSchema = z.object({
-  video_file_name: z.string().min(1).max(512),
-  video_file_type: z
-    .string()
-    .refine((v) => ALLOWED_VIDEO_TYPES.has(v), "Unsupported video type"),
-  video_file_size: z
-    .number()
-    .int()
-    .positive()
-    .max(MAX_VIDEO_FILE_SIZE_BYTES, "Video file size exceeds the 500 MB limit"),
-  duration_seconds: z
-    .number()
-    .positive()
-    .max(MAX_VIDEO_DURATION_SECONDS, "Video duration exceeds the 2 hour limit"),
-})
 
 // Endpoint contract is locked here. Part 2 of PRD-032 replaces the mock
 // transcript with a real Whisper / provider-abstracted call without changing
@@ -70,7 +47,7 @@ export async function POST(request: NextRequest) {
     )
   }
 
-  const metadataParse = metadataSchema.safeParse({
+  const metadataParse = transcriptVideoMetadataSchema.safeParse({
     video_file_name: formData.get("video_file_name"),
     video_file_type: formData.get("video_file_type"),
     video_file_size: Number(formData.get("video_file_size")),

@@ -18,7 +18,10 @@ import {
 import { DatePicker } from "./date-picker"
 import { type ParsedAttachment } from "./file-upload-zone"
 import { composeAIInput } from "@/lib/utils/compose-ai-input"
-import { uploadAttachmentsToSession } from "@/lib/utils/upload-attachments"
+import {
+  uploadAttachmentsToSession,
+  type PendingAttachmentUpload,
+} from "@/lib/utils/upload-attachments"
 import { useSignalExtraction } from "@/lib/hooks/use-signal-extraction"
 import { useVideoItemsState } from "@/lib/hooks/use-video-items-state"
 import { ReextractConfirmDialog } from "@/components/capture/reextract-confirm-dialog"
@@ -176,7 +179,7 @@ export function SessionCaptureForm({ onSessionSaved }: SessionCaptureFormProps) 
           sessionDate: data.sessionDate,
           rawNotes: data.rawNotes,
           structuredJson: structuredJson,
-          hasAttachments: attachments.length > 0,
+          hasAttachments: attachments.length > 0 || completedTranscripts.length > 0,
           promptVersionId: promptVersionId,
         }),
       })
@@ -195,8 +198,26 @@ export function SessionCaptureForm({ onSessionSaved }: SessionCaptureFormProps) 
 
       const { session } = await response.json()
 
-      if (attachments.length > 0) {
-        await uploadAttachmentsToSession(session.id, attachments)
+      const pendingUploads: PendingAttachmentUpload[] = [
+        ...attachments.map<PendingAttachmentUpload>((a) => ({
+          kind: "parsed",
+          file: a.file,
+          file_name: a.file_name,
+          parsed_content: a.parsed_content,
+          source_format: a.source_format,
+        })),
+        ...completedTranscripts.map<PendingAttachmentUpload>((t) => ({
+          kind: "video_transcript",
+          file_name: t.file_name,
+          file_type: t.file_type,
+          file_size: t.file_size,
+          duration_seconds: t.duration_seconds,
+          parsed_content: t.parsed_content,
+        })),
+      ]
+
+      if (pendingUploads.length > 0) {
+        await uploadAttachmentsToSession(session.id, pendingUploads)
       }
 
       toast.success("Session saved")
