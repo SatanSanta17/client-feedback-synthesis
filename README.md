@@ -31,6 +31,24 @@ The result: your team always knows what clients are asking for, what's blocking 
 - **Prompts are yours.** Admins edit the AI extraction prompt directly in the app, with version history and revert.
 - **File uploads.** Attach raw transcripts, chat exports, or meeting notes — drag-and-drop, concurrent uploads, 50k character combined limit.
 
+## Strategy & positioning
+
+**Category anchor.** Synthesiser is a **Customer Feedback Management / Voice of Customer** platform — but for the moment *before* feedback becomes a ticket. Productboard, Canny, and Cycle are submission-pipeline tools optimised for inbound feature requests with voting. Dovetail is research-team-shaped with manual tagging. Synthesiser sits upstream of all of them: it turns **raw discovery calls, customer conversations, and meeting recordings** into structured cross-client signal automatically.
+
+**The problem in one paragraph.** Every team that talks to clients generates a goldmine of insight that lives in personal Notion pages, Google Docs, email threads, and one rep's head. Synthesis is a manual, periodic, gut-feel exercise. Cross-client questions ("which 5 clients raised attribution?", "is onboarding friction trending up?") are unanswerable in any tool. Recordings are watched once and lost. Generic CFM tools are submission-pipelines, not synthesis engines. The cost: roadmap decisions based on hunches, churn that should have been seen coming, departing employees walking out with three years of client context in their notes.
+
+**Core differentiators — what nobody else stacks together.**
+
+1. **RAG chat over the entire client corpus, with citations.** Two LLM tools — semantic search (pgvector + HNSW) and a 17-action database query layer — let the model answer both qualitative ("what are clients saying about onboarding?") and quantitative ("how many enterprise clients flagged pricing this quarter?") questions with clickable citations back to the source session. Multi-step reasoning up to 10 tool-call rounds.
+2. **Multi-stream concurrent chat.** Up to 5 chat streams in parallel per workspace, surviving navigation across pages. ChatGPT and Claude.ai both block you behind one stream — we don't.
+3. **Customizable AI extraction prompts, versioned per workspace.** Workspaces own and edit the prompt that drives extraction; every saved session records the exact prompt version that produced its output. Bulk re-extract refreshes up to 50 past sessions when the prompt evolves. Productboard / Canny / Cycle / Dovetail are sealed AI.
+4. **Video upload with on-device audio extraction.** Drop a Zoom recording up to 500 MB / 2 hours. The browser extracts the audio in a Web Worker via `ffmpeg.wasm`; the original video never leaves the device. The audio is held server-side only during Whisper transcription, never persisted. Only the transcript is stored. Transcripts are user-editable to fix mishears.
+5. **Provider-agnostic AI layer.** `AI_PROVIDER` + `AI_MODEL` env vars switch between Anthropic, OpenAI, and Google. Adding a provider is a single map entry. (Operator-controlled today; tenant-level BYOK is roadmap.)
+
+**The 30-second pitch.** Synthesiser is built for the moment *before* feedback becomes a ticket — turning unstructured discovery calls, customer conversations, and Zoom recordings into a structured, AI-extracted, semantically searchable knowledge base of every client signal your team has ever heard. Ask "what are the top pain points across enterprise clients this quarter, with quotes?" and get a cited, multi-stream answer grounded in your actual session data. None of the incumbents have that.
+
+**What we deliberately don't pitch (yet).** No Slack / Gong / Intercom / Zoom / Teams / Salesforce / HubSpot / Jira integrations — paste, drag-drop, and video upload only. No tenant-level bring-your-own-key. No supersession / "what's resolved" view (PRD-028 is draft, not built). No audio-only uploads (.mp3/.wav), no speaker diarisation. The "master signal" UI is retired — dashboards + chat replaced it. Today's product is the feedback-and-insight layer; spec generation and IDE / MCP integration are the founder's next-stage roadmap, not current capability.
+
 ## Tech stack
 
 | Layer | Tech |

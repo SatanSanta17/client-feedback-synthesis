@@ -170,24 +170,48 @@ export function useVideoAttachment(
   return { state, cancel }
 }
 
-// Heuristic refinement (PRD-032 P4.R1, P4.R2) lands in Part 4.
 function mapToVideoUploadError(err: unknown): VideoUploadError {
   const message = err instanceof Error ? err.message : "Unknown error"
 
-  if (/memory|oom|allocation/i.test(message)) {
+  // PRD-032 P4.R1 — OOM detection. RangeError is the canonical JS signal for
+  // memory exhaustion; ffmpeg.wasm surfaces "memory access out of bounds" as
+  // a WebAssembly.RuntimeError when the WASM heap is exhausted. The
+  // constructor-name string compare is used because WebAssembly.RuntimeError
+  // isn't reliably exposed as a global across runtimes. Falls back to the
+  // message-text regex (covers Chrome/Firefox runtime variants and older
+  // ffmpeg.wasm releases).
+  const isRangeError = err instanceof RangeError
+  const isWasmRuntimeError =
+    err instanceof Error && err.constructor.name === "RuntimeError"
+  if (
+    isRangeError ||
+    isWasmRuntimeError ||
+    /memory|oom|allocation|out of bounds|out of memory/i.test(message)
+  ) {
     return {
       code: "EXTRACTION_OOM",
       message:
         "Your device couldn't process this video. Try a shorter clip or a different device.",
     }
   }
-  if (/ffmpeg|exec|invalid|unsupported|codec|format/i.test(message)) {
+
+  // PRD-032 P4.R2 — codec / format / corrupt-file failures. Specific
+  // ffmpeg.wasm phrases observed in production: "Invalid data found when
+  // processing input", "Invalid argument", "Unable to find a suitable
+  // output format". `malformed` and `could not decode` cover container-
+  // corruption surfaces from the wider browser stack.
+  if (
+    /ffmpeg|exec|invalid (data|argument)|unsupported|codec|format|unable to find|could not decode|malformed/i.test(
+      message,
+    )
+  ) {
     return {
       code: "EXTRACTION_FAILED",
       message:
         "This video format couldn't be processed. Try converting to MP4 or use a different recording.",
     }
   }
+
   if (/network|timed out/i.test(message)) {
     return {
       code: "UPLOAD_FAILED",
