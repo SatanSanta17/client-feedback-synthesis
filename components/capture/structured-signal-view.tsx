@@ -24,11 +24,25 @@ export interface StructuredSignalViewProps {
  * severity badges, quote formatting, and empty-state handling.
  * Replaces the ReactMarkdown rendering of structured_notes for sessions
  * that have structured_json (PRD-018 P2.R3).
+ *
+ * PRD-031 Part 2:
+ * - New "Positive Signals" section (success-themed severity badge), positioned
+ *   in the current-state cluster between Pain Points and Must-Haves.
+ * - Empty narrative sections are hidden entirely instead of rendering a
+ *   "No signals identified." placeholder row (P2.R6). Always-visible sections
+ *   (Session Summary, Sentiment, Urgency, Decision Timeline, Client Profile)
+ *   are unchanged — they keep their own "Not mentioned" treatment for null
+ *   fields.
+ * - Defensive `?? []` access on `positiveSignals` because legacy v1 rows
+ *   read via raw cast may lack the field at runtime even though the inferred
+ *   type marks it as required.
  */
 export function StructuredSignalView({
   signals,
   className,
 }: StructuredSignalViewProps) {
+  const positiveSignals = signals.positiveSignals ?? [];
+
   return (
     <div className={cn("space-y-6", className)}>
       {/* --- Session Overview --- */}
@@ -59,34 +73,53 @@ export function StructuredSignalView({
         </div>
       </Section>
 
-      {/* --- Signal Categories --- */}
-      <Section title="Pain Points">
-        <SignalChunkList chunks={signals.painPoints} />
-      </Section>
+      {/* --- Signal Categories (P2.R6: each gated on length > 0) --- */}
+      {signals.painPoints.length > 0 && (
+        <Section title="Pain Points">
+          <SignalChunkList chunks={signals.painPoints} />
+        </Section>
+      )}
 
-      <Section title="Must-Haves / Requirements">
-        <RequirementChunkList chunks={signals.requirements} />
-      </Section>
+      {positiveSignals.length > 0 && (
+        <Section title="Positive Signals">
+          <SignalChunkList chunks={positiveSignals} severityVariant="positive" />
+        </Section>
+      )}
 
-      <Section title="Aspirations">
-        <SignalChunkList chunks={signals.aspirations} />
-      </Section>
+      {signals.requirements.length > 0 && (
+        <Section title="Must-Haves / Requirements">
+          <RequirementChunkList chunks={signals.requirements} />
+        </Section>
+      )}
 
-      <Section title="Competitive Mentions">
-        <CompetitiveMentionList mentions={signals.competitiveMentions} />
-      </Section>
+      {signals.aspirations.length > 0 && (
+        <Section title="Aspirations">
+          <SignalChunkList chunks={signals.aspirations} />
+        </Section>
+      )}
 
-      <Section title="Blockers / Dependencies">
-        <SignalChunkList chunks={signals.blockers} />
-      </Section>
+      {signals.competitiveMentions.length > 0 && (
+        <Section title="Competitive Mentions">
+          <CompetitiveMentionList mentions={signals.competitiveMentions} />
+        </Section>
+      )}
 
-      <Section title="Platforms & Channels">
-        <ToolAndPlatformList tools={signals.toolsAndPlatforms} />
-      </Section>
+      {signals.blockers.length > 0 && (
+        <Section title="Blockers / Dependencies">
+          <SignalChunkList chunks={signals.blockers} />
+        </Section>
+      )}
 
-      {/* --- Custom Categories --- */}
-      {signals.custom.length > 0 &&
-        signals.custom.map((category: CustomCategory, i: number) => (
+      {signals.toolsAndPlatforms.length > 0 && (
+        <Section title="Platforms & Channels">
+          <ToolAndPlatformList tools={signals.toolsAndPlatforms} />
+        </Section>
+      )}
+
+      {/* --- Custom Categories (P2.R6: each category gated on length > 0) --- */}
+      {signals.custom
+        .filter((category: CustomCategory) => category.signals.length > 0)
+        .map((category: CustomCategory, i: number) => (
           <Section key={i} title={category.categoryName}>
             <SignalChunkList chunks={category.signals} />
           </Section>
@@ -132,26 +165,30 @@ function ProfileField({ label, value }: { label: string; value: string | null })
   );
 }
 
-function EmptyState() {
-  return (
-    <p className="text-sm text-muted-foreground">No signals identified.</p>
-  );
-}
-
 // ---------------------------------------------------------------------------
 // Signal chunk lists
+//
+// PRD-031 Part 2: empty-array guards removed — the parent gates each section
+// on length > 0 before rendering, so list components never receive empty
+// arrays. The previous EmptyState component is dead and was deleted.
 // ---------------------------------------------------------------------------
 
-function SignalChunkList({ chunks }: { chunks: SignalChunk[] }) {
-  if (chunks.length === 0) return <EmptyState />;
+type SeverityVariant = "default" | "positive";
 
+function SignalChunkList({
+  chunks,
+  severityVariant = "default",
+}: {
+  chunks: SignalChunk[];
+  severityVariant?: SeverityVariant;
+}) {
   return (
     <ul className="space-y-2">
       {chunks.map((chunk, i) => (
         <li key={i} className="text-sm">
           <div className="flex items-start justify-between gap-2">
             <span className="text-foreground">{chunk.text}</span>
-            <SeverityBadge severity={chunk.severity} />
+            <SeverityBadge severity={chunk.severity} variant={severityVariant} />
           </div>
           <ClientQuote quote={chunk.clientQuote} />
         </li>
@@ -161,8 +198,6 @@ function SignalChunkList({ chunks }: { chunks: SignalChunk[] }) {
 }
 
 function RequirementChunkList({ chunks }: { chunks: RequirementChunk[] }) {
-  if (chunks.length === 0) return <EmptyState />;
-
   return (
     <ul className="space-y-2">
       {chunks.map((chunk, i) => (
@@ -184,8 +219,6 @@ function RequirementChunkList({ chunks }: { chunks: RequirementChunk[] }) {
 }
 
 function CompetitiveMentionList({ mentions }: { mentions: CompetitiveMention[] }) {
-  if (mentions.length === 0) return <EmptyState />;
-
   return (
     <ul className="space-y-2">
       {mentions.map((m, i) => (
@@ -202,8 +235,6 @@ function CompetitiveMentionList({ mentions }: { mentions: CompetitiveMention[] }
 }
 
 function ToolAndPlatformList({ tools }: { tools: ToolAndPlatform[] }) {
-  if (tools.length === 0) return <EmptyState />;
-
   return (
     <ul className="space-y-2">
       {tools.map((t, i) => (
@@ -238,19 +269,37 @@ function ClientQuote({ quote }: { quote: string | null }) {
 // Badge components
 // ---------------------------------------------------------------------------
 
-const SEVERITY_STYLES: Record<"low" | "medium" | "high", string> = {
-  low: "bg-muted text-muted-foreground",
-  medium:
-    "bg-[var(--status-warning-light)] text-[var(--status-warning-text)] border border-[var(--status-warning-border)]",
-  high: "bg-[var(--status-error-light)] text-[var(--status-error)] border border-[var(--status-error-border)]",
+// PRD-031 Part 2: severity badge gains a `variant` prop. The `positive` variant
+// reuses the existing `--status-success-*` token chain (same tokens used by the
+// positive SentimentBadge), so a positive_signal item's "high" intensity reads
+// as a strong-green pill instead of a strong-red one.
+const SEVERITY_STYLE_MAPS: Record<SeverityVariant, Record<"low" | "medium" | "high", string>> = {
+  default: {
+    low: "bg-muted text-muted-foreground",
+    medium:
+      "bg-[var(--status-warning-light)] text-[var(--status-warning-text)] border border-[var(--status-warning-border)]",
+    high: "bg-[var(--status-error-light)] text-[var(--status-error)] border border-[var(--status-error-border)]",
+  },
+  positive: {
+    low: "bg-muted text-muted-foreground",
+    medium:
+      "bg-[var(--status-success-light)] text-[var(--status-success)] border border-[var(--status-success-border)] opacity-80",
+    high: "bg-[var(--status-success-light)] text-[var(--status-success)] border border-[var(--status-success-border)]",
+  },
 };
 
-function SeverityBadge({ severity }: { severity: "low" | "medium" | "high" }) {
+function SeverityBadge({
+  severity,
+  variant = "default",
+}: {
+  severity: "low" | "medium" | "high";
+  variant?: SeverityVariant;
+}) {
   return (
     <span
       className={cn(
         "inline-flex shrink-0 items-center rounded-full px-2 py-0.5 text-xs font-medium",
-        SEVERITY_STYLES[severity]
+        SEVERITY_STYLE_MAPS[variant][severity]
       )}
     >
       {severity}
