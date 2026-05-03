@@ -44,14 +44,8 @@ export interface UseVideoItemsStateReturn {
 // at every call site. `logPrefix` distinguishes the two consumers in error
 // telemetry without forcing the hook to know about them.
 export function useVideoItemsState(
-  options: string | UseVideoItemsStateOptions,
+  opts: UseVideoItemsStateOptions,
 ): UseVideoItemsStateReturn {
-  // Back-compat: original signature was a single `logPrefix` string. The
-  // option-bag form is the new shape; both are accepted to avoid forcing
-  // every consumer to migrate at once.
-  const opts: UseVideoItemsStateOptions =
-    typeof options === "string" ? { logPrefix: options } : options
-
   const [videoItems, setVideoItems] = useState<VideoListItem[]>([])
 
   const completedTranscripts = videoItems.flatMap((v) =>

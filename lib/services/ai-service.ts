@@ -441,7 +441,7 @@ export function resolveTranscriptionModel(): {
   return { model: factory(modelId), label: `${provider}/${modelId}` };
 }
 
-export interface TranscribeAudioResult {
+interface TranscribeAudioResult {
   text: string;
   durationMs: number;
   modelLabel: string;

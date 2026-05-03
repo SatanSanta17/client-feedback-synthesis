@@ -93,7 +93,7 @@ export function SessionCaptureForm({ onSessionSaved }: SessionCaptureFormProps) 
     handleVideoError,
     handleVideoRemove,
     reset: resetVideoItems,
-  } = useVideoItemsState("[SessionCaptureForm]")
+  } = useVideoItemsState({ logPrefix: "[SessionCaptureForm]" })
 
   // View Prompt dialog state (P2.R1)
   const [showPromptDialog, setShowPromptDialog] = useState(false)

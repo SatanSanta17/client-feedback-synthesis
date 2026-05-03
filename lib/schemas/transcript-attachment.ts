@@ -26,5 +26,3 @@ export const transcriptVideoMetadataSchema = z.object({
     .positive()
     .max(MAX_VIDEO_DURATION_SECONDS, "Video duration exceeds the 2 hour limit"),
 })
-
-export type TranscriptVideoMetadata = z.infer<typeof transcriptVideoMetadataSchema>

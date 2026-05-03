@@ -18,7 +18,7 @@ export interface CreateAttachmentInput {
 // PRD-032 Part 2 — transcript-only persistence. No Storage upload; the row
 // is the only artefact. Called when the client has already received the
 // transcript from /api/files/transcribe and now wants it on the session.
-export interface CreateTranscriptInput {
+interface CreateTranscriptInput {
   sessionId: string;
   teamId: string | null;
   fileName: string;
