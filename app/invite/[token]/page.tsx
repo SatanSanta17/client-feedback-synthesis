@@ -77,7 +77,7 @@ export default async function InvitePage({ params }: InvitePageProps) {
         teamName={invitation.team_name}
         role={invitation.role}
         invitedEmail={invitation.email}
-        userEmail={user.email!}
+        userEmail={user.email ?? "(unknown email)"}
         inviteToken={token}
       />
     );

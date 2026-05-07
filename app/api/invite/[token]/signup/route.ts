@@ -9,6 +9,7 @@ import {
 } from "@/lib/services/invitation-service";
 import { passwordField } from "@/lib/schemas/password-schema";
 import { setActiveTeamCookieOnResponse } from "@/lib/cookies/active-team-server";
+import { parseInviteToken } from "@/lib/invite/token";
 
 const signupBodySchema = z.object({
   password: passwordField,
@@ -19,7 +20,15 @@ interface RouteContext {
 }
 
 export async function POST(request: Request, context: RouteContext) {
-  const { token } = await context.params;
+  const { token: rawToken } = await context.params;
+  const token = parseInviteToken(rawToken);
+
+  if (!token) {
+    return NextResponse.json(
+      { message: "This invitation link is invalid." },
+      { status: 404 }
+    );
+  }
 
   let body: unknown;
   try {

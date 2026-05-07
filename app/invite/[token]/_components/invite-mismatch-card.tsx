@@ -38,8 +38,7 @@ export function InviteMismatchCard({
 
   async function handleSignOut() {
     setSigningOut(true);
-    await signOut();
-    window.location.href = `/invite/${inviteToken}`;
+    await signOut(`/invite/${inviteToken}`);
   }
 
   return (

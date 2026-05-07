@@ -120,7 +120,7 @@ export function UserMenu({
         </div>
         <DropdownMenuSeparator />
         <DropdownMenuItem
-          onClick={signOut}
+          onClick={() => signOut()}
           className="cursor-pointer"
         >
           <LogOut className="mr-2 h-4 w-4" />

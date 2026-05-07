@@ -24,7 +24,7 @@ interface AuthContextValue {
   canCreateTeam: boolean;
   activeTeamId: string | null;
   setActiveTeam: (teamId: string | null) => void;
-  signOut: () => Promise<void>;
+  signOut: (redirectTo?: string) => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextValue | undefined>(undefined);
@@ -115,15 +115,21 @@ export function AuthProvider({ children }: AuthProviderProps) {
     router.refresh();
   }, [router, pathname]);
 
-  const signOut = useCallback(async () => {
-    await supabase.auth.signOut();
-    clearActiveTeamCookie();
-    clearAllStreams();
-    setUser(null);
-    setCanCreateTeam(false);
-    setActiveTeamId(null);
-    router.push("/login");
-  }, [supabase, router]);
+  const signOut = useCallback(
+    async (redirectTo: string = "/login") => {
+      await supabase.auth.signOut();
+      clearActiveTeamCookie();
+      clearAllStreams();
+      setUser(null);
+      setCanCreateTeam(false);
+      setActiveTeamId(null);
+      router.push(redirectTo);
+      // Force a server-component refetch so the destination re-evaluates
+      // auth state — required when redirectTo equals the current pathname.
+      router.refresh();
+    },
+    [supabase, router]
+  );
 
   return (
     <AuthContext
