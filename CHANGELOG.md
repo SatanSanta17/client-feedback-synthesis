@@ -6,6 +6,18 @@ All notable changes to this project are documented here, grouped by PRD and part
 
 ## [Unreleased]
 
+### PRD-035 — Invite flow simplification — 2026-05-07
+
+Collapsed the invite acceptance flow so a single click on the email CTA resolves to the right destination, and stopped sending a redundant verification email to invited new users. Implementation landed end-to-end in one go (Parts 1–5).
+
+- **Part 1 — Auto-accept for signed-in users.** `app/invite/[token]/page.tsx` is now a server-side dispatcher: when the visitor is already signed in with the matching email, it calls `acceptAndActivate()`, sets `active_team_id`, and 307s to the post-auth landing path. No "Accept & Join" button page.
+- **Part 2 — Direct routing for signed-out users.** Unauthenticated visitors are redirected to `/login?invite={token}` (existing account) or `/signup?invite={token}` (new account). Both pages resolve the invitation server-side and pass `invitedEmail` / `inviteToken` to the form, which pre-fills + locks the email and accepts post-auth via the `acceptInviteAction` server action. Google OAuth from these pages preserves the token via `redirectTo=/auth/callback?invite={token}`.
+- **Part 3 — No verification email for invited signups.** New `POST /api/invite/[token]/signup` route uses the Supabase Admin API (`createUser({ email_confirm: true })`) to create a pre-confirmed user, signs them in on the cookie-bound server client, and accepts the invitation in one orchestrated call (`signupAndAcceptInvitation()` in `invitation-service.ts`). Direct (non-invite) signups continue to require email verification.
+- **Part 4 — Mismatch + status screens.** `invite-status-card.tsx` is now a server component (drops `useRouter` for a `next/link` CTA). `invite-mismatch-card.tsx` adds the `?error=email_mismatch` toast and re-enters `/invite/{token}` after sign-out so the dispatcher routes the user to the correct login/signup with the invite intact.
+- **Part 5 — Cleanup.** Removed `invite-page-content.tsx`, `invite-accept-card.tsx`, `invite-sign-in-form.tsx`, `invite-sign-up-form.tsx`, `invite-helpers.ts`, the unused `OAuthDivider` export, and the legacy `POST /api/invite/[token]/accept` route. The `pending_invite_token` cookie is gone — the auth callback reads `?invite=` from the URL only. `ARCHITECTURE.md` invite section, file map, and API table updated.
+
+Single source of truth for acceptance: every code path funnels through `acceptAndActivate(repo, supabase, invitation, userId)` in `lib/services/invitation-service.ts` — `accepted_at` is never written elsewhere. Token shape is validated centrally via `parseInviteToken()` in `lib/invite/token.ts` (64-hex). `npx tsc --noEmit` clean. No DB schema changes; new env vars: none (`SUPABASE_SERVICE_ROLE_KEY` was already in use).
+
 ### Trivial fix — Past Sessions table prepends new row instead of refetching — 2026-05-04
 
 The capture page's `Past Sessions` table was running a full `GET /api/sessions?offset=0&limit=20` round-trip every time a session saved — visible in dev logs after every form submit. The mechanism was a `refreshKey` counter bumped by `CapturePageContent` and listed in the table's fetch effect's deps; every bump reset `offset` to 0 and refetched. The earlier optimisation (commit `a40d8b7`, "row doesnt collapse on save and table doesnt re-fetch on updating a session") only covered the **edit** path via `handleExpandedSave(updated)`'s in-place `setSessions(prev => prev.map(...))`; the **create** path was never given the same treatment.

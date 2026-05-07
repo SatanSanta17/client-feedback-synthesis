@@ -1,6 +1,4 @@
-"use client";
-
-import { useRouter } from "next/navigation";
+import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import type { InvitationStatus } from "@/lib/services/invitation-service";
 import { InviteShell, StatusIcon } from "./invite-shell";
@@ -11,8 +9,6 @@ interface InviteStatusCardProps {
 }
 
 export function InviteStatusCard({ status, teamName }: InviteStatusCardProps) {
-  const router = useRouter();
-
   if (status === "invalid") {
     return (
       <InviteShell>
@@ -54,12 +50,12 @@ export function InviteStatusCard({ status, teamName }: InviteStatusCardProps) {
         of <strong>{teamName}</strong>, sign in to continue.
       </p>
       <Button
-        onClick={() => router.push("/login")}
+        asChild
         className="mt-6 w-full cursor-pointer"
         variant="default"
         size="lg"
       >
-        Go to Sign In
+        <Link href="/login">Go to Sign In</Link>
       </Button>
     </InviteShell>
   );

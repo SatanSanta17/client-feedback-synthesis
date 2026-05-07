@@ -1,11 +1,12 @@
 import { NextResponse } from "next/server";
 import { createClient, createServiceRoleClient } from "@/lib/supabase/server";
 import {
+  acceptAndActivate,
   getInvitationByToken,
-  acceptInvitation,
 } from "@/lib/services/invitation-service";
 import { createInvitationRepository } from "@/lib/repositories/supabase/supabase-invitation-repository";
 import { DEFAULT_AUTH_ROUTE, ONBOARDING_ROUTE } from "@/lib/constants";
+import { parseInviteToken } from "@/lib/invite/token";
 
 export async function GET(request: Request) {
   const { searchParams, origin } = new URL(request.url);
@@ -31,38 +32,30 @@ export async function GET(request: Request) {
     return NextResponse.redirect(`${origin}/reset-password`);
   }
 
-  // Redirect returning users (with sessions) to the dashboard; new users to capture
-  const { count: sessionCount } = await supabase
-    .from("sessions")
-    .select("id", { count: "exact", head: true })
-    .is("deleted_at", null)
-    .limit(1);
-  const postAuthPath = (sessionCount ?? 0) > 0 ? DEFAULT_AUTH_ROUTE : ONBOARDING_ROUTE;
+  const inviteToken = parseInviteToken(searchParams.get("invite"));
 
-  const pendingToken = getCookie(request, "pending_invite_token");
-  const response = NextResponse.redirect(`${origin}${postAuthPath}`);
-
-  // Always clear the invite cookie regardless of outcome
-  if (pendingToken) {
-    response.cookies.set("pending_invite_token", "", {
-      path: "/",
-      maxAge: 0,
-    });
-  }
-
-  if (!pendingToken) {
-    return response;
+  if (!inviteToken) {
+    const { count: sessionCount } = await supabase
+      .from("sessions")
+      .select("id", { count: "exact", head: true })
+      .is("deleted_at", null)
+      .limit(1);
+    const postAuthPath =
+      (sessionCount ?? 0) > 0 ? DEFAULT_AUTH_ROUTE : ONBOARDING_ROUTE;
+    return NextResponse.redirect(`${origin}${postAuthPath}`);
   }
 
   try {
     const serviceClient = createServiceRoleClient();
     const invitationRepo = createInvitationRepository(supabase, serviceClient);
 
-    const result = await getInvitationByToken(invitationRepo, pendingToken);
+    const result = await getInvitationByToken(invitationRepo, inviteToken);
 
     if (!result || result.status !== "valid") {
-      console.log("Auth callback: invite token invalid or expired, skipping acceptance");
-      return response;
+      console.log(
+        `Auth callback: invite token ${inviteToken.slice(0, 8)} ${result?.status ?? "not_found"}, skipping acceptance`
+      );
+      return NextResponse.redirect(`${origin}${DEFAULT_AUTH_ROUTE}`);
     }
 
     const { invitation } = result;
@@ -73,52 +66,42 @@ export async function GET(request: Request) {
 
     if (!user) {
       console.error("Auth callback: no user after session exchange");
-      return response;
+      return NextResponse.redirect(`${origin}${DEFAULT_AUTH_ROUTE}`);
     }
 
     if (user.email?.toLowerCase() !== invitation.email.toLowerCase()) {
       console.warn(
         `Auth callback: email mismatch — user ${user.email} tried to accept invite for ${invitation.email}`
       );
-      const mismatchRedirect = NextResponse.redirect(
-        `${origin}/invite/${pendingToken}?error=email_mismatch`
+      return NextResponse.redirect(
+        `${origin}/invite/${inviteToken}?error=email_mismatch`
       );
-      mismatchRedirect.cookies.set("pending_invite_token", "", {
-        path: "/",
-        maxAge: 0,
-      });
-      return mismatchRedirect;
     }
 
-    await acceptInvitation(
+    const { teamId, postAuthPath } = await acceptAndActivate(
       invitationRepo,
-      invitation.id,
-      user.id,
-      invitation.team_id,
-      invitation.role
+      supabase,
+      invitation,
+      user.id
     );
 
-    response.cookies.set("active_team_id", invitation.team_id, {
+    const response = NextResponse.redirect(`${origin}${postAuthPath}`);
+    response.cookies.set("active_team_id", teamId, {
       path: "/",
       maxAge: 60 * 60 * 24 * 365,
       sameSite: "lax",
     });
 
     console.log(
-      `Auth callback: user ${user.id} joined team ${invitation.team_id} via invite`
+      `Auth callback: user ${user.id} joined team ${teamId} via invite`
     );
+
+    return response;
   } catch (err) {
     console.error(
       "Auth callback: invite acceptance failed",
       err instanceof Error ? err.message : err
     );
+    return NextResponse.redirect(`${origin}${DEFAULT_AUTH_ROUTE}`);
   }
-
-  return response;
-}
-
-function getCookie(request: Request, name: string): string | undefined {
-  const header = request.headers.get("cookie") ?? "";
-  const match = header.match(new RegExp(`(?:^|;\\s*)${name}=([^;]*)`));
-  return match ? decodeURIComponent(match[1]) : undefined;
 }

@@ -40,16 +40,6 @@ export function InviteHeader({ teamName, role }: InviteHeaderProps) {
   );
 }
 
-export function OAuthDivider() {
-  return (
-    <div className="my-6 flex items-center gap-3">
-      <div className="h-px flex-1 bg-[var(--border-default)]" />
-      <span className="text-xs text-[var(--text-muted)]">or</span>
-      <div className="h-px flex-1 bg-[var(--border-default)]" />
-    </div>
-  );
-}
-
 export function StatusIcon({
   variant,
 }: {

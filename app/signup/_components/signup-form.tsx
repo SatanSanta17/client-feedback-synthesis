@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useForm } from "react-hook-form";
 import { z } from "zod";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -15,6 +16,7 @@ import { GoogleIcon } from "@/components/ui/google-icon";
 import { passwordField } from "@/lib/schemas/password-schema";
 import { AuthFormShell } from "@/components/auth/auth-form-shell";
 import { EmailConfirmationPanel } from "@/components/auth/email-confirmation-panel";
+import { appendInviteParam } from "@/lib/invite/url";
 
 const signupSchema = z
   .object({
@@ -29,10 +31,21 @@ const signupSchema = z
 
 type SignupFields = z.infer<typeof signupSchema>;
 
-export function SignupForm() {
+interface SignupFormProps {
+  invitedEmail?: string | null;
+  inviteToken?: string | null;
+}
+
+export function SignupForm({
+  invitedEmail = null,
+  inviteToken = null,
+}: SignupFormProps) {
   const [serverError, setServerError] = useState<string | null>(null);
   const [confirmedEmail, setConfirmedEmail] = useState<string | null>(null);
+  const router = useRouter();
   const supabase = createClient();
+
+  const isInviteMode = !!(invitedEmail && inviteToken);
 
   const {
     register,
@@ -40,11 +53,37 @@ export function SignupForm() {
     formState: { errors, isSubmitting },
   } = useForm<SignupFields>({
     resolver: zodResolver(signupSchema),
-    defaultValues: { email: "", password: "", confirmPassword: "" },
+    defaultValues: {
+      email: invitedEmail ?? "",
+      password: "",
+      confirmPassword: "",
+    },
   });
 
   async function onSubmit(data: SignupFields) {
     setServerError(null);
+
+    if (isInviteMode) {
+      const response = await fetch(`/api/invite/${inviteToken}/signup`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ password: data.password }),
+      });
+
+      if (!response.ok) {
+        const body = (await response.json().catch(() => ({}))) as {
+          message?: string;
+        };
+        setServerError(body.message ?? "Could not complete signup");
+        return;
+      }
+
+      const { postAuthPath } = (await response.json()) as {
+        postAuthPath: string;
+      };
+      router.push(postAuthPath);
+      return;
+    }
 
     const { error } = await supabase.auth.signUp({
       email: data.email,
@@ -63,10 +102,11 @@ export function SignupForm() {
   }
 
   async function handleGoogleSignUp() {
+    const callbackPath = appendInviteParam("/auth/callback", inviteToken);
     await supabase.auth.signInWithOAuth({
       provider: "google",
       options: {
-        redirectTo: `${window.location.origin}/auth/callback`,
+        redirectTo: `${window.location.origin}${callbackPath}`,
       },
     });
   }
@@ -84,7 +124,11 @@ export function SignupForm() {
   return (
     <AuthFormShell
       title="Synthesiser"
-      subtitle="Create your account to get started."
+      subtitle={
+        isInviteMode
+          ? "Create your account to accept your invitation."
+          : "Create your account to get started."
+      }
     >
       <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
         <div className="space-y-1.5">
@@ -94,6 +138,12 @@ export function SignupForm() {
             type="email"
             placeholder="you@example.com"
             autoComplete="email"
+            readOnly={isInviteMode}
+            className={
+              isInviteMode
+                ? "bg-[var(--surface-secondary)] text-[var(--text-muted)]"
+                : undefined
+            }
             {...register("email")}
           />
           {errors.email && (
@@ -144,6 +194,8 @@ export function SignupForm() {
               <Loader2 className="mr-2 size-4 animate-spin" />
               Creating…
             </>
+          ) : isInviteMode ? (
+            "Create Account & Join"
           ) : (
             "Create Account"
           )}
@@ -169,7 +221,7 @@ export function SignupForm() {
       <p className="mt-6 text-center text-sm text-[var(--text-secondary)]">
         Already have an account?{" "}
         <Link
-          href="/login"
+          href={appendInviteParam("/login", inviteToken)}
           className="font-medium text-[var(--brand-primary)] hover:underline"
         >
           Sign in

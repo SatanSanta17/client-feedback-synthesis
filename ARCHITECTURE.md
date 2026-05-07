@@ -238,24 +238,21 @@ synthesiser/
 │   │       └── view-prompt-dialog.tsx    # Reusable read-only dialog for viewing prompt content (markdown rendered, fetch-on-open)
 │   ├── invite/
 │   │   └── [token]/
-│   │       ├── page.tsx                   # Invite acceptance page — server component
+│   │       ├── page.tsx                   # PRD-035 — server-side dispatcher: resolves invite, auto-accepts on email match, redirects unauth users to /login or /signup with `?invite=`, renders status/mismatch screens otherwise
 │   │       └── _components/
-│   │           ├── invite-page-content.tsx    # Client coordinator — validates token, routes between invite states (PRD-011 Part 3)
-│   │           ├── invite-shell.tsx           # Shared centered card shell for all invite states, with status icon
-│   │           ├── invite-status-card.tsx     # Status cards for invalid/expired/already-accepted states
-│   │           ├── invite-accept-card.tsx     # Authenticated + email-match state — shows team/role + accept button
-│   │           ├── invite-mismatch-card.tsx   # Authenticated + email-mismatch state — warning + sign-out option
-│   │           ├── invite-sign-in-form.tsx    # Unauthenticated + existing user — email/password sign-in with pre-filled email
-│   │           ├── invite-sign-up-form.tsx    # Unauthenticated + new user — sign-up with pre-filled email
-│   │           └── invite-helpers.ts          # Shared helpers for invite state resolution
+│   │           ├── invite-shell.tsx           # Shared centered card shell + InviteHeader + StatusIcon
+│   │           ├── invite-status-card.tsx     # PRD-035 — server-rendered status (invalid/expired/already-accepted)
+│   │           └── invite-mismatch-card.tsx   # PRD-035 — authed + email-mismatch warning, signs out and re-enters /invite/{token}
 │   ├── login/
-│   │   ├── page.tsx             # Login page — server component with metadata
+│   │   ├── page.tsx             # Server component — resolves `?invite=` and passes invitedEmail/inviteToken to the form
+│   │   ├── _actions/
+│   │   │   └── accept-invite-action.ts  # PRD-035 — server action used by invite-aware login to accept after sign-in
 │   │   └── _components/
-│   │       └── login-form.tsx   # Email/password form + Google OAuth button (PRD-011 Part 1)
+│   │       └── login-form.tsx   # Email/password form + Google OAuth; in invite mode pre-fills + locks email and accepts post-login (PRD-035)
 │   ├── signup/
-│   │   ├── page.tsx             # Sign-up page — server component with metadata
+│   │   ├── page.tsx             # Server component — resolves `?invite=` and passes invitedEmail/inviteToken to the form
 │   │   └── _components/
-│   │       └── signup-form.tsx  # Email/password sign-up (Zod validation) + Google OAuth + email-confirmation panel (PRD-011 Part 1)
+│   │       └── signup-form.tsx  # Email/password sign-up (Zod validation) + Google OAuth + email-confirmation panel; invite mode posts to /api/invite/[token]/signup with no verification email (PRD-035)
 │   ├── forgot-password/
 │   │   ├── page.tsx             # Forgot-password page — server component with metadata
 │   │   └── _components/
@@ -933,14 +930,17 @@ Persistent workspace-level notifications. **One row per recipient** (per PRD-029
 - **AuthProvider** (`components/providers/auth-provider.tsx`) wraps the app in `layout.tsx`. It reads the initial session on mount, subscribes to `onAuthStateChange`, and exposes `user`, `isAuthenticated`, `isLoading`, `canCreateTeam`, `activeTeamId`, `setActiveTeam`, and `signOut` via React context. `signOut()` calls `supabase.auth.signOut()`, `clearActiveTeamCookie()`, and `clearAllStreams()` (PRD-024) so workspace context, streaming state, and the user identity don't leak to the next session on the same machine. The `onAuthStateChange` listener mirrors the same cleanup on any session-null transition (token expiry, multi-tab sign-out, server-side revoke) — not just the explicit `signOut` path (PRD-024 P5.R4).
 - **UserMenu** consumes the auth context. Shows a loading skeleton while `isLoading`, a "Sign in" link when unauthenticated, and the user's avatar + email with a sign-out dropdown when authenticated.
 
-**Invite acceptance flow:**
+**Invite acceptance flow (PRD-035):**
 
-1. User receives an email with a link to `/invite/[token]`.
-2. If authenticated and email matches the invitation: `InviteAcceptCard` shows team name, role, and "Accept & Join Team" button. Accepting calls `POST /api/invite/[token]/accept`, which creates a `team_members` entry and sets `active_team_id` cookie.
-3. If authenticated but email does NOT match: `InviteMismatchCard` warns the user and offers a sign-out option.
-4. If unauthenticated + account already exists for the invited email: `InviteSignInForm` — email is pre-filled; password or Google OAuth completes sign-in. A `pending_invite_token` cookie is set before any OAuth redirect.
-5. If unauthenticated + no account exists: `InviteSignUpForm` — email is pre-filled; completing sign-up flows through confirmation.
-6. After OAuth callback, if `pending_invite_token` exists and the signed-in email matches the invitation email, the callback auto-accepts the invitation, sets `active_team_id`, and clears the pending token cookie. On email mismatch the callback redirects to `/invite/[token]?error=email_mismatch`.
+`/invite/[token]` is a server-side dispatcher (`app/invite/[token]/page.tsx`) that resolves the invitation, inspects auth state, and routes the user — there is no intermediate "Accept & Join" UI. The invitation context is carried as a URL parameter (`?invite={token}`) on `/login`, `/signup`, and `/auth/callback`; no cookie is involved. Acceptance is always written server-side via `acceptAndActivate()` in `lib/services/invitation-service.ts`.
+
+1. User clicks the link in the invitation email → lands on `/invite/[token]`.
+2. **Authenticated, email matches** → dispatcher calls `acceptAndActivate()`, sets `active_team_id`, redirects to the post-auth landing path (`/dashboard` if the user has prior sessions, else `/capture`).
+3. **Authenticated, email mismatch** → renders `InviteMismatchCard` with a "Sign out and continue as `invitedEmail`" CTA that re-enters `/invite/[token]` after sign-out.
+4. **Unauthenticated, profile exists for invited email** → 307 to `/login?invite={token}`. The login page pre-fills + locks the email; on successful sign-in the `acceptInviteAction` server action accepts the invite and routes the user to the post-auth landing path. Google OAuth from this page passes the token through `redirectTo=/auth/callback?invite={token}`.
+5. **Unauthenticated, no profile** → 307 to `/signup?invite={token}`. The signup form posts to `POST /api/invite/[token]/signup`, which uses the Supabase Admin API (`createUser({ email_confirm: true })`) to create a pre-confirmed account, signs the user in, and accepts the invite — **no verification email is sent for invited signups** (the invite click already proves email ownership). Direct (non-invite) signups continue to require email verification.
+6. **Invalid / expired / already-accepted token** → renders `InviteStatusCard` (server-rendered).
+7. The auth callback (`/auth/callback`) reads `?invite=` from its own URL and applies the same email-match guard for OAuth-completed flows; mismatches redirect to `/invite/[token]?error=email_mismatch` and the mismatch card surfaces a toast.
 
 **Workspace context:**
 
@@ -1114,7 +1114,7 @@ lib/hooks/
 | POST | `/api/teams/[teamId]/invitations` | Send invitations. Admin+ only. Body: `{ emails, role }`. | Yes |
 | DELETE | `/api/teams/[teamId]/invitations/[invitationId]` | Revoke invitation. Admin+ only. | Yes |
 | POST | `/api/teams/[teamId]/invitations/[invitationId]/resend` | Resend invitation email. Admin+ only. | Yes |
-| POST | `/api/invite/[token]/accept` | Accept invitation. Creates team_members entry. | Yes |
+| POST | `/api/invite/[token]/signup` | PRD-035 — Create pre-confirmed user via Admin API + sign in + accept invitation. Body: `{ password }`. Returns `{ teamId, postAuthPath }`. | No (gated by valid invite token) |
 
 ### Chat
 

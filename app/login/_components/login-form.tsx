@@ -7,6 +7,7 @@ import { useForm } from "react-hook-form";
 import { z } from "zod";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { Loader2 } from "lucide-react";
+import { toast } from "sonner";
 import { createClient } from "@/lib/supabase/client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -14,6 +15,8 @@ import { Label } from "@/components/ui/label";
 import { PasswordInput } from "@/components/ui/password-input";
 import { GoogleIcon } from "@/components/ui/google-icon";
 import { AuthFormShell } from "@/components/auth/auth-form-shell";
+import { appendInviteParam } from "@/lib/invite/url";
+import { acceptInviteAction } from "../_actions/accept-invite-action";
 
 const loginSchema = z.object({
   email: z.string().email("Please enter a valid email address"),
@@ -21,6 +24,11 @@ const loginSchema = z.object({
 });
 
 type LoginFields = z.infer<typeof loginSchema>;
+
+interface LoginFormProps {
+  invitedEmail?: string | null;
+  inviteToken?: string | null;
+}
 
 function friendlyAuthError(message: string): string {
   const lower = message.toLowerCase();
@@ -33,10 +41,15 @@ function friendlyAuthError(message: string): string {
   return message;
 }
 
-export function LoginForm() {
+export function LoginForm({
+  invitedEmail = null,
+  inviteToken = null,
+}: LoginFormProps) {
   const [serverError, setServerError] = useState<string | null>(null);
   const router = useRouter();
   const supabase = createClient();
+
+  const isInviteMode = !!(invitedEmail && inviteToken);
 
   const {
     register,
@@ -44,14 +57,14 @@ export function LoginForm() {
     formState: { errors, isSubmitting },
   } = useForm<LoginFields>({
     resolver: zodResolver(loginSchema),
-    defaultValues: { email: "", password: "" },
+    defaultValues: { email: invitedEmail ?? "", password: "" },
   });
 
   async function onSubmit(data: LoginFields) {
     setServerError(null);
 
     const { error } = await supabase.auth.signInWithPassword({
-      email: data.email,
+      email: isInviteMode ? invitedEmail! : data.email,
       password: data.password,
     });
 
@@ -60,14 +73,30 @@ export function LoginForm() {
       return;
     }
 
+    if (isInviteMode) {
+      const result = await acceptInviteAction(inviteToken!);
+      if (!result.ok) {
+        if (result.reason === "email_mismatch") {
+          router.push(`/invite/${inviteToken}?error=email_mismatch`);
+          return;
+        }
+        toast.error(result.message);
+        router.push("/dashboard");
+        return;
+      }
+      router.push(result.postAuthPath);
+      return;
+    }
+
     router.push("/capture");
   }
 
   async function handleGoogleSignIn() {
+    const callbackPath = appendInviteParam("/auth/callback", inviteToken);
     await supabase.auth.signInWithOAuth({
       provider: "google",
       options: {
-        redirectTo: `${window.location.origin}/auth/callback`,
+        redirectTo: `${window.location.origin}${callbackPath}`,
       },
     });
   }
@@ -75,7 +104,11 @@ export function LoginForm() {
   return (
     <AuthFormShell
       title="Synthesiser"
-      subtitle="Sign in to capture and synthesise client feedback."
+      subtitle={
+        isInviteMode
+          ? "Sign in to accept your invitation."
+          : "Sign in to capture and synthesise client feedback."
+      }
     >
       <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
         <div className="space-y-1.5">
@@ -85,6 +118,12 @@ export function LoginForm() {
             type="email"
             placeholder="you@example.com"
             autoComplete="email"
+            readOnly={isInviteMode}
+            className={
+              isInviteMode
+                ? "bg-[var(--surface-secondary)] text-[var(--text-muted)]"
+                : undefined
+            }
             {...register("email")}
           />
           {errors.email && (
@@ -128,6 +167,8 @@ export function LoginForm() {
               <Loader2 className="mr-2 size-4 animate-spin" />
               Signing in…
             </>
+          ) : isInviteMode ? (
+            "Sign in & Join"
           ) : (
             "Sign In"
           )}
@@ -153,7 +194,7 @@ export function LoginForm() {
       <p className="mt-6 text-center text-sm text-[var(--text-secondary)]">
         Don&apos;t have an account?{" "}
         <Link
-          href="/signup"
+          href={appendInviteParam("/signup", inviteToken)}
           className="font-medium text-[var(--brand-primary)] hover:underline"
         >
           Sign up

@@ -1,4 +1,5 @@
 import crypto from "crypto";
+import type { SupabaseClient } from "@supabase/supabase-js";
 import type {
   InvitationRepository,
   InvitationRow,
@@ -7,6 +8,7 @@ import type {
 import type { TeamRepository } from "@/lib/repositories/team-repository";
 import { sendEmail } from "@/lib/services/email-service";
 import { buildInviteEmailHtml } from "@/lib/email-templates/invite-email";
+import { DEFAULT_AUTH_ROUTE, ONBOARDING_ROUTE } from "@/lib/constants";
 
 // ---------------------------------------------------------------------------
 // Re-export types for backward compatibility
@@ -239,4 +241,108 @@ export async function acceptInvitation(
   await repo.markAccepted(invitationId);
 
   console.log(`[invitation-service] acceptInvitation — invitation ${invitationId} marked as accepted`);
+}
+
+// ---------------------------------------------------------------------------
+// Orchestration — accept + decide post-auth redirect
+// ---------------------------------------------------------------------------
+
+export class InvitedSignupError extends Error {
+  constructor(public readonly code: "user_already_exists" | "create_user_failed") {
+    super(code);
+    this.name = "InvitedSignupError";
+  }
+}
+
+/**
+ * Accepts an invitation and returns the post-auth landing path for the user.
+ *
+ * Returning users (those with at least one non-deleted session in any team)
+ * land on DEFAULT_AUTH_ROUTE; new users land on ONBOARDING_ROUTE. The session
+ * lookup uses the cookie-bound `supabase` client so RLS scopes the count to
+ * the authenticated user only.
+ */
+export async function acceptAndActivate(
+  repo: InvitationRepository,
+  supabase: SupabaseClient,
+  invitation: InvitationWithTeamRow,
+  userId: string
+): Promise<{ teamId: string; postAuthPath: string }> {
+  await acceptInvitation(repo, invitation.id, userId, invitation.team_id, invitation.role);
+
+  const { count: sessionCount } = await supabase
+    .from("sessions")
+    .select("id", { count: "exact", head: true })
+    .is("deleted_at", null)
+    .limit(1);
+
+  const postAuthPath =
+    (sessionCount ?? 0) > 0 ? DEFAULT_AUTH_ROUTE : ONBOARDING_ROUTE;
+
+  console.log(
+    `[invitation-service] acceptAndActivate — user ${userId} → team ${invitation.team_id} (postAuthPath ${postAuthPath})`
+  );
+
+  return { teamId: invitation.team_id, postAuthPath };
+}
+
+/**
+ * Creates a pre-confirmed user via the Admin API, signs them in on the
+ * cookie-bound client, and accepts the invitation in one orchestration.
+ *
+ * Used by `POST /api/invite/[token]/signup` — clicking the invite already
+ * proves email ownership, so we skip the standard verification email.
+ */
+export async function signupAndAcceptInvitation(
+  repo: InvitationRepository,
+  adminSupabase: SupabaseClient,
+  supabase: SupabaseClient,
+  invitation: InvitationWithTeamRow,
+  password: string
+): Promise<{ userId: string; teamId: string; postAuthPath: string }> {
+  console.log(
+    `[invitation-service] signupAndAcceptInvitation — creating user for ${invitation.email}`
+  );
+
+  const { data: created, error: createError } = await adminSupabase.auth.admin.createUser({
+    email: invitation.email,
+    password,
+    email_confirm: true,
+  });
+
+  if (createError || !created?.user) {
+    const message = createError?.message ?? "createUser returned no user";
+    console.error(
+      `[invitation-service] signupAndAcceptInvitation — createUser failed:`,
+      message
+    );
+    if (/already (registered|exists)/i.test(message)) {
+      throw new InvitedSignupError("user_already_exists");
+    }
+    throw new InvitedSignupError("create_user_failed");
+  }
+
+  const userId = created.user.id;
+
+  const { error: signInError } = await supabase.auth.signInWithPassword({
+    email: invitation.email,
+    password,
+  });
+
+  if (signInError) {
+    console.error(
+      `[invitation-service] signupAndAcceptInvitation — signIn after createUser failed:`,
+      signInError.message
+    );
+    throw new InvitedSignupError("create_user_failed");
+  }
+
+  const { teamId, postAuthPath } = await acceptAndActivate(
+    repo,
+    supabase,
+    invitation,
+    userId
+  );
+
+  return { userId, teamId, postAuthPath };
 }

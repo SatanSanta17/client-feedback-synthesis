@@ -1,6 +1,8 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { useSearchParams } from "next/navigation";
+import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { AlertTriangle, Loader2 } from "lucide-react";
 import { useAuth } from "@/components/providers/auth-provider";
@@ -11,6 +13,7 @@ interface InviteMismatchCardProps {
   role: string | null;
   invitedEmail: string;
   userEmail: string;
+  inviteToken: string;
 }
 
 export function InviteMismatchCard({
@@ -18,13 +21,25 @@ export function InviteMismatchCard({
   role,
   invitedEmail,
   userEmail,
+  inviteToken,
 }: InviteMismatchCardProps) {
   const [signingOut, setSigningOut] = useState(false);
   const { signOut } = useAuth();
+  const searchParams = useSearchParams();
+
+  useEffect(() => {
+    if (searchParams.get("error") === "email_mismatch") {
+      toast.error(
+        "You signed in with a different email than the invitation was sent to"
+      );
+      window.history.replaceState({}, "", window.location.pathname);
+    }
+  }, [searchParams]);
 
   async function handleSignOut() {
     setSigningOut(true);
     await signOut();
+    window.location.href = `/invite/${inviteToken}`;
   }
 
   return (
