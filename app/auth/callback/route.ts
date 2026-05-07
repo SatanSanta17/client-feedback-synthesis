@@ -7,6 +7,7 @@ import {
 import { createInvitationRepository } from "@/lib/repositories/supabase/supabase-invitation-repository";
 import { DEFAULT_AUTH_ROUTE, ONBOARDING_ROUTE } from "@/lib/constants";
 import { parseInviteToken } from "@/lib/invite/token";
+import { setActiveTeamCookieOnResponse } from "@/lib/cookies/active-team-server";
 
 export async function GET(request: Request) {
   const { searchParams, origin } = new URL(request.url);
@@ -86,11 +87,7 @@ export async function GET(request: Request) {
     );
 
     const response = NextResponse.redirect(`${origin}${postAuthPath}`);
-    response.cookies.set("active_team_id", teamId, {
-      path: "/",
-      maxAge: 60 * 60 * 24 * 365,
-      sameSite: "lax",
-    });
+    setActiveTeamCookieOnResponse(response, teamId);
 
     console.log(
       `Auth callback: user ${user.id} joined team ${teamId} via invite`

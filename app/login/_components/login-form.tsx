@@ -16,6 +16,7 @@ import { PasswordInput } from "@/components/ui/password-input";
 import { GoogleIcon } from "@/components/ui/google-icon";
 import { AuthFormShell } from "@/components/auth/auth-form-shell";
 import { appendInviteParam } from "@/lib/invite/url";
+import { DEFAULT_AUTH_ROUTE } from "@/lib/constants";
 import { acceptInviteAction } from "../_actions/accept-invite-action";
 
 const loginSchema = z.object({
@@ -81,7 +82,7 @@ export function LoginForm({
           return;
         }
         toast.error(result.message);
-        router.push("/dashboard");
+        router.push(DEFAULT_AUTH_ROUTE);
         return;
       }
       router.push(result.postAuthPath);

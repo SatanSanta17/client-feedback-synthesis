@@ -299,7 +299,7 @@ export async function signupAndAcceptInvitation(
   supabase: SupabaseClient,
   invitation: InvitationWithTeamRow,
   password: string
-): Promise<{ userId: string; teamId: string; postAuthPath: string }> {
+): Promise<{ teamId: string; postAuthPath: string }> {
   console.log(
     `[invitation-service] signupAndAcceptInvitation — creating user for ${invitation.email}`
   );
@@ -337,12 +337,5 @@ export async function signupAndAcceptInvitation(
     throw new InvitedSignupError("create_user_failed");
   }
 
-  const { teamId, postAuthPath } = await acceptAndActivate(
-    repo,
-    supabase,
-    invitation,
-    userId
-  );
-
-  return { userId, teamId, postAuthPath };
+  return acceptAndActivate(repo, supabase, invitation, userId);
 }

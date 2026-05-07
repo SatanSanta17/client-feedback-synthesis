@@ -349,7 +349,11 @@ synthesiser/
 │   │   └── file-icons.ts        # FILE_ICONS map (MIME type → lucide icon component)
 │   ├── cookies/
 │   │   ├── active-team.ts          # Client-side active team cookie helpers (getActiveTeamId via document.cookie, setActiveTeamCookie, clearActiveTeamCookie)
-│   │   └── active-team-server.ts   # Server-side active team cookie reader (getActiveTeamId via next/headers cookies)
+│   │   └── active-team-server.ts   # Server-side active team cookie helpers — reader (getActiveTeamId), server-component writer (setActiveTeamCookieServer), route-handler writer (setActiveTeamCookieOnResponse) [PRD-035]
+│   ├── invite/
+│   │   ├── token.ts                # parseInviteToken — validates ?invite= against 64-hex shape (PRD-035)
+│   │   ├── url.ts                  # appendInviteParam — appends ?invite= to a path, preserving any existing query (PRD-035)
+│   │   └── resolve.ts              # resolveInvitedEmailFromParam — used by /login + /signup to resolve ?invite= into the locked email + canonical token (PRD-035)
 │   ├── hooks/
 │   │   ├── use-chat.ts          # Composer — wires useConversationMessages + useChatStreaming and returns the combined UseChatReturn shape consumed by chat-surface components; thin wiring layer, no logic of its own (PRD-024 Part 6 decomposition; previously a 492-LOC monolithic hook)
 │   │   ├── use-conversation-messages.ts  # Internal building block — owns active conversation's messages array, pagination, isLoadingMessages, isConversationNotFound, the load-messages effect with the Gap P9 skip-refetch guard, and clearMessages. Exposes setMessages so useChatStreaming can perform optimistic adds, retry trims, and fold-completion appends. Not re-exported from any barrel — useChat is the public composer (PRD-024 Part 6)

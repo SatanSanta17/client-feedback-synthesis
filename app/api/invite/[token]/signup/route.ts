@@ -8,6 +8,7 @@ import {
   InvitedSignupError,
 } from "@/lib/services/invitation-service";
 import { passwordField } from "@/lib/schemas/password-schema";
+import { setActiveTeamCookieOnResponse } from "@/lib/cookies/active-team-server";
 
 const signupBodySchema = z.object({
   password: passwordField,
@@ -84,11 +85,7 @@ export async function POST(request: Request, context: RouteContext) {
     );
 
     const response = NextResponse.json({ teamId, postAuthPath });
-    response.cookies.set("active_team_id", teamId, {
-      path: "/",
-      maxAge: 60 * 60 * 24 * 365,
-      sameSite: "lax",
-    });
+    setActiveTeamCookieOnResponse(response, teamId);
     return response;
   } catch (err) {
     if (err instanceof InvitedSignupError && err.code === "user_already_exists") {
