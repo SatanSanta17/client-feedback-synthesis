@@ -301,6 +301,8 @@ synthesiser/
 │   │   └── structured-signal-view.tsx   # Renders ExtractedSignals JSON as typed UI — sections, severity/priority/sentiment badges, quotes (PRD-018 P2)
 │   ├── dashboard/
 │   │   └── recent-merge-indicator.tsx   # PRD-026 Part 4 — `<RecentMergeIndicator />` GitMerge icon + "Recently merged" tooltip; rendered inline next to canonical theme names on the matrix and trends widgets (top-themes uses a unicode ⤳ suffix because Recharts' Y-axis tickFormatter accepts string only — caption strip explains the marker)
+│   ├── invite/
+│   │   └── invite-outcome-toast.tsx     # PRD-035 — reads ?invite_outcome= from the URL once on mount, fires the matching sonner toast (joined / already_member), strips the param. Mounted globally in app/layout.tsx (Suspense-wrapped because useSearchParams is bailout-on-prerender).
 │   ├── notifications/
 │   │   ├── notification-bell.tsx          # Public bell composition — Popover trigger (full-row button matching the sidebar's "More"/UserMenu pattern) + badge overlay (capped "9+" display, brand-coloured); Popover content lazy-mounts via Radix Portal so useNotifications fetches only on open; props: collapsed, onOpenChange (PRD-029 Part 2)
 │   │   ├── notification-dropdown.tsx      # Popover content — header (title + "Mark all as read" when hasUnread), branches between skeleton / error / empty / row-list with optional Load-more footer; computes showWorkspaceLabel by row-team heuristic (suppresses labels when all visible rows share team_id) (PRD-029 Part 2)
@@ -912,7 +914,7 @@ Persistent workspace-level notifications. **One row per recipient** (per PRD-029
 
 **Providers:** Supabase Auth with two paths — Google OAuth and email + password. Open to any account (no domain allowlist). Email confirmation is required for new email/password sign-ups.
 
-**Middleware** (`middleware.ts`) runs on every request. It refreshes the Supabase session via `getUser()`, redirects unauthenticated users to `/login`, and validates the `active_team_id` cookie (clears if user is no longer a member). Public routes (`/`, `/login`, `/signup`, `/forgot-password`, `/auth/callback`, `/invite/*`) are excluded. Authenticated users who hit `/login`, `/signup`, or `/forgot-password` are bounced to `DEFAULT_AUTH_ROUTE` (`/dashboard`). `/reset-password` is not public — users arrive there via the recovery link which establishes a session first.
+**Middleware** (`middleware.ts`) runs on every request. It refreshes the Supabase session via `getUser()`, redirects unauthenticated users to `/login`, and validates the `active_team_id` cookie (clears if user is no longer a member). Public routes (`/`, `/login`, `/signup`, `/forgot-password`, `/auth/callback`, `/invite/*`, `/api/invite/*`) are excluded. The `/api/invite/*` exclusion covers `POST /api/invite/[token]/signup` (creates a pre-verified user, must run unauthenticated) and `GET /api/invite/[token]/accept` (handles its own auth check via `getUser()` + falls back to `/invite/[token]` on failure). Both gate themselves on the invite token's validity in the database. Authenticated users who hit `/login`, `/signup`, or `/forgot-password` are bounced to `DEFAULT_AUTH_ROUTE` (`/dashboard`). `/reset-password` is not public — users arrive there via the recovery link which establishes a session first.
 
 **Google OAuth flow:**
 
@@ -939,7 +941,12 @@ Persistent workspace-level notifications. **One row per recipient** (per PRD-029
 `/invite/[token]` is a server-side dispatcher (`app/invite/[token]/page.tsx`) that resolves the invitation, inspects auth state, and routes the user — there is no intermediate "Accept & Join" UI. The invitation context is carried as a URL parameter (`?invite={token}`) on `/login`, `/signup`, and `/auth/callback`; no cookie is involved. Acceptance is always written server-side via `acceptAndActivate()` in `lib/services/invitation-service.ts`.
 
 1. User clicks the link in the invitation email → lands on `/invite/[token]`.
-2. **Authenticated, email matches** → dispatcher calls `acceptAndActivate()`, sets `active_team_id`, redirects to the post-auth landing path (`/dashboard` if the user has prior sessions, else `/capture`).
+2. **Authenticated, email matches** → dispatcher 307s to `GET /api/invite/[token]/accept` (server components can't write cookies; the route handler does). The handler branches on team membership:
+   - **Already a member** (re-click after acceptance, or a defensive duplicate-invite that slipped past the create-time guard) → skip `acceptAndActivate`, set `active_team_id`, redirect to `/dashboard?invite_outcome=already_member`. The dispatcher reaches this branch regardless of the invitation's status (`valid` / `expired` / `already_accepted`) — being a member is the source of truth.
+   - **Not a member** + invitation still `valid` → run `acceptAndActivate(repo, serviceClient, invitation, userId)`, set cookie, redirect to `postAuthPath?invite_outcome=joined`. `postAuthPath` is `/dashboard` if **the invited team** has any non-deleted sessions, else `/capture` — i.e. it reflects the workspace the user is *entering*, not their prior global session count. The query uses the service-role client because the user's `active_team_id` cookie hasn't switched yet and RLS would scope the count to their previous workspace.
+   - **Not a member** + invitation expired or already-accepted → fallback redirect to `/invite/[token]` for the dispatcher to render the appropriate status card.
+
+   Any failure inside the handler redirects back to `/invite/[token]` for the dispatcher to re-render the correct state.
 3. **Authenticated, email mismatch** → renders `InviteMismatchCard` with a "Sign out and continue as `invitedEmail`" CTA that re-enters `/invite/[token]` after sign-out.
 4. **Unauthenticated, profile exists for invited email** → 307 to `/login?invite={token}`. The login page pre-fills + locks the email; on successful sign-in the `acceptInviteAction` server action accepts the invite and routes the user to the post-auth landing path. Google OAuth from this page passes the token through `redirectTo=/auth/callback?invite={token}`.
 5. **Unauthenticated, no profile** → 307 to `/signup?invite={token}`. The signup form posts to `POST /api/invite/[token]/signup`, which uses the Supabase Admin API (`createUser({ email_confirm: true })`) to create a pre-confirmed account, signs the user in, and accepts the invite — **no verification email is sent for invited signups** (the invite click already proves email ownership). Direct (non-invite) signups continue to require email verification.
@@ -1119,6 +1126,7 @@ lib/hooks/
 | DELETE | `/api/teams/[teamId]/invitations/[invitationId]` | Revoke invitation. Admin+ only. | Yes |
 | POST | `/api/teams/[teamId]/invitations/[invitationId]/resend` | Resend invitation email. Admin+ only. | Yes |
 | POST | `/api/invite/[token]/signup` | PRD-035 — Create pre-confirmed user via Admin API + sign in + accept invitation. Body: `{ password }`. Returns `{ teamId, postAuthPath }`. | No (gated by valid invite token) |
+| GET | `/api/invite/[token]/accept` | PRD-035 — Auto-accept handler invoked by the invite dispatcher (server components can't write cookies). Validates auth + email match, branches on existing membership: already-a-member → silent join + `?invite_outcome=already_member` toast, not-a-member + valid invitation → accept + `?invite_outcome=joined` toast. Failure modes redirect back to `/invite/[token]`. | Yes |
 
 ### Chat
 

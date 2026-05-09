@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useRef, useState, useCallback } from "react";
+import { useEffect, useRef, useState, useCallback } from "react";
 import { Upload } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
@@ -46,13 +46,14 @@ export function FileUploadZone({
   const [isDragOver, setIsDragOver] = useState(false);
   const [parsing, setParsing] = useState(0);
 
-  // Capability + caller-opt-in are checked once per mount. The Worker / WASM
-  // / video-element capabilities don't change at runtime.
-  const videoCapability = useMemo(() => {
-    if (!onVideoSelected) return { ok: false as const, reason: "disabled" };
-    return canProcessVideoInBrowser();
+  // Defer the capability probe to post-mount so SSR and the first client
+  // render agree on `false`. Browser APIs aren't available on the server.
+  const [videoEnabled, setVideoEnabled] = useState(false);
+
+  useEffect(() => {
+    if (!onVideoSelected) return;
+    setVideoEnabled(canProcessVideoInBrowser().ok);
   }, [onVideoSelected]);
-  const videoEnabled = videoCapability.ok;
 
   const acceptedFormatsLabel = videoEnabled
     ? "TXT, PDF, CSV, DOCX, JSON — 10 MB · MP4, MOV, WEBM — 500 MB / 2 hr"

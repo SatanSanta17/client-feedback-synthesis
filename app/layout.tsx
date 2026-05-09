@@ -1,10 +1,12 @@
 import type { Metadata } from "next";
 import { cookies } from "next/headers";
 import { Geist, Geist_Mono } from "next/font/google";
+import { Suspense } from "react";
 import { Toaster } from "sonner";
 import { cn } from "@/lib/utils";
 import { AuthenticatedLayout } from "@/components/layout/authenticated-layout";
 import { AuthProvider } from "@/components/providers/auth-provider";
+import { InviteOutcomeToast } from "@/components/invite/invite-outcome-toast";
 import "./globals.css";
 
 const geistSans = Geist({
@@ -52,6 +54,9 @@ export default async function RootLayout({
             {children}
           </AuthenticatedLayout>
           <Toaster position="bottom-right" richColors />
+          <Suspense fallback={null}>
+            <InviteOutcomeToast />
+          </Suspense>
         </AuthProvider>
       </body>
     </html>

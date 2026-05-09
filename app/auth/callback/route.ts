@@ -81,7 +81,7 @@ export async function GET(request: Request) {
 
     const { teamId, postAuthPath } = await acceptAndActivate(
       invitationRepo,
-      supabase,
+      serviceClient,
       invitation,
       user.id
     );

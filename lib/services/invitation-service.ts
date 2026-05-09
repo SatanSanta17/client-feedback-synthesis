@@ -257,22 +257,25 @@ export class InvitedSignupError extends Error {
 /**
  * Accepts an invitation and returns the post-auth landing path for the user.
  *
- * Returning users (those with at least one non-deleted session in any team)
- * land on DEFAULT_AUTH_ROUTE; new users land on ONBOARDING_ROUTE. The session
- * lookup uses the cookie-bound `supabase` client so RLS scopes the count to
- * the authenticated user only.
+ * The destination reflects the *invited team's* state: if team A has any
+ * non-deleted sessions, the user lands on DEFAULT_AUTH_ROUTE (there's content
+ * to look at); otherwise ONBOARDING_ROUTE (team A is empty, push them into
+ * the capture flow). The query uses the service-role client because the
+ * user's `active_team_id` cookie hasn't been switched yet — RLS would scope
+ * the count to their previous workspace.
  */
 export async function acceptAndActivate(
   repo: InvitationRepository,
-  supabase: SupabaseClient,
+  serviceClient: SupabaseClient,
   invitation: InvitationWithTeamRow,
   userId: string
 ): Promise<{ teamId: string; postAuthPath: string }> {
   await acceptInvitation(repo, invitation.id, userId, invitation.team_id, invitation.role);
 
-  const { count: sessionCount } = await supabase
+  const { count: sessionCount } = await serviceClient
     .from("sessions")
     .select("id", { count: "exact", head: true })
+    .eq("team_id", invitation.team_id)
     .is("deleted_at", null)
     .limit(1);
 
@@ -280,7 +283,7 @@ export async function acceptAndActivate(
     (sessionCount ?? 0) > 0 ? DEFAULT_AUTH_ROUTE : ONBOARDING_ROUTE;
 
   console.log(
-    `[invitation-service] acceptAndActivate — user ${userId} → team ${invitation.team_id} (postAuthPath ${postAuthPath})`
+    `[invitation-service] acceptAndActivate — user ${userId} → team ${invitation.team_id} (team session count ${sessionCount}, postAuthPath ${postAuthPath})`
   );
 
   return { teamId: invitation.team_id, postAuthPath };
@@ -337,5 +340,5 @@ export async function signupAndAcceptInvitation(
     throw new InvitedSignupError("create_user_failed");
   }
 
-  return acceptAndActivate(repo, supabase, invitation, userId);
+  return acceptAndActivate(repo, adminSupabase, invitation, userId);
 }

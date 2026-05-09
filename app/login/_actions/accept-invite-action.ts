@@ -8,6 +8,7 @@ import {
 } from "@/lib/services/invitation-service";
 import { setActiveTeamCookieServer } from "@/lib/cookies/active-team-server";
 import { parseInviteToken } from "@/lib/invite/token";
+import { DEFAULT_AUTH_ROUTE } from "@/lib/constants";
 
 export type AcceptInviteActionResult =
   | { ok: true; postAuthPath: string }
@@ -62,6 +63,35 @@ export async function acceptInviteAction(
 
   const { invitation, status } = result;
 
+  // Email match is checked before invitation status so a wrong-account user
+  // gets a mismatch error instead of "expired" / "already_accepted" leaks.
+  if (invitation.email.toLowerCase() !== user.email?.toLowerCase()) {
+    console.warn(
+      `[accept-invite-action] mismatch — user ${user.email} tried to accept invite for ${invitation.email}`
+    );
+    return {
+      ok: false,
+      reason: "email_mismatch",
+      message: "This invitation was sent to a different email address.",
+    };
+  }
+
+  // Already a member → silent join + already_member toast (mirrors the
+  // /api/invite/[token]/accept route handler's branch). Reachable when the
+  // invitation was created before the user joined the team via another path.
+  const isAlreadyMember = await repo.isUserTeamMember(invitation.team_id, user.id);
+
+  if (isAlreadyMember) {
+    await setActiveTeamCookieServer(invitation.team_id);
+    console.log(
+      `[accept-invite-action] user ${user.id} already member of team ${invitation.team_id}, switching workspace`
+    );
+    return {
+      ok: true,
+      postAuthPath: `${DEFAULT_AUTH_ROUTE}?invite_outcome=already_member`,
+    };
+  }
+
   if (status === "already_accepted") {
     return {
       ok: false,
@@ -79,26 +109,18 @@ export async function acceptInviteAction(
     };
   }
 
-  if (invitation.email.toLowerCase() !== user.email?.toLowerCase()) {
-    console.warn(
-      `[accept-invite-action] mismatch — user ${user.email} tried to accept invite for ${invitation.email}`
-    );
-    return {
-      ok: false,
-      reason: "email_mismatch",
-      message: "This invitation was sent to a different email address.",
-    };
-  }
-
   try {
     const { teamId, postAuthPath } = await acceptAndActivate(
       repo,
-      supabase,
+      serviceClient,
       invitation,
       user.id
     );
     await setActiveTeamCookieServer(teamId);
-    return { ok: true, postAuthPath };
+    console.log(
+      `[accept-invite-action] user ${user.id} → team ${teamId} (postAuthPath ${postAuthPath})`
+    );
+    return { ok: true, postAuthPath: `${postAuthPath}?invite_outcome=joined` };
   } catch (err) {
     console.error(
       "[accept-invite-action] acceptance failed:",

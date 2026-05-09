@@ -46,7 +46,8 @@ export async function middleware(request: NextRequest) {
     pathname === "/forgot-password" ||
     pathname === "/api/contact" ||
     pathname.startsWith("/auth/callback") ||
-    pathname.startsWith("/invite");
+    pathname.startsWith("/invite") ||
+    pathname.startsWith("/api/invite/");
 
   if (!user && !isPublicRoute) {
     if (pathname.startsWith("/api/")) {
