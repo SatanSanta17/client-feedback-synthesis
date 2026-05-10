@@ -399,7 +399,8 @@ synthesiser/
 │   │   ├── signal-extraction.ts # System prompt and user message template for signal extraction (used by prompt editor)
 │   │   ├── structured-extraction.ts # System prompt and user message builder for generateObject() extraction (PRD-018)
 │   │   ├── theme-assignment.ts    # Theme assignment system prompt, max tokens, and buildThemeAssignmentUserMessage() for generateObject() classification (PRD-021)
-│   │   └── headline-insights.ts  # Headline insights system prompt, max tokens, InsightAggregates interface, buildHeadlineInsightsUserMessage() for generateObject() insight generation (PRD-021 Part 5)
+│   │   ├── headline-insights.ts  # Headline insights system prompt, max tokens, InsightAggregates interface, buildHeadlineInsightsUserMessage() for generateObject() insight generation (PRD-021 Part 5)
+│   │   └── summarise-session-prompt.ts  # **PRD-033 Part 2** — versioned cheap-model leaf prompt (`SUMMARISE_SESSION_PROMPT_VERSION = "v1"`). Default mode: balanced 3-sentence digest. Focus mode: extract focus-relevant content or return literal "No content matches focus." sentinel. Renderer `renderSummariseSessionUser(sessionContent, focus?)` shapes the user message body
 │   ├── schemas/
 │   │   ├── extraction-schema.ts   # Zod schema for structured extraction output — signalChunkSchema, extractionSchema, type exports
 │   │   ├── password-schema.ts     # Shared `passwordField` Zod schema (8+ chars, 1 digit, 1 special char) used by signup/reset forms (PRD-011)
@@ -492,12 +493,15 @@ synthesiser/
 │   │   ├── retrieval-rrf.ts     # **PRD-033 Part 1** — pure rrfFuse(setA, setB, keyFn, cfg) function. Cormack et al. RRF formula `score = Σ weight / (k + rank)`; default k=60. Returns each row annotated with its rrfScore + sources: ('vector' | 'fts')[] for telemetry
 │   │   ├── retrieval-config.ts  # **PRD-033 Part 1** — env-overridable hybrid retrieval constants (RAG_VECTOR_TOP_N, RAG_FTS_TOP_N, RAG_RRF_K, RAG_VECTOR_WEIGHT, RAG_FTS_WEIGHT, RAG_FINAL_TOP_N) with bounds validation
 │   │   ├── token-estimator.ts   # **PRD-033 Part 1** — chars/4 token-count proxy with documented ±20% inaccuracy. Used by fetch_session_content budget enforcement; will be reused by Part 2 fan-out budgeting and Part 3 cost circuit breaker. Real tokenizers (tiktoken / Anthropic countTokens / Google) deferred until eval shows budget mis-estimation is a real problem
+│   │   ├── cheap-model-service.ts  # **PRD-033 Part 2** — `resolveCheapModel()` reads SUMMARY_AI_PROVIDER / SUMMARY_AI_MODEL (independent of chat-model env vars; PRD P2.R2 — no fallback) and returns the corresponding Vercel AI SDK model. Throws SummaryProviderConfigError lazily on first call. `withCheapModelRetry(opName, fn)` mirrors the embedding-service retry pattern: 3 retries, exponential backoff, Retry-After honoured for 429, no retry for 4xx other than 429
+│   │   ├── bounded-concurrency.ts  # **PRD-033 Part 2** — pure `runWithConcurrency(tasks, concurrency, onProgress?)` semaphore. Returns TaskResult<T>[] (`{ ok: true, value }` or `{ ok: false, error }` per row) so per-row failures don't abort the batch. Used by summarise_sessions to fan out per-session leaves to the cheap model
 │   │   ├── chat-tool-services/  # **PRD-033 Part 1** — domain logic for the chat tool surface
 │   │   │   ├── discovery-service.ts        # listClients / listSessions / listThemes wrappers — thin pass-through to ChatQueryRepository
 │   │   │   ├── session-content-service.ts  # fetchSessionContent(ids) — composes session headers + all 11 chunk types into SessionContent[], enforces token budget (CHAT_FETCH_CONTENT_BUDGET, default 50k), reports {fetched, requested, budgetReached}
 │   │   │   ├── signals-service.ts          # fetchSignals(filters) — strictly schema-filtered, no query string. Distinct from semantic_search; for completeness questions ("every pain point about pricing")
 │   │   │   ├── aggregation-service.ts      # aggregate / timeSeries — thin adapter mapping (entity, groupBy) tuples to existing database-query QueryAction enum per PRD-033 § P1.R3 mapping table; reshapes results for the model. Multi-dim groupBy supported (theme×client matrix, client×severity health grid)
-│   │   │   └── insights-service.ts         # getLatestInsights / getInsightsHistory — passthrough to existing insights domain module via executeQuery
+│   │   │   ├── insights-service.ts         # getLatestInsights / getInsightsHistory — passthrough to existing insights domain module via executeQuery
+│   │   │   └── summarise-sessions-service.ts # **PRD-033 Part 2** — map step of summarise_sessions. Composes Part 1's fetchSessionContent + cheap-model generateText (with withCheapModelRetry) + runWithConcurrency. Per-row error isolation, sanitised model-facing errors, no content retention. Returns four partial-coverage signals: capReached (fan-out cap), budgetReached (fetch-content token budget), outOfScopeCount (workspace-scope filter), telemetry.failedCount (leaves that ran and failed despite retries). Telemetry stripped from model-facing payload by the tool factory; logged server-side only
 │   │   ├── chat-tools/         # **PRD-033 Part 1** — Vercel AI SDK tool factories for the agentic chat surface. NOT YET wired into chat-stream-service.ts (P1.AC9); the Part 3 cutover commit will swap them in and delete searchInsights + queryDatabase. Each tool is one file with a Zod input schema (per-tool filter contract — no shared filter bag), tool description tuned for routing accuracy, and an execute() that delegates to the corresponding chat-tool-service
 │   │   │   ├── index.ts                       # createChatTools(ctx) registry — returns Record<toolName, Tool> with all 10 tools
 │   │   │   ├── shared/
@@ -510,6 +514,7 @@ synthesiser/
 │   │   │   ├── fetch-signals-tool.ts          # Retrieval — fetch_signals (schema-only, completeness questions)
 │   │   │   ├── aggregate-tool.ts              # Aggregation — aggregate (entity, groupBy[]); subsumes 11 of the 13 retired CHAT_TOOL_ACTIONS quantitative actions
 │   │   │   ├── time-series-tool.ts            # Aggregation — time_series (granularity week/month, optional groupBy=theme)
+│   │   │   ├── summarise-sessions-tool.ts     # **PRD-033 Part 2** — map-reduce summarisation tool. Tool description leans heavily on "use over fetch_session_content when N > ~10" routing guidance. Throttled progress emits ("Summarising sessions… (X/N)") via ctx.emitStatus. Strips telemetry from the model-facing payload — model sees summaries + capReached + budgetReached + outOfScopeCount + summarised/requested counts only
 │   │   │   ├── insights-latest-tool.ts        # Insights passthrough — insights_latest
 │   │   │   └── insights-history-tool.ts       # Insights passthrough — insights_history
 │   │   ├── attachment-service.ts # Attachment CRUD — accepts AttachmentRepository. **PRD-032 Part 2:** new `createTranscriptAttachment(repo, input)` companion to `uploadAndCreateAttachment` — DB insert only, no Storage interaction; `deleteAttachment()` skips `removeFromStorage()` when the soft-deleted row's `storage_path` is null (transcript rows have nothing to clean up). **PRD-032 Part 3:** new `updateTranscriptAttachment(repo, attachmentId, parsedContent)` for transcript edits via the PATCH route; `CreateTranscriptInput` (internal) gains optional `isEdited: boolean` for the pre-save edit case
@@ -1177,7 +1182,7 @@ lib/hooks/
 | GET | `/api/chat/conversations/[id]/messages?cursor=` | List messages for a conversation (cursor-based, newest-first). | Yes (RLS) |
 | POST | `/api/chat/send` | Streaming chat endpoint. Validates input, resolves/creates conversation, delegates to `chat-stream-service`, returns SSE response with `X-Conversation-Id` header. `teamId` is always read from the `active_team_id` cookie — never from the request body. | Yes |
 
-**Chat tool surface** (PRD-033 Part 1, not yet wired into the streaming surface — see P1.AC9): the new agentic primitive tools live in `lib/services/chat-tools/` (one file per tool, factory + Vercel AI SDK `tool()`). The registry `createChatTools(ctx)` returns 10 tools: `list_clients`, `list_sessions`, `list_themes` (discovery), `semantic_search` (hybrid vector+FTS), `fetch_session_content`, `fetch_signals`, `aggregate`, `time_series` (delegates to existing `database-query` domains), `insights_latest`, `insights_history`. Workspace scope is enforced at the service layer; tool inputs never carry `teamId`. The Part 3 cutover commit will swap them into `chat-stream-service.ts` and remove `searchInsights` + `queryDatabase`.
+**Chat tool surface** (PRD-033 Parts 1 & 2 — built but not yet wired into the streaming surface; see P1.AC9 / Part 3 cutover): the new agentic primitive tools live in `lib/services/chat-tools/` (one file per tool, factory + Vercel AI SDK `tool()`). The registry `createChatTools(ctx)` returns 11 tools: `list_clients`, `list_sessions`, `list_themes` (discovery), `semantic_search` (hybrid vector+FTS), `fetch_session_content`, `fetch_signals`, `aggregate`, `time_series` (delegates to existing `database-query` domains), **`summarise_sessions`** (PRD-033 Part 2 — map-reduce summarisation against a separately-configured cheap model via `SUMMARY_AI_*` env vars), `insights_latest`, `insights_history`. Workspace scope is enforced at the service layer; tool inputs never carry `teamId`. The Part 3 cutover commit will swap them into `chat-stream-service.ts` and remove `searchInsights` + `queryDatabase`.
 
 ### Dashboard
 
@@ -1233,6 +1238,11 @@ lib/hooks/
 | `CHAT_FETCH_CONTENT_BUDGET` | Server only | Token budget for `fetch_session_content` (default 50000; chars/4 proxy ±20%) |
 | `EVAL_JUDGE_PROVIDER` | Server only | Provider for the eval LLM-as-judge (independent of `AI_PROVIDER`); falls back to `AI_PROVIDER` if unset |
 | `EVAL_JUDGE_MODEL` | Server only | Model id for the eval judge; falls back to `AI_MODEL` if unset |
+| `SUMMARY_AI_PROVIDER` | Server only | **PRD-033 Part 2** — cheap-model provider for summarise_sessions map step (`anthropic` / `openai` / `google`). Required when summarise_sessions is invoked; deliberately independent of `AI_PROVIDER` (no fallback) |
+| `SUMMARY_AI_MODEL` | Server only | **PRD-033 Part 2** — cheap-model id (e.g. `claude-haiku-4-5-20251001`, `gpt-4o-mini`, `gemini-flash-2.0`). Required when summarise_sessions is invoked |
+| `SUMMARY_AI_MAX_OUTPUT_TOKENS` | Server only | **PRD-033 Part 2** — per-leaf cap (default 200; ~3 sentences) |
+| `SUMMARY_AI_FANOUT_CAP` | Server only | **PRD-033 Part 2** — max session ids per summarise_sessions call (default 50, count-cap not budget-cap) |
+| `SUMMARY_AI_CONCURRENCY` | Server only | **PRD-033 Part 2** — parallel leaves in flight at once (default 5) |
 
 See `.env.example` for the full template.
 

@@ -143,5 +143,106 @@
     "rubric": {
       "mustMention": ["API"]
     }
+  },
+  {
+    "id": "Q-017",
+    "category": "hybrid",
+    "partOf": "P2",
+    "query": "Summarise everything Acme has told us this quarter",
+    "expectedTrajectory": ["list_sessions", "summarise_sessions"],
+    "rubric": {
+      "mustMention": ["Acme"]
+    }
+  },
+  {
+    "id": "Q-018",
+    "category": "hybrid",
+    "partOf": "P2",
+    "query": "Summarise pricing-related feedback across all clients in the last 90 days",
+    "expectedTrajectory": ["list_sessions", "summarise_sessions"],
+    "rubric": {
+      "mustMention": ["pricing"]
+    }
+  },
+  {
+    "id": "Q-019",
+    "category": "hybrid",
+    "partOf": "P2",
+    "query": "What changed in our top theme between Q1 and Q2?",
+    "expectedTrajectory": ["aggregate", "list_sessions", "summarise_sessions"],
+    "rubric": {
+      "mustMention": ["theme"]
+    }
+  },
+  {
+    "id": "Q-020",
+    "category": "hybrid",
+    "partOf": "P2",
+    "query": "Give me a rundown of every session this year",
+    "expectedTrajectory": ["list_sessions", "summarise_sessions"],
+    "rubric": {
+      "mustMention": ["session"]
+    }
+  },
+  {
+    "id": "Q-021",
+    "category": "hybrid",
+    "partOf": "P2",
+    "query": "Show me the rest of the sessions you didn't summarise yet",
+    "expectedTrajectory": ["list_sessions", "summarise_sessions"],
+    "rubric": {
+      "mustMention": ["session"]
+    }
+  },
+  {
+    "id": "Q-022",
+    "category": "hybrid",
+    "partOf": "P2",
+    "query": "Summarise the last 5 sessions, focusing on positive feedback only",
+    "expectedTrajectory": ["list_sessions", "summarise_sessions"],
+    "rubric": {
+      "mustMention": ["positive"]
+    }
+  },
+  {
+    "id": "Q-023",
+    "category": "qualitative",
+    "partOf": "P2",
+    "query": "What did Acme say about competitor X?",
+    "expectedTrajectory": ["list_sessions", "summarise_sessions"],
+    "rubric": {
+      "mustMention": ["Acme"]
+    }
+  },
+  {
+    "id": "Q-024",
+    "category": "quantitative",
+    "partOf": "P2",
+    "query": "How many sessions do we have? Just give me a number.",
+    "expectedTrajectory": ["aggregate"],
+    "rubric": {
+      "mustMention": ["session"],
+      "mustNotHallucinate": ["summarise_sessions usage — this is a count question, not a synthesis question"]
+    }
+  },
+  {
+    "id": "Q-025",
+    "category": "hybrid",
+    "partOf": "P2",
+    "query": "What are the top product complaints across our enterprise clients?",
+    "expectedTrajectory": ["list_sessions", "summarise_sessions"],
+    "rubric": {
+      "mustMention": ["complaint"]
+    }
+  },
+  {
+    "id": "Q-026",
+    "category": "hybrid",
+    "partOf": "P2",
+    "query": "Summarise our 50 most recent sessions",
+    "expectedTrajectory": ["list_sessions", "summarise_sessions"],
+    "rubric": {
+      "mustMention": ["session"]
+    }
   }
 ]

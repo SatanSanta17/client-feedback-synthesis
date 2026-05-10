@@ -30,6 +30,12 @@ import { JUDGE_SYSTEM_PROMPT, JUDGE_PROMPT_VERSION } from "@/docs/033-agentic-ch
 interface EvalQuery {
   id: string;
   category: "quantitative" | "qualitative" | "discovery" | "hybrid" | "exact-term";
+  /**
+   * Optional flag bucketing the query under a PRD part. Queries without
+   * this flag are treated as P1 baseline. PRD-033 P2.R9 requires Part-2
+   * pass rate to be reported separately from baseline.
+   */
+  partOf?: "P1" | "P2";
   query: string;
   expectedTrajectory: string[];
   rubric: {
@@ -41,6 +47,13 @@ interface EvalQuery {
 interface SurfaceInvocationResult {
   finalAnswer: string;
   toolCalls: string[];
+  /**
+   * Optional per-tool telemetry — for cost-test queries the shim should
+   * surface the summarise_sessions telemetry block (input/output/total
+   * tokens, duration, model label) so the Q-026 cost baseline lands in
+   * the report.
+   */
+  toolTelemetry?: Record<string, unknown>;
 }
 
 interface JudgeResult {
@@ -55,6 +68,7 @@ interface JudgeResult {
 interface QueryReport {
   id: string;
   category: string;
+  partOf: "P1" | "P2";
   query: string;
   finalAnswer: string;
   expectedTrajectory: string[];
@@ -62,6 +76,12 @@ interface QueryReport {
   routingPass: boolean;
   judge: JudgeResult;
   durationMs: number;
+  /**
+   * Optional cost-test telemetry, populated by the surface invocation shim
+   * for queries that exercise summarise_sessions or other cost-relevant
+   * tools. Used by the Q-026 baseline cost report (PRD § P3.AC6 input).
+   */
+  toolTelemetry?: Record<string, unknown>;
 }
 
 interface AggregateReport {
@@ -76,6 +96,15 @@ interface AggregateReport {
   };
   byCategory: Record<
     string,
+    { count: number; answerCorrectnessAvg: number; routingAccuracyPct: number }
+  >;
+  /**
+   * Pass rate bucketed by PRD part. Queries without `partOf` fall under P1.
+   * PRD-033 P2.R9: Part-2 pass rate is reported separately so the new
+   * capability is evidence-tracked, not just claimed.
+   */
+  partOfBreakdown: Record<
+    "P1" | "P2",
     { count: number; answerCorrectnessAvg: number; routingAccuracyPct: number }
   >;
   perQuery: QueryReport[];
@@ -213,10 +242,12 @@ async function main(): Promise<void> {
     const start = Date.now();
     let finalAnswer = "";
     let toolCalls: string[] = [];
+    let toolTelemetry: Record<string, unknown> | undefined;
     try {
       const r = await invokeSurface(surface, q.query);
       finalAnswer = r.finalAnswer;
       toolCalls = r.toolCalls;
+      toolTelemetry = r.toolTelemetry;
     } catch (err) {
       console.error(
         `[eval] surface invocation failed for ${q.id}:`,
@@ -251,6 +282,7 @@ async function main(): Promise<void> {
     perQuery.push({
       id: q.id,
       category: q.category,
+      partOf: q.partOf ?? "P1",
       query: q.query,
       finalAnswer,
       expectedTrajectory: q.expectedTrajectory,
@@ -258,6 +290,7 @@ async function main(): Promise<void> {
       routingPass,
       judge,
       durationMs: Date.now() - start,
+      toolTelemetry,
     });
 
     console.log(
@@ -265,7 +298,7 @@ async function main(): Promise<void> {
     );
   }
 
-  // Aggregate
+  // Aggregate by category
   const byCategory: AggregateReport["byCategory"] = {};
   for (const r of perQuery) {
     if (!byCategory[r.category]) {
@@ -283,6 +316,25 @@ async function main(): Promise<void> {
         (cat.count + 1) *
       100;
     cat.count += 1;
+  }
+
+  // Aggregate by PRD part — PRD § P2.R9 requires Part-2 pass rate to be
+  // reported separately from the P1 baseline.
+  const partOfBreakdown: AggregateReport["partOfBreakdown"] = {
+    P1: { count: 0, answerCorrectnessAvg: 0, routingAccuracyPct: 0 },
+    P2: { count: 0, answerCorrectnessAvg: 0, routingAccuracyPct: 0 },
+  };
+  for (const r of perQuery) {
+    const bucket = partOfBreakdown[r.partOf];
+    bucket.answerCorrectnessAvg =
+      (bucket.answerCorrectnessAvg * bucket.count + r.judge.overall) /
+      (bucket.count + 1);
+    bucket.routingAccuracyPct =
+      ((bucket.routingAccuracyPct / 100) * bucket.count +
+        (r.routingPass ? 1 : 0)) /
+        (bucket.count + 1) *
+      100;
+    bucket.count += 1;
   }
 
   const totalAvg =
@@ -303,6 +355,7 @@ async function main(): Promise<void> {
       routingAccuracyPct: routingPct,
     },
     byCategory,
+    partOfBreakdown,
     perQuery,
   };
 
@@ -319,6 +372,9 @@ async function main(): Promise<void> {
 
   console.log(
     `\n[eval] DONE. Surface=${surface}, queries=${perQuery.length}, answerCorrectnessAvg=${totalAvg.toFixed(3)}, routingAccuracyPct=${routingPct.toFixed(1)}%`
+  );
+  console.log(
+    `[eval] Part breakdown — P1: ${partOfBreakdown.P1.count} queries, judge=${partOfBreakdown.P1.answerCorrectnessAvg.toFixed(3)}, routing=${partOfBreakdown.P1.routingAccuracyPct.toFixed(1)}% | P2: ${partOfBreakdown.P2.count} queries, judge=${partOfBreakdown.P2.answerCorrectnessAvg.toFixed(3)}, routing=${partOfBreakdown.P2.routingAccuracyPct.toFixed(1)}%`
   );
   console.log(`[eval] Report: ${outPath}`);
 }

@@ -779,3 +779,712 @@ These are the only items where the PRD doesn't fully constrain the choice and th
 - **Reranker** — backlog.
 
 End of Part 1.
+
+---
+
+## Part 2: Map-Reduce Summarisation Tool
+
+> **Status:** Draft. Mirrors PRD Part 2.
+> **Depends on:** Part 1 shipped (the new tools, ChatQueryRepository, EmbeddingRepository extensions, hybrid retrieval, and `estimateTokens` are all live; the new tool registry exists but is not yet wired to the chat model — that swap is Part 3).
+
+### Architectural Direction
+
+The `summarise_sessions` tool is the **only new user-facing capability** in Part 2 — every other piece of work in this part exists to support it: a separate cheap-model resolver, a bounded-concurrency primitive, a versioned summarisation prompt, status-event progress updates. The tool fans out per-session summaries to a cheaper model and returns the digest array to the chat model without ever holding all N sessions' content in the chat model's context.
+
+**Industry-standard patterns adopted:**
+- **Map-reduce with cheap leaves and premium reduce.** Anthropic's contextual-retrieval reference implementation, OpenAI's deep research mode, and ChatGPT's "summarise this whole document" feature all use the same pattern: small model on the leaves (Haiku / 4o-mini / Gemini Flash), large model on the synthesis. Cost savings on broad queries are typically 10–30× depending on which model pair you pick.
+- **Independent provider/model env vars for the cheap step.** Mirroring PRD-032 Part 2 (transcription has its own `AI_TRANSCRIPTION_PROVIDER` / `AI_TRANSCRIPTION_MODEL`); the chat model and the cheap-model are separately wired so each can be tuned in isolation. The PRD explicitly forbids implicit fallback from one to the other (P2.R2).
+- **Bounded concurrency via a small DIY semaphore** rather than the `p-limit` npm package. 20 lines of code, no new dependency, no version-skew risk. `p-limit` is a fine library; we just don't need a dependency for this.
+- **Per-session error isolation** — one failed leaf does not abort the batch (P2.R5). Returns `{ summary: null, error }` for the failed entry so the chat model can mention partial coverage.
+- **Streaming status events** for user-perceived latency. Existing pipeline (`emitStatus` on `ChatToolContext`) handles per-batch progress updates without UI changes (P2.R6 / P2.R8).
+- **No persistence of leaf summaries** (P2.R7). Token-usage telemetry only.
+
+**Forward-compat for Part 3:** the cheap-model resolver and per-call telemetry are set up so the per-turn cost circuit breaker (Part 3 P3.R10) sees `summarise_sessions`'s tool-result tokens like any other tool. The `recordToolResultTokens` hook earmarked in Part 1's `ChatToolContext` still applies — `summarise_sessions` returns a small array of digests to the chat model, so its *tool-result* size is small even when N is large.
+
+---
+
+### 2.1 New Environment Variables
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `SUMMARY_AI_PROVIDER` | (required) | Cheap-model provider for the map step. Must be configured separately from `AI_PROVIDER` — no fallback. |
+| `SUMMARY_AI_MODEL` | (required) | Cheap-model id (e.g. `claude-haiku-4-5-20251001`, `gpt-4o-mini`, `gemini-flash-2.0`). |
+| `SUMMARY_AI_MAX_OUTPUT_TOKENS` | `200` | Per-leaf cap. ~3 sentences fits comfortably; raises sets a ceiling on cost per session. |
+| `SUMMARY_AI_FANOUT_CAP` | `50` | Max session ids per `summarise_sessions` call (P2.R4). Count cap, not token-budget cap — see PRD § P2.R4 rationale. |
+| `SUMMARY_AI_CONCURRENCY` | `5` | Parallel leaves in flight at once (P2.R5). |
+
+`SUMMARY_AI_PROVIDER` and `SUMMARY_AI_MODEL` are required-on-startup *only when* `summarise_sessions` is exercised. We do not fail boot — instead, the resolver throws a clear `SummaryProviderConfigError` the first time the tool runs without these set, mirroring how `EMBEDDING_PROVIDER` is validated lazily in `embedding-service.ts`.
+
+ARCHITECTURE.md env table updated as part of Increment 2.6.
+
+---
+
+### 2.2 New Service: Cheap-Model Resolver
+
+#### `lib/services/cheap-model-service.ts`
+
+Mirrors `resolveModel()` in `ai-service.ts` but reads from `SUMMARY_*` env vars and returns a `LanguageModel` instance plus a label.
+
+```ts
+import { anthropic } from "@ai-sdk/anthropic";
+import { google } from "@ai-sdk/google";
+import { openai } from "@ai-sdk/openai";
+import type { LanguageModel } from "ai";
+
+export class SummaryProviderConfigError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "SummaryProviderConfigError";
+  }
+}
+
+const PROVIDER_MAP: Record<string, (modelId: string) => LanguageModel> = {
+  anthropic: (id) => anthropic(id),
+  openai: (id) => openai(id),
+  google: (id) => google(id),
+};
+
+export function resolveCheapModel(): { model: LanguageModel; label: string } {
+  const provider = process.env.SUMMARY_AI_PROVIDER;
+  const modelId = process.env.SUMMARY_AI_MODEL;
+  if (!provider) {
+    throw new SummaryProviderConfigError(
+      "SUMMARY_AI_PROVIDER is not set — required for summarise_sessions tool. Cheap-model and chat-model env vars are deliberately independent (no fallback)."
+    );
+  }
+  if (!modelId) {
+    throw new SummaryProviderConfigError(
+      "SUMMARY_AI_MODEL is not set — required for summarise_sessions tool."
+    );
+  }
+  const factory = PROVIDER_MAP[provider];
+  if (!factory) {
+    throw new SummaryProviderConfigError(
+      `Unsupported SUMMARY_AI_PROVIDER: "${provider}". Supported: ${Object.keys(PROVIDER_MAP).join(", ")}`
+    );
+  }
+  return { model: factory(modelId), label: `${provider}/${modelId}` };
+}
+```
+
+The chat model (`resolveModel()` in `ai-service.ts`) is **never** used in the map step, and `resolveCheapModel()` is **never** used in the reduce step. PRD P2.R2 — enforced by use site, not by type. Reviewers verify in PR.
+
+#### `withCheapModelRetry` helper (same file)
+
+A retry wrapper for the leaf `generateText` calls, mirroring the existing `withEmbeddingRetry` in [`embedding-service.ts`](../../lib/services/embedding-service.ts):
+
+```ts
+const MAX_RETRIES = 3;
+const INITIAL_RETRY_DELAY_MS = 1000;
+
+export async function withCheapModelRetry<T>(
+  operationName: string,
+  fn: () => Promise<T>
+): Promise<T> {
+  let lastError: Error | null = null;
+
+  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      lastError = err instanceof Error ? err : new Error(String(err));
+
+      // Config errors are non-retryable
+      if (err instanceof SummaryProviderConfigError) throw err;
+
+      // The Vercel AI SDK exposes status on its error subclasses
+      // (APICallError, RateLimitError); inspect via duck-typing to stay
+      // provider-agnostic.
+      const statusCode = readStatusCode(err);
+
+      // Don't retry 4xx other than 429
+      if (
+        statusCode !== undefined &&
+        statusCode < 500 &&
+        statusCode !== 429
+      ) {
+        console.error(
+          `[cheap-model] ${operationName} — client error (${statusCode}, not retrying):`,
+          lastError.message
+        );
+        throw lastError;
+      }
+
+      if (attempt >= MAX_RETRIES) {
+        console.error(
+          `[cheap-model] ${operationName} — failed after ${attempt + 1} attempts:`,
+          lastError.message
+        );
+        throw lastError;
+      }
+
+      // Honour Retry-After for 429 when present, otherwise exponential backoff.
+      const retryAfterMs =
+        statusCode === 429 ? readRetryAfterMs(err) : null;
+      const delay =
+        retryAfterMs ?? INITIAL_RETRY_DELAY_MS * Math.pow(2, attempt);
+
+      console.warn(
+        `[cheap-model] ${operationName} — retryable error (status: ${statusCode ?? "?"}, attempt ${attempt + 1}), retrying in ${delay}ms:`,
+        lastError.message
+      );
+
+      await new Promise((resolve) => setTimeout(resolve, delay));
+    }
+  }
+
+  throw lastError ?? new Error(`${operationName} failed`);
+}
+```
+
+`readStatusCode(err)` and `readRetryAfterMs(err)` are small private helpers that duck-type across the AI SDK's error subclasses (`APICallError`, `RateLimitError`, the per-provider error types). Living next to the resolver — not in `ai-service.ts` — because the retry semantics for the cheap model (smaller batches, higher concurrency) may diverge from the chat model's needs over time.
+
+---
+
+### 2.3 New Service: Bounded Concurrency Primitive
+
+#### `lib/services/bounded-concurrency.ts`
+
+A small semaphore. Used to run leaf summaries in parallel while capping in-flight count.
+
+```ts
+/**
+ * Runs `tasks` in parallel with a max of `concurrency` running at any time.
+ * Each task is a function that returns a promise. Results are returned in
+ * input order. Errors do NOT abort the batch — they're returned as a
+ * `{ ok: false, error }` per-row so the caller can mark partial coverage.
+ */
+export type TaskResult<T> =
+  | { ok: true; value: T }
+  | { ok: false; error: Error };
+
+export async function runWithConcurrency<T>(
+  tasks: Array<() => Promise<T>>,
+  concurrency: number,
+  onProgress?: (completed: number, total: number) => void
+): Promise<TaskResult<T>[]> {
+  const results: TaskResult<T>[] = new Array(tasks.length);
+  let next = 0;
+  let completed = 0;
+
+  async function worker(): Promise<void> {
+    while (true) {
+      const i = next++;
+      if (i >= tasks.length) return;
+      try {
+        const value = await tasks[i]();
+        results[i] = { ok: true, value };
+      } catch (err) {
+        results[i] = {
+          ok: false,
+          error: err instanceof Error ? err : new Error(String(err)),
+        };
+      } finally {
+        completed += 1;
+        onProgress?.(completed, tasks.length);
+      }
+    }
+  }
+
+  const workers = Array.from(
+    { length: Math.min(concurrency, tasks.length) },
+    () => worker()
+  );
+  await Promise.all(workers);
+  return results;
+}
+```
+
+Pure function, no Supabase / no AI imports — testable in isolation.
+
+---
+
+### 2.4 New Prompt: `lib/prompts/summarise-session-prompt.ts`
+
+Versioned, committed alongside other prompts. The cheap model receives the session content + an optional focus string, and returns one short summary.
+
+```ts
+export const SUMMARISE_SESSION_PROMPT_VERSION = "v1";
+
+export const SUMMARISE_SESSION_SYSTEM_PROMPT = `You produce short summaries of a single client feedback session. You receive structured session content (signals across categories: pain points, requirements, aspirations, positive signals, blockers, competitive mentions, etc.) plus optional client + date metadata. You return a concise summary suitable for downstream synthesis by another model.
+
+Rules:
+- Default mode (no focus): return exactly 3 sentences capturing the session's most important pain points, requirements, and overall sentiment. Balanced; do not over-index on any single signal type.
+- Focus mode (focus string supplied): extract only content relevant to the focus topic. If no content matches the focus, return the literal sentence: "No content matches focus." — exact wording, no quotation marks added, nothing else.
+- Do NOT invent details. If a signal type is empty in the input, do not mention it.
+- Do NOT include conversational text, headings, or bullet points. Plain prose only.
+- Do NOT exceed 3 sentences in default mode, or 4 sentences in focus mode.
+- The output is read by another model — clarity and grounding matter more than rhetorical polish.`;
+
+export const SUMMARISE_SESSION_MAX_OUTPUT_TOKENS_DEFAULT = 200;
+
+/**
+ * Renders the user-message body for one leaf invocation.
+ * `sessionContent` is the SessionContent object produced by Part 1's
+ * fetch_session_content service.
+ */
+export function renderSummariseSessionUser(
+  sessionContent: unknown,
+  focus?: string
+): string {
+  const focusBlock = focus
+    ? `\n\nFocus: ${focus}\nReturn only content relevant to this focus, or "No content matches focus." if none.`
+    : `\n\nNo focus specified. Return a balanced 3-sentence digest.`;
+  return `Session content (JSON):\n${JSON.stringify(sessionContent, null, 2)}${focusBlock}`;
+}
+```
+
+Versioning rule: changing the system prompt bumps `SUMMARISE_SESSION_PROMPT_VERSION`. The eval harness records the version with each report so behaviour drift is traceable.
+
+---
+
+### 2.5 New Service: Summarise-Sessions
+
+#### `lib/services/chat-tool-services/summarise-sessions-service.ts`
+
+Public function `summariseSessions(input, deps)`. Uses Part 1's `fetchSessionContent` to get the per-session payload (workspace-scoped, deleted-aware) and the new cheap-model resolver to produce per-session summaries.
+
+```ts
+import { generateText } from "ai";
+
+import { resolveCheapModel } from "@/lib/services/cheap-model-service";
+import { runWithConcurrency } from "@/lib/services/bounded-concurrency";
+import {
+  SUMMARISE_SESSION_SYSTEM_PROMPT,
+  SUMMARISE_SESSION_MAX_OUTPUT_TOKENS_DEFAULT,
+  renderSummariseSessionUser,
+} from "@/lib/prompts/summarise-session-prompt";
+import { fetchSessionContent } from "./session-content-service";
+import { estimateTokens } from "@/lib/services/token-estimator";
+
+const FANOUT_CAP = parseInt(process.env.SUMMARY_AI_FANOUT_CAP ?? "50", 10);
+const CONCURRENCY = parseInt(process.env.SUMMARY_AI_CONCURRENCY ?? "5", 10);
+const MAX_OUTPUT = parseInt(
+  process.env.SUMMARY_AI_MAX_OUTPUT_TOKENS ??
+    String(SUMMARISE_SESSION_MAX_OUTPUT_TOKENS_DEFAULT),
+  10
+);
+
+export interface SummariseInput {
+  sessionIds: string[];
+  focus?: string;
+}
+
+export interface SummaryRow {
+  sessionId: string;
+  clientName: string;
+  date: string;
+  summary: string | null;
+  error?: string;
+}
+
+export interface SummariseResult {
+  summaries: SummaryRow[];
+  summarised: number;
+  requested: number;
+  /**
+   * True when more session ids were passed than this service's fan-out cap
+   * (`SUMMARY_AI_FANOUT_CAP`, default 50). The slice that wasn't processed
+   * is up to the chat model to paginate.
+   */
+  capReached: boolean;
+  /**
+   * True when the upstream `fetchSessionContent` token budget
+   * (`CHAT_FETCH_CONTENT_BUDGET`, default 50k) was exhausted before all
+   * fan-out-cap-allowed ids could be loaded. Distinct from `capReached`:
+   * - `capReached=true, budgetReached=false` → chat model passed > 50 ids
+   * - `capReached=false, budgetReached=true`  → < 50 ids but content too big
+   * - both true                                → both limits hit
+   */
+  budgetReached: boolean;
+  /**
+   * Sessions the chat model asked about that weren't in the active
+   * workspace (filtered by RLS / workspace scope). Distinguishes "filtered
+   * out before processing" from "leaf summary failed" — the chat model
+   * mentions partial coverage differently for each.
+   */
+  outOfScopeCount: number;
+  /** Aggregate cheap-model telemetry — not persisted, logged only. */
+  telemetry: {
+    cheapModelLabel: string;
+    inputTokens: number;
+    outputTokens: number;
+    totalTokens: number;
+    failedCount: number;
+    durationMs: number;
+  };
+}
+
+export async function summariseSessions(
+  input: SummariseInput,
+  deps: {
+    chatQueryRepo: import("@/lib/repositories/chat-query-repository").ChatQueryRepository;
+    embeddingRepo: import("@/lib/repositories/embedding-repository").EmbeddingRepository;
+    workspace: { teamId: string | null; userId: string };
+    onProgress?: (completed: number, total: number) => void;
+  }
+): Promise<SummariseResult> {
+  const requested = input.sessionIds.length;
+  const ids = input.sessionIds.slice(0, FANOUT_CAP);
+  const capReached = requested > FANOUT_CAP;
+
+  // Fetch full content via Part 1's service. The cheap model receives this
+  // payload one session at a time — content never crosses into the chat
+  // model's context.
+  const contentResult = await fetchSessionContent(ids, {
+    chatQueryRepo: deps.chatQueryRepo,
+    embeddingRepo: deps.embeddingRepo,
+    workspace: deps.workspace,
+  });
+
+  const start = Date.now();
+  const { model, label } = resolveCheapModel();
+
+  // System prompt is sent on every leaf call. Count it once × N for an
+  // honest input-token total; otherwise we'd under-count by ~300 tokens
+  // per leaf (15k on a 50-session call).
+  const systemTokens = estimateTokens(SUMMARISE_SESSION_SYSTEM_PROMPT);
+  let inputTokens = systemTokens * contentResult.sessions.length;
+  let outputTokens = 0;
+
+  const tasks = contentResult.sessions.map((session) => async () => {
+    const userMsg = renderSummariseSessionUser(session, input.focus);
+    inputTokens += estimateTokens(userMsg);
+    // Wrap generateText in the same retry pattern used by embedding-service:
+    // 3 retries with exponential backoff (1s, 2s, 4s); honour Retry-After
+    // for 429s; no retry for 4xx other than 429. Failures after the retry
+    // budget propagate to runWithConcurrency, which captures them as
+    // per-row TaskResult errors (not aborting the batch).
+    const { text, usage } = await withCheapModelRetry(
+      `summarise-session ${session.sessionId}`,
+      () =>
+        generateText({
+          model,
+          system: SUMMARISE_SESSION_SYSTEM_PROMPT,
+          prompt: userMsg,
+          maxOutputTokens: MAX_OUTPUT,
+        })
+    );
+    outputTokens += usage?.outputTokens ?? estimateTokens(text);
+    return {
+      sessionId: session.sessionId,
+      clientName: session.clientName,
+      date: session.sessionDate,
+      summary: text.trim(),
+    } satisfies SummaryRow;
+  });
+
+  const taskResults = await runWithConcurrency(
+    tasks,
+    CONCURRENCY,
+    deps.onProgress
+  );
+
+  const summaries: SummaryRow[] = contentResult.sessions.map((session, i) => {
+    const r = taskResults[i];
+    if (r?.ok) return r.value;
+    // Sanitise: log the raw error server-side, return a generic message to
+    // the chat model. Provider-specific details (auth keys, internal URLs,
+    // stack traces) must not surface to the LLM context.
+    if (r && r.ok === false) {
+      console.error(
+        `[summarise-sessions-service] leaf failed — session ${session.sessionId}:`,
+        r.error
+      );
+    }
+    return {
+      sessionId: session.sessionId,
+      clientName: session.clientName,
+      date: session.sessionDate,
+      summary: null,
+      error: "summary unavailable for this session",
+    };
+  });
+
+  const failedCount = summaries.filter((s) => s.summary === null).length;
+
+  // Sessions the chat model asked about that we never even tried to
+  // summarise — filtered out by workspace scope inside fetchSessionContent
+  // (RLS / personal-workspace check). Distinct from `failedCount` (leaves
+  // that ran and failed) and from `capReached` (slice that we deliberately
+  // never sent to fetch).
+  const outOfScopeCount =
+    Math.min(requested, FANOUT_CAP) - contentResult.fetched;
+
+  return {
+    summaries,
+    summarised: summaries.length,
+    requested,
+    capReached,
+    budgetReached: contentResult.budgetReached,
+    outOfScopeCount,
+    telemetry: {
+      cheapModelLabel: label,
+      inputTokens,
+      outputTokens,
+      totalTokens: inputTokens + outputTokens,
+      failedCount,
+      durationMs: Date.now() - start,
+    },
+  };
+}
+```
+
+**Notes on the implementation:**
+- **Cap + budget interaction.** `fetchSessionContent` enforces its own token budget. The result reports four distinct partial-coverage signals: `capReached` (fan-out cap, > 50 ids passed), `budgetReached` (fetch_session_content token budget exhausted before all cap-allowed ids loaded), `outOfScopeCount` (ids filtered out by workspace scope before processing), and per-row `error` (leaf summary failed despite retries). The chat model uses these to phrase partial-coverage messages accurately ("I summarised 30 of the 50 you asked for; 18 were over the per-call cap, 2 weren't in your workspace").
+- **Retry wrapper for cheap-model calls.** `withCheapModelRetry(opName, fn)` mirrors the existing `withEmbeddingRetry` pattern in [`lib/services/embedding-service.ts`](../../lib/services/embedding-service.ts): 3 retries with exponential backoff (1s, 2s, 4s); 429s honour the `Retry-After` header when present; 4xx other than 429 do not retry. Implemented as a small helper inside `cheap-model-service.ts` so the AI-SDK error-shape interpretation lives next to the resolver. Retry exhaustion propagates to `runWithConcurrency`, which captures the error as a per-row `TaskResult.error` — the batch keeps going.
+- **No content retention (P2.R7).** The `SummaryRow.summary` strings are returned to the caller and never written to a persistent store. Audit logging (`telemetry` field + console.log lines) captures token counts, not content.
+- **Per-row `error` is sanitised.** The model-facing `error` field is always a generic message (`"summary unavailable for this session"`). Raw provider errors (auth failures, stack traces, internal URLs) are logged server-side via `console.error`, never sent to the chat model. This is a one-way containment of provider details.
+- **System prompt token-count is included.** `inputTokens = estimateTokens(SYSTEM_PROMPT) * N + Σ estimateTokens(userMsg_i)` so cost telemetry doesn't quietly under-count the ~300 tokens of system prompt sent on every leaf call. Still ±20% per the chars/4 proxy, but no longer biased low by an extra ~600 tokens / 30 sessions.
+- **[fwd-compat for Part 3]** `telemetry` is the data source for the per-turn cost circuit breaker. It will sum `totalTokens` across all `summarise_sessions` calls in a turn (alongside other tools' result tokens) against the budget.
+
+---
+
+### 2.6 New Tool: `lib/services/chat-tools/summarise-sessions-tool.ts`
+
+```ts
+import { tool } from "ai";
+import { z } from "zod";
+
+import { summariseSessions } from "@/lib/services/chat-tool-services/summarise-sessions-service";
+
+import type { ChatToolContext } from "./shared/tool-context";
+
+const inputSchema = z.object({
+  sessionIds: z
+    .array(z.string().uuid())
+    .min(1)
+    .max(200)
+    .describe(
+      "List of session ids (UUIDs) to summarise. Get these from list_sessions. The fan-out cap (default 50) caps actual processing — the schema cap of 200 only prevents extreme inputs."
+    ),
+  focus: z
+    .string()
+    .optional()
+    .describe(
+      "Optional topic focus (e.g. 'pricing complaints', 'feature requests'). When set, each per-session summary is scoped to this topic; sessions with no matching content come back with the sentinel 'No content matches focus.'. OMIT for a balanced 3-sentence digest per session."
+    ),
+});
+
+export function createSummariseSessionsTool(ctx: ChatToolContext) {
+  return tool({
+    description:
+      "Summarise N sessions without holding all N in chat-model context. Fans out per-session summaries to a cheaper model, returns a digest array (sessionId, clientName, date, summary). " +
+      "Use this for broad multi-session synthesis: 'summarise everything Acme said this quarter', 'what changed in our top theme between Q1 and Q2'. " +
+      "Prefer this over fetch_session_content when N > ~10 — it's cheaper and avoids context bloat. " +
+      "Capped at 50 sessions per call (default); pass paged ids for larger sets. " +
+      "Sessions whose individual summary fails come back with summary=null + error — partial coverage is normal, mention it in your reply when it happens.",
+    inputSchema,
+    execute: async (input) => {
+      ctx.emitStatus(`Summarising ${input.sessionIds.length} session(s)…`);
+      const result = await summariseSessions(input, {
+        chatQueryRepo: ctx.chatQueryRepo,
+        embeddingRepo: ctx.embeddingRepo,
+        workspace: ctx.workspace,
+        onProgress: (done, total) => {
+          // Throttle progress emits — every 10% or every 5 sessions, whichever
+          // is smaller. Avoids hammering the SSE stream on fast batches.
+          const stride = Math.max(Math.ceil(total / 10), 5);
+          if (done === total || done % stride === 0) {
+            ctx.emitStatus(`Summarising sessions… (${done}/${total})`);
+          }
+        },
+      });
+      console.log(
+        `[summarise-sessions-tool] complete — summarised: ${result.summarised}, failed: ${result.telemetry.failedCount}, model: ${result.telemetry.cheapModelLabel}, tokens(in/out/total): ${result.telemetry.inputTokens}/${result.telemetry.outputTokens}/${result.telemetry.totalTokens}, duration: ${result.telemetry.durationMs}ms`
+      );
+      // Strip telemetry from the model-facing payload — the chat model
+      // gets the digest array + every partial-coverage signal it needs to
+      // phrase a partial-coverage message accurately. Telemetry is internal
+      // observability only.
+      return {
+        summaries: result.summaries,
+        summarised: result.summarised,
+        requested: result.requested,
+        capReached: result.capReached,
+        budgetReached: result.budgetReached,
+        outOfScopeCount: result.outOfScopeCount,
+      };
+    },
+  });
+}
+```
+
+Tool description leans heavily on **when to use** vs **when to prefer fetch_session_content** — this is the primary lever for keeping tool-routing accuracy high in the eval (P1.R9).
+
+---
+
+### 2.7 Tool Registry Update
+
+#### `lib/services/chat-tools/index.ts`
+
+```ts
+import { createSummariseSessionsTool } from "./summarise-sessions-tool";
+
+export function createChatTools(ctx: ChatToolContext) {
+  return {
+    list_clients: createListClientsTool(ctx),
+    list_sessions: createListSessionsTool(ctx),
+    list_themes: createListThemesTool(ctx),
+    semantic_search: createSemanticSearchTool(ctx),
+    fetch_session_content: createFetchSessionContentTool(ctx),
+    fetch_signals: createFetchSignalsTool(ctx),
+    aggregate: createAggregateTool(ctx),
+    time_series: createTimeSeriesTool(ctx),
+    summarise_sessions: createSummariseSessionsTool(ctx),  // <-- new
+    insights_latest: createInsightsLatestTool(ctx),
+    insights_history: createInsightsHistoryTool(ctx),
+  } as const;
+}
+```
+
+`ChatToolContext` is unchanged — `summarise_sessions` reuses the existing `chatQueryRepo` and `embeddingRepo` (via `fetchSessionContent`) and resolves the cheap model lazily inside the service. **No new field is added to the context** because the resolver is pulled from `process.env` at call time, not injected. This is consistent with how `resolveModel()` is used elsewhere (`retrieval-service.ts`'s classification step does the same).
+
+> Earlier TRD § 1.4 said "Part 2 will add `cheapModel: LanguageModel` to the context". That was a forward-compat hypothesis. Implementation lands the resolver inside the service for two reasons: (a) it keeps the context bag small and avoids threading model objects through 11 tools that don't use them; (b) the cheap model is only needed by `summarise_sessions`, so paying the construction cost (one `anthropic(modelId)` factory call per turn) for every turn — even those that never invoke `summarise_sessions` — is wasted work.
+
+---
+
+### 2.8 Telemetry
+
+Per-call log line on tool exit (already in the tool factory above):
+
+```
+[summarise-sessions-tool] complete — summarised: 23, failed: 1, model: anthropic/claude-haiku-4-5-20251001, tokens(in/out/total): 18432/4567/22999, duration: 6743ms
+```
+
+Three concerns kept distinct:
+1. **Cheap-model telemetry** — input / output / total tokens, duration, model label, failed count. Logged on every call (P2.AC7).
+2. **Chat-model telemetry** — unchanged; `chat-stream-service.ts` continues to emit its existing `[chat-stream-service] chat-complete` line for the chat-model side.
+3. **Eval telemetry** — the `summarised`, `requested`, `capReached`, and per-row `error` fields are visible to the eval runner via the tool result shape.
+
+No persistent store writes (P2.R7). Audit log lines are sufficient because the existing observability surface (Vercel / Supabase logs) captures them.
+
+---
+
+### 2.9 Eval Coverage Extension (P2.R9)
+
+Append 10 new queries to `docs/033-agentic-chat/eval/queries.json`. Each carries the existing fields (`id`, `category`, `query`, `expectedTrajectory`, `rubric`) plus a new optional `partOf: "P2"` flag so the runner can report Part-2-specific pass rate separately from the Part-1 baseline (PRD P2.R9: "the new surface's pass rate on these is tracked separately").
+
+| New ID | Category | What it exercises |
+|---|---|---|
+| Q-017 | hybrid | Canonical gap-closer: "Summarise everything Acme has told us this quarter" — expectedTrajectory: `list_sessions → summarise_sessions` |
+| Q-018 | hybrid | Focus-scoped: "Summarise pricing-related feedback across all clients last 90 days" — expectedTrajectory: `list_sessions → summarise_sessions` (with focus param expected on the call) |
+| Q-019 | hybrid | Comparative: "What changed in our top theme between Q1 and Q2?" — expectedTrajectory: `aggregate → list_sessions → summarise_sessions` (×2: once per quarter) |
+| Q-020 | hybrid | Broad fan-out (>30 sessions): "Give me a rundown of every session this year" — expectedTrajectory: `list_sessions → summarise_sessions` (cap exercised; expects `capReached: true`) |
+| Q-021 | hybrid | Pagination: follow-up to Q-020 — "Show me the rest" — expectedTrajectory: `list_sessions → summarise_sessions` with paged ids |
+| Q-022 | hybrid | Small-batch focus: "Summarise the last 5 sessions, focusing on positive feedback only" — small fan-out with focus; exercises the "No content matches focus." sentinel naturally (sessions without positive_signal chunks should produce it) |
+| Q-023 | qualitative | Focus + no-match: "What did Acme say about competitor X?" where Acme never mentioned X — expects "No content matches focus." for at least one returned row |
+| Q-024 | quantitative | Negative test: "How many sessions do we have?" — expectedTrajectory: `aggregate` (must NOT chain summarise_sessions; routing-accuracy regression if it does) |
+| Q-025 | hybrid | Focus rephrasing: "What are the top product complaints across our enterprise clients?" — verifies the model picks `summarise_sessions` (not `semantic_search`) for completeness across many sessions |
+| Q-026 | hybrid | Cost test: "Summarise our 50 most recent sessions" — produces a baseline cost report for the broad-summary test (PRD P3.AC6 input) |
+
+> **Partial-failure tolerance (P2.AC5) is verified manually, not in the automated eval.** The TRD originally proposed a synthetic Q-022 that injects a known-bad session id, but in production data there is no deterministic way to make a single leaf fail without adding a debug-only failure-injection mechanism — which itself becomes a test surface to maintain. Cleaner path: hand-verify the partial-failure code path during Increment 2.4 by passing an obviously-malformed input to one leaf (e.g. truncating a session's content to an empty string and confirming the leaf either returns a degenerate summary or fails into a per-row `error: "summary unavailable for this session"` while the batch keeps going). This is recorded in the increment's verification notes; P2.AC5's "without aborting the batch" property is structural and only needs to be verified once. This is a small, deliberate deviation from PRD § P2.R9 ("partial-failure tolerance" listed among the eval exercises), justified by the cost/benefit of adding an injection-only test mechanism vs. one-time manual verification.
+
+Runner update (`scripts/run-eval.ts`):
+- Aggregate report gains a `partOfBreakdown: { P1: {...}, P2: {...} }` field that buckets answer-correctness avg + routing-accuracy pct per `partOf` flag (queries without the flag fall under P1).
+- The cost-test query (Q-026) writes `tokens(in/out/total)` from the tool's telemetry into the per-query report so the broad-summary cost reduction target (P3.AC6: ≥ 30% vs hypothetical premium-only `fetch_session_content`) is measurable.
+
+---
+
+### 2.10 Files Changed (Part 2)
+
+**New files:**
+- `lib/services/cheap-model-service.ts`
+- `lib/services/bounded-concurrency.ts`
+- `lib/prompts/summarise-session-prompt.ts`
+- `lib/services/chat-tool-services/summarise-sessions-service.ts`
+- `lib/services/chat-tools/summarise-sessions-tool.ts`
+
+**Modified files:**
+- `lib/services/chat-tools/index.ts` — register `summarise_sessions` in `createChatTools()`.
+- `docs/033-agentic-chat/eval/queries.json` — add Q-017 through Q-026 (10 new queries).
+- `scripts/run-eval.ts` — `partOfBreakdown` aggregation; cost-test telemetry passthrough.
+- `ARCHITECTURE.md` — add new env vars (`SUMMARY_*`), file map entries for new files.
+- `CHANGELOG.md` — Part 2 entry.
+
+**Files explicitly NOT touched:**
+- `lib/services/chat-stream-service.ts` — old surface remains the active wiring through Part 2 (Part 3 cutover).
+- `lib/prompts/chat-prompt.ts` — system prompt v2 is Part 3.
+- `app/api/dashboard/route.ts` — dashboard surface unchanged.
+- Any UI files — P2.R8.
+
+---
+
+### 2.11 Implementation Increments
+
+#### Increment 2.1 — Cheap-model resolver + env vars
+
+`cheap-model-service.ts` + ARCHITECTURE.md env table updates. No call site yet. Verifiable by a one-off script that constructs the model and runs a one-shot `generateText` against a known cheap model; not a permanent test.
+
+#### Increment 2.2 — Bounded-concurrency primitive
+
+`bounded-concurrency.ts`. Pure function, easy to verify by hand: pass an array of `() => sleep(N)` tasks and assert the wall time scales correctly. No tests committed yet (the project has no test infrastructure — see Part 1 § 1.7 note).
+
+#### Increment 2.3 — Summarise-session prompt
+
+`summarise-session-prompt.ts`. Versioned constants. No call site yet — verified by Increment 2.4.
+
+#### Increment 2.4 — Summarise-sessions service
+
+`summarise-sessions-service.ts`. End-to-end: provided test session ids, real cheap-model env vars, real Supabase. Hand-verified by running the service from a one-off script. Confirms:
+- token telemetry sums correctly (system prompt × N + user msg × N + cheap-model `usage.outputTokens` per leaf)
+- cap + budget + out-of-scope interaction with `fetchSessionContent` produces the four-flag combined feedback expected by § 2.5
+- **partial-failure tolerance (P2.AC5)** — manually triggered by truncating one session's content to an empty string before passing to the cheap model (or by deliberately mis-configuring the cheap-model env vars for one in-flight leaf). Confirm the per-row error path: the failing leaf returns `summary: null + error: "summary unavailable for this session"`, the rest of the batch completes, no provider details leak into the chat-model-facing payload, and the raw error is logged server-side. The verification notes for this increment record the exact reproduction recipe so it's repeatable.
+
+#### Increment 2.5 — Summarise-sessions tool + registry
+
+`summarise-sessions-tool.ts` + registry update. Tool is registered but still not exposed to the chat model (the registry is built but `chat-stream-service.ts` doesn't consume it until Part 3). Verifiable by the eval runner with `--surface=new` once Increment 2.6 lands.
+
+#### Increment 2.6 — Eval coverage + cost-test report
+
+10 new queries appended to `queries.json`. `scripts/run-eval.ts` gains `partOfBreakdown` and cost-test telemetry passthrough. Run `npm run eval:chat -- --surface=new` and commit the resulting report alongside the Part 1 baselines (P2.AC9 + cost report for P3.AC6).
+
+#### Increment 2.7 — End-of-Part-2 audit
+
+Run the audit checklist from [CLAUDE.md](../../CLAUDE.md#end-of-part-audit) across all files touched. Update `ARCHITECTURE.md` (file map + env table + Chat tool surface paragraph: add `summarise_sessions` to the registry list). `CHANGELOG.md` Part 2 entry. Verify no regressions in Part 1 increments (run baseline eval against old surface, confirm pass rate unchanged).
+
+---
+
+### 2.12 Acceptance Criteria → Verification Map
+
+| PRD AC | Verified by |
+|---|---|
+| P2.AC1 (`summarise_sessions` tool exists, returns one summary per id, input order preserved) | Increment 2.5 (tool factory + registry); Increment 2.4 verifies order-preservation by indexing `taskResults` by input position |
+| P2.AC2 (cheap model env-controlled, independent of chat) | Increment 2.1: `resolveCheapModel()` reads only `SUMMARY_*`; chat-model env vars never consulted in the map step |
+| P2.AC3 (focus-scoped, "no content matches focus" sentinel) | Increment 2.3 (prompt) — sentinel is a literal sentence in the system prompt; Increment 2.6 eval Q-023 exercises it |
+| P2.AC4 (per-call cap with "summarised N of M requested" indicator) | Increment 2.4 — `requested` / `summarised` / `capReached` / `budgetReached` / `outOfScopeCount` fields in the result shape; Increment 2.6 eval Q-020 exercises cap |
+| P2.AC5 (per-row error without aborting batch) | Increment 2.2 (`runWithConcurrency` returns `TaskResult<T>` not `T[]`) + Increment 2.4 (per-row error mapping + sanitised error message). **Verified manually during Increment 2.4** (see § 2.9 deviation note) — adding an injection-only test surface to the eval was rejected as cost-out-of-line with the structural property being verified |
+| P2.AC6 ("Summarising N sessions…" status) | Increment 2.5 — `ctx.emitStatus` at start + throttled progress emits |
+| P2.AC7 (per-call telemetry input/output/total tokens) | Increment 2.4 — telemetry field; Increment 2.5 — log line on tool exit |
+| P2.AC8 (no persistent store writes) | Increment 2.4 — service is read-only; explicit absence of any Supabase write call (verified by grep in audit) |
+| P2.AC9 (10 summarisation queries; new-surface pass rate tracked separately) | Increment 2.6 — `queries.json` extended; runner emits `partOfBreakdown` |
+
+---
+
+### 2.13 Open Implementation Questions
+
+These are the only decisions where the PRD doesn't fully constrain the choice and the implementer should pick deliberately:
+
+1. **Progress event throttling.** The tool factory above throttles to "every 10% or every 5 sessions, whichever is smaller". This is a UX choice — too quiet feels stuck, too chatty floods the SSE stream. If real-traffic feedback shows either failure mode, retune in a follow-up. Default is biased slightly toward chatty (every 5 sessions on small batches).
+2. **`generateText` `usage` field availability.** The Vercel AI SDK exposes `usage` per provider; some return `inputTokens` / `outputTokens` directly, others return totals only. The service falls back to `estimateTokens(text)` when `usage.outputTokens` is absent. Input tokens are estimated end-to-end via the `estimateTokens` proxy (system prompt × N + user msg × N) for provider-agnosticism. This means the per-call telemetry inherits the same ±20% characteristic as `fetch_session_content`'s budget. Acceptable for telemetry and rough cost reporting; not for billing reconciliation.
+3. **What "balanced 3-sentence digest" means** for sessions whose extraction is sparse (e.g. a session with only one chunk). The prompt says "if a signal type is empty, do not mention it" — for very sparse sessions the leaf may return a 1-sentence summary. The chat model handles this gracefully because it sees the full digest array. No special handling.
+
+#### Resolved during TRD review (2026-05-11)
+
+- **`budgetReached` propagation.** Resolved — `SummariseResult` now carries `budgetReached`, `outOfScopeCount`, plus `capReached`. All four partial-coverage signals are passed through to the chat model. See § 2.5.
+- **Rate-limit retry behaviour.** Resolved — `withCheapModelRetry` mirrors the embedding-service retry pattern: 3 retries, exponential backoff, Retry-After honoured for 429. Lives in `cheap-model-service.ts`. See § 2.2.
+- **Q-022 partial-failure test mechanism.** Resolved — Q-022 replaced with a small-batch focus query that exercises the "No content matches focus." sentinel naturally. Partial-failure tolerance (P2.AC5) is verified manually during Increment 2.4 with a documented reproduction recipe; rationale in § 2.9 deviation note.
+- **System prompt token-count.** Resolved — counted as `estimateTokens(SYSTEM_PROMPT) * N` so cost telemetry doesn't quietly under-count by ~600 tokens / 30 sessions. See § 2.5.
+- **Leaf error message sanitisation.** Resolved — model-facing `error` is the generic `"summary unavailable for this session"`; raw provider errors logged server-side via `console.error`. See § 2.5.
+- **`requested` vs `outOfScopeCount` distinction.** Resolved — the result now distinguishes "asked but filtered by workspace scope before processing" (`outOfScopeCount`) from "leaf summary failed despite retries" (`telemetry.failedCount` + per-row `summary: null + error`). See § 2.5.
+
+---
+
+### 2.14 What Part 2 Explicitly Defers
+
+- **Streaming the map step.** The current implementation waits for the full batch before returning to the chat model. Streaming per-session summaries as they complete is in the PRD backlog and is a significant UX win on broad queries (the chat model could start writing its synthesis before all leaves return). Deferred — it requires a different chat-stream-service integration shape (sub-stream emission within a tool execute) that's not justified by current usage.
+- **Cheap-model fallback to the chat model when the cheap model is unavailable.** Explicitly forbidden by PRD P2.R2. If the cheap model is down, `summarise_sessions` fails for that turn and the model is expected to mention partial coverage / suggest narrowing.
+- **User-controllable summarisation depth** ("brief / detailed / verbatim"). Backlog. The model picks depth implicitly via the `focus` parameter and prompt rules.
+- **Tool-result memoisation across turns.** Backlog — for "what changed since I last asked" follow-ups. Not in Part 2 scope.
+
+End of Part 2.

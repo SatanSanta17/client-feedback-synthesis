@@ -16,6 +16,7 @@ import { createListSessionsTool } from "./list-sessions-tool";
 import { createListThemesTool } from "./list-themes-tool";
 import { createSemanticSearchTool } from "./semantic-search-tool";
 import type { ChatToolContext } from "./shared/tool-context";
+import { createSummariseSessionsTool } from "./summarise-sessions-tool";
 import { createTimeSeriesTool } from "./time-series-tool";
 
 export type { ChatToolContext, WorkspaceCtx } from "./shared/tool-context";
@@ -30,6 +31,7 @@ export function createChatTools(ctx: ChatToolContext) {
     fetch_signals: createFetchSignalsTool(ctx),
     aggregate: createAggregateTool(ctx),
     time_series: createTimeSeriesTool(ctx),
+    summarise_sessions: createSummariseSessionsTool(ctx),
     insights_latest: createInsightsLatestTool(ctx),
     insights_history: createInsightsHistoryTool(ctx),
   } as const;
