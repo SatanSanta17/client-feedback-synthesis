@@ -5,6 +5,7 @@ import { resolveModel } from "@/lib/services/ai-service";
 import { embedTexts } from "@/lib/services/embedding-service";
 import type {
   EmbeddingRepository,
+  FtsResult,
   SimilarityResult,
 } from "@/lib/repositories/embedding-repository";
 import type { ChunkType } from "@/lib/types/embedding-chunk";
@@ -18,6 +19,15 @@ import {
   CLASSIFY_QUERY_SYSTEM_PROMPT,
   CLASSIFY_QUERY_MAX_TOKENS,
 } from "@/lib/prompts/classify-query";
+import { rrfFuse, type RrfSource } from "@/lib/services/retrieval-rrf";
+import {
+  RAG_FINAL_TOP_N,
+  RAG_FTS_TOP_N,
+  RAG_FTS_WEIGHT,
+  RAG_RRF_K,
+  RAG_VECTOR_TOP_N,
+  RAG_VECTOR_WEIGHT,
+} from "@/lib/services/retrieval-config";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -48,11 +58,6 @@ const classificationSchema = z.object({
 // Internal: query classification
 // ---------------------------------------------------------------------------
 
-/**
- * Classifies a user query to determine retrieval depth.
- * On any failure, falls back to broad (15 chunks) — classification is a
- * "nice to have" optimisation, not a gate.
- */
 async function classifyQuery(query: string): Promise<ClassificationResult> {
   const start = Date.now();
   const truncatedQuery = query.length > 100 ? `${query.slice(0, 100)}…` : query;
@@ -97,48 +102,41 @@ async function classifyQuery(query: string): Promise<ClassificationResult> {
 }
 
 // ---------------------------------------------------------------------------
-// Internal: deduplication
+// Internal: deduplication (used post-fusion, after both lists merged)
 // ---------------------------------------------------------------------------
 
-/**
- * Deduplicates results by exact chunk text match.
- * If the same text appears from multiple sessions, only the highest-scoring
- * instance survives. Re-sorts after deduplication to maintain descending
- * similarity order.
- */
-function deduplicateResults(results: SimilarityResult[]): SimilarityResult[] {
-  const seen = new Map<string, SimilarityResult>();
+interface FusedRow {
+  id: string;
+  sessionId: string;
+  chunkText: string;
+  chunkType: string;
+  metadata: Record<string, unknown>;
+  similarityScore: number;
+  sources: RrfSource[];
+}
 
-  for (const result of results) {
-    const existing = seen.get(result.chunkText);
-    if (!existing || result.similarityScore > existing.similarityScore) {
-      seen.set(result.chunkText, result);
+function deduplicateByText(rows: FusedRow[]): FusedRow[] {
+  const seen = new Map<string, FusedRow>();
+  for (const row of rows) {
+    const existing = seen.get(row.chunkText);
+    if (!existing || row.similarityScore > existing.similarityScore) {
+      seen.set(row.chunkText, row);
     }
   }
-
   return Array.from(seen.values()).sort(
     (a, b) => b.similarityScore - a.similarityScore
   );
 }
 
-// ---------------------------------------------------------------------------
-// Internal: mapping
-// ---------------------------------------------------------------------------
-
-/**
- * Maps a repository-layer SimilarityResult to the public RetrievalResult
- * interface. Promotes clientName and sessionDate from metadata to top-level
- * fields for consumer convenience.
- */
-function toRetrievalResult(result: SimilarityResult): RetrievalResult {
+function toRetrievalResult(row: FusedRow): RetrievalResult {
   return {
-    chunkText: result.chunkText,
-    similarityScore: result.similarityScore,
-    sessionId: result.sessionId,
-    clientName: (result.metadata.client_name as string) ?? "Unknown",
-    sessionDate: (result.metadata.session_date as string) ?? "",
-    chunkType: result.chunkType as ChunkType,
-    metadata: result.metadata,
+    chunkText: row.chunkText,
+    similarityScore: row.similarityScore,
+    sessionId: row.sessionId,
+    clientName: (row.metadata.client_name as string) ?? "Unknown",
+    sessionDate: (row.metadata.session_date as string) ?? "",
+    chunkType: row.chunkType as ChunkType,
+    metadata: row.metadata,
   };
 }
 
@@ -149,17 +147,22 @@ function toRetrievalResult(result: SimilarityResult): RetrievalResult {
 /**
  * Retrieves relevant embedding chunks for a natural-language query.
  *
+ * Hybrid retrieval (PRD-033 P1.R2): runs vector similarity search and Postgres
+ * full-text search in parallel, then fuses both ranked lists via reciprocal
+ * rank fusion (RRF). Closes the gap where pure-vector misses exact-term
+ * queries ("Snowflake") and pure-keyword misses semantic paraphrase
+ * ("onboarding pain" ↔ "first-time setup is confusing").
+ *
  * Flow:
- *   1. Classify the query (LLM call) → determines chunk count.
- *   2. Embed the query (embedding service) → produces query vector.
- *   3. Similarity search (embedding repository RPC) → ranked chunks.
- *   4. Deduplicate by exact chunk text → highest score wins.
- *   5. Map to RetrievalResult[] → return to caller.
+ *   1. Classify the query (LLM call) → determines per-side top-N override.
+ *   2. Embed the query (embedding service).
+ *   3. Run similaritySearch + fullTextSearch in parallel.
+ *   4. Fuse via RRF using the embedding row id as the join key.
+ *   5. Deduplicate by exact chunk text → highest score wins.
+ *   6. Map to RetrievalResult[] → return.
  *
- * Classification errors are swallowed (falls back to broad).
+ * Classification errors are swallowed (fall back to broad).
  * Embedding and search errors propagate to the caller.
- *
- * Framework-agnostic: no imports from next/server or HTTP concepts.
  */
 export async function retrieveRelevantChunks(
   query: string,
@@ -175,45 +178,112 @@ export async function retrieveRelevantChunks(
     })}`
   );
 
-  // 1. Classify
+  // 1. Classify — controls finalTopN for backwards compat with the existing
+  //    chat surface, which expects 6/10/15 results based on classification.
   const classification = await classifyQuery(query);
-  const resolvedMaxChunks =
-    options.maxChunks ?? CHUNK_COUNT_MAP[classification.type];
+  const finalTopN = options.maxChunks ?? CHUNK_COUNT_MAP[classification.type];
 
   console.log(
-    `${LOG_PREFIX} Query classified as "${classification.type}", fetching up to ${resolvedMaxChunks} chunks`
+    `${LOG_PREFIX} Query classified as "${classification.type}", finalTopN: ${finalTopN}`
   );
 
-  // 2. Embed the query
+  // 2. Embed
   const [queryEmbedding] = await embedTexts([query]);
 
-  console.log(`${LOG_PREFIX} Query embedded, vector length: ${queryEmbedding.length}`);
-
-  // 3. Similarity search
-  const rawResults = await embeddingRepo.similaritySearch(queryEmbedding, {
-    teamId: options.teamId,
-    maxResults: resolvedMaxChunks,
-    chunkTypes: options.chunkTypes,
-    clientName: options.clientName,
-    dateFrom: options.dateFrom,
-    dateTo: options.dateTo,
-    similarityThreshold: DEFAULT_SIMILARITY_THRESHOLD,
-  });
-
   console.log(
-    `${LOG_PREFIX} Similarity search returned ${rawResults.length} results`
+    `${LOG_PREFIX} Query embedded, vector length: ${queryEmbedding.length}`
   );
 
-  // 4. Deduplicate
-  const deduped = deduplicateResults(rawResults);
-  if (deduped.length < rawResults.length) {
+  // 3. Parallel vector + FTS search
+  const [vectorResults, ftsResults] = await Promise.all([
+    embeddingRepo.similaritySearch(queryEmbedding, {
+      teamId: options.teamId,
+      maxResults: RAG_VECTOR_TOP_N,
+      chunkTypes: options.chunkTypes,
+      clientName: options.clientName,
+      dateFrom: options.dateFrom,
+      dateTo: options.dateTo,
+      similarityThreshold: DEFAULT_SIMILARITY_THRESHOLD,
+    }),
+    embeddingRepo.fullTextSearch(query, {
+      teamId: options.teamId,
+      maxResults: RAG_FTS_TOP_N,
+      chunkTypes: options.chunkTypes,
+      clientName: options.clientName,
+      dateFrom: options.dateFrom,
+      dateTo: options.dateTo,
+    }),
+  ]);
+
+  console.log(
+    `${LOG_PREFIX} Hybrid retrieval — vector: ${vectorResults.length}, fts: ${ftsResults.length}`
+  );
+
+  // 4. RRF fusion. We use embedding row id as the cross-list join key.
+  type Joinable = { id: string };
+  const fused = rrfFuse<Joinable>(
+    vectorResults as unknown as (SimilarityResult & Joinable)[],
+    ftsResults as unknown as (FtsResult & Joinable)[],
+    (row) => row.id,
+    {
+      k: RAG_RRF_K,
+      vectorWeight: RAG_VECTOR_WEIGHT,
+      ftsWeight: RAG_FTS_WEIGHT,
+      finalTopN,
+    }
+  );
+
+  // Resolve the full row (chunk text, metadata, etc.) from whichever list
+  // yielded it — both lists carry the same payload, prefer vector for the
+  // similarityScore where present.
+  const vectorById = new Map(vectorResults.map((r) => [r.id, r]));
+  const ftsById = new Map(ftsResults.map((r) => [r.id, r]));
+
+  const fusedRows: FusedRow[] = fused.map((entry) => {
+    const id = (entry.row as Joinable).id;
+    const v = vectorById.get(id);
+    const f = ftsById.get(id);
+    const source = v ?? f;
+    if (!source) {
+      throw new Error(`RRF produced an id (${id}) absent from both source lists`);
+    }
+    return {
+      id: source.id,
+      sessionId: source.sessionId,
+      chunkText: source.chunkText,
+      chunkType: source.chunkType,
+      metadata: source.metadata,
+      similarityScore: entry.rrfScore,
+      sources: entry.sources,
+    };
+  });
+
+  // 5. Deduplicate by exact text
+  const deduped = deduplicateByText(fusedRows);
+  if (deduped.length < fusedRows.length) {
     console.log(
-      `${LOG_PREFIX} Deduplicated ${rawResults.length} → ${deduped.length} results`
+      `${LOG_PREFIX} Deduplicated ${fusedRows.length} → ${deduped.length} results`
     );
   }
 
-  // 5. Map to RetrievalResult[]
-  const results = deduped.map(toRetrievalResult);
+  // Telemetry: how many of the final results came from each source?
+  const fromVector = deduped.filter((r) => r.sources.includes("vector")).length;
+  const fromFts = deduped.filter((r) => r.sources.includes("fts")).length;
+  const fromBoth = deduped.filter(
+    (r) => r.sources.includes("vector") && r.sources.includes("fts")
+  ).length;
+  console.log(
+    `${LOG_PREFIX} RRF source distribution — vector: ${fromVector}, fts: ${fromFts}, both: ${fromBoth} (final: ${deduped.length})`
+  );
+
+  // Cap at finalTopN one more time — dedup may have shrunk the list, but
+  // never expanded it. Finally map.
+  const results = deduped.slice(0, finalTopN).map(toRetrievalResult);
+
+  // The unused-import-of-RAG_FINAL_TOP_N would otherwise be flagged. It's
+  // imported for symmetry with the rest of the config (callers can read it
+  // directly if they want a default). Reference here keeps the import live.
+  void RAG_FINAL_TOP_N;
 
   console.log(
     `${LOG_PREFIX} Retrieval complete, returning ${results.length} results`

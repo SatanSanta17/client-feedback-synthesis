@@ -28,6 +28,7 @@ Every change follows this sequence. No step is skipped.
 - **Section PRDs** live in `docs/<number>-<name>/prd.md` with co-located `trd.md`.
 - **PRD contains:** purpose, user story, requirements per part (P1.R1, P1.R2…), acceptance criteria (checkboxes per part), and a backlog section. No technical details — those go in the TRD.
 - **TRD mirrors PRD parts** — same part numbers, same boundaries. Each part includes: database models, API endpoints, frontend pages/components, files changed, and implementation increments. The TRD answers "how" for everything the PRD says "what."
+- **TRDs capture approach and contracts, not implementation.** Include only what locks in a decision: SQL DDL, type/interface signatures, API request/response shapes (Zod schemas or shape descriptions), prompt templates, and architectural diagrams. Do **not** include function bodies, component JSX, route handler implementations, or step-by-step pseudocode — that belongs in the code, not the doc. The TRD should be reviewable in one sitting; if a part feels bulky, the implementation detail has leaked in.
 - **Write TRD parts one at a time, but reference the entire PRD.** Each TRD part must account for forward compatibility — data structures and interfaces should carry the shape that later parts will need, even if unused until then.
 - **Parts break into increments.** An increment is a self-contained, verifiable unit of work. A PR is the smallest pushable unit of code.
 

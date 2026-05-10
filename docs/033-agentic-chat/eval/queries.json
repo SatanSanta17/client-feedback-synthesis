@@ -1,0 +1,147 @@
+[
+  {
+    "id": "Q-001",
+    "category": "quantitative",
+    "query": "How many sessions do we have?",
+    "expectedTrajectory": ["aggregate"],
+    "rubric": {
+      "mustMention": ["session count"],
+      "mustNotHallucinate": ["specific client names not requested"]
+    }
+  },
+  {
+    "id": "Q-002",
+    "category": "quantitative",
+    "query": "How many clients are in the workspace?",
+    "expectedTrajectory": ["aggregate"],
+    "rubric": {
+      "mustMention": ["client count"]
+    }
+  },
+  {
+    "id": "Q-003",
+    "category": "quantitative",
+    "query": "What's the sentiment distribution across all sessions?",
+    "expectedTrajectory": ["aggregate"],
+    "rubric": {
+      "mustMention": ["positive", "negative"]
+    }
+  },
+  {
+    "id": "Q-004",
+    "category": "quantitative",
+    "query": "Top 5 themes this month",
+    "expectedTrajectory": ["aggregate"],
+    "rubric": {
+      "mustMention": ["theme"]
+    }
+  },
+  {
+    "id": "Q-005",
+    "category": "quantitative",
+    "query": "How have sessions trended over the last 6 months by month?",
+    "expectedTrajectory": ["time_series"],
+    "rubric": {
+      "mustMention": ["month"]
+    }
+  },
+  {
+    "id": "Q-006",
+    "category": "qualitative",
+    "query": "What are clients saying about onboarding?",
+    "expectedTrajectory": ["semantic_search"],
+    "rubric": {
+      "mustMention": ["onboarding"]
+    }
+  },
+  {
+    "id": "Q-007",
+    "category": "qualitative",
+    "query": "What's the general feeling about pricing across our clients?",
+    "expectedTrajectory": ["semantic_search"],
+    "rubric": {
+      "mustMention": ["pricing"]
+    }
+  },
+  {
+    "id": "Q-008",
+    "category": "discovery",
+    "query": "Which clients exist in the workspace?",
+    "expectedTrajectory": ["list_clients"],
+    "rubric": {
+      "mustMention": ["client"]
+    }
+  },
+  {
+    "id": "Q-009",
+    "category": "discovery",
+    "query": "List the most recent sessions",
+    "expectedTrajectory": ["list_sessions"],
+    "rubric": {
+      "mustMention": ["session"]
+    }
+  },
+  {
+    "id": "Q-010",
+    "category": "discovery",
+    "query": "What themes do we track?",
+    "expectedTrajectory": ["list_themes"],
+    "rubric": {
+      "mustMention": ["theme"]
+    }
+  },
+  {
+    "id": "Q-011",
+    "category": "hybrid",
+    "query": "What are the top 3 themes and what does each one represent?",
+    "expectedTrajectory": ["aggregate", "semantic_search"],
+    "rubric": {
+      "mustMention": ["theme"]
+    }
+  },
+  {
+    "id": "Q-012",
+    "category": "hybrid",
+    "query": "Which clients have mentioned pricing concerns and what did they say?",
+    "expectedTrajectory": ["fetch_signals"],
+    "rubric": {
+      "mustMention": ["pricing"]
+    }
+  },
+  {
+    "id": "Q-013",
+    "category": "hybrid",
+    "query": "Summarise everything Acme has said this quarter",
+    "expectedTrajectory": ["list_sessions", "fetch_session_content"],
+    "rubric": {
+      "mustMention": ["Acme"]
+    }
+  },
+  {
+    "id": "Q-014",
+    "category": "exact-term",
+    "query": "Find every pain point that mentions Snowflake",
+    "expectedTrajectory": ["semantic_search"],
+    "rubric": {
+      "mustMention": ["Snowflake"]
+    }
+  },
+  {
+    "id": "Q-015",
+    "category": "exact-term",
+    "query": "Search for sessions that contain the word 'churn'",
+    "expectedTrajectory": ["semantic_search"],
+    "rubric": {
+      "mustMention": ["churn"]
+    }
+  },
+  {
+    "id": "Q-016",
+    "category": "exact-term",
+    "query": "Show every blocker that references the API",
+    "expectedTrajectory": ["semantic_search"],
+    "rubric": {
+      "mustMention": ["API"]
+    }
+  }
+]

@@ -2,7 +2,7 @@
 
 > **Status:** Draft
 > **Depends on:** PRD-019 (Vector Search — implemented), PRD-020 (RAG Chat — implemented), PRD-021 (Insights Dashboard — implemented), PRD-031 Part 3 (Looser Chat Response Limits — implemented)
-> **Deliverable:** Replaces today's two-tool chat surface (`searchInsights` + `queryDatabase` with a 13-action enum) with a small set of focused, composable tools the chat model chains together to answer any question. Closes the "summarise all sessions" gap, lowers cost on broad queries through a map-reduce summarisation tool, and removes the defensive filter-sanitisation layer that exists only because today's monolithic tool over-fills its schema. Lands the production-readiness pieces an agentic chat surface needs to be safely shippable: prompt caching for input-cost reduction, a per-turn cost circuit breaker against pathological chains, and a CI-gated eval set so the cutover is evidence-based.
+> **Deliverable:** Replaces today's two-tool chat surface (`searchInsights` + `queryDatabase` with a 13-action enum) with a small set of focused, composable tools the chat model chains together to answer any question. Closes the "summarise all sessions" gap, lowers cost on broad queries through a map-reduce summarisation tool, and removes the defensive filter-sanitisation layer that exists only because today's monolithic tool over-fills its schema. Lands the production-readiness pieces an agentic chat surface needs to be safely shippable: prompt caching for input-cost reduction, a per-turn cost circuit breaker against pathological chains, and an eval-gated cutover so the switch to the new surface is evidence-based.
 
 ## Purpose
 
@@ -18,7 +18,7 @@ A focused **map-reduce summarisation tool** lets broad queries scale beyond what
 
 Three production-readiness pieces accompany the new surface. **Prompt caching** of the system prompt and tool descriptions (Anthropic `cache_control` / equivalent) cuts repeat input cost dramatically — system prompts and tool descriptions are large and stable, so this is essentially free money once enabled. A **per-turn cost circuit breaker** caps the total tool-result tokens accumulated within a single user turn, so a pathological query ("summarise everything across all clients all time") forces the model to synthesise from a bounded budget and tell the user to narrow rather than chaining indefinitely. A **golden eval set** of representative queries with expected tool trajectories and an LLM-as-judge scoring rubric is built alongside the new tools and gates the cutover — the old surface is not deleted until the new one demonstrably matches or exceeds it on the eval.
 
-This is a **big-bang replacement** — when this PRD ships, the old `searchInsights` and `queryDatabase` tools are gone. The dashboard's direct use of the underlying query layer (which has its own action surface, separate from what the chat model sees) is unchanged.
+This is a **single-surface replacement** — when this PRD ships, every team and personal workspace is on the new surface. The cutover is gated by the eval (Part 3 specifies the threshold). If a real-world regression surfaces post-cutover that the eval missed, the rollback lever is reverting the cutover commit, closing the gap in the eval, and re-cutting once the eval re-passes — there is no separate feature-flag system for this PRD. The dashboard's direct use of the underlying query layer (which has its own action surface, separate from what the chat model sees) is unchanged.
 
 ## User Story
 
@@ -34,21 +34,41 @@ As a user of the chat tab, I want to ask broad, open-ended questions like "summa
 
 **P1.R1 — Discovery tools.** The chat surface includes tools for listing and discovering data without returning content:
 - A tool to **list clients** with lightweight metadata (id, name, session count, last-session timestamp), filterable by name search and "has sessions".
-- A tool to **list sessions** returning ids and lightweight metadata (id, client name, date, sentiment, urgency, theme names) — filterable by client, date range, theme, severity, sentiment. Returns ids and headers, not full content.
-- A tool to **list themes** with mention counts, filterable by name search.
+- A tool to **list sessions** returning ids and lightweight metadata (id, client name, date, sentiment, urgency, theme names) — filterable by client, date range, theme, severity, sentiment, urgency, chunk type. Returns ids and headers, not full content.
+- A tool to **list themes** with mention counts, filterable by name search and date range (so "what themes were discussed this quarter" works without first listing sessions).
 
 These tools answer "what exists?" without dumping content into the model's context.
 
+**Filter semantics for `list_sessions`** (and any other tool that filters by a mix of session-level and signal-level fields): session-level fields (sentiment, date, client) filter the session row directly. Signal-level fields (severity, urgency, theme, chunk type) match a session if **at least one** of its signal chunks satisfies the filter — "high-severity sessions" returns every session that contains at least one high-severity chunk. Filter combinations are AND across the filter set, not "the same chunk satisfies all signal-level filters" — a session matches `severity=high AND theme=pricing` if it has any high-severity chunk **and** any pricing-themed chunk, even if those are different chunks.
+
 **P1.R2 — Retrieval tools.** The chat surface includes three retrieval tools, each with a distinct purpose:
-- A **semantic-search tool** (replaces today's `searchInsights`) — rephrase-friendly query string, returns ranked chunks with client/date/text/score. Filterable by client, date range, and chunk type.
-- A **fetch-session-content tool** — takes a list of session ids and returns the full structured content (pain points, requirements, aspirations, positive signals, blockers, competitive mentions, etc.) for each. This is the new tool that closes the "summarise all sessions" gap. Capped at a maximum of N session ids per call (initial cap: 30) with explicit "got 30 of {total} requested" feedback in the response so the model can paginate or narrow.
-- A **fetch-signals tool** — flat list of structured signal chunks across sessions matching filters (client, theme, chunk type, severity, urgency, date range). This is the path for "give me every pain point about pricing" — filter-driven, not similarity-driven.
+- A **semantic-search tool** (replaces today's `searchInsights`) — rephrase-friendly query string, returns ranked chunks with client/date/text/score. Filterable by client, date range, and chunk type. Retrieval is **hybrid**: a Postgres `tsvector` full-text search and the existing pgvector similarity search both produce top-N candidate sets, fused via reciprocal rank fusion (RRF) before the model sees the result. Pure-vector misses exact-term queries ("sessions mentioning Snowflake"); pure-keyword misses semantic paraphrase ("onboarding pain" ↔ "first-time setup is confusing"). Hybrid + RRF closes both gaps without introducing a paid reranker dependency. The RRF weighting and per-side top-N are configurable; the eval set (P1.R9) is the source of truth for tuning.
+- A **fetch-session-content tool** — takes a list of session ids and returns the full content for each. "Full content" means **all 11 chunk types** (`summary`, `client_profile`, `pain_point`, `requirement`, `aspiration`, `positive_signal`, `competitive_mention`, `blocker`, `tool_and_platform`, `custom`, `raw`) plus session-level metadata (date, client name, themes, sentiment, urgency, raw notes) — there is no chunk-type filter on this tool. The model gets everything; the token budget protects cost; redundancy between `summary`/`raw` and the structured chunks is acceptable for the simplicity of "no filter to choose wrong". Capped by a **token budget** rather than a raw session count (initial budget: ~50,000 tokens of returned content per call, configurable via env var) so small sessions fill more slots and large sessions fewer. **Token counting** uses the active provider's tokenizer (`AI_PROVIDER` env var) where the SDK exposes one; otherwise a `chars/4` proxy is acceptable since the budget is approximate by design. The response reports "fetched N of M requested (token budget reached)" when the budget is exhausted before all ids are served, so the model can paginate or narrow.
+- A **fetch-signals tool** — flat list of structured signal chunks across sessions matching filters (client, theme, chunk type, severity, urgency, date range). **Strictly schema-filtered — no query string.** This is the deliberate distinction from `semantic_search`: "every pain point about pricing" is a completeness question (`fetch_signals(theme=pricing, chunk_type=pain_point)` returns *all* matches), while "what are clients saying about onboarding?" is a similarity question (`semantic_search(query="onboarding")`). If the model wants similarity ranking, it uses `semantic_search`; if it wants exhaustive coverage of a tagged subset, it uses `fetch_signals`. The two tools must not overlap in capability.
 
 **P1.R3 — Aggregation tools.** The chat surface includes two aggregation tools that subsume today's quantitative actions:
-- An **aggregate tool** — takes an entity (sessions / signals / clients), an optional `groupBy` dimension (client / theme / sentiment / urgency / chunk type), and filters. Omitting `groupBy` returns a count.
-- A **time-series tool** — takes an entity, a granularity (week / month), and filters. Returns time-bucketed counts.
+- An **aggregate tool** — takes an entity (sessions / signals / clients), an optional `groupBy` (single dimension or array of dimensions, drawn from: client / theme / sentiment / urgency / severity / chunk type), and filters. Omitting `groupBy` returns a count. With a single-dim `groupBy` the result is ranked by count desc by default. With a multi-dim `groupBy` (e.g. `[theme, client]`) the result is a flat array of `{ dimensions: { theme, client }, count }` rows that the model can pivot into a matrix in its response.
+- A **time-series tool** — takes an entity, a granularity (week / month), an optional single-dim `groupBy`, and filters. Returns time-bucketed counts.
 
-Together these replace today's 13 quantitative actions (`count_clients`, `count_sessions`, `sessions_per_client`, `sentiment_distribution`, `urgency_distribution`, `recent_sessions`, `client_list`, `sessions_over_time`, `client_health_grid`, `competitive_mention_frequency`, `top_themes`, `theme_trends`, `theme_client_matrix`).
+**Mapping from today's 13 quantitative actions to the new surface** (this table is the source of truth for P1.AC4 parity testing):
+
+| Old action | New call |
+|---|---|
+| `count_clients` | `aggregate(entity=clients)` |
+| `count_sessions` | `aggregate(entity=sessions)` |
+| `sessions_per_client` | `aggregate(entity=sessions, groupBy=client)` |
+| `sentiment_distribution` | `aggregate(entity=sessions, groupBy=sentiment)` |
+| `urgency_distribution` | `aggregate(entity=signals, groupBy=urgency)` |
+| `recent_sessions` | `list_sessions` (sorted by date desc — discovery, not aggregation) |
+| `client_list` | `list_clients` (discovery, not aggregation) |
+| `sessions_over_time` | `time_series(entity=sessions, granularity=week\|month)` |
+| `client_health_grid` | `aggregate(entity=signals, groupBy=[client, severity])` |
+| `competitive_mention_frequency` | `aggregate(entity=signals, filter chunk_type=competitive_mention, groupBy=client)` |
+| `top_themes` | `aggregate(entity=signals, groupBy=theme)` (default sort handles "top") |
+| `theme_trends` | `time_series(entity=signals, groupBy=theme, granularity=week\|month)` |
+| `theme_client_matrix` | `aggregate(entity=signals, groupBy=[theme, client])` |
+
+Two of the 13 (`recent_sessions`, `client_list`) are discovery shapes, not aggregations, so they map to Part 1 discovery tools rather than to `aggregate`. The remaining 11 all collapse into `aggregate` or `time_series`. Multi-dim `groupBy` is required to cover `client_health_grid` and `theme_client_matrix`; single-dim is sufficient for the other nine.
 
 **P1.R4 — Insights passthrough tools.** The two existing insights actions (`insights_latest`, `insights_history`) become their own tools rather than being merged into aggregation, because their shape and pagination semantics don't fit the aggregate / time-series mould.
 
@@ -60,20 +80,26 @@ Together these replace today's 13 quantitative actions (`count_clients`, `count_
 
 **P1.R8 — No new user-facing UI.** The chat tab's UI does not change in this part. Status messages emitted during tool calls update to reflect the new tool names (e.g. "Looking up clients…", "Fetching session content…"), but the conversation panel, citation chips, follow-ups, and starter questions are unchanged.
 
-**P1.R9 — Eval harness foundation.** Alongside the new tool surface, an automated eval harness is established: a frozen test set of representative chat queries paired with the expected tool-call trajectory for each query, an LLM-as-judge scoring rubric for answer quality (factual correctness, groundedness, citation accuracy, list completeness), and an integration that lets the eval be run on demand against any tool / system-prompt change. Initial coverage: at least 15 queries spanning the four shapes today's surface handles — quantitative (count / distribution / time-series), qualitative (semantic search), discovery (list), and hybrid. This part runs the eval against both surfaces (old and new) so the new surface can be measured against the old one's baseline before the Part 3 cutover gate fires.
+**P1.R9 — Eval harness foundation.** Alongside the new tool surface, an automated eval harness is established: a frozen test set of representative chat queries paired with the expected tool-call trajectory for each query, an LLM-as-judge scoring rubric for answer quality (factual correctness, groundedness, citation accuracy, list completeness), and an integration that lets the eval be run on demand against any tool / system-prompt change. The harness scores **two dimensions per query**, tracked separately:
+- **Answer correctness** — judged by the LLM-as-judge rubric.
+- **Tool-routing accuracy** — did the model pick the right tool / chain (e.g. "which clients exist?" should hit `list_clients`, not `aggregate(sessions, group_by=client)`). A query can be answered correctly via the wrong path; that still counts as a routing regression because it bloats cost, latency, and context. **Matching is by subsequence**: the expected tool calls must appear in the actual call sequence in order, but extra calls between them are allowed (the model is free to take exploratory side-trips like an extra `semantic_search` to clarify a query). Missing a required call, or executing them out of expected order, fails the routing check.
+
+Initial coverage: at least 15 queries spanning the four shapes today's surface handles — quantitative (count / distribution / time-series), qualitative (semantic search), discovery (list), and hybrid — plus dedicated **exact-term queries** ("sessions mentioning Snowflake", "find the word 'churn' in any pain point") that validate the hybrid retrieval added in P1.R2 and would fail under pure-vector. This part runs the eval against both surfaces (old and new) so the new surface can be measured against the old one's baseline before the Part 3 cutover gate fires.
 
 ### Acceptance Criteria
 
 - [ ] P1.AC1 — Each new tool exists and can be invoked directly with valid inputs to return correct results
 - [ ] P1.AC2 — `list_sessions` returns lightweight metadata only (no `parsed_content`, no `structured_json`)
-- [ ] P1.AC3 — `fetch_session_content` returns structured content for the requested ids and reports "got N of M requested" when input exceeds the per-call cap
+- [ ] P1.AC3 — `fetch_session_content` returns structured content sized by a token budget (not a raw session count) and reports "fetched N of M requested (token budget reached)" when the budget is exhausted before all ids are served
 - [ ] P1.AC4 — `aggregate` with no `groupBy` returns a count; with a `groupBy` returns a ranked or labelled distribution; matches today's `queryDatabase` results for the same filters across all 13 retired actions
 - [ ] P1.AC5 — `time_series` returns the same shape as today's `sessions_over_time` and `theme_trends` for equivalent inputs
 - [ ] P1.AC6 — Each tool's filter schema contains only fields that tool uses; no shared 8-field filter bag
 - [ ] P1.AC7 — Workspace scoping is enforced at the service layer; the tool inputs do not include any `teamId` field
 - [ ] P1.AC8 — Tool result shapes are JSON-serialisable, name-resolved (clients/themes by name, not UUID), date-string normalised, and use `[]` for empty results
 - [ ] P1.AC9 — The old `searchInsights` and `queryDatabase` tools remain wired to the chat model and unchanged in behaviour at the end of this part
-- [ ] P1.AC10 — The eval harness exists, contains at least 15 queries across the four shape categories, runs end-to-end against the old surface (establishing baseline pass rate) and the new surface (measuring parity), and produces a per-query report with judge scores
+- [ ] P1.AC10 — The eval harness exists, contains at least 15 queries across the four shape categories plus dedicated exact-term queries, runs end-to-end against the old surface (establishing baseline pass rate) and the new surface (measuring parity), and produces a per-query report with judge scores
+- [ ] P1.AC11 — `semantic_search` performs hybrid retrieval (pgvector + Postgres `tsvector`, fused via RRF); exact-term queries return the matching chunks even when there is no semantic similarity to the query phrasing
+- [ ] P1.AC12 — The eval harness reports tool-routing accuracy as a metric distinct from answer correctness; the per-query report distinguishes "right answer via wrong path" from "right answer via right path"
 
 ---
 
@@ -89,7 +115,7 @@ Together these replace today's 13 quantitative actions (`count_clients`, `count_
 
 **P2.R3 — Focus-scoped summaries.** When the chat model passes a `focus` string ("pricing complaints", "feature requests"), each per-session summary is scoped to that topic — the summarisation prompt explicitly instructs the cheap model to extract only content relevant to the focus and to return a single sentence noting "no content matches focus" if the session is irrelevant. With no focus, the summary is a balanced 3-sentence digest.
 
-**P2.R4 — Bounded fan-out.** The tool caps the number of session ids per call (initial cap: 50) with explicit "summarised 50 of {total} requested" feedback so the model can paginate. The cap is independent of, and may be larger than, the `fetch_session_content` cap because each session's content stays in the cheap model's context, not the chat model's.
+**P2.R4 — Bounded fan-out.** The tool caps the number of session ids per call (initial cap: 50) with explicit "summarised 50 of {total} requested" feedback so the model can paginate. This is a count cap, not a token-budget cap (unlike `fetch_session_content`), because each session's full content is held only in the cheap model's context one at a time — the chat model only ever sees the short per-session summaries, so the chat-side context pressure is small and predictable.
 
 **P2.R5 — Parallel execution with bounded concurrency.** Per-session summaries run in parallel, capped at a small concurrency limit (initial: 5), to avoid swamping the cheap model's rate limits. Sessions that fail their individual summary do not abort the batch — they are returned with `summary: null` and an explicit `error` field, so the chat model can mention partial coverage in its reply.
 
@@ -117,13 +143,13 @@ Together these replace today's 13 quantitative actions (`count_clients`, `count_
 
 ## Part 3: Cutover and Ripout
 
-**Scope:** Switch the chat model to the new tool surface. Delete the old tools and the defensive scaffolding around them. No A/B, no flag, no parallel runtime.
+**Scope:** Switch the chat model to the new tool surface and delete the old tools and the defensive scaffolding around them in the same commit. The cutover is gated by the eval (P3.R11). If a real-world regression surfaces post-cutover that the eval missed, the cutover commit is reverted, the gap is closed in the eval, and the cutover is re-attempted before this PRD is closed.
 
 ### Requirements
 
-**P3.R1 — System prompt v2.** The chat system prompt is rewritten to instruct the model on the new tool surface. It explains each tool's purpose, when to chain them (list → fetch → synthesise; list → summarise → synthesise), and when to prefer summarise-sessions over fetch-session-content (rule of thumb: when N > ~10). It retains the existing rules on grounding, citations, internal-detail non-disclosure, list-completeness, and follow-ups.
+**P3.R1 — System prompt v2.** The chat system prompt is rewritten to instruct the model on the new tool surface. It explains each tool's purpose, when to chain them (list → fetch → synthesise; list → summarise → synthesise), and when to prefer summarise-sessions over fetch-session-content (rule of thumb: when N > ~10). It also instructs the model on **agent-driven multi-query semantic search**: when the user's question is broad, ambiguous, or uses domain-specific terminology, the model issues 2–3 `semantic_search` calls with rephrased queries and synthesises across the union, rather than relying on a single phrasing. This is prompt-guided, not a hardcoded pre-rewriter pipeline — the model decides whether and how to fan out, consistent with the agentic philosophy of the rest of the surface. It retains the existing rules on grounding, citations, internal-detail non-disclosure, list-completeness, and follow-ups.
 
-**P3.R2 — Old tools removed.** The `searchInsights` and `queryDatabase` tool builders are removed from the chat stream service. The defensive filter-sanitisation layer (cue-matching against the user's last message to drop hallucinated filters) is removed in the same change — the new per-tool filter schemas make it unnecessary.
+**P3.R2 — Old tools removed.** The `searchInsights` and `queryDatabase` tool builders are removed from the chat stream service in the cutover commit. The defensive filter-sanitisation layer (cue-matching against the user's last message to drop hallucinated filters) is removed in the same change — the new per-tool filter schemas make it unnecessary. There is no parallel-runtime commit; the cutover and the ripout are the same change.
 
 **P3.R3 — Chat-tool action registry retired.** The `CHAT_TOOL_ACTIONS` tuple, the `buildChatToolDescription()` helper, and the dev-time `assertChatToolActionsInSync()` check that exists only to keep the chat tool's enum in sync with the dashboard registry are deleted. The dashboard's own use of the underlying query layer (its own action surface) is unaffected.
 
@@ -142,11 +168,16 @@ Together these replace today's 13 quantitative actions (`count_clients`, `count_
 
 **P3.R8 — Starter questions updated.** The four hardcoded starter questions are reviewed and at least one is changed to demonstrate a question the old surface couldn't answer (e.g. a "summarise everything" prompt), so users discover the new capability.
 
-**P3.R9 — Prompt caching.** The chat system prompt and tool descriptions are cached at the model-call layer using the configured provider's cache mechanism (Anthropic `cache_control` markers; equivalent for other providers, with a no-op fallback when the active provider doesn't support caching). Per-turn telemetry logs cache-hit-input vs cache-miss-input token counts so the savings are observable. Target: a measurable input-cost reduction on every turn after the first within a conversation; specifically, cache-hit tokens become the majority of input tokens once the conversation is past its first turn.
+**P3.R9 — Prompt caching.** The chat system prompt and tool descriptions are cached at the model-call layer using the configured provider's cache mechanism. All three providers Synthesiser supports today have caching:
+- **Anthropic** — explicit `cache_control: { type: "ephemeral" }` markers on the cached message blocks.
+- **OpenAI** — automatic for any prompt ≥ 1024 tokens (no developer action needed); telemetry exposes the hit count via `usage.prompt_tokens_details.cached_tokens`.
+- **Google Gemini** — explicit `createCachedContent` API call before the generate call.
 
-**P3.R10 — Per-turn cost circuit breaker.** The chat stream tracks the cumulative tool-result tokens introduced into the model's context within a single user turn. When the per-turn budget is exceeded (initial budget: 200,000 tool-result input tokens; configurable via env var), no further tool calls are accepted; a system-level message is injected telling the model "you have hit the per-turn budget — synthesise an answer with what you already have, and explicitly tell the user the query was too broad and suggest narrowing by client or date range". The user-facing response surfaces this narrowing suggestion in plain language, never an internal error. The hit is logged with telemetry indicating which tools and how many calls preceded the breaker.
+A no-op fallback applies if the active provider is later swapped for one without caching support. Per-turn telemetry logs cache-hit-input vs cache-miss-input token counts so the savings are observable. Target: a measurable input-cost reduction on every turn after the first within a conversation; specifically, cache-hit tokens become the majority of input tokens once the conversation is past its first turn.
 
-**P3.R11 — Eval set as the cutover gate.** The cutover (deletion of the old tools) is gated by the eval results. Before the ripout commit lands, the new surface must score at least the configured pass-rate threshold (initial target: ≥ 90% of the Part 1 baseline-coverage queries judged "correct or better" by the LLM-as-judge rubric, AND zero regressions on queries the old surface answered correctly). The eval results are reviewed and the pass is documented in the cutover commit / PR description. If the threshold is not met, the cutover is deferred — the old surface stays wired and the gap is fixed, eval re-run, then re-gated.
+**P3.R10 — Per-turn cost circuit breaker.** The chat stream tracks the cumulative tool-result tokens introduced into the model's context within a single user turn. When the per-turn budget is exceeded (initial budget: 100,000 tool-result input tokens; configurable via env var, expected to be tuned upward from telemetry once we see real workloads — start tight rather than discover the right number through a surprise bill), no further tool calls are accepted; a system-level message is injected telling the model "you have hit the per-turn budget — synthesise an answer with what you already have, and explicitly tell the user the query was too broad and suggest narrowing by client or date range". The user-facing response surfaces this narrowing suggestion in plain language, never an internal error. The hit is logged with telemetry indicating which tools and how many calls preceded the breaker.
+
+**P3.R11 — Eval set as the cutover gate.** The cutover (deletion of the old tools) is gated by the eval results. Before the cutover commit lands, the new surface must clear two thresholds (initial targets: ≥ 90% answer-correctness pass-rate AND ≥ 90% tool-routing accuracy on the Part 1 baseline-coverage queries, with zero regressions on either dimension vs. queries the old surface answered correctly). The eval results are reviewed and the pass is documented in the cutover commit / PR description. If a threshold is not met, the cutover is deferred — the old surface stays wired and the gap is fixed, eval re-run, then re-gated. If a regression surfaces in real production traffic post-cutover that the eval missed, the cutover commit is reverted, the gap is closed by adding a covering query to the eval, and the cutover is re-attempted once the updated eval passes.
 
 ### Acceptance Criteria
 
@@ -160,7 +191,7 @@ Together these replace today's 13 quantitative actions (`count_clients`, `count_
 - [ ] P3.AC8 — Existing chat features (citations, follow-ups, in-conversation search, archive, conversation rename / pin / archive / delete) are unchanged
 - [ ] P3.AC9 — Prompt caching is enabled for the active provider with a no-op fallback for unsupported providers; per-turn telemetry shows cache-hit-input as the majority of input tokens on turns 2+ within a conversation
 - [ ] P3.AC10 — A pathological broad query trips the per-turn cost circuit breaker, the model produces a synthesised partial answer, and the user-facing response includes a "too broad — try narrowing" suggestion in plain language
-- [ ] P3.AC11 — The eval results meet the configured threshold (≥ 90% pass with zero regressions vs. the old-surface baseline) and are documented in the cutover PR description before the old tools are deleted
+- [ ] P3.AC11 — The eval results clear both gates (≥ 90% answer-correctness AND ≥ 90% tool-routing accuracy, with zero regressions on either dimension vs. the old-surface baseline) and are documented in the cutover PR description before the old tools are deleted
 
 ---
 
@@ -168,7 +199,7 @@ Together these replace today's 13 quantitative actions (`count_clients`, `count_
 
 - **Tool-call tracing UI.** A debug panel (admin-only or dev-only) that shows the model's tool-call sequence for a turn, so we can audit whether the model is chaining tools efficiently.
 - **Per-tool latency telemetry.** Log entry / exit / duration for each tool call separately, surfaced in a dashboard, so we can spot slow tools and optimise the right ones.
-- **Adaptive fetch-session-content cap.** Replace the static 30-session cap with a token-budget cap (e.g. "fetch until ~50k tokens") so smaller sessions fill more slots and larger ones fewer.
+- **Reranker layer for semantic search.** A second-stage reranker (Cohere Rerank, BGE, or a self-hosted cross-encoder) over the top-N results from the hybrid retrieval added in P1.R2, before the chunks reach the chat model. Deferred from PRD-033 because: (a) it introduces a new paid SaaS dependency or a new self-hosted service; (b) it adds 200–500ms of latency per call; (c) hybrid retrieval (pgvector + tsvector + RRF) often closes 80% of the precision gap a reranker would address. Decision rule: ship hybrid, measure precision on the eval over real workloads, and only PRD a reranker if a precision gap remains that's not closable by tuning RRF weights or query rewriting.
 - **Chat-side caching of `list_*` results.** A list of clients rarely changes within a single conversation. Cache discovery-tool results per conversation turn so chained calls don't re-query.
 - **Cross-session diff tool.** A first-class "compare A vs B" tool that takes two filter sets and returns aligned summaries — currently the chat model has to do this by chaining two summarise calls.
 - **User-controllable summarisation depth.** Surface a per-conversation setting ("brief / detailed / verbatim") that the chat model passes through to summarise-sessions, instead of the model picking depth implicitly.
@@ -176,7 +207,7 @@ Together these replace today's 13 quantitative actions (`count_clients`, `count_
 - **Tool-result memoisation across turns.** Recognise that "what changed since I last asked" benefits from comparing against a previous turn's tool results; persist the most recent result per tool per conversation for quick deltas.
 - **User-editable system prompt for chat.** Lift the chat system prompt out of source control and into the per-team prompt editor (mirroring extraction prompts), so power users can tune chat behaviour without a code change.
 - **Semantic caching of repeated user queries.** A second-layer cache (Portkey / Helicone / homegrown) that recognises semantically-equivalent user prompts within a workspace and serves the prior answer directly, skipping the model entirely. Saves recurring "what did Acme say last week" lookups but needs careful invalidation when underlying data changes.
-- **Adaptive per-turn cost budget.** Replace the static 200k-token circuit breaker with a budget that scales with query intent — broader queries get a larger budget up to a hard ceiling, narrow queries are capped tighter. Avoids the false-positive case where a legitimately broad query is artificially squeezed.
+- **Adaptive per-turn cost budget.** Replace the static circuit breaker (initially 100k tool-result input tokens; expected to settle higher once telemetry calibrates it) with a budget that scales with query intent — broader queries get a larger budget up to a hard ceiling, narrow queries are capped tighter. Avoids the false-positive case where a legitimately broad query is artificially squeezed.
 - **Trajectory-matching CI block.** Promote the eval from "manually run before cutover" to a CI gate that blocks merges when tool-call trajectories regress against the golden set — turn the Part 3 manual gate into a permanent quality bar for chat changes.
 - **Graph-based agent orchestration.** If tool count grows past ~15 or chained-call workflows become consistently buggy, revisit whether to migrate from ReAct + `streamText` to an explicit state-machine library (LangGraph or OpenAI Agents SDK). Premature today.
 - **LLM-as-judge model upgrade path.** Today's eval uses a single judge model. Add multi-judge agreement (or a stronger model than the chat model as judge) once eval volume justifies the cost.

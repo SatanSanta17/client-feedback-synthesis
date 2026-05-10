@@ -412,7 +412,8 @@ synthesiser/
 │   │   ├── attachment-repository.ts    # AttachmentRepository interface — `AttachmentRow.storage_path: string \| null` (nullable since PRD-032 Part 2 to support transcript-only rows); `AttachmentRow.last_edited_at: string \| null` (PRD-032 Part 3 — non-null on edited transcript rows). Methods: `create()` (parsed-file insert, requires non-null storage_path), `createTranscript()` (PRD-032 P2 — DB-only insert with storage_path NULL and source_format hardcoded to 'video_transcript' inside the impl; PRD-032 P3 — optional `is_edited` flag on the input writes `last_edited_at = now()` on insert when true), `updateTranscript(attachmentId, parsedContent)` (PRD-032 P3 — UPDATE parsed_content + set `last_edited_at = now()`, defence-in-depth `eq("source_format", "video_transcript")` predicate so a stale client racing past the route's check still hits a no-op), `softDelete()` (returns `string \| null`), upload/remove/getSignedUrl/getStoragePath/getBySessionId/getCountForSession. `ATTACHMENT_ROW_FIELDS` constant in the Supabase impl is the single source of truth for the SELECT field list (4 call sites)
 │   │   ├── client-repository.ts        # ClientRepository interface
 │   │   ├── conversation-repository.ts  # ConversationRepository interface + ConversationInsert, ConversationUpdate types (PRD-020)
-│   │   ├── embedding-repository.ts    # EmbeddingRepository interface + EmbeddingRow, SearchOptions, SimilarityResult types (PRD-019)
+│   │   ├── embedding-repository.ts    # EmbeddingRepository interface + EmbeddingRow, SearchOptions, SimilarityResult types (PRD-019). **PRD-033 Part 1**: extended with `fullTextSearch` (hybrid retrieval FTS side), `fetchBySessionIds` (chat fetch_session_content), `listSignals` (chat fetch_signals); FtsResult / FtsSearchOptions / SessionChunkRow / SignalFilters types
+│   │   ├── chat-query-repository.ts   # **PRD-033 Part 1** — ChatQueryRepository interface for the agentic chat tool surface (`listClients`, `listSessions`, `listThemes`, `fetchSessionHeaders`). Deviation from TRD § 1.2: created as a dedicated repo rather than extending SessionRepository / ClientRepository / ThemeRepository (ISP — none of the dashboard/list-page consumers want chat-shaped methods). Implements at-least-one-chunk EXISTS semantics for signal-level filters on list_sessions (PRD § P1.R1)
 │   │   ├── invitation-repository.ts    # InvitationRepository interface
 │   │   ├── theme-repository.ts        # ThemeRepository interface + ThemeInsert, ThemeUpdate types (PRD-021)
 │   │   ├── signal-theme-repository.ts # SignalThemeRepository interface + SignalThemeInsert type (PRD-021)
@@ -433,7 +434,8 @@ synthesiser/
 │   │   │   ├── supabase-attachment-repository.ts  # Supabase adapter for AttachmentRepository
 │   │   │   ├── supabase-client-repository.ts      # Supabase adapter for ClientRepository
 │   │   │   ├── supabase-conversation-repository.ts # Supabase adapter for ConversationRepository — cursor pagination, pinned-first ordering (PRD-020)
-│   │   │   ├── supabase-embedding-repository.ts   # Supabase adapter for EmbeddingRepository — uses service-role client, similarity search via match_session_embeddings RPC with filter_user_id for personal workspace isolation (PRD-019)
+│   │   │   ├── supabase-embedding-repository.ts   # Supabase adapter for EmbeddingRepository — uses service-role client, similarity search via match_session_embeddings RPC with filter_user_id for personal workspace isolation (PRD-019). **PRD-033 Part 1**: + `fullTextSearch` via match_session_embeddings_fts RPC (mirrors vector-RPC signature, adds FTS rank), `fetchBySessionIds` (chunk bulk fetch), `listSignals` (filter-driven chunks, joins through signal_themes when themeName is set; severity/urgency applied in TS via metadata JSONB)
+│   │   │   ├── supabase-chat-query-repository.ts   # **PRD-033 Part 1** — Supabase adapter for ChatQueryRepository. listClients computes session counts + last-session date in TS from a workspace-scoped sessions pull. listSessions resolves signal-level filters (theme, chunkTypes, severity, urgency) by computing per-filter session-id sets and intersecting them, then applies session-level filters. listThemes scopes via in-scope session_embeddings → signal_themes junction, returns mention counts sorted desc. fetchSessionHeaders uses the same theme-resolution helper as listSessions
 │   │   │   ├── supabase-theme-repository.ts       # Supabase adapter for ThemeRepository — workspace-scoped with scopeByTeam(), case-insensitive findByName via ilike (PRD-021)
 │   │   │   ├── supabase-signal-theme-repository.ts # Supabase adapter for SignalThemeRepository — bulk insert, query by embedding IDs or theme ID (PRD-021)
 │   │   │   ├── supabase-theme-candidate-repository.ts # PRD-026 Part 2 adapter — joins themes via named FKs (theme_a_id_fkey / theme_b_id_fkey) for current name+description; mapRow asserts the theme_a_id < theme_b_id ordering invariant defensively; pgvector text-format helpers shared with the prevention path; also exposes createThemeCandidatePairsRepository wrapping the find_theme_candidate_pairs RPC
@@ -486,7 +488,30 @@ synthesiser/
 │   │   ├── workspace-context.ts       # PRD-026 Part 3 (extracted in audit) — WorkspaceCtx shape ({ teamId, userId }) + matchesWorkspace() defense-in-depth helper used by services that fetch a row by id and want to verify it belongs to the requesting workspace. Originally lived in theme-candidate-service.ts; extracted once theme-merge-service became the second consumer
 │   │   ├── insight-service.ts   # Headline insight generation — generateHeadlineInsights() (aggregates → LLM → batch insert), maybeRefreshDashboardInsights() (conditional fire-and-forget after extraction) (PRD-021 Part 5)
 │   │   ├── notification-service.ts # Workspace-notifications service — emit (registry check + Zod parse + insert), listForUser, unreadCount, markRead, markAllRead; UnknownEventTypeError + InvalidPayloadError; consumers import directly (no API routes until Part 2) (PRD-029 Part 1)
-│   │   ├── retrieval-service.ts # Retrieval service — retrieveRelevantChunks() with adaptive query classification, embedding, similarity search, deduplication (PRD-019)
+│   │   ├── retrieval-service.ts # Retrieval service — retrieveRelevantChunks() with adaptive query classification, embedding, similarity search, deduplication (PRD-019). **PRD-033 Part 1**: now hybrid — runs vector + FTS in parallel (Promise.all), fuses via reciprocal rank fusion (RRF), logs per-side source distribution (vector / fts / both) for eval telemetry. The existing `searchInsights` chat tool transparently uses the hybrid path
+│   │   ├── retrieval-rrf.ts     # **PRD-033 Part 1** — pure rrfFuse(setA, setB, keyFn, cfg) function. Cormack et al. RRF formula `score = Σ weight / (k + rank)`; default k=60. Returns each row annotated with its rrfScore + sources: ('vector' | 'fts')[] for telemetry
+│   │   ├── retrieval-config.ts  # **PRD-033 Part 1** — env-overridable hybrid retrieval constants (RAG_VECTOR_TOP_N, RAG_FTS_TOP_N, RAG_RRF_K, RAG_VECTOR_WEIGHT, RAG_FTS_WEIGHT, RAG_FINAL_TOP_N) with bounds validation
+│   │   ├── token-estimator.ts   # **PRD-033 Part 1** — chars/4 token-count proxy with documented ±20% inaccuracy. Used by fetch_session_content budget enforcement; will be reused by Part 2 fan-out budgeting and Part 3 cost circuit breaker. Real tokenizers (tiktoken / Anthropic countTokens / Google) deferred until eval shows budget mis-estimation is a real problem
+│   │   ├── chat-tool-services/  # **PRD-033 Part 1** — domain logic for the chat tool surface
+│   │   │   ├── discovery-service.ts        # listClients / listSessions / listThemes wrappers — thin pass-through to ChatQueryRepository
+│   │   │   ├── session-content-service.ts  # fetchSessionContent(ids) — composes session headers + all 11 chunk types into SessionContent[], enforces token budget (CHAT_FETCH_CONTENT_BUDGET, default 50k), reports {fetched, requested, budgetReached}
+│   │   │   ├── signals-service.ts          # fetchSignals(filters) — strictly schema-filtered, no query string. Distinct from semantic_search; for completeness questions ("every pain point about pricing")
+│   │   │   ├── aggregation-service.ts      # aggregate / timeSeries — thin adapter mapping (entity, groupBy) tuples to existing database-query QueryAction enum per PRD-033 § P1.R3 mapping table; reshapes results for the model. Multi-dim groupBy supported (theme×client matrix, client×severity health grid)
+│   │   │   └── insights-service.ts         # getLatestInsights / getInsightsHistory — passthrough to existing insights domain module via executeQuery
+│   │   ├── chat-tools/         # **PRD-033 Part 1** — Vercel AI SDK tool factories for the agentic chat surface. NOT YET wired into chat-stream-service.ts (P1.AC9); the Part 3 cutover commit will swap them in and delete searchInsights + queryDatabase. Each tool is one file with a Zod input schema (per-tool filter contract — no shared filter bag), tool description tuned for routing accuracy, and an execute() that delegates to the corresponding chat-tool-service
+│   │   │   ├── index.ts                       # createChatTools(ctx) registry — returns Record<toolName, Tool> with all 10 tools
+│   │   │   ├── shared/
+│   │   │   │   └── tool-context.ts            # ChatToolContext type (workspace, repos, supabaseClient, emitStatus). Forward-compat: Part 2 will add cheapModel; Part 3 will add recordToolResultTokens telemetry
+│   │   │   ├── list-clients-tool.ts           # Discovery — list_clients
+│   │   │   ├── list-sessions-tool.ts          # Discovery — list_sessions (supports session-level + signal-level filters per PRD § P1.R1 semantics)
+│   │   │   ├── list-themes-tool.ts            # Discovery — list_themes (with optional date-range narrowing)
+│   │   │   ├── semantic-search-tool.ts        # Retrieval — semantic_search (hybrid via retrieval-service); routes RIVER similarity questions, NOT completeness questions
+│   │   │   ├── fetch-session-content-tool.ts  # Retrieval — fetch_session_content (token-budget capped); the gap-closer for "summarise everything" multi-session synthesis
+│   │   │   ├── fetch-signals-tool.ts          # Retrieval — fetch_signals (schema-only, completeness questions)
+│   │   │   ├── aggregate-tool.ts              # Aggregation — aggregate (entity, groupBy[]); subsumes 11 of the 13 retired CHAT_TOOL_ACTIONS quantitative actions
+│   │   │   ├── time-series-tool.ts            # Aggregation — time_series (granularity week/month, optional groupBy=theme)
+│   │   │   ├── insights-latest-tool.ts        # Insights passthrough — insights_latest
+│   │   │   └── insights-history-tool.ts       # Insights passthrough — insights_history
 │   │   ├── attachment-service.ts # Attachment CRUD — accepts AttachmentRepository. **PRD-032 Part 2:** new `createTranscriptAttachment(repo, input)` companion to `uploadAndCreateAttachment` — DB insert only, no Storage interaction; `deleteAttachment()` skips `removeFromStorage()` when the soft-deleted row's `storage_path` is null (transcript rows have nothing to clean up). **PRD-032 Part 3:** new `updateTranscriptAttachment(repo, attachmentId, parsedContent)` for transcript edits via the PATCH route; `CreateTranscriptInput` (internal) gains optional `isEdited: boolean` for the pre-save edit case
 │   │   ├── client-service.ts    # Client search and creation — accepts ClientRepository
 │   │   ├── contact-service.ts   # Landing-page contact form — persistSubmission() (service-role insert into contact_submissions, bypasses RLS) + notifyOperator() (composes plain HTML email via email-service with reply-to set to submitter, never throws — failure recoverable from DB) (PRD-030 Part 3)
@@ -527,8 +552,19 @@ synthesiser/
 │   └── ffmpeg/                       # PRD-032 Part 1 — gitignored. `ffmpeg-core.js` (112 KB) and `ffmpeg-core.wasm` (32 MB) copied from `node_modules/@ffmpeg/core/dist/umd/` by the `postinstall` hook. Served from our origin under `/ffmpeg/*` with `Cache-Control: public, max-age=31536000, immutable` (set in `next.config.ts`)
 ├── scripts/                         # One-off operational scripts run via `npm run …` (tsx + @next/env loader, not in the request lifecycle)
 │   ├── backfill-theme-embeddings.ts # PRD-026 Part 1 backfill — populates `themes.embedding` for every row where the column is NULL. Idempotent; runs once between migrations 001 and 002. Uses buildThemeEmbeddingText for the same name+description composition the prevention guard uses.
+│   ├── run-eval.ts                  # **PRD-033 Part 1** — CLI eval runner (`npm run eval:chat -- --surface=old|new [--query=Q-0xx]`). Loads docs/033-agentic-chat/eval/queries.json, invokes the chat surface for each query, scores answer correctness via LLM-as-judge (judge-prompt.ts), and tool-routing accuracy via subsequence match. Writes per-query + aggregate report to docs/033-agentic-chat/eval/reports/<ISO>-<surface>.json (gitignored). Surface invocation step is a documented stub — the eval mechanics compile and the shim is filled in once test environment is configured
 │   └── copy-ffmpeg-assets.mjs      # PRD-032 Part 1 — idempotent copy of `@ffmpeg/core` UMD assets into `public/ffmpeg/`. Wired as `postinstall` in `package.json`. Skip-on-missing-source. Only copies when size or mtime changed
 └── docs/                            # Each numbered folder contains prd.md + trd.md (and optional SQL migrations)
+    └── 033-agentic-chat/
+        ├── prd.md
+        ├── trd.md
+        ├── 001-fts-on-session-embeddings.sql      # **PRD-033 Part 1** migration — adds chunk_text_tsv (generated tsvector) + GIN index + composite (team_id, session_id) index on session_embeddings
+        ├── 002-match-session-embeddings-fts-rpc.sql  # **PRD-033 Part 1** migration — match_session_embeddings_fts RPC mirroring the vector RPC's signature; uses websearch_to_tsquery + ts_rank_cd
+        └── eval/
+            ├── queries.json                       # **PRD-033 Part 1** — frozen test set for the chat eval harness (16 queries: quantitative / qualitative / discovery / hybrid / exact-term)
+            ├── judge-prompt.ts                    # **PRD-033 Part 1** — LLM-as-judge system prompt (versioned v1)
+            ├── .gitignore                         # excludes reports/
+            └── reports/                           # generated per-run reports (gitignored)
 ```
 
 > This map is updated after each increment ships. Only files that exist in the codebase are listed here.
@@ -616,10 +652,13 @@ Stores vector embeddings of chunked session extraction data for semantic similar
 | `chunk_type` | TEXT | NOT NULL. One of: `summary`, `client_profile`, `pain_point`, `requirement`, `aspiration`, `positive_signal` (PRD-031 Part 2), `competitive_mention`, `blocker`, `tool_and_platform`, `custom`, `raw`. Stored as text (not enum) for extensibility. |
 | `metadata` | JSONB | NOT NULL, default `'{}'`. Type-specific fields: `client_name`, `session_date`, `severity`, `priority`, `competitor`, `category_name`, `client_quote`, etc. |
 | `embedding` | vector(1536) | NOT NULL. Embedding vector (dimension matches configured embedding model). |
+| `chunk_text_tsv` | tsvector | **PRD-033 Part 1** (migration `001-fts-on-session-embeddings.sql`). Generated `STORED` column: `to_tsvector('english', coalesce(chunk_text, ''))`. Auto-maintained; powers the FTS side of hybrid retrieval (RRF fused with vector similarity in `retrieval-service.ts`). |
 | `schema_version` | INTEGER | NOT NULL, default `1`. Matches extraction schema version for schema-aware retrieval. |
 | `created_at` | TIMESTAMPTZ | Default `now()` |
 
-**Indexes:** `session_embeddings_embedding_hnsw_idx` — HNSW index on `embedding` using `vector_cosine_ops` for cosine similarity search. `session_embeddings_session_id_idx` — on `session_id` for cascade deletes and re-extraction cleanup. `session_embeddings_team_chunk_type_idx` — on `(team_id, chunk_type)` for filtered similarity searches.
+**Indexes:** `session_embeddings_embedding_hnsw_idx` — HNSW index on `embedding` using `vector_cosine_ops` for cosine similarity search. `session_embeddings_session_id_idx` — on `session_id` for cascade deletes and re-extraction cleanup. `session_embeddings_team_chunk_type_idx` — on `(team_id, chunk_type)` for filtered similarity searches. **PRD-033 Part 1**: `idx_session_embeddings_tsv` — GIN index on `chunk_text_tsv` for FTS matching; `idx_session_embeddings_team_session` — composite on `(team_id, session_id)` for the chat `fetch_session_content` bulk fetch path.
+
+**RPCs (PRD-033 Part 1):** `match_session_embeddings_fts(query_text, match_count, filter_team_id, filter_user_id, filter_chunk_types, filter_client_name, filter_date_from, filter_date_to)` — FTS counterpart to the existing `match_session_embeddings` (vector RPC). Uses `websearch_to_tsquery('english', ...)` (handles quoted phrases, OR, `-term`) and `ts_rank_cd` for scoring. Returns rows in the same `(id, session_id, chunk_text, chunk_type, metadata, fts_rank)` shape so RRF fusion in TS is a simple keyed join on `id`. Workspace scoping mirrors `match_session_embeddings` exactly.
 **RLS:** Personal: users SELECT/INSERT/UPDATE/DELETE embeddings for their own sessions. Team: members SELECT/INSERT/UPDATE/DELETE team embeddings via `is_team_member()`.
 
 ### `themes`
@@ -1138,6 +1177,8 @@ lib/hooks/
 | GET | `/api/chat/conversations/[id]/messages?cursor=` | List messages for a conversation (cursor-based, newest-first). | Yes (RLS) |
 | POST | `/api/chat/send` | Streaming chat endpoint. Validates input, resolves/creates conversation, delegates to `chat-stream-service`, returns SSE response with `X-Conversation-Id` header. `teamId` is always read from the `active_team_id` cookie — never from the request body. | Yes |
 
+**Chat tool surface** (PRD-033 Part 1, not yet wired into the streaming surface — see P1.AC9): the new agentic primitive tools live in `lib/services/chat-tools/` (one file per tool, factory + Vercel AI SDK `tool()`). The registry `createChatTools(ctx)` returns 10 tools: `list_clients`, `list_sessions`, `list_themes` (discovery), `semantic_search` (hybrid vector+FTS), `fetch_session_content`, `fetch_signals`, `aggregate`, `time_series` (delegates to existing `database-query` domains), `insights_latest`, `insights_history`. Workspace scope is enforced at the service layer; tool inputs never carry `teamId`. The Part 3 cutover commit will swap them into `chat-stream-service.ts` and remove `searchInsights` + `queryDatabase`.
+
 ### Dashboard
 
 | Method | Route | Purpose | Auth |
@@ -1183,6 +1224,15 @@ lib/hooks/
 | `EMBEDDING_DIMENSIONS` | Server only | Vector dimension — must match `session_embeddings.embedding` column (e.g., `1536`) |
 | `CONTACT_OPERATOR_EMAIL` | Server only | Recipient address for landing-page contact form notifications (PRD-030 Part 3) |
 | `NEXT_PUBLIC_CALENDLY_URL` | Public | Optional — when set, the landing-page contact section renders a "Book time directly" link to this URL (PRD-030 Part 3) |
+| `RAG_VECTOR_TOP_N` | Server only | Hybrid retrieval — top-N from vector side before RRF (default 30, PRD-033 Part 1) |
+| `RAG_FTS_TOP_N` | Server only | Hybrid retrieval — top-N from FTS side before RRF (default 30) |
+| `RAG_RRF_K` | Server only | RRF constant; default 60 (Cormack et al.) |
+| `RAG_VECTOR_WEIGHT` | Server only | RRF weight applied to vector contributions (default 1.0) |
+| `RAG_FTS_WEIGHT` | Server only | RRF weight applied to FTS contributions (default 1.0) |
+| `RAG_FINAL_TOP_N` | Server only | RRF — final top-N returned to caller (default 10) |
+| `CHAT_FETCH_CONTENT_BUDGET` | Server only | Token budget for `fetch_session_content` (default 50000; chars/4 proxy ±20%) |
+| `EVAL_JUDGE_PROVIDER` | Server only | Provider for the eval LLM-as-judge (independent of `AI_PROVIDER`); falls back to `AI_PROVIDER` if unset |
+| `EVAL_JUDGE_MODEL` | Server only | Model id for the eval judge; falls back to `AI_MODEL` if unset |
 
 See `.env.example` for the full template.
 
