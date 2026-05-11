@@ -21,7 +21,6 @@ import {
 } from "@/lib/prompts/classify-query";
 import { rrfFuse, type RrfSource } from "@/lib/services/retrieval-rrf";
 import {
-  RAG_FINAL_TOP_N,
   RAG_FTS_TOP_N,
   RAG_FTS_WEIGHT,
   RAG_RRF_K,
@@ -279,11 +278,6 @@ export async function retrieveRelevantChunks(
   // Cap at finalTopN one more time — dedup may have shrunk the list, but
   // never expanded it. Finally map.
   const results = deduped.slice(0, finalTopN).map(toRetrievalResult);
-
-  // The unused-import-of-RAG_FINAL_TOP_N would otherwise be flagged. It's
-  // imported for symmetry with the rest of the config (callers can read it
-  // directly if they want a default). Reference here keeps the import live.
-  void RAG_FINAL_TOP_N;
 
   console.log(
     `${LOG_PREFIX} Retrieval complete, returning ${results.length} results`

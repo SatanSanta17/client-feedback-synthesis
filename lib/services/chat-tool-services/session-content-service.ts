@@ -43,6 +43,14 @@ export interface FetchSessionContentResult {
   fetched: number;
   requested: number;
   budgetReached: boolean;
+  /**
+   * Sessions in the input that the workspace-scope check filtered out before
+   * processing (header lookup returned nothing). Distinct from the budget
+   * cut-off — these are sessions that don't belong to the current workspace
+   * (RLS / personal-workspace check); the chat model phrases partial coverage
+   * differently for "not yours" vs "couldn't fit".
+   */
+  outOfScopeCount: number;
 }
 
 export async function fetchSessionContent(
@@ -55,7 +63,13 @@ export async function fetchSessionContent(
   budgetTokens: number = DEFAULT_BUDGET
 ): Promise<FetchSessionContentResult> {
   if (ids.length === 0) {
-    return { sessions: [], fetched: 0, requested: 0, budgetReached: false };
+    return {
+      sessions: [],
+      fetched: 0,
+      requested: 0,
+      budgetReached: false,
+      outOfScopeCount: 0,
+    };
   }
 
   console.log(
@@ -72,14 +86,20 @@ export async function fetchSessionContent(
   const chunksBySessionId = groupChunks(allChunks);
 
   // Iterate in the order the model requested; budget-cut at the first session
-  // that would push us over.
+  // that would push us over. Sessions filtered out by workspace scope are
+  // counted separately so the chat model can phrase partial coverage
+  // accurately ("not in your workspace" vs "didn't fit in this call").
   const out: SessionContent[] = [];
   let used = 0;
   let budgetReached = false;
+  let outOfScopeCount = 0;
 
   for (const id of ids) {
     const header = headersBySessionId.get(id);
-    if (!header) continue; // session not in workspace or deleted
+    if (!header) {
+      outOfScopeCount += 1;
+      continue;
+    }
 
     const chunkRows = chunksBySessionId.get(id) ?? [];
     const session: SessionContent = {
@@ -111,7 +131,7 @@ export async function fetchSessionContent(
   }
 
   console.log(
-    `${LOG_PREFIX} fetchSessionContent — fetched ${out.length} / ${ids.length}, used ~${used} tokens, budgetReached: ${budgetReached}`
+    `${LOG_PREFIX} fetchSessionContent — fetched ${out.length} / ${ids.length}, used ~${used} tokens, budgetReached: ${budgetReached}, outOfScope: ${outOfScopeCount}`
   );
 
   return {
@@ -119,6 +139,7 @@ export async function fetchSessionContent(
     fetched: out.length,
     requested: ids.length,
     budgetReached,
+    outOfScopeCount,
   };
 }
 

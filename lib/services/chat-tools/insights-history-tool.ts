@@ -5,19 +5,7 @@ import { getInsightsHistory } from "@/lib/services/chat-tool-services/insights-s
 
 import type { ChatToolContext } from "./shared/tool-context";
 
-const inputSchema = z.object({
-  cursor: z
-    .string()
-    .optional()
-    .describe("Pagination cursor (batch_id) — pass the cursor from a prior call to fetch the next page."),
-  limit: z
-    .number()
-    .int()
-    .min(1)
-    .max(50)
-    .optional()
-    .describe("Max insight cards to return (default: backend default)."),
-});
+const inputSchema = z.object({});
 
 export function createInsightsHistoryTool(ctx: ChatToolContext) {
   return tool({
@@ -25,10 +13,10 @@ export function createInsightsHistoryTool(ctx: ChatToolContext) {
       "Fetch historical batches of dashboard insight cards. " +
       "Use when the user asks for older insights or wants to compare insights over time.",
     inputSchema,
-    execute: async (input) => {
+    execute: async () => {
       ctx.emitStatus("Fetching insights history…");
       return getInsightsHistory(
-        { teamId: ctx.workspace.teamId, cursor: input.cursor, limit: input.limit },
+        { teamId: ctx.workspace.teamId },
         { supabase: ctx.supabaseClient }
       );
     },

@@ -11,11 +11,9 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 
 import type { ChatQueryRepository } from "@/lib/repositories/chat-query-repository";
 import type { EmbeddingRepository } from "@/lib/repositories/embedding-repository";
+import type { WorkspaceCtx } from "@/lib/services/workspace-context";
 
-export interface WorkspaceCtx {
-  teamId: string | null;
-  userId: string;
-}
+export type { WorkspaceCtx };
 
 export interface ChatToolContext {
   workspace: WorkspaceCtx;

@@ -166,15 +166,11 @@ export async function summariseSessions(
 
   const failedCount = summaries.filter((s) => s.summary === null).length;
 
-  // Sessions the chat model asked about that we never even tried to
-  // summarise — filtered out by workspace scope inside fetchSessionContent
-  // (RLS / personal-workspace check). Distinct from `failedCount` (leaves
-  // that ran and failed) and from `capReached` (slice deliberately not sent
-  // to fetch).
-  const outOfScopeCount = Math.max(
-    0,
-    Math.min(requested, FANOUT_CAP) - contentResult.fetched
-  );
+  // Sessions the chat model asked about that workspace scope filtered out
+  // before processing (RLS / personal-workspace check). Sourced directly
+  // from fetchSessionContent so we don't conflate "filtered by scope"
+  // with "didn't fit under the token budget".
+  const outOfScopeCount = contentResult.outOfScopeCount;
 
   const telemetry = {
     cheapModelLabel: label,

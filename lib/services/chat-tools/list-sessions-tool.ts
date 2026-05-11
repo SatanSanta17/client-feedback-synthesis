@@ -3,21 +3,8 @@ import { z } from "zod";
 
 import { listSessions } from "@/lib/services/chat-tool-services/discovery-service";
 
+import { chunkTypeEnum } from "./shared/chunk-type-enum";
 import type { ChatToolContext } from "./shared/tool-context";
-
-const chunkTypeEnum = z.enum([
-  "summary",
-  "client_profile",
-  "pain_point",
-  "requirement",
-  "aspiration",
-  "positive_signal",
-  "competitive_mention",
-  "blocker",
-  "tool_and_platform",
-  "custom",
-  "raw",
-]);
 
 const inputSchema = z.object({
   clientName: z

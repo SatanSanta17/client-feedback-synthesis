@@ -11,23 +11,25 @@ import { executeQuery } from "@/lib/services/database-query";
 const LOG_PREFIX = "[insights-service]";
 
 export async function getLatestInsights(
-  filters: { teamId: string | null; limit?: number },
+  filters: { teamId: string | null },
   deps: { supabase: SupabaseClient }
 ): Promise<Record<string, unknown>> {
   console.log(`${LOG_PREFIX} getLatestInsights — teamId: ${filters.teamId}`);
   const result = await executeQuery(deps.supabase, "insights_latest", {
     teamId: filters.teamId,
   });
+  console.log(`${LOG_PREFIX} getLatestInsights — completed`);
   return result.data;
 }
 
 export async function getInsightsHistory(
-  filters: { teamId: string | null; cursor?: string; limit?: number },
+  filters: { teamId: string | null },
   deps: { supabase: SupabaseClient }
 ): Promise<Record<string, unknown>> {
   console.log(`${LOG_PREFIX} getInsightsHistory — teamId: ${filters.teamId}`);
   const result = await executeQuery(deps.supabase, "insights_history", {
     teamId: filters.teamId,
   });
+  console.log(`${LOG_PREFIX} getInsightsHistory — completed`);
   return result.data;
 }

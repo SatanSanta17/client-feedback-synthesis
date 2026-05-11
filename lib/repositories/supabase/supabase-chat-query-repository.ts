@@ -144,7 +144,11 @@ export function createChatQueryRepository(
       // we collect the set of session_ids that satisfy it; the final session
       // list is the AND of all such sets (intersection), then session-level
       // filters are applied.
-      const signalFilteredSessionIds = await this.resolveSignalLevelFilters(filters);
+      const signalFilteredSessionIds = await resolveSignalLevelFilters(
+        supabase,
+        teamId,
+        filters
+      );
       if (signalFilteredSessionIds && signalFilteredSessionIds.length === 0) {
         return [];
       }
@@ -174,7 +178,10 @@ export function createChatQueryRepository(
       // Step 4: in-memory sentiment filter (lives in structured_json) and
       // theme name resolution.
       const sessionIds = (sRows ?? []).map((r) => r.id as string);
-      const themesBySessionId = await this.fetchThemesForSessions(sessionIds);
+      const themesBySessionId = await fetchThemesForSessions(
+        supabase,
+        sessionIds
+      );
 
       const out: ChatSessionRow[] = [];
       for (const row of sRows ?? []) {
@@ -311,7 +318,8 @@ export function createChatQueryRepository(
         throw new Error(`fetchSessionHeaders failed: ${error.message}`);
       }
 
-      const themesBySessionId = await this.fetchThemesForSessions(
+      const themesBySessionId = await fetchThemesForSessions(
+        supabase,
         (data ?? []).map((r) => r.id as string)
       );
 
@@ -332,153 +340,168 @@ export function createChatQueryRepository(
       return out;
     },
 
-    // -----------------------------------------------------------------------
-    // Internal helpers
-    // -----------------------------------------------------------------------
-
-    /**
-     * Returns null if no signal-level filter was specified (caller skips this
-     * narrowing). Returns the intersection of session_ids satisfying every
-     * signal-level filter otherwise. Returns [] if any filter has no matches.
-     */
-    async resolveSignalLevelFilters(
-      filters: ChatSessionListFilters
-    ): Promise<string[] | null> {
-      const haveSignalFilter =
-        !!filters.themeName ||
-        (filters.chunkTypes && filters.chunkTypes.length > 0) ||
-        !!filters.severity ||
-        !!filters.urgency;
-      if (!haveSignalFilter) return null;
-
-      const sets: Set<string>[] = [];
-
-      // theme filter — go through signal_themes
-      if (filters.themeName) {
-        let tq = supabase
-          .from("themes")
-          .select("id")
-          .ilike("name", filters.themeName)
-          .eq("is_archived", false);
-        if (teamId) tq = tq.eq("team_id", teamId);
-        else tq = tq.is("team_id", null);
-
-        const { data: tRows } = await tq;
-        const themeIds = (tRows ?? []).map((t: { id: string }) => t.id);
-        if (themeIds.length === 0) return [];
-
-        const { data: jRows } = await supabase
-          .from("signal_themes")
-          .select("embedding_id")
-          .in("theme_id", themeIds);
-        const embeddingIds = (jRows ?? []).map(
-          (r: { embedding_id: string }) => r.embedding_id
-        );
-        if (embeddingIds.length === 0) return [];
-
-        const { data: eRows } = await supabase
-          .from("session_embeddings")
-          .select("session_id")
-          .in("id", embeddingIds);
-        sets.push(new Set((eRows ?? []).map((r: { session_id: string }) => r.session_id)));
-      }
-
-      // chunkTypes filter — pull session_ids that have at-least-one matching chunk
-      if (filters.chunkTypes && filters.chunkTypes.length > 0) {
-        let eq = supabase
-          .from("session_embeddings")
-          .select("session_id")
-          .in("chunk_type", filters.chunkTypes);
-        if (teamId) eq = eq.eq("team_id", teamId);
-        else eq = eq.is("team_id", null);
-
-        const { data: eRows } = await eq;
-        sets.push(new Set((eRows ?? []).map((r: { session_id: string }) => r.session_id)));
-      }
-
-      // severity / urgency — metadata JSONB filter
-      if (filters.severity || filters.urgency) {
-        let eq = supabase
-          .from("session_embeddings")
-          .select("session_id, metadata");
-        if (teamId) eq = eq.eq("team_id", teamId);
-        else eq = eq.is("team_id", null);
-
-        const { data: eRows } = await eq;
-        const matchingSessionIds = new Set<string>();
-        for (const row of eRows ?? []) {
-          const meta = (row.metadata ?? {}) as Record<string, unknown>;
-          if (
-            filters.severity &&
-            String(meta.severity ?? "").toLowerCase() !== filters.severity
-          ) {
-            continue;
-          }
-          if (
-            filters.urgency &&
-            String(meta.urgency ?? "").toLowerCase() !== filters.urgency
-          ) {
-            continue;
-          }
-          matchingSessionIds.add(row.session_id as string);
-        }
-        sets.push(matchingSessionIds);
-      }
-
-      if (sets.length === 0) return null;
-
-      // Intersection of all filter sets
-      let intersection = sets[0];
-      for (let i = 1; i < sets.length; i++) {
-        intersection = new Set([...intersection].filter((x) => sets[i].has(x)));
-      }
-      return [...intersection];
-    },
-
-    async fetchThemesForSessions(
-      sessionIds: string[]
-    ): Promise<Map<string, string[]>> {
-      const result = new Map<string, string[]>();
-      if (sessionIds.length === 0) return result;
-
-      // session_embeddings → signal_themes → themes
-      const { data: embRows } = await supabase
-        .from("session_embeddings")
-        .select("id, session_id")
-        .in("session_id", sessionIds);
-      const embIdToSessionId = new Map<string, string>(
-        (embRows ?? []).map((r: { id: string; session_id: string }) => [r.id, r.session_id])
-      );
-      const embIds = [...embIdToSessionId.keys()];
-      if (embIds.length === 0) return result;
-
-      const { data: junctionRows } = await supabase
-        .from("signal_themes")
-        .select("embedding_id, theme_id")
-        .in("embedding_id", embIds);
-      const themeIds = [...new Set((junctionRows ?? []).map((r: { theme_id: string }) => r.theme_id))];
-      if (themeIds.length === 0) return result;
-
-      const { data: themeRows } = await supabase
-        .from("themes")
-        .select("id, name")
-        .in("id", themeIds);
-      const themeNameById = new Map<string, string>(
-        (themeRows ?? []).map((t: { id: string; name: string }) => [t.id, t.name])
-      );
-
-      for (const j of junctionRows ?? []) {
-        const sessionId = embIdToSessionId.get(j.embedding_id as string);
-        const themeName = themeNameById.get(j.theme_id as string);
-        if (!sessionId || !themeName) continue;
-        const list = result.get(sessionId) ?? [];
-        if (!list.includes(themeName)) list.push(themeName);
-        result.set(sessionId, list);
-      }
-      return result;
-    },
-  } as ChatQueryRepository & {
-    resolveSignalLevelFilters: (filters: ChatSessionListFilters) => Promise<string[] | null>;
-    fetchThemesForSessions: (sessionIds: string[]) => Promise<Map<string, string[]>>;
   };
+}
+
+// ---------------------------------------------------------------------------
+// Module-scope helpers (private to this file).
+// Extracted from the factory so they don't pollute ChatQueryRepository's
+// public surface.
+// ---------------------------------------------------------------------------
+
+/**
+ * Returns null if no signal-level filter was specified (caller skips this
+ * narrowing). Returns the intersection of session_ids satisfying every
+ * signal-level filter otherwise. Returns [] if any filter has no matches.
+ */
+async function resolveSignalLevelFilters(
+  supabase: SupabaseClient,
+  teamId: string | null,
+  filters: ChatSessionListFilters
+): Promise<string[] | null> {
+  const haveSignalFilter =
+    !!filters.themeName ||
+    (filters.chunkTypes && filters.chunkTypes.length > 0) ||
+    !!filters.severity ||
+    !!filters.urgency;
+  if (!haveSignalFilter) return null;
+
+  const sets: Set<string>[] = [];
+
+  // theme filter — go through signal_themes
+  if (filters.themeName) {
+    let tq = supabase
+      .from("themes")
+      .select("id")
+      .ilike("name", filters.themeName)
+      .eq("is_archived", false);
+    if (teamId) tq = tq.eq("team_id", teamId);
+    else tq = tq.is("team_id", null);
+
+    const { data: tRows } = await tq;
+    const themeIds = (tRows ?? []).map((t: { id: string }) => t.id);
+    if (themeIds.length === 0) return [];
+
+    const { data: jRows } = await supabase
+      .from("signal_themes")
+      .select("embedding_id")
+      .in("theme_id", themeIds);
+    const embeddingIds = (jRows ?? []).map(
+      (r: { embedding_id: string }) => r.embedding_id
+    );
+    if (embeddingIds.length === 0) return [];
+
+    const { data: eRows } = await supabase
+      .from("session_embeddings")
+      .select("session_id")
+      .in("id", embeddingIds);
+    sets.push(
+      new Set((eRows ?? []).map((r: { session_id: string }) => r.session_id))
+    );
+  }
+
+  // chunkTypes filter — pull session_ids that have at-least-one matching chunk
+  if (filters.chunkTypes && filters.chunkTypes.length > 0) {
+    let eq = supabase
+      .from("session_embeddings")
+      .select("session_id")
+      .in("chunk_type", filters.chunkTypes);
+    if (teamId) eq = eq.eq("team_id", teamId);
+    else eq = eq.is("team_id", null);
+
+    const { data: eRows } = await eq;
+    sets.push(
+      new Set((eRows ?? []).map((r: { session_id: string }) => r.session_id))
+    );
+  }
+
+  // severity / urgency — metadata JSONB filter (in-memory because nested
+  // JSONB queries don't compose well with the existing severity-filter helper)
+  if (filters.severity || filters.urgency) {
+    let eq = supabase
+      .from("session_embeddings")
+      .select("session_id, metadata");
+    if (teamId) eq = eq.eq("team_id", teamId);
+    else eq = eq.is("team_id", null);
+
+    const { data: eRows } = await eq;
+    const matchingSessionIds = new Set<string>();
+    for (const row of eRows ?? []) {
+      const meta = (row.metadata ?? {}) as Record<string, unknown>;
+      if (
+        filters.severity &&
+        String(meta.severity ?? "").toLowerCase() !== filters.severity
+      ) {
+        continue;
+      }
+      if (
+        filters.urgency &&
+        String(meta.urgency ?? "").toLowerCase() !== filters.urgency
+      ) {
+        continue;
+      }
+      matchingSessionIds.add(row.session_id as string);
+    }
+    sets.push(matchingSessionIds);
+  }
+
+  if (sets.length === 0) return null;
+
+  // Intersection of all filter sets
+  let intersection = sets[0];
+  for (let i = 1; i < sets.length; i++) {
+    intersection = new Set([...intersection].filter((x) => sets[i].has(x)));
+  }
+  return [...intersection];
+}
+
+async function fetchThemesForSessions(
+  supabase: SupabaseClient,
+  sessionIds: string[]
+): Promise<Map<string, string[]>> {
+  const result = new Map<string, string[]>();
+  if (sessionIds.length === 0) return result;
+
+  // session_embeddings → signal_themes → themes
+  const { data: embRows } = await supabase
+    .from("session_embeddings")
+    .select("id, session_id")
+    .in("session_id", sessionIds);
+  const embIdToSessionId = new Map<string, string>(
+    (embRows ?? []).map((r: { id: string; session_id: string }) => [
+      r.id,
+      r.session_id,
+    ])
+  );
+  const embIds = [...embIdToSessionId.keys()];
+  if (embIds.length === 0) return result;
+
+  const { data: junctionRows } = await supabase
+    .from("signal_themes")
+    .select("embedding_id, theme_id")
+    .in("embedding_id", embIds);
+  const themeIds = [
+    ...new Set(
+      (junctionRows ?? []).map((r: { theme_id: string }) => r.theme_id)
+    ),
+  ];
+  if (themeIds.length === 0) return result;
+
+  const { data: themeRows } = await supabase
+    .from("themes")
+    .select("id, name")
+    .in("id", themeIds);
+  const themeNameById = new Map<string, string>(
+    (themeRows ?? []).map((t: { id: string; name: string }) => [t.id, t.name])
+  );
+
+  for (const j of junctionRows ?? []) {
+    const sessionId = embIdToSessionId.get(j.embedding_id as string);
+    const themeName = themeNameById.get(j.theme_id as string);
+    if (!sessionId || !themeName) continue;
+    const list = result.get(sessionId) ?? [];
+    if (!list.includes(themeName)) list.push(themeName);
+    result.set(sessionId, list);
+  }
+  return result;
 }
