@@ -16,6 +16,7 @@ eval "$(ssh-agent -s)" && ssh-add ~/.ssh/id_ed25519_personal
 - org awareness
 - direct jira ticket creation from the platform
 - update email service in prod
+- update dasboard structure
 
 Mental model:
 feedback --> insights fetched --> code context --> creats a feature spec (editable) --> MCP of my platform can be used to conect with IDE like cursor and development can be done based on the spec provided --> after implementation all the insights related to that spec should be cleared from the platform 

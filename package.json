@@ -8,6 +8,7 @@
     "start": "next start",
     "lint": "eslint",
     "backfill:theme-embeddings": "tsx scripts/backfill-theme-embeddings.ts",
+    "eval:chat": "tsx scripts/run-eval.ts",
     "postinstall": "node scripts/copy-ffmpeg-assets.mjs"
   },
   "dependencies": {

@@ -51,9 +51,13 @@ export function startStream(args: StartStreamArgs): void {
     `${LOG_PREFIX} startStream conversation=${conversationId} team=${teamId ?? "personal"}`
   );
 
-  // Defensive cap. The UI gate in chat-input is the primary enforcement
-  // (Part 3); this guard catches any caller that bypasses the gate so we
-  // never silently exceed the documented cap.
+  // Best-effort defensive cap. The UI gate in chat-input is the primary
+  // enforcement (Part 3); this guard catches any caller that bypasses the
+  // gate. The check-then-act here is NOT atomic — two startStream calls
+  // dispatched in the same React batch can both observe count < cap and
+  // both proceed. Acceptable trade-off given the UI gate is the real
+  // backstop; if this ever needs hard guarantees, lift the check into
+  // setSlice as an atomic compare-and-write.
   const activeForTeam = countActiveStreams(teamId);
   if (activeForTeam >= MAX_CONCURRENT_STREAMS) {
     console.warn(
@@ -92,12 +96,35 @@ export function startStream(args: StartStreamArgs): void {
       // unseen flag iff partial content arrived. Pure-failure (no deltas
       // before error) skips the flag because there's nothing to view.
       const sliceBeforeClear = getSlice(conversationId);
-      const hadContent = !!sliceBeforeClear?.streamingContent;
+      const partialContent = sliceBeforeClear?.streamingContent ?? "";
+      const hadContent = partialContent.length > 0;
+      // Symmetric with the cancel path: when partial content streamed before
+      // the error, build a finalMessage with status:"failed" so the fold
+      // in useChatStreaming appends it to messages[]. Without this, the
+      // streaming sentinel disappears (streamState !== "streaming") and no
+      // entry takes its place — the bubble vanishes from the UI until
+      // reload re-fetches the server-persisted failed row.
+      const failedMessage = hadContent
+        ? {
+            id:
+              sliceBeforeClear?.assistantMessageId ??
+              `temp-failed-${Date.now()}`,
+            conversationId,
+            parentMessageId: null,
+            role: "assistant" as const,
+            content: partialContent,
+            sources: null,
+            status: "failed" as const,
+            metadata: null,
+            createdAt: new Date().toISOString(),
+          }
+        : null;
       setSlice(conversationId, {
         streamState: "error",
         error: message,
         streamingContent: "",
         statusText: null,
+        finalMessage: failedMessage,
         hasUnseenCompletion: hadContent,
       });
     })
