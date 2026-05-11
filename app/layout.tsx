@@ -8,6 +8,7 @@ import { AuthenticatedLayout } from "@/components/layout/authenticated-layout";
 import { AuthProvider } from "@/components/providers/auth-provider";
 import { InviteOutcomeToast } from "@/components/invite/invite-outcome-toast";
 import "./globals.css";
+import { Analytics } from "@vercel/analytics/next"
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -49,6 +50,7 @@ export default async function RootLayout({
       )}
     >
       <body className="flex min-h-full flex-col bg-[var(--surface-page)] text-[var(--text-primary)]">
+        <Analytics />
         <AuthProvider>
           <AuthenticatedLayout>
             {children}
