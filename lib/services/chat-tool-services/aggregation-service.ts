@@ -94,19 +94,17 @@ function resolveAggregateAction(
   if (
     entity === "signals" &&
     dims.length === 2 &&
-    dims.includes("client") &&
-    dims.includes("severity")
-  ) {
-    return "client_health_grid";
-  }
-  if (
-    entity === "signals" &&
-    dims.length === 2 &&
     dims.includes("theme") &&
     dims.includes("client")
   ) {
     return "theme_client_matrix";
   }
+  // Note: the dashboard's `client_health_grid` action is intentionally not
+  // routed here. Its handler returns a per-client (sentiment, urgency)
+  // snapshot — it does not carry per-row severity, so any [client, severity]
+  // request cannot be satisfied from its output. Falling through to the
+  // explicit "Unsupported" error below lets the chat model recover instead of
+  // silently receiving an empty distribution (PRD-033 audit fix, 2026-05-11).
   if (entity === "signals" && dims.length === 1 && dims[0] === "client") {
     // Generic per-client signal count, filterable by chunkTypes. The
     // dashboard's `competitive_mention_frequency` handler counts COMPETITOR
@@ -185,38 +183,43 @@ export async function timeSeries(
     toQueryFilters(input.filters, input.granularity)
   );
 
-  return reshapeTimeSeries(input.granularity, result.data, !!input.groupBy);
+  return reshapeTimeSeries(action, input.granularity, result.data);
 }
 
 // ---------------------------------------------------------------------------
-// Result reshaping (loosely typed to keep this independent of domain types)
+// Result reshaping
+// ---------------------------------------------------------------------------
+// Every action returned by resolveAggregateAction / resolveTimeSeriesAction
+// has a dedicated reshape branch. The previous generic key-scanning
+// implementation silently produced empty distributions when a domain module's
+// shape didn't match its key heuristics (PRD-033 audit, 2026-05-11) — every
+// shape mismatch now either reshapes correctly or throws loudly so the chat
+// model can recover instead of confidently reporting "no data."
 // ---------------------------------------------------------------------------
 
 function reshapeAggregate(
   action: QueryAction,
   data: Record<string, unknown>,
-  input: AggregateInput
+  _input: AggregateInput
 ): AggregateResult {
   if (action === "count_clients" || action === "count_sessions") {
     return { count: (data.count as number) ?? 0 };
   }
 
-  // Single-dim distributions
+  if (action === "sentiment_distribution" || action === "urgency_distribution") {
+    return { distribution: reshapeFlatRecord(data) };
+  }
+
   if (
-    action === "sentiment_distribution" ||
-    action === "urgency_distribution" ||
     action === "sessions_per_client" ||
     action === "signals_per_client" ||
     action === "top_themes"
   ) {
-    const distribution = extractDistribution(data, action);
-    return { distribution };
+    return { distribution: reshapeNamedDistribution(data, action) };
   }
 
-  // Multi-dim distributions
-  if (action === "client_health_grid" || action === "theme_client_matrix") {
-    const distribution = extractMultiDimDistribution(data, input.groupBy, action);
-    return { distribution };
+  if (action === "theme_client_matrix") {
+    return { distribution: reshapeThemeClientMatrix(data) };
   }
 
   // No silent fallback — unknown actions are routing bugs, not "zero results".
@@ -225,120 +228,185 @@ function reshapeAggregate(
   );
 }
 
-function extractDistribution(
+function reshapeTimeSeries(
+  action: QueryAction,
+  granularity: "week" | "month",
+  data: Record<string, unknown>
+): TimeSeriesResult {
+  if (action === "sessions_over_time") {
+    return reshapeSessionsOverTime(granularity, data);
+  }
+  if (action === "theme_trends") {
+    return reshapeThemeTrends(granularity, data);
+  }
+  throw new Error(
+    `reshapeTimeSeries: unhandled action "${action}". This is a routing bug — every action returned by resolveTimeSeriesAction must have a corresponding reshape branch.`
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Per-action reshape helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Reshapes a flat `{ bucket: count, ... }` record into the chat distribution
+ * shape. Used by sentiment_distribution and urgency_distribution, whose domain
+ * handlers return e.g. `{ positive: 5, negative: 3, neutral: 2, mixed: 0 }`.
+ * Zero-count buckets are preserved so the model can see the full distribution.
+ */
+function reshapeFlatRecord(
+  data: Record<string, unknown>
+): Array<{ key: string; count: number }> {
+  return Object.entries(data)
+    .filter(([, v]) => typeof v === "number")
+    .map(([key, v]) => ({ key, count: Number(v) }))
+    .sort((a, b) => b.count - a.count);
+}
+
+/**
+ * Reshapes a `{ <wrapperKey>: [{ name|themeName, count }] }` payload into the
+ * chat distribution shape. Used by handlers whose result wraps the array
+ * under a domain-specific key (e.g. `clients`, `themes`). The accepted name
+ * fields cover both snake_case (legacy) and camelCase (current convention).
+ */
+function reshapeNamedDistribution(
   data: Record<string, unknown>,
   action: QueryAction
 ): Array<{ key: string; count: number }> {
-  // Domain modules return varying shapes — try common ones.
-  for (const k of [
-    "distribution",
-    "rows",
-    "results",
-    "data",
-    "items",
-    "themes",
-    "clients",
-    "sentiments",
-    "urgencies",
-  ]) {
-    const v = data[k];
-    if (Array.isArray(v)) {
-      return (v as Array<Record<string, unknown>>).map((row) => ({
-        key: String(
-          row.label ?? row.key ?? row.name ?? row.client_name ?? row.clientName ?? row.theme_name ?? row.themeName ?? row.value ?? "unknown"
-        ),
+  for (const wrapper of ["themes", "clients", "distribution", "rows", "items"]) {
+    const arr = data[wrapper];
+    if (!Array.isArray(arr)) continue;
+    return (arr as Array<Record<string, unknown>>).map((row, index) => {
+      const rawKey =
+        row.themeName ??
+        row.theme_name ??
+        row.clientName ??
+        row.client_name ??
+        row.name ??
+        row.label ??
+        row.key;
+      if (rawKey === undefined || rawKey === null) {
+        console.warn(
+          `${LOG_PREFIX} reshapeNamedDistribution — row ${index} of action "${action}" missing a label field. Row keys: ${Object.keys(row).join(", ")}`
+        );
+      }
+      return {
+        key: String(rawKey ?? "(missing label)"),
         count: Number(row.count ?? row.total ?? row.value ?? 0),
-      }));
-    }
+      };
+    });
   }
-  // Loud warning rather than silent []. If a domain module renames its
-  // top-level key, callers see [] in production and silently report "no
-  // results" — that's the failure mode this branch flags.
   console.warn(
-    `${LOG_PREFIX} extractDistribution — no candidate array key matched for action "${action}". Data keys: ${Object.keys(data).join(", ") || "(empty)"}. Returning empty distribution.`
+    `${LOG_PREFIX} reshapeNamedDistribution — no candidate array wrapper key matched for action "${action}". Data keys: ${Object.keys(data).join(", ") || "(empty)"}.`
   );
   return [];
 }
 
-function extractMultiDimDistribution(
-  data: Record<string, unknown>,
-  groupBy: AggregateDim | AggregateDim[] | undefined,
-  action: QueryAction
+/**
+ * Reshapes the theme_client_matrix payload `{ themes: [{id, name}], clients:
+ * [{id, name}], cells: [{themeId, clientId, count}] }` into a flat two-dim
+ * distribution. Cell rows carry only IDs, so theme/client names are resolved
+ * from the sibling arrays. Previously the generic extractor scanned for one
+ * of `distribution/rows/matrix/data/items` and never found `cells`, silently
+ * returning an empty distribution.
+ */
+function reshapeThemeClientMatrix(
+  data: Record<string, unknown>
 ): Array<{ dimensions: Record<string, string>; count: number }> {
-  const dims = Array.isArray(groupBy) ? groupBy : groupBy ? [groupBy] : [];
-  // Reuse the same array discovery
-  let arr: Array<Record<string, unknown>> | null = null;
-  for (const k of ["distribution", "rows", "matrix", "data", "items"]) {
-    const v = data[k];
-    if (Array.isArray(v)) {
-      arr = v as Array<Record<string, unknown>>;
-      break;
-    }
-  }
-  if (!arr) {
+  const themes = data.themes;
+  const clients = data.clients;
+  const cells = data.cells;
+  if (!Array.isArray(themes) || !Array.isArray(clients) || !Array.isArray(cells)) {
     console.warn(
-      `${LOG_PREFIX} extractMultiDimDistribution — no candidate array key matched for action "${action}". Data keys: ${Object.keys(data).join(", ") || "(empty)"}. Returning empty distribution.`
+      `${LOG_PREFIX} reshapeThemeClientMatrix — expected { themes, clients, cells } arrays. Got keys: ${Object.keys(data).join(", ") || "(empty)"}.`
     );
     return [];
   }
 
-  return arr.map((row) => {
-    const dimensions: Record<string, string> = {};
-    for (const dim of dims) {
-      const candidates =
-        dim === "client"
-          ? ["client_name", "clientName", "client", "name"]
-          : dim === "theme"
-            ? ["theme_name", "themeName", "theme", "name"]
-            : [dim];
-      for (const c of candidates) {
-        if (row[c] !== undefined) {
-          dimensions[dim] = String(row[c]);
-          break;
-        }
-      }
-    }
-    return {
-      dimensions,
-      count: Number(row.count ?? row.total ?? 0),
-    };
-  });
+  const themeName = new Map<string, string>();
+  for (const t of themes as Array<{ id?: string; name?: string }>) {
+    if (t.id) themeName.set(t.id, t.name ?? t.id);
+  }
+  const clientName = new Map<string, string>();
+  for (const c of clients as Array<{ id?: string; name?: string }>) {
+    if (c.id) clientName.set(c.id, c.name ?? c.id);
+  }
+
+  return (cells as Array<{ themeId?: string; clientId?: string; count?: number }>).map(
+    (cell) => ({
+      dimensions: {
+        theme: themeName.get(cell.themeId ?? "") ?? cell.themeId ?? "(unknown theme)",
+        client: clientName.get(cell.clientId ?? "") ?? cell.clientId ?? "(unknown client)",
+      },
+      count: Number(cell.count ?? 0),
+    })
+  );
 }
 
-function reshapeTimeSeries(
+/**
+ * Reshapes the sessions_over_time RPC payload `{ buckets: [{bucket|period_start,
+ * count}] }` into the chat time-series shape. The RPC has shipped two field
+ * names historically; both are accepted.
+ */
+function reshapeSessionsOverTime(
   granularity: "week" | "month",
-  data: Record<string, unknown>,
-  hasGroupBy: boolean
+  data: Record<string, unknown>
 ): TimeSeriesResult {
-  let arr: Array<Record<string, unknown>> | null = null;
-  for (const k of ["buckets", "rows", "data", "series", "trends", "results"]) {
-    const v = data[k];
-    if (Array.isArray(v)) {
-      arr = v as Array<Record<string, unknown>>;
-      break;
-    }
-  }
-  if (!arr) {
+  const raw = data.buckets;
+  if (!Array.isArray(raw)) {
     console.warn(
-      `${LOG_PREFIX} reshapeTimeSeries — no candidate array key matched. Data keys: ${Object.keys(data).join(", ") || "(empty)"}. Returning empty buckets.`
+      `${LOG_PREFIX} reshapeSessionsOverTime — expected buckets array. Data keys: ${Object.keys(data).join(", ") || "(empty)"}.`
+    );
+    return { granularity, buckets: [] };
+  }
+  const buckets = (raw as Array<Record<string, unknown>>).map((row) => ({
+    periodStart: String(row.period_start ?? row.bucket ?? ""),
+    count: Number(row.count ?? row.total ?? row.value ?? 0),
+  }));
+  return { granularity, buckets };
+}
+
+/**
+ * Reshapes the theme_trends payload `{ themes: [{themeId, themeName}],
+ * buckets: [{bucket, counts: {[themeId]: number}}] }` into a flat per-(bucket,
+ * theme) time-series. Each non-zero cell becomes one output bucket entry with
+ * the resolved theme name. Previously the generic time-series reshaper read
+ * `row.count` (always undefined here, since counts are nested) and `row.theme_name`
+ * (never present), so every entry came back as `{ count: 0, key: "unknown" }`.
+ */
+function reshapeThemeTrends(
+  granularity: "week" | "month",
+  data: Record<string, unknown>
+): TimeSeriesResult {
+  const themes = data.themes;
+  const rawBuckets = data.buckets;
+  if (!Array.isArray(themes) || !Array.isArray(rawBuckets)) {
+    console.warn(
+      `${LOG_PREFIX} reshapeThemeTrends — expected { themes, buckets } arrays. Got keys: ${Object.keys(data).join(", ") || "(empty)"}.`
     );
     return { granularity, buckets: [] };
   }
 
-  const buckets = arr.map((row) => {
-    const periodStart = String(
-      row.period_start ?? row.bucket ?? row.date ?? row.week ?? row.month ?? ""
-    );
-    const count = Number(row.count ?? row.total ?? row.value ?? 0);
-    if (hasGroupBy) {
-      return {
-        periodStart,
-        key: String(row.theme_name ?? row.themeName ?? row.key ?? row.name ?? "unknown"),
-        count,
-      };
-    }
-    return { periodStart, count };
-  });
+  const themeName = new Map<string, string>();
+  for (const t of themes as Array<{ themeId?: string; themeName?: string }>) {
+    if (t.themeId) themeName.set(t.themeId, t.themeName ?? t.themeId);
+  }
 
-  return { granularity, buckets };
+  const out: TimeSeriesResult["buckets"] = [];
+  for (const b of rawBuckets as Array<{
+    bucket?: string;
+    counts?: Record<string, number>;
+  }>) {
+    const periodStart = String(b.bucket ?? "");
+    const counts = b.counts ?? {};
+    for (const [themeId, count] of Object.entries(counts)) {
+      if (!count) continue;
+      out.push({
+        periodStart,
+        key: themeName.get(themeId) ?? themeId,
+        count: Number(count),
+      });
+    }
+  }
+  return { granularity, buckets: out };
 }

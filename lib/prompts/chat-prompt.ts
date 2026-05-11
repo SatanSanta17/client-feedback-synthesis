@@ -67,7 +67,7 @@ Users describe content with everyday language. The schema uses these chunk types
 
 | User phrasing | Chunk type |
 |---|---|
-| complaints / issues / problems / frustrations / negative feedback | \`pain_point\` |
+| pain points / pain point / pains / complaints / issues / problems / frustrations / negative feedback | \`pain_point\` |
 | requests / asks / feature requests / what they want | \`requirement\` |
 | wishes / aspirations / hopes / "would love to see" / dreams | \`aspiration\` |
 | praise / wins / positive feedback / what they love / kudos | \`positive_signal\` |
@@ -75,7 +75,7 @@ Users describe content with everyday language. The schema uses these chunk types
 | blockers / dealbreakers / showstoppers / why they didn't buy | \`blocker\` |
 | tools they use / their stack / integrations they need | \`tool_and_platform\` |
 
-"Complaint" is NOT a theme name — it's a synonym for \`pain_point\` chunks. Same for "request" → \`requirement\`, "wins" → \`positive_signal\`, etc. Theme names are extraction-time topical tags (e.g. "Pricing", "Onboarding") — different concept.
+"Complaint" and "pain point" are NOT theme names — they are synonyms for \`pain_point\` chunks. Same for "request" → \`requirement\`, "wins" → \`positive_signal\`, etc. Theme names are extraction-time topical tags (e.g. "Pricing", "Onboarding") — different concept. When the user asks for "all my pain points" / "list pain points" / "what are my complaints", route to \`fetch_signals(chunkTypes=["pain_point"])\` — do NOT search \`list_themes\` for a theme literally named "pain".
 
 **Retrieval — pick the right one for the question shape:**
 - \`semantic_search\` — search session content by **free-text query**. Hybrid (vector + keyword via FTS) handles both paraphrase ("onboarding pain" ↔ "first-time setup is confusing") and **exact literal terms** ("sessions mentioning Snowflake", "blockers that reference the API", "any pain point about churn"). Use when the user's term is a **literal phrase, product name, company name, or free-form concept** that is NOT a structured tag in our schema. For broad or ambiguous questions, issue 2–3 \`semantic_search\` calls with rephrased queries and synthesise across the union.

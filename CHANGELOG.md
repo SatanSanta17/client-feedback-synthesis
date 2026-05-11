@@ -6,6 +6,44 @@ All notable changes to this project are documented here, grouped by PRD and part
 
 ## [Unreleased]
 
+### PRD-033 post-cutover — aggregate / time-series reshape correctness — 2026-05-11
+
+Follow-up audit triggered by a real-user bug: asking "top pain points across all clients" surfaced as the agent reporting *"signals are associated with an 'unknown' theme — could indicate a data issue."* No data issue existed. The reshape layer between the chat tool surface and the dashboard query domains was silently emitting `"unknown"` labels (and elsewhere, empty arrays) when a domain handler's output shape didn't match the reshaper's key heuristics.
+
+**Root cause.** [`aggregation-service.ts`](lib/services/chat-tool-services/aggregation-service.ts) used two generic key-scanning reshapers (`extractDistribution`, `extractMultiDimDistribution`) plus an action-agnostic `reshapeTimeSeries`. Each scanned the domain payload for an array under one of a fixed candidate-key list, then read row fields from a fixed candidate-field list. The two lists were authored once at PRD-033 cutover assuming all distribution-producing handlers would converge on a shared shape — they didn't. Five domain handlers diverged after subsequent PRDs, and every divergence either produced silent `[]` or rows with `key: "unknown"`. The leaf `?? "unknown"` made the failure look like data-quality noise instead of a routing bug.
+
+**Sites and shapes:**
+
+| Action | Handler returns | Generic reshaper expected | Visible failure |
+|---|---|---|---|
+| `sentiment_distribution` | `{ positive, negative, neutral, mixed }` flat record ([`distributions.ts`](lib/services/database-query/domains/distributions.ts)) | array under one of `distribution/rows/results/data/items/themes/clients/sentiments/urgencies` | `extractDistribution` warned and returned `[]` — agent said "no sentiment data" |
+| `urgency_distribution` | `{ low, medium, high, critical }` flat record | same | same — empty distribution |
+| `theme_client_matrix` | `{ themes:[{id,name}], clients:[{id,name}], cells:[{themeId,clientId,count}] }` ([`themes.ts`](lib/services/database-query/domains/themes.ts)) | array under one of `distribution/rows/matrix/data/items`; rows expected `count` plus `theme_name`/`client_name` | `extractMultiDimDistribution` never found `cells` → `[]`. Even if it had, cell rows carry only IDs — `dimensions` would have been `{}`. |
+| `theme_trends` (time series) | `{ themes:[{themeId,themeName}], buckets:[{bucket, counts:{[themeId]:n}}] }` | flat row with scalar `count` + `theme_name` | every bucket → `{ key: "unknown", count: 0 }` |
+| `client_health_grid` (routed from `entity=signals, groupBy=[client,severity]`) | `{ clients:[{clientId, clientName, sentiment, urgency, sessionDate}] }` — per-client snapshot ([`sessions.ts`](lib/services/database-query/domains/sessions.ts)) | array under `distribution/rows/matrix/data/items`; rows expected `count` plus per-dim name | `clients` wrapper key not in scan list → `[]`. Semantically the route was also wrong: severity is a per-chunk field, not present on the per-client snapshot at all. |
+
+**Why the bug went unnoticed.** Each route returned a well-typed `AggregateResult` / `TimeSeriesResult`, so the chat model received "no data" / "unknown" deterministically — the LLM accepted it and synthesised plausible-sounding apologies rather than retrying. The `console.warn` lines logged correctly, but nothing in the chat path surfaced them.
+
+**Fix — structural, in [`aggregation-service.ts`](lib/services/chat-tool-services/aggregation-service.ts) only.** The two generic reshapers are replaced by one explicit branch per action. The action-agnostic `reshapeTimeSeries` now takes the action and dispatches.
+
+- `reshapeFlatRecord` — flat `{ bucket: count }` → `[{key, count}]` (sentiment / urgency distributions). Preserves zero buckets so the model sees the full distribution. Sorted by count desc.
+- `reshapeNamedDistribution` — `{ <wrapper>: [{ name|themeName|clientName, count }] }` → `[{key, count}]` (sessions_per_client / signals_per_client / top_themes). Now reads both snake_case and camelCase name fields; missing labels emit a `console.warn` with row keys instead of silently masking to `"unknown"`.
+- `reshapeThemeClientMatrix` — joins `cells` against the sibling `themes` / `clients` arrays for name resolution → `[{dimensions:{theme,client}, count}]`.
+- `reshapeSessionsOverTime` — buckets array (accepts both `period_start` and `bucket`).
+- `reshapeThemeTrends` — fans `{ buckets:[{bucket, counts:{[themeId]:n}}] }` out to one entry per non-zero (bucket, theme) cell with name resolution from the sibling `themes` array.
+- Both `reshapeAggregate` and `reshapeTimeSeries` throw on unknown actions — silent zeros for routing bugs are gone.
+
+**Routing change — `entity=signals, groupBy=[client, severity]` is no longer mapped.** The `client_health_grid` handler returns a per-client (sentiment, urgency) snapshot and carries no severity data; the route was a semantic mismatch from cutover. The combination now falls through to the explicit "Unsupported aggregate" throw, letting the chat model recover instead of silently receiving `[]`. The dashboard's use of `client_health_grid` (the sentiment×urgency scatter widget at [`client-health-widget.tsx`](app/dashboard/_components/client-health-widget.tsx)) is untouched — that path uses `executeQuery` directly, not the chat aggregation service.
+
+**What did not change.**
+
+- Domain handlers in [`lib/services/database-query/domains/`](lib/services/database-query/domains/) — untouched.
+- Public types `AggregateResult` / `TimeSeriesResult` — untouched. Tool callers see the same shape; just correctly populated now.
+- Dashboard `/api/dashboard` route and all widgets — untouched.
+- Tool input schemas ([`aggregate-tool.ts`](lib/services/chat-tools/aggregate-tool.ts), [`time-series-tool.ts`](lib/services/chat-tools/time-series-tool.ts)) — untouched. The `[client, severity]` combination is still expressible in the schema; it now produces a clear error instead of an empty result.
+
+**Verification.** `npx tsc --noEmit` clean. Manual trace of each previously-broken action against the fresh reshaper confirms a well-formed `AggregateResult` / `TimeSeriesResult`. The `extractDistribution` / `extractMultiDimDistribution` helpers are deleted entirely — no dead code remains.
+
 ### Add `product_manager` team role — 2026-05-11
 
 Adds a third member role on team workspaces with the same effective permissions as `sales` (non-admin tier). Motivated by workspaces wanting to mirror their org structure on the members list — admin gates are unchanged.
