@@ -1488,3 +1488,518 @@ These are the only decisions where the PRD doesn't fully constrain the choice an
 - **Tool-result memoisation across turns.** Backlog — for "what changed since I last asked" follow-ups. Not in Part 2 scope.
 
 End of Part 2.
+
+---
+
+## Part 3: Cutover and Ripout
+
+> **Status:** Draft. Mirrors PRD Part 3.
+> **Depends on:** Parts 1 and 2 shipped. The new tool surface is fully built and dormant; this part wires it to the chat model, deletes the old surface, lands the three production-readiness pieces (prompt caching, per-turn cost circuit breaker, eval gate), and is the final part of PRD-033.
+
+### Architectural Direction
+
+Part 3 is **the cutover commit** — every change lands in one PR. There is no feature flag (PRD § Purpose, decided after discussion); the eval is the safety net, and `git revert` is the rollback lever. The PRD explicitly forbids parallel-runtime cutovers.
+
+Three production-readiness pieces sit alongside the surface swap:
+
+1. **Prompt caching** — the system prompt and tool descriptions are the largest stable input on every chat turn (~2K tokens by Part 1's measurement). Caching them is industry-standard practice for any production chat surface: Anthropic's `cache_control` markers cut input cost ~90% on cache hits; OpenAI does it automatically for prompts ≥1024 tokens; Google requires explicit `createCachedContent` calls. Implementation prioritises Anthropic + OpenAI (the providers Synthesiser most commonly uses); Google falls back to a no-op until the explicit cache path is needed.
+
+2. **Per-turn cost circuit breaker** — caps the total tool-result tokens that can flow into the model's context within a single user turn (default 100,000, env-overridable). When tripped, subsequent tool calls receive an injected "budget exhausted" payload, the model synthesises from what it has, and the user-facing response includes a plain-language "too broad — try narrowing" suggestion. Standard pattern for agentic chat; Anthropic recommends it in their multi-step agent guidance, and OpenAI's Agents SDK ships a similar `max_input_tokens` guard.
+
+3. **Eval gate** — Parts 1 and 2 built the harness. Part 3 fires it: pre-merge, against both surfaces; required to clear both thresholds (≥ 90% answer-correctness AND ≥ 90% tool-routing accuracy, zero regressions on either dimension vs the old-surface baseline) before the cutover commit lands. Documented in the PR description.
+
+**Industry-standard patterns adopted:**
+- **Provider-specific cache implementation, no-op fallback.** Anthropic gets explicit `cache_control` markers; OpenAI is automatic with telemetry read from the response; Google falls back. This matches the Vercel AI SDK's stance — each provider adapter handles its own caching semantics.
+- **Cost circuit breaker via wrapped tool execute().** Industry pattern: wrap each tool's `execute` in a guard that returns an injected sentinel result when the per-turn budget is exhausted, rather than aborting the stream. The model sees a structured "you have hit the per-turn budget" message and synthesises a partial answer — graceful degradation, not an error.
+- **One-shot first call.** Edge case: if the first tool's result itself exceeds the budget, accept it (give the model something to work with), then reject subsequent calls. Better than "budget exceeded before any data was gathered."
+- **System prompt v2 structure:** role → tool catalogue → routing guidance → grounding rules → output format → error handling. Standard agentic chat prompt skeleton; mirrors what Anthropic, OpenAI, and Cursor's reference prompts look like.
+- **Revert as rollback** for production regressions caught after the cutover ships. Established earlier in this PRD; not a feature flag.
+
+---
+
+### 3.1 System Prompt v2
+
+#### File: `lib/prompts/chat-prompt.ts` (rewritten in place)
+
+The existing system prompt is replaced. Old version is preserved in git history; no backwards-compat shim. The prompt is rewritten — not patched — because the underlying tool surface has changed shape.
+
+Structure:
+
+```
+[1. Role + workspace context (1-2 sentences)]
+[2. Tool catalogue (10 tools, 1-2 lines each — when to use, when not to)]
+[3. Routing patterns:
+    - list → fetch → synthesise
+    - list → summarise → synthesise
+    - When to prefer summarise_sessions over fetch_session_content (N > ~10)
+    - Multi-query semantic_search (2-3 calls with rephrased queries for broad/ambiguous questions)]
+[4. Grounding rules: cite client name + session date; never invent; partial coverage is OK to mention]
+[5. Output format: markdown, follow-up questions block, citation chips]
+[6. Error / partial-coverage handling: budget hit, summarise failures, out-of-scope sessions]
+```
+
+Targets:
+- **~1,800 tokens total** (system prompt + 10 tool descriptions inlined). Smaller is better for cache miss cost; larger is OK because everything after the first turn is a cache hit. Tool descriptions are tuned for routing accuracy, not minimal length.
+- **Stable across turns.** Nothing dynamic in the system prompt — date injection (`{{TODAY}}`) is the only template substitution, and it's the same string for the whole turn so the cache stays warm.
+
+Versioning constant `CHAT_PROMPT_VERSION = "v2"` is exported alongside the prompt. Bumping it invalidates eval reports (forces re-run on next eval).
+
+**[fwd-compat note from earlier parts retired.]** The Part 1 / Part 2 hypothesis about adding `cheapModel: LanguageModel` to `ChatToolContext` was retired in Part 2 (resolver moved into the service). Part 3 adds `recordToolResultTokens` instead — see § 3.6.
+
+---
+
+### 3.2 Old Tool Removal
+
+#### `lib/services/chat-stream-service.ts`
+
+Deletions:
+- `buildSearchInsightsTool()` function — entire function block (currently lines 459–562 per Part 1 mapping).
+- `buildQueryDatabaseTool()` function — entire function block (568–681).
+- The cue-matching filter sanitisation layer:
+  - `sanitizeSearchInsightsFilters()` and `sanitizeQueryDatabaseFilters()` functions
+  - `SEVERITY_CUES`, `URGENCY_CUES`, `GRANULARITY_CUES`, `CONFIDENCE_CUES`, `DATE_CUE_REGEX` constants
+  - All in `chat-stream-service.ts` (currently around lines 325–450)
+- The `lastUserMessage` plumbing that exists only to feed the sanitiser into the tool builders. Once the sanitiser is gone, the model receives Zod-validated inputs only, and the per-tool filter contracts (PRD § P1.R5) make the cue layer unnecessary.
+
+These deletions are pure subtraction — no replacement code goes in their place. The new tools are wired in § 3.3 below.
+
+#### `lib/services/database-query/action-metadata.ts`
+
+Deletions:
+- `CHAT_TOOL_ACTIONS_TUPLE` (and the re-exports `CHAT_TOOL_ACTIONS`, `ChatToolAction`)
+- `buildChatToolDescription()` helper
+- `assertChatToolActionsInSync()` dev-time check
+
+Retained (dashboard still uses these — PRD § Purpose):
+- `ACTION_METADATA` registry
+- `QueryAction` union type
+- `executeQuery` entry point
+
+The `llmToolExposed` flag on each action metadata entry is also retained — it's harmless once `CHAT_TOOL_ACTIONS_TUPLE` is gone, and the dashboard's own enum (in `app/api/dashboard/route.ts`) is unchanged. Optionally tidy by dropping the flag in a follow-up PR; out of scope here.
+
+#### `lib/services/database-query/index.ts`
+
+Update the public re-exports to drop `CHAT_TOOL_ACTIONS`, `ChatToolAction`, `buildChatToolDescription`. Keep `ACTION_METADATA`, `QueryAction`, `QueryFilters`, `DatabaseQueryResult`, `ActionMeta`, `executeQuery`.
+
+---
+
+### 3.3 Chat-Stream-Service Surface Swap
+
+#### `lib/services/chat-stream-service.ts` — modified
+
+The streaming orchestration shape stays the same (`streamText` + SSE events + message finalization). What changes:
+
+```ts
+import { createChatTools } from "@/lib/services/chat-tools";
+import { createChatQueryRepository } from "@/lib/repositories/supabase/supabase-chat-query-repository";
+import { createEmbeddingRepository } from "@/lib/repositories/supabase/supabase-embedding-repository";
+import {
+  buildSystemPrompt,
+  CHAT_PROMPT_VERSION,
+} from "@/lib/prompts/chat-prompt";
+import { applyPromptCacheMarkers } from "@/lib/services/chat-prompt-cache";
+import { createCostBudgetTracker } from "@/lib/services/chat-cost-budget";
+
+// Inside the streaming handler, once teamId and user are resolved:
+
+const ctx: ChatToolContext = {
+  workspace: { teamId, userId: user.id },
+  chatQueryRepo: createChatQueryRepository(serviceClient, teamId, user.id),
+  embeddingRepo: createEmbeddingRepository(serviceClient, teamId, user.id),
+  supabaseClient,
+  emitStatus: (msg) => controller.enqueue(encoder.encode(sseEvent("status", { text: msg }))),
+  recordToolResultTokens: budgetTracker.record, // see § 3.5
+};
+
+const baseTools = createChatTools(ctx);
+const tools = budgetTracker.wrap(baseTools); // see § 3.5
+
+const budgetTracker = createCostBudgetTracker(CHAT_PER_TURN_BUDGET, {
+  onBudgetExceeded: () => {
+    controller.enqueue(encoder.encode(sseEvent("status", {
+      text: "Query is broad — synthesising a partial answer."
+    })));
+  },
+});
+
+const systemPrompt = buildSystemPrompt({ date: todayIso() });
+const messages = applyPromptCacheMarkers(systemPrompt, contextMessages);
+
+const result = await streamText({
+  model: resolvedModel.model,
+  system: undefined, // system message is in `messages` so caching can apply
+  messages,
+  tools,
+  stopWhen: stepCountIs(CHAT_STEP_CAP),
+  maxOutputTokens: clampOutputTokens(CHAT_MAX_TOKENS, resolvedModel.label),
+});
+```
+
+Key changes from the old shape:
+- System prompt is now a `messages[0]` system message (not the `system: ...` field) so the cache markers can apply to it. This is provider-specific (Anthropic), but the Vercel AI SDK accepts both shapes — works as a no-op for OpenAI / Google.
+- `baseTools` (from `createChatTools(ctx)`) is wrapped by `budgetTracker.wrap()` to insert the budget guard before each tool's `execute()` fires.
+- The `controller`, `encoder`, `lastUserMessage` threading into tool builders is gone — tools get everything they need from `ChatToolContext`.
+
+The SSE event pipeline (`status`, `delta`, `sources`, `follow_ups`, `done`, `error`) is unchanged. Message finalization, abort handling, length/step-cap warnings are unchanged.
+
+---
+
+### 3.4 Prompt Caching
+
+#### `lib/services/chat-prompt-cache.ts` — new
+
+Provider-aware wrapper that adds cache markers to the stable prefix (system prompt + tool descriptions). Tool descriptions are carried separately by the Vercel AI SDK's `tools` parameter — they're cached by the SDK / provider automatically when the system message itself is cached, so we only need to mark the system message.
+
+> **Provider-agnostic at the call-site, provider-specific inside the helper.** Caching is one of the few features where the providers fundamentally differ in protocol — Anthropic requires explicit markers, OpenAI is automatic, Google requires a separate API call before generation. The AI SDK doesn't unify these because they can't be unified at the abstraction layer. The right shape is one helper that switches on `AI_PROVIDER` internally; the rest of the system never sees the difference. This is the same pattern Vercel's docs, LangChain, and Anthropic's own SDK documentation recommend.
+
+```ts
+import type { ModelMessage } from "ai";
+
+const ANTHROPIC = "anthropic";
+const OPENAI = "openai";
+const GOOGLE = "google";
+
+/**
+ * Applies provider-specific cache markers to the stable system message so
+ * the system prompt + tool descriptions are billed at the cache-hit rate
+ * on every turn after the first within a conversation.
+ *
+ * - Anthropic: explicit `providerOptions.anthropic.cacheControl` marker.
+ *   First-call cost slightly higher (cache write); subsequent calls ~10%
+ *   of input price for cached tokens.
+ * - OpenAI: caching is automatic for prompts ≥ 1024 tokens. Nothing to
+ *   add at request time; cache-hit telemetry comes from response usage
+ *   `cachedInputTokens` (or equivalent SDK field).
+ * - Google: requires explicit `createCachedContent` API call. Deferred
+ *   to a follow-up — the no-op path applies until that's wired.
+ * - Other / unknown providers: no-op fallback.
+ */
+export function applyPromptCacheMarkers(
+  systemPrompt: string,
+  history: ModelMessage[]
+): ModelMessage[] {
+  const provider = process.env.AI_PROVIDER ?? "";
+
+  if (provider === ANTHROPIC) {
+    return [
+      {
+        role: "system",
+        content: systemPrompt,
+        providerOptions: {
+          anthropic: { cacheControl: { type: "ephemeral" } },
+        },
+      },
+      ...history,
+    ];
+  }
+
+  // OpenAI: caching is automatic, no markers needed. Same shape as no-op.
+  // Google: explicit CachedContent API not wired here yet (backlog).
+  // Unknown providers: graceful no-op.
+  void OPENAI;
+  void GOOGLE;
+  return [{ role: "system", content: systemPrompt }, ...history];
+}
+```
+
+Per-turn telemetry (in `chat-stream-service.ts`'s existing `chat-complete` log line) gains two fields:
+
+```
+cache-hit-input: <N>     // from usage.cachedInputTokens (or provider equivalent)
+cache-miss-input: <N>    // from usage.inputTokens - cachedInputTokens
+```
+
+Where the active provider doesn't expose cached-token counts, both fields are logged as `0` and a once-per-process warning is emitted so observability gaps are visible.
+
+**Industry-standard expectation:** on turn 2+ within a single conversation, `cache-hit-input` should be the **majority** of input tokens (PRD § P3.AC9). For Anthropic this means ~80–90% of input tokens served from cache once the system prompt + tool descriptions have been cached. The eval harness reports this stat alongside per-query metrics for evidence.
+
+#### Cache TTL note
+
+Anthropic's `ephemeral` cache lives **5 minutes** by default and is per-conversation (keyed by exact prefix bytes). A conversation that sits idle for >5 minutes loses the cache on its next turn — that's expected behaviour and not worth working around. Long-conversation users see a cache miss on the first re-engaged turn and cache hits thereafter.
+
+---
+
+### 3.5 Per-Turn Cost Circuit Breaker
+
+#### `lib/services/chat-cost-budget.ts` — new
+
+Stateful per-turn tracker. Wraps each tool's `execute()` with a guard that:
+- Lets the **first** tool call through unconditionally (so the model always gets some data).
+- Checks the running total before each subsequent call.
+- When the budget is exceeded, returns an injected sentinel payload instead of running the tool.
+
+```ts
+import { estimateTokens } from "@/lib/services/token-estimator";
+import type { Tool } from "ai";
+
+export const CHAT_PER_TURN_BUDGET = parseInt(
+  process.env.CHAT_PER_TURN_BUDGET ?? "100000",
+  10
+);
+
+export interface BudgetTrackerOpts {
+  /** Fired the first time the budget is exceeded in this turn. */
+  onBudgetExceeded?: (info: {
+    totalTokensAtTrip: number;
+    callsBeforeTrip: number;
+    callsRejected: number;
+    toolCounts: Record<string, number>;
+  }) => void;
+}
+
+export function createCostBudgetTracker(
+  budgetTokens: number,
+  opts: BudgetTrackerOpts = {}
+) {
+  let totalResultTokens = 0;
+  let callCount = 0;
+  let exceeded = false;
+  let callsRejected = 0;
+  const toolCounts: Record<string, number> = {};
+
+  function record(toolName: string, tokens: number): void {
+    totalResultTokens += tokens;
+    callCount += 1;
+    toolCounts[toolName] = (toolCounts[toolName] ?? 0) + 1;
+  }
+
+  function isExceeded(): boolean {
+    return totalResultTokens >= budgetTokens;
+  }
+
+  function wrap<T extends Record<string, Tool>>(tools: T): T {
+    const out = {} as Record<string, Tool>;
+    for (const [name, original] of Object.entries(tools)) {
+      out[name] = {
+        ...original,
+        execute: async (input, options) => {
+          // One-shot first call: always let the first tool call through.
+          if (callCount > 0 && isExceeded()) {
+            callsRejected += 1;
+            if (!exceeded) {
+              exceeded = true;
+              opts.onBudgetExceeded?.({
+                totalTokensAtTrip: totalResultTokens,
+                callsBeforeTrip: callCount,
+                callsRejected,
+                toolCounts: { ...toolCounts },
+              });
+            }
+            return {
+              __BUDGET_EXHAUSTED__: true,
+              message:
+                "Per-turn cost budget exhausted. Synthesise an answer from the tool results you already have, and explicitly tell the user the query was too broad and suggest narrowing by client or date range.",
+            };
+          }
+          const result = await original.execute(input, options);
+          record(name, estimateTokens(result));
+          return result;
+        },
+      } as Tool;
+    }
+    return out as T;
+  }
+
+  return { wrap, record, isExceeded };
+}
+```
+
+The `__BUDGET_EXHAUSTED__` sentinel is recognised by the system prompt v2 — the prompt instructs the model that when it sees this payload it must stop calling tools and synthesise a response from earlier results, explicitly telling the user the query was too broad. The user-facing message surfaces this in plain language; the sentinel itself never leaks into the assistant's text.
+
+Telemetry on trip (logged via `console.warn` from the `onBudgetExceeded` callback in `chat-stream-service.ts`):
+
+```
+[chat-stream-service] per-turn cost budget exceeded — totalTokensAtTrip: 102347, callsBeforeTrip: 4, callsRejected: 2, toolCounts: { semantic_search: 2, fetch_session_content: 2 }
+```
+
+#### Budget tuning
+
+The 100,000-token initial budget is **deliberately tight** (TRD § 1.12 of Part 2 noted this). Expected to be raised to 150–250k from telemetry once we see real workloads. Tuning is via the `CHAT_PER_TURN_BUDGET` env var, no code change.
+
+---
+
+### 3.6 ChatToolContext Extension
+
+#### `lib/services/chat-tools/shared/tool-context.ts` — modified
+
+Add the telemetry hook earmarked in Part 1's TRD § 1.4. Single new field:
+
+```ts
+export interface ChatToolContext {
+  workspace: WorkspaceCtx;
+  chatQueryRepo: ChatQueryRepository;
+  embeddingRepo: EmbeddingRepository;
+  supabaseClient: SupabaseClient;
+  emitStatus: (message: string) => void;
+  /** PRD-033 Part 3 — sums tool-result tokens for the cost circuit breaker. */
+  recordToolResultTokens: (toolName: string, tokens: number) => void;
+}
+```
+
+The wrapper in § 3.5 calls `record()` automatically when each tool's execute returns. Individual tool factories don't have to be touched — the wrapper handles it. The field is exposed on the context for future use cases (e.g. a per-tool budget for `fetch_session_content` alone) but the budget tracker is the only Part 3 consumer.
+
+---
+
+### 3.7 Step Cap Review
+
+`stepCountIs(10)` is the current ceiling (from PRD-031 Part 3). Broad agentic queries now chain 2–4 tool calls instead of 1, so the cap is **reviewed but not raised by default** per PRD P3.R7.
+
+Review procedure (one-time, during Increment 3.7):
+- Run the eval against the new surface with `stepCountIs(10)`.
+- Check the per-query report for any query where `actualTrajectory.length >= 10` AND `routingPass === false`. If a representative query (Q-001..Q-026) hits the cap on a plausible chain, raise the constant. Otherwise leave it.
+- Document the review outcome in the cutover PR description.
+
+Expected outcome: no raise needed. The longest expected chains are:
+- `aggregate → list_sessions → fetch_session_content` (3 calls)
+- `aggregate → list_sessions → summarise_sessions` (3 calls)
+- `aggregate × 2 → list_sessions → summarise_sessions` for comparative queries (4 calls)
+
+All well under 10.
+
+---
+
+### 3.8 Starter Questions Update
+
+P3.R8: at least one starter question is changed to demonstrate a new capability.
+
+Implementation: find the starter-questions array in the chat UI component (likely a const at the top of one of the chat client components in `app/`). Replace one of the existing four with a "summarise everything" prompt — e.g. **"Summarise everything I've heard from my top client this quarter"**.
+
+This is a 4-line UI change. Not gated by P1.R8 ("no new UI") because Part 3 is the cutover and is allowed to change the chat tab's discoverable surface.
+
+---
+
+### 3.9 Eval Gate (Cutover Gate)
+
+Pre-merge procedure for the cutover PR:
+
+1. Apply the migrations from Part 1 to staging Supabase (`001-fts-on-session-embeddings.sql`, `002-match-session-embeddings-fts-rpc.sql`) if not already applied.
+2. Set `SUMMARY_AI_PROVIDER` / `SUMMARY_AI_MODEL` in the staging env.
+3. Fill in the `invokeSurface()` shim in `scripts/run-eval.ts` against the staging `/api/chat/send` route.
+4. Run the eval against both surfaces:
+   ```
+   npm run eval:chat -- --surface=old
+   npm run eval:chat -- --surface=new
+   ```
+5. Compare the two reports:
+   - **Threshold A:** new surface achieves ≥ 90% answer-correctness (judge-rubric overall ≥ 0.9 averaged across all queries).
+   - **Threshold B:** new surface achieves ≥ 90% tool-routing accuracy (subsequence match rate).
+   - **Zero regressions:** for every query where the old surface scored ≥ 0.9 on answer correctness OR passed routing, the new surface must score the same or better.
+6. Document the report paths, totals, and per-category breakdown in the cutover PR description. Attach both report JSONs as PR artefacts.
+7. If a threshold is not met or a regression is found: do not merge. Open follow-up issues for the gap, fix in the cutover branch, re-eval, re-gate.
+
+**Post-cutover safety:** after merge, monitor production telemetry for 1–2 weeks (the standard observation window we'd have used a feature flag for, if we had one). The mechanisms are: per-turn `chat-complete` logs, the new cache-hit / cache-miss telemetry, the budget-trip warnings. If a real-traffic regression surfaces that the eval missed, revert the cutover commit, close the gap in the eval set with a covering query, and re-cut once the updated eval passes.
+
+---
+
+### 3.10 Files Changed (Part 3)
+
+**New files:**
+- `lib/services/chat-prompt-cache.ts` — provider-aware cache marker application.
+- `lib/services/chat-cost-budget.ts` — per-turn cost circuit breaker (`createCostBudgetTracker`).
+
+**Modified files:**
+- `lib/prompts/chat-prompt.ts` — system prompt v2 rewritten in place; `CHAT_PROMPT_VERSION = "v2"` exported; `buildSystemPrompt({ date })` is the new entry point.
+- `lib/services/chat-stream-service.ts` — swaps tool surface, removes `buildSearchInsightsTool` + `buildQueryDatabaseTool` + the sanitisation layer (~150 lines deleted), wires the new prompt + cache + budget tracker. The `lastUserMessage` threading is removed.
+- `lib/services/chat-tools/shared/tool-context.ts` — adds `recordToolResultTokens` field.
+- `lib/services/database-query/action-metadata.ts` — removes `CHAT_TOOL_ACTIONS_TUPLE`, `buildChatToolDescription`, `assertChatToolActionsInSync`.
+- `lib/services/database-query/index.ts` — removes the corresponding public re-exports.
+- One UI file in `app/` — replaces one starter question with a "summarise everything" prompt.
+- `ARCHITECTURE.md` — final file-map cleanup; Chat tool surface paragraph updated to "wired to the streaming surface"; new env var entry for `CHAT_PER_TURN_BUDGET`.
+- `CHANGELOG.md` — Part 3 entry.
+
+**Files explicitly NOT touched:**
+- `app/api/dashboard/route.ts` — dashboard's action surface untouched (PRD § Purpose).
+- All Part 1 / Part 2 tool factories — already final.
+- The eval harness or queries.json — the surface-invocation shim in `run-eval.ts` is filled in pre-merge (Increment 3.9) but the rest is unchanged.
+
+---
+
+### 3.11 Implementation Increments
+
+#### Increment 3.1 — System prompt v2
+
+Rewrite `chat-prompt.ts` to the new structure (§ 3.1). The prompt isn't wired yet — `chat-stream-service.ts` still imports the old prompt name. Verifiable by reading the prompt and confirming structure; functional verification is via the eval after the cutover.
+
+#### Increment 3.2 — ChatToolContext extension + cost budget tracker (dormant)
+
+Add `recordToolResultTokens` to `ChatToolContext`. Land `chat-cost-budget.ts`. Wire the tracker into `chat-stream-service.ts` but **don't** wrap the old tools — the tracker exists but doesn't gate anything yet. This decouples the budget infrastructure from the cutover.
+
+#### Increment 3.3 — Prompt caching infrastructure (dormant)
+
+Land `chat-prompt-cache.ts`. Add the per-turn cache-hit / cache-miss telemetry to the existing `chat-complete` log line in `chat-stream-service.ts`. **Don't** switch the system message to use the cache markers yet — that lands with the cutover swap. This increment is a no-op functionally but lands the helper.
+
+#### Increment 3.4 — Cutover swap
+
+The one-PR-cutover. In a single change:
+- `chat-stream-service.ts` builds the `ChatToolContext`, calls `createChatTools(ctx)`, wraps with `budgetTracker.wrap()`, applies cache markers via `applyPromptCacheMarkers()`, imports the v2 prompt.
+- Deletes `buildSearchInsightsTool`, `buildQueryDatabaseTool`, `sanitizeSearchInsightsFilters`, `sanitizeQueryDatabaseFilters`, the cue constants, the `lastUserMessage` plumbing.
+- Deletes `CHAT_TOOL_ACTIONS_TUPLE`, `buildChatToolDescription`, `assertChatToolActionsInSync` from `action-metadata.ts`; removes the re-exports from `database-query/index.ts`.
+
+`tsc --noEmit` is the structural gate; the eval is the behavioural gate.
+
+#### Increment 3.5 — Starter questions update
+
+One UI file edit. Replace one starter question with a "summarise everything" prompt.
+
+#### Increment 3.6 — Step cap review
+
+Run the eval, inspect per-query reports for queries hitting `stepCountIs(10)`. If none, document "no raise needed" in the cutover PR. If one or more representative queries cap out, raise to 15 and document.
+
+#### Increment 3.7 — Eval gate run + PR description
+
+Apply the procedure from § 3.9. The PR cannot merge until the eval is documented in its description, both reports are attached, and the thresholds are clearly met.
+
+#### Increment 3.8 — End-of-PRD audit
+
+Run the audit checklist from [CLAUDE.md](../../CLAUDE.md#end-of-prd-audit) across **all** files touched by PRD-033 (Parts 1, 2, 3). Update ARCHITECTURE.md (file map, env vars table, Chat API section moves the "not yet wired" caveat out and reflects the deletions). Update CHANGELOG.md Part 3 entry. Verify every doc reference to a deleted symbol (`CHAT_TOOL_ACTIONS`, etc.) is gone. This audit produces fixes, not a report.
+
+---
+
+### 3.12 Acceptance Criteria → Verification Map
+
+| PRD AC | Verified by |
+|---|---|
+| P3.AC1 (only v2 system prompt in the codebase) | Increment 3.1 + grep verification in 3.8 audit (no stale references) |
+| P3.AC2 (all six retired symbols gone) | Increment 3.4 deletions; grep verification in 3.8 audit |
+| P3.AC3 (every query shape works on the new surface) | Eval queries Q-001..Q-016 baseline (Part 1) + Q-017..Q-026 (Part 2) cover the shape inventory; Increment 3.7 confirms |
+| P3.AC4 ("summarise everything for X" produces multi-session synthesis) | Eval Q-017 (canonical gap-closer); Increment 3.7 |
+| P3.AC5 (starter questions reflect new capability) | Increment 3.5 |
+| P3.AC6 (broad-summary cost ≥ 30% lower than premium-only fetch path) | Eval Q-026 (cost test) + per-turn telemetry comparison; documented in PR description |
+| P3.AC7 (`npx tsc --noEmit` passes) | Increment 3.4 gate |
+| P3.AC8 (existing chat features unchanged: citations, follow-ups, search, archive, rename/pin/archive/delete) | Manual regression pass per Increment 3.8 audit; touches mostly client-side code unaffected by the swap |
+| P3.AC9 (prompt caching: majority of input tokens cached on turns 2+) | Increment 3.3 telemetry + post-cutover production observation; documented in PR description with a sample conversation log |
+| P3.AC10 (circuit breaker trips, partial answer + "too broad" message) | Increment 3.7 includes a synthetic pathological query (e.g. "summarise everything across every client all time") to verify the trip; production-trip telemetry confirms the field telemetry path |
+| P3.AC11 (eval thresholds + zero regressions, documented in PR) | Increment 3.7 explicitly produces the documentation |
+
+---
+
+### 3.13 Open Implementation Questions
+
+These are the only choices the PRD doesn't fully constrain:
+
+1. **SDK `usage` field shape for cached-token telemetry.** Request-side caching is per-provider (§ 3.4 handles that with a switch). Response-side telemetry — reading how many cached tokens the provider actually served — comes back through the AI SDK's normalised `usage` object, whose field names have changed across SDK versions: recent versions expose `usage.cachedInputTokens`; older versions used `usage.promptTokensDetails.cachedTokens` mirroring OpenAI's raw response shape. Increment 3.3 reads the SDK's actual surface (the project is on `ai@^6.0.144`) and adapts. This is provider-neutral — Anthropic, OpenAI, and (eventually) Google all flow through the same SDK normalisation. If the active provider doesn't expose cached-token counts at all, log `0` and emit a one-time "observability gap" warning per provider.
+
+2. **Google Gemini caching is deferred.** The provider isn't in production use today (Synthesiser's active providers are Anthropic and OpenAI). When Google is added as an active provider, three deferred decisions need to be revisited together: (a) the `createCachedContent` API integration in `chat-prompt-cache.ts` (replacing the current no-op branch), (b) cache lifecycle management (TTL, eviction, per-conversation cache id storage), (c) usage-field telemetry verification for Google's SDK shape. The no-op fallback in `chat-prompt-cache.ts` is correct and honest until then — Google traffic just shows `cache-hit-input: 0`.
+
+3. **`recordToolResultTokens` granularity.** The current design records the result-token count once per tool call. If a single broad `summarise_sessions` call returns 50 digests (each ~50 tokens output), it's recorded as one ~3000-token charge against the budget. This matches how the chat model actually receives the result. Per-leaf recording would be misleading.
+
+4. **The `__BUDGET_EXHAUSTED__` sentinel payload shape.** Designed as `{ __BUDGET_EXHAUSTED__: true, message: "..." }` so the model sees a clear signal it must synthesise from prior results. The system prompt v2 (§ 3.1) explicitly instructs the model on this contract. If a future provider strips unknown top-level keys, the design holds because the `message` is human-readable. **This is the first behaviour the eval must verify in Increment 3.7** — the entire cost-protection mechanism depends on the model respecting the contract (stop calling tools, synthesise, surface "too broad" suggestion in plain language to the user, not leak the internal sentinel name). A deliberately-pathological eval query is added to `queries.json` during Increment 3.7 with three rubric checks: actualTrajectory stops growing after the sentinel is returned; the synthesised answer is coherent from prior results; the user-facing response mentions narrowing and does not contain "BUDGET_EXHAUSTED" or "error". Without this verification, we'd have built infrastructure that doesn't actually protect against pathological queries — robust when eval-verified, brittle when not.
+
+5. **Cache-aware tool description ordering.** Tool descriptions are passed via the AI SDK's `tools` parameter — they're separate from the system message but cached as part of the same prefix by both Anthropic and OpenAI (under the hood). Reordering `createChatTools()` would invalidate caches on that turn. Action item: pick an order, lock it in Increment 3.4, don't reorder casually after that.
+
+---
+
+### 3.14 What Part 3 Explicitly Defers
+
+Items intentionally left for follow-up PRDs (already enumerated in the PRD backlog; mirrored here for the implementer's reference):
+
+- **Per-team feature flag** for the cutover — explicitly rejected during PRD review (no flag system exists; revert is the rollback lever for an early-stage product).
+- **Google Gemini explicit cache integration** — deferred; no-op fallback applies until then.
+- **Adaptive per-turn budget** — replaces the static 100k with a query-intent-aware budget.
+- **Reranker layer** for `semantic_search` — already in backlog; hybrid retrieval is in production and the eval will tell us whether a reranker is needed.
+- **Streaming the map step** of `summarise_sessions` — UX improvement, deferred from Part 2.
+- **Tool-call tracing UI** — debug panel; backlog.
+- **Trajectory-matching CI block** — promotes the manual eval to a CI gate; this PRD does the manual version once at cutover. The CI block is a separate ops decision (CI minutes, secret management for `EVAL_JUDGE_*` keys).
+- **LLM-as-judge model upgrade path** — single-judge → multi-judge agreement; deferred until eval volume justifies the cost.
+
+End of Part 3. End of TRD-033.

@@ -14,6 +14,11 @@ import type {
 const LOG_PREFIX = "[signals-service]";
 
 export interface SignalResult {
+  /**
+   * Included for citation plumbing in the chat surface — system prompt v2
+   * instructs the model not to mention UUIDs in its reply.
+   */
+  sessionId: string;
   clientName: string;
   sessionDate: string;
   chunkType: string;
@@ -51,6 +56,7 @@ export async function fetchSignals(
       continue;
     }
     const result: SignalResult = {
+      sessionId: row.sessionId,
       clientName,
       sessionDate,
       chunkType: row.chunkType,

@@ -15,10 +15,15 @@ import { cn } from "@/lib/utils";
 // Constants
 // ---------------------------------------------------------------------------
 
+// PRD-033 Part 3 P3.R8 — one starter swapped to a "summarise everything" prompt
+// that exercises the new agentic capability (summarise_sessions); the other
+// three retain the long-standing shapes (top pain points, recent urgency,
+// competitive threats) so the empty-state still covers the four common
+// question types users discover by clicking.
 const STARTER_QUESTIONS = [
   "What are the top pain points mentioned across all clients?",
+  "Summarise everything our most active client has told us this quarter",
   "Which clients have expressed urgency in the last 30 days?",
-  "Summarise the most common feature requests",
   "Are there any competitive threats mentioned recently?",
 ] as const;
 

@@ -1,72 +1,70 @@
 // ---------------------------------------------------------------------------
-// Chat Stream Service (PRD-020 Part 2)
+// Chat Stream Service (PRD-020 Part 2; cutover at PRD-033 Part 3)
 // ---------------------------------------------------------------------------
-// Orchestrates the AI streaming pipeline: tool definitions, streamText call,
-// SSE event emission, follow-up parsing, source collection, and message
-// finalization. Returns a ReadableStream that the route handler wraps in a
-// Response.
+// Orchestrates the AI streaming pipeline: builds the ChatToolContext, wires
+// the agentic primitive tool surface (PRD-033 Parts 1 & 2), applies prompt-
+// cache markers (Part 3), wraps tools with the per-turn cost circuit breaker
+// (Part 3), emits SSE events, and finalises the assistant message.
 //
 // Framework-agnostic: no imports from next/server or HTTP concepts.
 // ---------------------------------------------------------------------------
 
-import { streamText, stepCountIs, tool, zodSchema } from "ai";
-import { z } from "zod";
+import { streamText, stepCountIs } from "ai";
 
 import {
   sseEvent,
   parseFollowUps,
   deduplicateSources,
-  toSource,
 } from "@/lib/utils/chat-helpers";
-import { retrieveRelevantChunks } from "@/lib/services/retrieval-service";
-import { executeQuery } from "@/lib/services/database-query";
 import { clampOutputTokens } from "@/lib/services/ai-provider-limits";
-import { CHAT_SYSTEM_PROMPT, CHAT_MAX_TOKENS } from "@/lib/prompts/chat-prompt";
+import {
+  buildSystemPrompt,
+  CHAT_MAX_TOKENS,
+  CHAT_PROMPT_VERSION,
+} from "@/lib/prompts/chat-prompt";
+import { createChatTools } from "@/lib/services/chat-tools";
+import { createChatQueryRepository } from "@/lib/repositories/supabase/supabase-chat-query-repository";
+import {
+  CHAT_PER_TURN_BUDGET,
+  createCostBudgetTracker,
+} from "@/lib/services/chat-cost-budget";
+import {
+  applyPromptCacheMarkers,
+  readCacheTelemetry,
+} from "@/lib/services/chat-prompt-cache";
 
 import type { LanguageModel } from "ai";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { ChatService, ContextMessage } from "@/lib/services/chat-service";
 import type { EmbeddingRepository } from "@/lib/repositories/embedding-repository";
 import type { ChatSource } from "@/lib/types/chat";
-import type { ChunkType } from "@/lib/types/embedding-chunk";
-import {
-  CHAT_TOOL_ACTIONS,
-  buildChatToolDescription,
-  type QueryAction,
-} from "@/lib/services/database-query";
 
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
 const LOG_PREFIX = "[chat-stream-service]";
+const CHAT_STEP_CAP = 10;
 
 // ---------------------------------------------------------------------------
 // Dependencies interface
 // ---------------------------------------------------------------------------
 
-/**
- * All dependencies the stream service needs, injected by the route handler.
- * This keeps the service testable and decoupled from framework specifics.
- */
 export interface ChatStreamDeps {
   model: LanguageModel;
   modelLabel: string;
   chatService: ChatService;
   embeddingRepo: EmbeddingRepository;
-  /** RLS-protected client (carries user cookies) — used for data queries. */
+  /** RLS-protected client (carries user cookies) — used for aggregation tools. */
   anonClient: SupabaseClient;
+  /** Service-role client — used for the ChatQueryRepository cross-table joins. */
+  serviceClient: SupabaseClient;
   teamId: string | null;
+  userId: string;
   conversationId: string;
   assistantMessageId: string;
   isNewConversation: boolean;
   contextMessages: ContextMessage[];
-  /**
-   * Request abort signal — propagated to `streamText()` so a client-side
-   * cancel cancels the upstream provider call AND throws inside the
-   * for-await loop. The outer catch differentiates abort from error and
-   * updates the placeholder accordingly. (Gap E14)
-   */
   abortSignal: AbortSignal;
 }
 
@@ -78,12 +76,13 @@ export interface ChatStreamDeps {
  * Creates a ReadableStream that emits typed SSE events for the chat
  * streaming pipeline. The stream:
  *
- * 1. Calls streamText with searchInsights and queryDatabase tools
- * 2. Emits `status` events during tool execution
- * 3. Emits `delta` events for text chunks
- * 4. On completion: parses follow-ups, deduplicates sources, finalizes
+ * 1. Builds the ChatToolContext (workspace, repos, status emitter, cost tracker)
+ * 2. Calls streamText with the wrapped agentic tool surface
+ * 3. Emits `status` events during tool execution
+ * 4. Emits `delta` events for text chunks
+ * 5. On completion: parses follow-ups, deduplicates sources, finalises
  *    the assistant message, and emits `sources`, `follow_ups`, `done`
- * 5. On error: marks the message as failed and emits an `error` event
+ * 6. On error: marks the message as failed and emits an `error` event
  */
 export function createChatStream(deps: ChatStreamDeps): ReadableStream {
   const {
@@ -92,7 +91,9 @@ export function createChatStream(deps: ChatStreamDeps): ReadableStream {
     chatService,
     embeddingRepo,
     anonClient,
+    serviceClient,
     teamId,
+    userId,
     conversationId,
     assistantMessageId,
     isNewConversation,
@@ -103,51 +104,69 @@ export function createChatStream(deps: ChatStreamDeps): ReadableStream {
   const encoder = new TextEncoder();
   const collectedSources: ChatSource[] = [];
 
-  // Last user message — used by the tool boundary to drop filter values the
-  // model invented (schema-fill hallucination) rather than derived from user
-  // intent. See sanitizeFilters() below.
-  const lastUserMessage =
-    [...contextMessages].reverse().find((m) => m.role === "user")?.content ??
-    "";
-
   return new ReadableStream({
     async start(controller) {
       // Lifted to outer scope so the catch can preserve partial content when
-      // the stream is aborted or errors mid-flight (gap E14).
+      // the stream is aborted or errors mid-flight.
       let fullText = "";
       const toolsCalled: string[] = [];
 
+      const emitStatus = (text: string): void => {
+        controller.enqueue(encoder.encode(sseEvent("status", { text })));
+      };
+
+      // Build the per-turn cost circuit breaker. Logs telemetry on trip.
+      const budgetTracker = createCostBudgetTracker(CHAT_PER_TURN_BUDGET, {
+        onBudgetExceeded: (info) => {
+          console.warn(
+            `${LOG_PREFIX} per-turn cost budget exceeded — totalTokensAtTrip: ${info.totalTokensAtTrip}, callsBeforeTrip: ${info.callsBeforeTrip}, callsRejected: ${info.callsRejected}, toolCounts: ${JSON.stringify(info.toolCounts)}`
+          );
+          emitStatus("Query is broad — synthesising a partial answer.");
+        },
+      });
+
+      const chatQueryRepo = createChatQueryRepository(
+        serviceClient,
+        teamId,
+        userId
+      );
+
+      // Build the dormant tool registry, then wrap each tool's execute()
+      // with the budget guard. Tool factories never see the budget logic.
+      const baseTools = createChatTools({
+        workspace: { teamId, userId },
+        chatQueryRepo,
+        embeddingRepo,
+        supabaseClient: anonClient,
+        emitStatus,
+        recordToolResultTokens: budgetTracker.record,
+      });
+      const tools = budgetTracker.wrap(baseTools);
+
       try {
-        const result = streamText({
-          model,
-          system: `${CHAT_SYSTEM_PROMPT}\n\nToday's date is ${new Date().toISOString().split('T')[0]}. Use this to resolve relative time references (e.g. "past month", "last week").`,
-          messages: contextMessages.map((m) => ({
+        // System prompt is passed via `messages[0]` (not the `system` field)
+        // so provider-specific cache markers (Anthropic `cache_control`) can
+        // apply. No-op for providers without explicit caching.
+        const systemPrompt = buildSystemPrompt({
+          date: new Date().toISOString().split("T")[0],
+        });
+        const messages = applyPromptCacheMarkers(
+          systemPrompt,
+          contextMessages.map((m) => ({
             role: m.role as "user" | "assistant",
             content: m.content,
-          })),
-          tools: {
-            searchInsights: buildSearchInsightsTool(
-              controller,
-              encoder,
-              embeddingRepo,
-              teamId,
-              collectedSources,
-              lastUserMessage
-            ),
-            queryDatabase: buildQueryDatabaseTool(
-              controller,
-              encoder,
-              anonClient,
-              teamId,
-              lastUserMessage
-            ),
-          },
-          stopWhen: stepCountIs(10),
+          }))
+        );
+
+        const result = streamText({
+          model,
+          messages,
+          tools,
+          stopWhen: stepCountIs(CHAT_STEP_CAP),
           maxOutputTokens: clampOutputTokens(CHAT_MAX_TOKENS, modelLabel),
           abortSignal,
         });
 
-        // Send "generating" status
         controller.enqueue(
           encoder.encode(sseEvent("status", { text: "Generating answer..." }))
         );
@@ -163,6 +182,13 @@ export function createChatStream(deps: ChatStreamDeps): ReadableStream {
 
             case "tool-call":
               toolsCalled.push(part.toolName);
+              // Collect source citations from retrieval-shaped tool calls.
+              // The new surface emits chunk results via semantic_search and
+              // fetch_signals (both return clientName + sessionDate + text).
+              break;
+
+            case "tool-result":
+              collectSourcesFromToolResult(part, collectedSources);
               break;
 
             case "error":
@@ -184,18 +210,13 @@ export function createChatStream(deps: ChatStreamDeps): ReadableStream {
           }
         }
 
-        // Stream complete — detect truncation. Two cases:
-        //   - Step-budget exhaustion (gap E8): stopWhen fires mid-tool-calling,
-        //     finishReason resolves to "tool-calls" — the model wanted another
-        //     step but hit the cap.
-        //   - Length-budget exhaustion (PRD-031 P3.R6): the model emitted up to
-        //     maxOutputTokens and finishReason resolves to "length" — the answer
-        //     ran out of room before the model finished. Same UX pattern: append
-        //     a single-line warning to streamed + persisted content so the user
-        //     sees the truncation and can follow up.
+        // Stream complete — detect truncation modes.
         const finishReason = await result.finishReason;
         const stepCount = (await result.steps).length;
         const usage = await result.usage;
+        const cacheTelemetry = readCacheTelemetry(
+          usage as unknown as Record<string, unknown> | undefined
+        );
         const wasStepTruncated = finishReason === "tool-calls";
         const wasLengthTruncated = finishReason === "length";
 
@@ -225,14 +246,14 @@ export function createChatStream(deps: ChatStreamDeps): ReadableStream {
           metadata: {
             model: modelLabel,
             toolsCalled,
+            promptVersion: CHAT_PROMPT_VERSION,
           },
         });
 
         console.log(
-          `${LOG_PREFIX} stream complete — steps: ${stepCount}, finishReason: ${finishReason}, usage: input=${usage?.inputTokens ?? "?"}, output=${usage?.outputTokens ?? "?"}, total=${usage?.totalTokens ?? "?"}, content: ${cleanContent.length} chars, sources: ${uniqueSources.length}, followUps: ${followUps.length}${wasStepTruncated ? " (step-truncated)" : wasLengthTruncated ? " (length-truncated)" : ""}`
+          `${LOG_PREFIX} stream complete — steps: ${stepCount}, finishReason: ${finishReason}, usage: input=${usage?.inputTokens ?? "?"}, output=${usage?.outputTokens ?? "?"}, total=${usage?.totalTokens ?? "?"}, cache-hit-input=${cacheTelemetry.cacheHitInputTokens}, cache-miss-input=${cacheTelemetry.cacheMissInputTokens}, tool-result-tokens=${budgetTracker.total()}, budget-exceeded=${budgetTracker.isExceeded()}, content: ${cleanContent.length} chars, sources: ${uniqueSources.length}, followUps: ${followUps.length}, promptVersion: ${CHAT_PROMPT_VERSION}${wasStepTruncated ? " (step-truncated)" : wasLengthTruncated ? " (length-truncated)" : ""}`
         );
 
-        // Send final events
         if (uniqueSources.length > 0) {
           controller.enqueue(
             encoder.encode(sseEvent("sources", { sources: uniqueSources }))
@@ -259,9 +280,6 @@ export function createChatStream(deps: ChatStreamDeps): ReadableStream {
 
         controller.close();
       } catch (err) {
-        // Differentiate client-abort from genuine errors so the placeholder
-        // row reflects reality and any partial content the user already saw
-        // is preserved (gap E14).
         const isAbort =
           abortSignal.aborted ||
           (err instanceof Error && err.name === "AbortError");
@@ -277,9 +295,6 @@ export function createChatStream(deps: ChatStreamDeps): ReadableStream {
           );
         }
 
-        // Update the placeholder row with the terminal status and whatever
-        // partial content accumulated. Keeps client (which sees the partial
-        // text up to the abort/error) and server in agreement.
         try {
           await chatService.updateMessage(assistantMessageId, {
             status: isAbort ? "cancelled" : "failed",
@@ -293,9 +308,6 @@ export function createChatStream(deps: ChatStreamDeps): ReadableStream {
           );
         }
 
-        // On abort the client already knows it cancelled — no error event
-        // needed (and the controller is likely already torn down). On error,
-        // emit so the client renders error UI.
         if (!isAbort) {
           try {
             controller.enqueue(
@@ -322,360 +334,111 @@ export function createChatStream(deps: ChatStreamDeps): ReadableStream {
 }
 
 // ---------------------------------------------------------------------------
-// Filter sanitization (defensive — the model hallucinates default filter
-// values even when told not to). For each optional filter, we keep the value
-// only when the user's last message contains a textual cue that maps to it.
-// "User asked for it" is the gate — anything else is schema-fill noise and
-// gets dropped before reaching the database.
+// Source collection — pulls citation-shaped rows from retrieval tool results
+// (semantic_search, fetch_signals, fetch_session_content). Other tools return
+// counts / distributions / digests and don't produce citation rows.
 // ---------------------------------------------------------------------------
 
-const SEVERITY_CUES = ["severity", "severe", "low", "medium", "high"];
-const URGENCY_CUES = [
-  "urgency",
-  "urgent",
-  "low",
-  "medium",
-  "high",
-  "critical",
-];
-const GRANULARITY_CUES = [
-  "week",
-  "month",
-  "weekly",
-  "monthly",
-  "trend",
-  "over time",
-  "per month",
-  "per week",
-];
-const CONFIDENCE_CUES = ["confidence", "confident"];
-const DATE_CUE_REGEX =
-  /\b(20\d{2}|jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec|january|february|march|april|june|july|august|september|october|november|december|today|yesterday|recent|since|before|after|between|past|last|this)\b/i;
-
-function mentions(haystack: string, cues: string[]): boolean {
-  const lower = haystack.toLowerCase();
-  return cues.some((c) => lower.includes(c.toLowerCase()));
+interface ToolResultPart {
+  type: "tool-result";
+  toolName: string;
+  output?: unknown;
 }
 
-interface QueryDatabaseFilters {
-  dateFrom?: string;
-  dateTo?: string;
-  clientName?: string;
-  clientIds?: string[];
-  severity?: "low" | "medium" | "high";
-  urgency?: "low" | "medium" | "high" | "critical";
-  granularity?: "week" | "month";
-  confidenceMin?: number;
-}
+function collectSourcesFromToolResult(
+  part: unknown,
+  acc: ChatSource[]
+): void {
+  if (!part || typeof part !== "object") return;
+  const p = part as Partial<ToolResultPart>;
+  if (p.type !== "tool-result") return;
+  const toolName = p.toolName;
+  const output = p.output;
+  if (!toolName || !output) return;
 
-interface SearchInsightsFilters {
-  clientName?: string;
-  dateFrom?: string;
-  dateTo?: string;
-  chunkTypes?: string[];
-}
-
-function sanitizeQueryDatabaseFilters(
-  raw: QueryDatabaseFilters | undefined,
-  userMessage: string
-): QueryDatabaseFilters {
-  if (!raw) return {};
-  const hasDateCue = DATE_CUE_REGEX.test(userMessage);
-  const out: QueryDatabaseFilters = {};
-
-  const dateFrom = raw.dateFrom?.trim();
-  if (dateFrom && hasDateCue) out.dateFrom = dateFrom;
-
-  const dateTo = raw.dateTo?.trim();
-  if (dateTo && hasDateCue) out.dateTo = dateTo;
-
-  const clientName = raw.clientName?.trim();
-  if (clientName && userMessage.toLowerCase().includes(clientName.toLowerCase())) {
-    out.clientName = clientName;
-  }
-
-  if (raw.clientIds && raw.clientIds.length > 0) {
-    out.clientIds = raw.clientIds;
-  }
-
-  if (raw.severity && mentions(userMessage, SEVERITY_CUES)) {
-    out.severity = raw.severity;
-  }
-
-  if (raw.urgency && mentions(userMessage, URGENCY_CUES)) {
-    out.urgency = raw.urgency;
-  }
-
-  if (raw.granularity && mentions(userMessage, GRANULARITY_CUES)) {
-    out.granularity = raw.granularity;
-  }
-
-  // Drop confidenceMin when it's a no-op (≤ 0) or the user didn't mention
-  // confidence at all. The action handlers treat undefined as "no filter".
-  if (
-    raw.confidenceMin !== undefined &&
-    raw.confidenceMin > 0 &&
-    mentions(userMessage, CONFIDENCE_CUES)
-  ) {
-    out.confidenceMin = raw.confidenceMin;
-  }
-
-  return out;
-}
-
-function sanitizeSearchInsightsFilters(
-  raw: SearchInsightsFilters | undefined,
-  userMessage: string
-): SearchInsightsFilters {
-  if (!raw) return {};
-  const hasDateCue = DATE_CUE_REGEX.test(userMessage);
-  const out: SearchInsightsFilters = {};
-
-  const clientName = raw.clientName?.trim();
-  if (clientName && userMessage.toLowerCase().includes(clientName.toLowerCase())) {
-    out.clientName = clientName;
-  }
-
-  const dateFrom = raw.dateFrom?.trim();
-  if (dateFrom && hasDateCue) out.dateFrom = dateFrom;
-
-  const dateTo = raw.dateTo?.trim();
-  if (dateTo && hasDateCue) out.dateTo = dateTo;
-
-  if (raw.chunkTypes && raw.chunkTypes.length > 0) {
-    out.chunkTypes = raw.chunkTypes;
-  }
-
-  return out;
-}
-
-// ---------------------------------------------------------------------------
-// Tool builders
-// ---------------------------------------------------------------------------
-
-/**
- * Builds the searchInsights tool definition for streamText.
- */
-function buildSearchInsightsTool(
-  controller: ReadableStreamDefaultController,
-  encoder: TextEncoder,
-  embeddingRepo: EmbeddingRepository,
-  teamId: string | null,
-  collectedSources: ChatSource[],
-  lastUserMessage: string
-) {
-  return tool({
-    description:
-      "Search client feedback sessions for qualitative insights. Use when the question is about what clients said, felt, or experienced.",
-    inputSchema: zodSchema(
-      z.object({
-        query: z
-          .string()
-          .describe("Semantic search query optimised for embedding similarity"),
-        filters: z
-          .object({
-            clientName: z
-              .string()
-              .optional()
-              .describe(
-                "Filter by specific client name. OMIT unless the user names a specific client — do NOT pass an empty string."
-              ),
-            dateFrom: z
-              .string()
-              .optional()
-              .describe(
-                "Start date (ISO format YYYY-MM-DD). OMIT unless the user explicitly specifies a start date."
-              ),
-            dateTo: z
-              .string()
-              .optional()
-              .describe(
-                "End date (ISO format YYYY-MM-DD). OMIT unless the user explicitly specifies an end date."
-              ),
-            chunkTypes: z
-              .array(z.string())
-              .optional()
-              .describe(
-                "Filter by chunk types. Valid values: pain_point, requirement, aspiration, positive_signal, blocker, competitive_mention, tool_and_platform, client_profile, custom, raw. OMIT unless the user explicitly asks for a specific chunk category — do NOT pass an empty array."
-              ),
-          })
-          .optional()
-          .describe(
-            "Optional filters. OMIT this entire object — or omit individual fields — when the user has not explicitly specified that constraint. Never invent default values to 'fill in' the schema."
-          ),
-      })
-    ),
-    execute: async ({ query, filters }) => {
-      const sanitized = sanitizeSearchInsightsFilters(
-        filters,
-        lastUserMessage
-      );
-      if (filters && JSON.stringify(filters) !== JSON.stringify(sanitized)) {
-        console.log(
-          `${LOG_PREFIX} tool:searchInsights — sanitized filters; raw: ${JSON.stringify(filters)}, kept: ${JSON.stringify(sanitized)}`
-        );
-      }
-      console.log(`${LOG_PREFIX} tool:searchInsights — query: "${query}"`);
-      controller.enqueue(
-        encoder.encode(
-          sseEvent("status", { text: "Searching across sessions..." })
-        )
-      );
-      const results = await retrieveRelevantChunks(
-        query,
-        {
-          teamId,
-          clientName: sanitized.clientName,
-          dateFrom: sanitized.dateFrom,
-          dateTo: sanitized.dateTo,
-          chunkTypes: sanitized.chunkTypes as ChunkType[] | undefined,
-        },
-        embeddingRepo
-      );
-
-      // Collect sources for persistence
-      collectedSources.push(...results.map(toSource));
-
-      // Deduplicate client names for the status message
-      const uniqueClients = new Set(results.map((r) => r.clientName));
-
-      controller.enqueue(
-        encoder.encode(
-          sseEvent("status", {
-            text: `Found ${results.length} relevant insights from ${uniqueClients.size} client${uniqueClients.size !== 1 ? "s" : ""}`,
-          })
-        )
-      );
-
-      console.log(
-        `${LOG_PREFIX} tool:searchInsights — returned ${results.length} results from ${uniqueClients.size} clients`
-      );
-
-      return results.map((r) => ({
-        clientName: r.clientName,
-        sessionDate: r.sessionDate,
-        chunkType: r.chunkType,
-        chunkText: r.chunkText,
-        similarityScore: r.similarityScore,
-      }));
-    },
-  });
-}
-
-/**
- * Builds the queryDatabase tool definition for streamText.
- */
-function buildQueryDatabaseTool(
-  controller: ReadableStreamDefaultController,
-  encoder: TextEncoder,
-  supabaseClient: SupabaseClient,
-  teamId: string | null,
-  lastUserMessage: string
-) {
-  return tool({
-    description: buildChatToolDescription(),
-    inputSchema: zodSchema(
-      z.object({
-        action: z
-          .enum(CHAT_TOOL_ACTIONS)
-          .describe("The predefined query action to execute"),
-        filters: z
-          .object({
-            dateFrom: z
-              .string()
-              .optional()
-              .describe(
-                "Start date filter (ISO format YYYY-MM-DD). OMIT unless the user explicitly specifies a start date — do NOT default to a wide range like '2020-01-01'."
-              ),
-            dateTo: z
-              .string()
-              .optional()
-              .describe(
-                "End date filter (ISO format YYYY-MM-DD). OMIT unless the user explicitly specifies an end date — do NOT default to today."
-              ),
-            clientName: z
-              .string()
-              .optional()
-              .describe(
-                "Single-client convenience: matches by client name when no UUID is known. OMIT unless the user names a specific client — do NOT pass an empty string."
-              ),
-            clientIds: z
-              .array(z.string().uuid())
-              .optional()
-              .describe(
-                "Filter by one or more client UUIDs. OMIT unless the user is asking about specific clients by ID — do NOT pass an empty array."
-              ),
-            severity: z
-              .enum(["low", "medium", "high"])
-              .optional()
-              .describe(
-                "Filter signals by severity tier. OMIT unless the user explicitly asks about a severity tier — do NOT default to 'low'."
-              ),
-            urgency: z
-              .enum(["low", "medium", "high", "critical"])
-              .optional()
-              .describe(
-                "Filter signals by urgency tier. OMIT unless the user explicitly asks about an urgency tier — do NOT default to 'low'."
-              ),
-            granularity: z
-              .enum(["week", "month"])
-              .optional()
-              .describe(
-                "Time bucketing granularity. Used by sessions_over_time and theme_trends. OMIT for any other action — irrelevant filters are ignored but pollute the call."
-              ),
-            confidenceMin: z
-              .number()
-              .min(0)
-              .max(1)
-              .optional()
-              .describe(
-                "Minimum theme-assignment confidence score 0–1. Used by theme actions (top_themes, theme_trends, theme_client_matrix). OMIT for any other action — do NOT default to 0."
-              ),
-          })
-          .optional()
-          .describe(
-            "Optional filters. OMIT this entire object — or omit individual fields — when the user has not explicitly specified that constraint. Never invent default values to 'fill in' the schema."
-          ),
-      })
-    ),
-    execute: async ({ action, filters }) => {
-      const sanitized = sanitizeQueryDatabaseFilters(
-        filters,
-        lastUserMessage
-      );
-      if (filters && JSON.stringify(filters) !== JSON.stringify(sanitized)) {
-        console.log(
-          `${LOG_PREFIX} tool:queryDatabase — sanitized filters; raw: ${JSON.stringify(filters)}, kept: ${JSON.stringify(sanitized)}`
-        );
-      }
-      console.log(
-        `${LOG_PREFIX} tool:queryDatabase — action: ${action}, filters: ${JSON.stringify(sanitized)}`
-      );
-      controller.enqueue(
-        encoder.encode(
-          sseEvent("status", { text: "Looking up your data..." })
-        )
-      );
-      const result = await executeQuery(
-        supabaseClient,
-        action as QueryAction,
-        {
-          teamId,
-          dateFrom: sanitized.dateFrom,
-          dateTo: sanitized.dateTo,
-          clientName: sanitized.clientName,
-          clientIds: sanitized.clientIds,
-          severity: sanitized.severity,
-          urgency: sanitized.urgency,
-          granularity: sanitized.granularity,
-          confidenceMin: sanitized.confidenceMin,
+  // semantic_search → array of { sessionId, clientName, sessionDate, chunkType, text, score }
+  if (toolName === "semantic_search" && Array.isArray(output)) {
+    for (const row of output) {
+      if (row && typeof row === "object") {
+        const r = row as Record<string, unknown>;
+        if (
+          typeof r.sessionId === "string" &&
+          typeof r.clientName === "string" &&
+          typeof r.sessionDate === "string" &&
+          typeof r.text === "string"
+        ) {
+          acc.push({
+            sessionId: r.sessionId,
+            clientName: r.clientName,
+            sessionDate: r.sessionDate,
+            chunkType: typeof r.chunkType === "string" ? r.chunkType : "raw",
+            chunkText: r.text,
+          });
         }
-      );
-      console.log(
-        `${LOG_PREFIX} tool:queryDatabase — action: ${action} completed`
-      );
+      }
+    }
+    return;
+  }
 
-      return result.data;
-    },
-  });
+  // fetch_signals → array of { sessionId, clientName, sessionDate, chunkType, text, ... }
+  if (toolName === "fetch_signals" && Array.isArray(output)) {
+    for (const row of output) {
+      if (row && typeof row === "object") {
+        const r = row as Record<string, unknown>;
+        if (
+          typeof r.sessionId === "string" &&
+          typeof r.clientName === "string" &&
+          typeof r.sessionDate === "string" &&
+          typeof r.text === "string"
+        ) {
+          acc.push({
+            sessionId: r.sessionId,
+            clientName: r.clientName,
+            sessionDate: r.sessionDate,
+            chunkType: typeof r.chunkType === "string" ? r.chunkType : "raw",
+            chunkText: r.text,
+          });
+        }
+      }
+    }
+    return;
+  }
+
+  // fetch_session_content → { sessions: [...] }, each session has chunks[]
+  if (
+    toolName === "fetch_session_content" &&
+    output &&
+    typeof output === "object"
+  ) {
+    const o = output as Record<string, unknown>;
+    const sessions = o.sessions;
+    if (Array.isArray(sessions)) {
+      for (const session of sessions) {
+        if (!session || typeof session !== "object") continue;
+        const s = session as Record<string, unknown>;
+        if (typeof s.sessionId !== "string") continue;
+        const sessionId = s.sessionId;
+        const clientName =
+          typeof s.clientName === "string" ? s.clientName : "Unknown";
+        const sessionDate =
+          typeof s.sessionDate === "string" ? s.sessionDate : "";
+        const chunks = s.chunks;
+        if (Array.isArray(chunks)) {
+          for (const chunk of chunks) {
+            if (!chunk || typeof chunk !== "object") continue;
+            const c = chunk as Record<string, unknown>;
+            if (typeof c.text === "string") {
+              acc.push({
+                sessionId,
+                clientName,
+                sessionDate,
+                chunkType: typeof c.type === "string" ? c.type : "raw",
+                chunkText: c.text,
+              });
+            }
+          }
+        }
+      }
+    }
+  }
 }

@@ -168,12 +168,13 @@ Initial coverage: at least 15 queries spanning the four shapes today's surface h
 
 **P3.R8 — Starter questions updated.** The four hardcoded starter questions are reviewed and at least one is changed to demonstrate a question the old surface couldn't answer (e.g. a "summarise everything" prompt), so users discover the new capability.
 
-**P3.R9 — Prompt caching.** The chat system prompt and tool descriptions are cached at the model-call layer using the configured provider's cache mechanism. All three providers Synthesiser supports today have caching:
+**P3.R9 — Prompt caching.** The chat system prompt and tool descriptions are cached at the model-call layer using the configured provider's cache mechanism. The two providers Synthesiser uses in production today both have caching:
 - **Anthropic** — explicit `cache_control: { type: "ephemeral" }` markers on the cached message blocks.
-- **OpenAI** — automatic for any prompt ≥ 1024 tokens (no developer action needed); telemetry exposes the hit count via `usage.prompt_tokens_details.cached_tokens`.
-- **Google Gemini** — explicit `createCachedContent` API call before the generate call.
+- **OpenAI** — automatic for any prompt ≥ 1024 tokens (no developer action needed); telemetry exposes the hit count via the SDK's normalised `usage` object.
 
-A no-op fallback applies if the active provider is later swapped for one without caching support. Per-turn telemetry logs cache-hit-input vs cache-miss-input token counts so the savings are observable. Target: a measurable input-cost reduction on every turn after the first within a conversation; specifically, cache-hit tokens become the majority of input tokens once the conversation is past its first turn.
+**Google Gemini caching is deferred** — Google is not an active provider today. When it's added, three deferred decisions need to be revisited together: (a) the explicit `createCachedContent` API integration, (b) cache lifecycle management (TTL, eviction, per-conversation cache id storage), (c) the corresponding usage-field telemetry shape. Until then, the no-op fallback path applies and Google traffic shows `cache-hit-input: 0`, which is honest.
+
+A no-op fallback also applies if the active provider is later swapped for one without caching support. Per-turn telemetry logs cache-hit-input vs cache-miss-input token counts so the savings are observable. Target: a measurable input-cost reduction on every turn after the first within a conversation; specifically, cache-hit tokens become the majority of input tokens once the conversation is past its first turn.
 
 **P3.R10 — Per-turn cost circuit breaker.** The chat stream tracks the cumulative tool-result tokens introduced into the model's context within a single user turn. When the per-turn budget is exceeded (initial budget: 100,000 tool-result input tokens; configurable via env var, expected to be tuned upward from telemetry once we see real workloads — start tight rather than discover the right number through a surprise bill), no further tool calls are accepted; a system-level message is injected telling the model "you have hit the per-turn budget — synthesise an answer with what you already have, and explicitly tell the user the query was too broad and suggest narrowing by client or date range". The user-facing response surfaces this narrowing suggestion in plain language, never an internal error. The hit is logged with telemetry indicating which tools and how many calls preceded the breaker.
 

@@ -1,16 +1,12 @@
 // ---------------------------------------------------------------------------
 // Database Query — Action Metadata Registry
 // ---------------------------------------------------------------------------
-// Single source of truth for which actions the LLM can invoke via the chat
-// `queryDatabase` tool, plus per-action descriptions surfaced to the model.
-// Adding a new entry to QueryAction produces a TypeScript error in
-// ACTION_METADATA until classified — drift is structurally prevented.
-//
-// `llmToolExposed: false` means the action is reachable via direct API or UI
-// fetch but is NOT offered to the LLM as a tool choice. Notably,
-// `session_detail` remains used by the chat citation dialog (a client-side
-// fetch from `SessionPreviewDialog`) — the flag governs LLM tool exposure
-// only; UI-driven and direct-API callers are unaffected. (Gap E4)
+// Source of truth for the dashboard's action surface. Each entry carries a
+// description and a legacy `llmToolExposed` flag. The flag is preserved for
+// historical reference but no longer drives any runtime behaviour — PRD-033
+// Part 3 retired the chat tool's CHAT_TOOL_ACTIONS tuple and its sync check;
+// the chat surface now uses the primitive tool registry in
+// `lib/services/chat-tools/` and does not consume `llmToolExposed`.
 // ---------------------------------------------------------------------------
 
 import type { ActionMeta, QueryAction } from "./types";
@@ -112,73 +108,3 @@ export const ACTION_METADATA: Record<QueryAction, ActionMeta> = {
   },
 };
 
-// Const-asserted tuple of actions exposed to the LLM. Used as the runtime
-// source for the chat tool's Zod enum. Type-and-runtime parity with
-// ACTION_METADATA is verified at module load by assertChatToolActionsInSync().
-const CHAT_TOOL_ACTIONS_TUPLE = [
-  "count_clients",
-  "count_sessions",
-  "sessions_per_client",
-  "sentiment_distribution",
-  "urgency_distribution",
-  "recent_sessions",
-  "client_list",
-  "sessions_over_time",
-  "client_health_grid",
-  "competitive_mention_frequency",
-  "top_themes",
-  "theme_trends",
-  "theme_client_matrix",
-  "insights_latest",
-  "insights_history",
-] as const satisfies readonly QueryAction[];
-
-export type ChatToolAction = (typeof CHAT_TOOL_ACTIONS_TUPLE)[number];
-// Exported with the literal tuple type preserved (no widening) so consumers
-// like `z.enum(CHAT_TOOL_ACTIONS)` get a valid non-empty tuple type.
-export const CHAT_TOOL_ACTIONS = CHAT_TOOL_ACTIONS_TUPLE;
-
-// Dev-time sanity: the static tuple must match the runtime filter of the
-// registry. Catches the case where someone flips an `llmToolExposed` flag in
-// ACTION_METADATA without updating the tuple (or vice versa). Throws on
-// module load in non-production builds; never trips in production paths.
-function assertChatToolActionsInSync() {
-  const fromRegistry = (
-    Object.entries(ACTION_METADATA) as [QueryAction, ActionMeta][]
-  )
-    .filter(([, meta]) => meta.llmToolExposed)
-    .map(([action]) => action)
-    .sort();
-  const fromTuple = [...CHAT_TOOL_ACTIONS_TUPLE].sort();
-  if (
-    fromRegistry.length !== fromTuple.length ||
-    fromRegistry.some((a, i) => a !== fromTuple[i])
-  ) {
-    throw new Error(
-      `${LOG_PREFIX} CHAT_TOOL_ACTIONS_TUPLE is out of sync with ACTION_METADATA.\n` +
-        `From registry (llmToolExposed=true): ${fromRegistry.join(", ")}\n` +
-        `From tuple: ${fromTuple.join(", ")}`
-    );
-  }
-}
-
-if (process.env.NODE_ENV !== "production") {
-  assertChatToolActionsInSync();
-}
-
-/**
- * Builds the `description` string surfaced to the LLM as the `queryDatabase`
- * tool description. Composes the preamble with a bulleted list of LLM-exposed
- * actions and their descriptions, sourced from ACTION_METADATA.
- */
-export function buildChatToolDescription(): string {
-  const lines = CHAT_TOOL_ACTIONS.map(
-    (action) => `- ${action}: ${ACTION_METADATA[action].description}`
-  );
-  return [
-    "Query the database for quantitative data about clients, sessions, themes, competitive mentions, and dashboard insights. Use when the question involves counts, lists, distributions, or factual lookups.",
-    "",
-    "Available actions:",
-    ...lines,
-  ].join("\n");
-}

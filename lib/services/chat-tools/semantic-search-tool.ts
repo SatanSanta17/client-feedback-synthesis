@@ -61,6 +61,10 @@ export function createSemanticSearchTool(ctx: ChatToolContext) {
         ctx.embeddingRepo
       );
       return results.map((r) => ({
+        // sessionId is included for citation plumbing in the chat surface;
+        // system prompt v2 instructs the model not to mention UUIDs in
+        // its reply.
+        sessionId: r.sessionId,
         clientName: r.clientName,
         sessionDate: r.sessionDate,
         chunkType: r.chunkType,

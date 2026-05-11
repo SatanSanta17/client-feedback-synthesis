@@ -25,4 +25,11 @@ export interface ChatToolContext {
   supabaseClient: SupabaseClient;
   // Streaming-side
   emitStatus: (message: string) => void;
+  /**
+   * PRD-033 Part 3 — sums tool-result tokens for the per-turn cost circuit
+   * breaker. Populated automatically by the budget-tracker wrapper that
+   * `chat-stream-service` applies around `createChatTools(ctx)`; tool
+   * factories don't call this directly.
+   */
+  recordToolResultTokens: (toolName: string, tokens: number) => void;
 }

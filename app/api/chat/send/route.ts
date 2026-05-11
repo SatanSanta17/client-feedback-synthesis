@@ -158,14 +158,18 @@ export async function POST(request: NextRequest) {
     const { model, label: modelLabel } = resolveModel();
     console.log(`${LOG_PREFIX} POST — using model: ${modelLabel}`);
 
-    // 10. Delegate to chat stream service
+    // 10. Delegate to chat stream service. Pass both the anon client (for
+    //     RLS-protected reads) and the service-role client (for the
+    //     ChatQueryRepository's cross-table joins per PRD-033 Part 1).
     const stream = createChatStream({
       model,
       modelLabel,
       chatService,
       embeddingRepo,
       anonClient: supabase,
+      serviceClient,
       teamId,
+      userId: user.id,
       conversationId,
       assistantMessageId: assistantMessage.id,
       isNewConversation,
