@@ -22,7 +22,7 @@ import { cn } from "@/lib/utils";
 // question types users discover by clicking.
 const STARTER_QUESTIONS = [
   "What are the top pain points mentioned across all clients?",
-  "Summarise everything our most active client has told us this quarter",
+  "Summarise everything our client has told us this quarter",
   "Which clients have expressed urgency in the last 30 days?",
   "Are there any competitive threats mentioned recently?",
 ] as const;
