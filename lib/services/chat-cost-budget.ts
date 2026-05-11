@@ -52,16 +52,10 @@ export interface CostBudgetTracker {
    * Wrap a tool registry (e.g. the output of `createChatTools(ctx)`) so each
    * tool's `execute` is guarded by the budget check. The wrapped tools
    * behave identically below the budget; past it they return the sentinel
-   * payload instead of running.
+   * payload instead of running. The wrapper records each tool's result
+   * tokens internally.
    */
   wrap: <T extends Record<string, Tool>>(tools: T) => T;
-  /**
-   * Record a tool result's estimated token count against the budget.
-   * Normally called automatically by the wrapper; exposed for any caller
-   * that needs to fold an out-of-band tool result into the running total
-   * (none today; defensive).
-   */
-  record: (toolName: string, tokens: number) => void;
   /** Current cumulative tool-result tokens for this turn. */
   total: () => number;
   /** True once the budget has been exceeded; remains true for the rest of the turn. */
@@ -126,7 +120,6 @@ export function createCostBudgetTracker(
 
   return {
     wrap,
-    record,
     total: () => totalResultTokens,
     isExceeded,
   };

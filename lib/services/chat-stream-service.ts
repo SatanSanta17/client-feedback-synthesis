@@ -131,15 +131,15 @@ export function createChatStream(deps: ChatStreamDeps): ReadableStream {
         userId
       );
 
-      // Build the dormant tool registry, then wrap each tool's execute()
-      // with the budget guard. Tool factories never see the budget logic.
+      // Build the tool registry, then wrap each tool's execute() with the
+      // per-turn cost budget guard. Tool factories never see the budget
+      // logic — the wrapper records tool-result tokens internally.
       const baseTools = createChatTools({
         workspace: { teamId, userId },
         chatQueryRepo,
         embeddingRepo,
         supabaseClient: anonClient,
         emitStatus,
-        recordToolResultTokens: budgetTracker.record,
       });
       const tools = budgetTracker.wrap(baseTools);
 

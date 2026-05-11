@@ -18,8 +18,6 @@ import type { ModelMessage } from "ai";
 const LOG_PREFIX = "[chat-prompt-cache]";
 
 const PROVIDER_ANTHROPIC = "anthropic";
-const PROVIDER_OPENAI = "openai";
-const PROVIDER_GOOGLE = "google";
 
 /**
  * Per-turn cache telemetry, computed from the model response's normalised
@@ -68,11 +66,13 @@ export function applyPromptCacheMarkers(
     ];
   }
 
-  // OpenAI: automatic, no marker needed. Same shape as no-op.
-  // Google: explicit cache API deferred; no-op until then.
-  // Unknown providers: graceful no-op.
-  void PROVIDER_OPENAI;
-  void PROVIDER_GOOGLE;
+  // OpenAI ("openai"): caching is automatic for prompts ≥ 1024 tokens; no
+  //   marker needed at request time. Cache-hit telemetry comes from the
+  //   response usage (see `readCacheTelemetry` below).
+  // Google Gemini ("google"): explicit `createCachedContent` API call is
+  //   NOT wired here — deferred until Google becomes an active provider
+  //   (ARCHITECTURE.md "Deferred when Google becomes an active provider").
+  // Unknown / other providers: graceful no-op.
   return [{ role: "system", content: systemPrompt }, ...history];
 }
 

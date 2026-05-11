@@ -2,9 +2,9 @@
 // ChatToolContext — DI bag passed into every tool factory.
 // PRD-033 P1.R6 (workspace scope invisible to model) + TRD § 1.4.
 //
-// Forward-compat: Part 2 will add `cheapModel: LanguageModel` for
-// summarise_sessions; Part 3 will add `recordToolResultTokens` telemetry hooks
-// for the per-turn cost circuit breaker. Both are additive.
+// Each tool factory receives this context; no tool ever reaches for a
+// Supabase client or workspace identifier directly. Workspace scope is
+// enforced at the service / repository layer.
 // ---------------------------------------------------------------------------
 
 import type { SupabaseClient } from "@supabase/supabase-js";
@@ -25,11 +25,4 @@ export interface ChatToolContext {
   supabaseClient: SupabaseClient;
   // Streaming-side
   emitStatus: (message: string) => void;
-  /**
-   * PRD-033 Part 3 — sums tool-result tokens for the per-turn cost circuit
-   * breaker. Populated automatically by the budget-tracker wrapper that
-   * `chat-stream-service` applies around `createChatTools(ctx)`; tool
-   * factories don't call this directly.
-   */
-  recordToolResultTokens: (toolName: string, tokens: number) => void;
 }

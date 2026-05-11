@@ -60,7 +60,6 @@ export interface DatabaseQueryResult {
 }
 
 export interface ActionMeta {
-  llmToolExposed: boolean;
   description: string;
 }
 
