@@ -1,5 +1,6 @@
 import crypto from "crypto";
 import type { SupabaseClient } from "@supabase/supabase-js";
+import type { Role } from "@/lib/roles";
 import type {
   InvitationRepository,
   InvitationRow,
@@ -43,7 +44,7 @@ export async function createInvitations(
   teamRepo: TeamRepository,
   teamId: string,
   emails: string[],
-  role: "admin" | "sales",
+  role: Role,
   invitedBy: string,
   inviterEmail: string,
   teamName: string

@@ -1,5 +1,6 @@
 import { type SupabaseClient } from "@supabase/supabase-js";
 
+import type { Role } from "@/lib/roles";
 import type {
   TeamRepository,
   TeamRow,
@@ -245,7 +246,7 @@ export function createTeamRepository(
       console.log("[supabase-team-repo] removeMember — removed membership:", data.id);
     },
 
-    async changeMemberRole(teamId: string, userId: string, role: "admin" | "sales"): Promise<void> {
+    async changeMemberRole(teamId: string, userId: string, role: Role): Promise<void> {
       console.log("[supabase-team-repo] changeMemberRole — teamId:", teamId, "userId:", userId, "role:", role);
 
       const { error } = await supabase
@@ -266,7 +267,8 @@ export function createTeamRepository(
     async transferOwnership(teamId: string, newOwnerId: string): Promise<void> {
       console.log("[supabase-team-repo] transferOwnership — teamId:", teamId, "newOwnerId:", newOwnerId);
 
-      // Promote the new owner to admin if they are currently sales
+      // Promote the new owner to admin if they are currently a non-admin
+      // role (sales or product_manager). Owners must always be admins.
       const { data: member } = await serviceClient
         .from("team_members")
         .select("role")
@@ -275,7 +277,7 @@ export function createTeamRepository(
         .is("removed_at", null)
         .single();
 
-      if (member?.role === "sales") {
+      if (member?.role && member.role !== "admin") {
         const { error: promoteError } = await serviceClient
           .from("team_members")
           .update({ role: "admin" })

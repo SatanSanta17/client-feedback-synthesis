@@ -6,6 +6,27 @@ All notable changes to this project are documented here, grouped by PRD and part
 
 ## [Unreleased]
 
+### Add `product_manager` team role — 2026-05-11
+
+Adds a third member role on team workspaces with the same effective permissions as `sales` (non-admin tier). Motivated by workspaces wanting to mirror their org structure on the members list — admin gates are unchanged.
+
+**Migration:** [`docs/036-product-manager-role/001-add-product-manager-role.sql`](docs/036-product-manager-role/001-add-product-manager-role.sql) widens the `CHECK` constraint on `team_members.role` and `team_invitations.role` to `('admin', 'sales', 'product_manager')`.
+
+**New shared module:** [`lib/roles.ts`](lib/roles.ts) — single source of truth. Exports `ROLE_VALUES` (the canonical tuple), `Role` (derived from the tuple via `(typeof ROLE_VALUES)[number]`), `roleSchema` (Zod enum derived from the tuple), and `formatRole()`. Every consumer — repository interfaces, Supabase implementations, services, API route Zod schemas, UI — imports from here. Adding a future role is now a one-line edit to `ROLE_VALUES` plus a `<SelectItem>` in [role-picker.tsx](components/settings/role-picker.tsx) and the inline picker in [team-members-table.tsx](app/settings/_components/team-members-table.tsx), plus the DB migration. Replaces the duplicated `"admin" | "sales"` unions and parallel `z.enum([...])` declarations that previously lived in eight files.
+
+**Touch list:**
+
+- Repository interfaces and Supabase implementations ([team-repository.ts](lib/repositories/team-repository.ts), [invitation-repository.ts](lib/repositories/invitation-repository.ts), [supabase-team-repository.ts](lib/repositories/supabase/supabase-team-repository.ts), [supabase-invitation-repository.ts](lib/repositories/supabase/supabase-invitation-repository.ts)) and services ([team-service.ts](lib/services/team-service.ts), [invitation-service.ts](lib/services/invitation-service.ts)) now import `Role` from `lib/roles.ts` instead of declaring inline unions.
+- [PATCH /api/teams/[teamId]/members/[userId]/role](app/api/teams/%5BteamId%5D/members/%5BuserId%5D/role/route.ts) and [POST /api/teams/[teamId]/invitations](app/api/teams/%5BteamId%5D/invitations/route.ts) import the shared `roleSchema` instead of re-declaring `z.enum([...])`.
+- `RolePicker` ([role-picker.tsx](components/settings/role-picker.tsx)) gains a "Product Manager" `SelectItem`; trigger widens from `w-28` to `w-40` to fit the longer label. Re-exports `Role` and `formatRole` from `lib/roles.ts` for backward compatibility.
+- Display surfaces switched from `capitalize` to `formatRole()`: role badge and inline `<Select>` in [team-members-table.tsx](app/settings/_components/team-members-table.tsx), role cell in [pending-invitations-table.tsx](app/settings/_components/pending-invitations-table.tsx), role line in [invite-email.ts](lib/email-templates/invite-email.ts), and the "Changed X to Y" toast.
+- Two ancillary logic touches driven by the new role (not permission widening):
+  - [`transferOwnership`](lib/repositories/supabase/supabase-team-repository.ts) now auto-promotes any non-admin (sales or product_manager) target to admin — previously only `sales`. Keeps the invariant that owners are always admins.
+  - The admin-can-remove-non-admins gate in [team-members-table.tsx](app/settings/_components/team-members-table.tsx) widens from `member.role === "sales"` to `member.role !== "admin"`, since PM = sales tier.
+- Admin-only checks (`role === "admin"`) elsewhere (themes, prompts, master signal generation, session edit/delete) are **unchanged** — PM remains a non-admin.
+
+`npx tsc --noEmit` clean.
+
 ### PRD-033 post-cutover — chat-tool audit fixes (correctness + scale) — 2026-05-11
 
 Twelve-finding review against `main` surfaced three correctness bugs and nine informational issues across the new chat tool surface. All twelve are addressed in this change. The product framing — Synthesiser as the single source of truth for client sessions — drives the structural choice: filter logic that used to live in TS (with multi-round-trip resolve-then-filter patterns and limit-before-filter pathologies) now lives in SQL, joining to the canonical `sessions` / `clients` / `signal_themes` tables rather than trusting denormalised metadata copies on `session_embeddings`. Consistent with the pattern already established by [`match_session_embeddings`](docs/019-vector-search/002-match-session-embeddings-rpc.sql) and [`match_session_embeddings_fts`](docs/033-agentic-chat/002-match-session-embeddings-fts-rpc.sql).

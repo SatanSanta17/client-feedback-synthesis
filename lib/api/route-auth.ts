@@ -68,10 +68,12 @@ export async function requireAuth(): Promise<AuthContext | NextResponse> {
 // ---------------------------------------------------------------------------
 // Team-context helpers — verify membership/role on a given team.
 //
-// Roles in this codebase: "admin" | "sales" on team_members; ownership is
-// orthogonal and lives on teams.owner_id. Owner is always also an admin
-// member (enforced by team-repository.create()), so admin-level routes
-// transparently allow owners.
+// Roles in this codebase: "admin" | "sales" | "product_manager" on
+// team_members; ownership is orthogonal and lives on teams.owner_id. Owner
+// is always also an admin member (enforced by team-repository.create()),
+// so admin-level routes transparently allow owners. "sales" and
+// "product_manager" are non-admin tiers with the same effective
+// permissions.
 // ---------------------------------------------------------------------------
 
 type RequiredRole = "member" | "admin" | "owner";

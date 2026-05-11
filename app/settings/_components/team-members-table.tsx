@@ -16,6 +16,7 @@ import {
 } from "@/components/ui/select";
 import { ConfirmDialog, type ConfirmDialogConfig } from "@/components/ui/confirm-dialog";
 import { TableShell, TableHeadCell } from "@/components/settings/table-shell";
+import { formatRole } from "@/components/settings/role-picker";
 import { clearActiveTeamCookie } from "@/lib/cookies/active-team";
 
 interface MemberEntry {
@@ -161,7 +162,7 @@ export function TeamMembersTable({
         }
         throw new Error(body.message ?? "Failed to change role");
       }
-      toast.success(`Changed ${member.email} to ${newRole}`);
+      toast.success(`Changed ${member.email} to ${formatRole(newRole)}`);
       onMemberChanged();
       await fetchMembers();
     } catch (err) {
@@ -236,18 +237,21 @@ export function TeamMembersTable({
                               handleRoleChange(member, val)
                             }
                           >
-                            <SelectTrigger className="h-7 w-24 text-xs">
+                            <SelectTrigger className="h-7 w-36 text-xs">
                               <SelectValue />
                             </SelectTrigger>
                             <SelectContent>
                               <SelectItem value="admin">Admin</SelectItem>
                               <SelectItem value="sales">Sales</SelectItem>
+                              <SelectItem value="product_manager">
+                                Product Manager
+                              </SelectItem>
                             </SelectContent>
                           </Select>
                         ) : (
                           !isMemberOwner && (
-                            <Badge variant="secondary" className="capitalize text-xs">
-                              {member.role}
+                            <Badge variant="secondary" className="text-xs">
+                              {formatRole(member.role)}
                             </Badge>
                           )
                         )}
@@ -292,7 +296,7 @@ export function TeamMembersTable({
                               </Button>
                             )}
                             {(isOwner ||
-                              (isAdmin && member.role === "sales")) && (
+                              (isAdmin && member.role !== "admin")) && (
                               <Button
                                 variant="ghost"
                                 size="sm"

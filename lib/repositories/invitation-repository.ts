@@ -2,11 +2,13 @@
 // Invitation Repository Interface
 // ---------------------------------------------------------------------------
 
+import type { Role } from "@/lib/roles";
+
 export interface InvitationRow {
   id: string;
   team_id: string;
   email: string;
-  role: "admin" | "sales";
+  role: Role;
   invited_by: string;
   token: string;
   expires_at: string;
@@ -23,7 +25,7 @@ export interface InvitationRepository {
   create(invitation: {
     team_id: string;
     email: string;
-    role: "admin" | "sales";
+    role: Role;
     invited_by: string;
     token: string;
     expires_at: string;
@@ -44,7 +46,7 @@ export interface InvitationRepository {
     invitationId: string,
     newToken: string,
     newExpiresAt: string
-  ): Promise<{ email: string; role: "admin" | "sales" } | null>;
+  ): Promise<{ email: string; role: Role } | null>;
 
   /** Fetch an invitation by token, joined with team name (service-role). */
   getByToken(token: string): Promise<InvitationWithTeamRow | null>;

@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { requireAuth, requireTeamOwner } from "@/lib/api/route-auth";
 import { idempotentNoOp } from "@/lib/api/idempotent-no-op";
+import { roleSchema } from "@/lib/roles";
 import { getTeamMember, changeMemberRole } from "@/lib/services/team-service";
 
 interface RouteContext {
@@ -9,9 +10,7 @@ interface RouteContext {
 }
 
 const changeRoleSchema = z.object({
-  role: z.enum(["admin", "sales"], {
-    error: "Role must be 'admin' or 'sales'",
-  }),
+  role: roleSchema,
 });
 
 // ---------------------------------------------------------------------------

@@ -1,4 +1,5 @@
 import type { ProfileRepository } from "@/lib/repositories/profile-repository";
+import type { Role } from "@/lib/roles";
 import type {
   TeamRepository,
   TeamRow,
@@ -170,7 +171,7 @@ export async function changeMemberRole(
   repo: TeamRepository,
   teamId: string,
   userId: string,
-  role: "admin" | "sales"
+  role: Role
 ): Promise<void> {
   console.log(`[team-service] changeMemberRole — teamId: ${teamId}, userId: ${userId}, role: ${role}`);
 

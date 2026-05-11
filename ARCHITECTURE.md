@@ -27,7 +27,7 @@ Synthesiser is a web application for teams to capture structured client session 
 - Dual authentication: Google OAuth and email + password (sign-up, sign-in, forgot-password, reset-password) via Supabase Auth; invite acceptance supports both paths
 - Session capture with AI signal extraction (Vercel AI SDK, multi-provider) and file attachment upload (TXT, PDF, CSV, DOCX, JSON) with server-side parsing and chat format detection (WhatsApp, Slack)
 - Per-user/per-team prompt editor with version history and revert, accessed at `/settings/prompts`
-- Team workspaces with role-based access (owner, admin, sales)
+- Team workspaces with role-based access (owner, admin, sales, product_manager)
 - Email invitations via provider-agnostic email service (Resend)
 - Workspace switcher (personal ↔ team contexts)
 - Team-scoped sessions, clients, master signals, and prompts
@@ -312,7 +312,7 @@ synthesiser/
 │   ├── providers/
 │   │   └── auth-provider.tsx    # AuthProvider context — user, isAuthenticated, isLoading, canCreateTeam, activeTeamId, setActiveTeam, signOut
 │   ├── settings/
-│   │   ├── role-picker.tsx      # Controlled role picker (value, onValueChange) + exported Role type
+│   │   ├── role-picker.tsx      # Controlled role picker (value, onValueChange); re-exports the `Role` type and `formatRole` from `lib/roles.ts`
 │   │   └── table-shell.tsx      # Shared bordered table wrapper (TableShell) + standardised header cell (TableHeadCell)
 │   ├── layout/
 │   │   ├── app-footer.tsx       # Footer — public routes only (developer contact + theme toggle)
@@ -356,6 +356,7 @@ synthesiser/
 │   │   ├── token.ts                # parseInviteToken — validates ?invite= against 64-hex shape (PRD-035)
 │   │   ├── url.ts                  # appendInviteParam — appends ?invite= to a path, preserving any existing query (PRD-035)
 │   │   └── resolve.ts              # resolveInvitedEmailFromParam — used by /login + /signup to resolve ?invite= into the locked email + canonical token (PRD-035)
+│   ├── roles.ts                    # Single source of truth for team roles — exports ROLE_VALUES tuple, Role union (derived), roleSchema (Zod enum derived from the tuple), and formatRole label map. Every repo/service/API route/UI consumer imports from here; adding a role is a one-line edit to ROLE_VALUES + DB migration + 2 SelectItem additions
 │   ├── hooks/
 │   │   ├── use-chat.ts          # Composer — wires useConversationMessages + useChatStreaming and returns the combined UseChatReturn shape consumed by chat-surface components; thin wiring layer, no logic of its own (PRD-024 Part 6 decomposition; previously a 492-LOC monolithic hook)
 │   │   ├── use-conversation-messages.ts  # Internal building block — owns active conversation's messages array, pagination, isLoadingMessages, isConversationNotFound, the load-messages effect with the Gap P9 skip-refetch guard, and clearMessages. Exposes setMessages so useChatStreaming can perform optimistic adds, retry trims, and fold-completion appends. Not re-exported from any barrel — useChat is the public composer (PRD-024 Part 6)
@@ -833,7 +834,7 @@ Junction table linking users to teams with roles.
 | `id` | UUID (PK) | `gen_random_uuid()` |
 | `team_id` | UUID (FK → teams) | NOT NULL |
 | `user_id` | UUID (FK → auth.users.id) | NOT NULL |
-| `role` | TEXT | NOT NULL, CHECK: `admin`, `sales` |
+| `role` | TEXT | NOT NULL, CHECK: `admin`, `sales`, `product_manager` |
 | `joined_at` | TIMESTAMPTZ | Default `now()` |
 | `removed_at` | TIMESTAMPTZ | Nullable. Set when member leaves/removed. |
 
@@ -849,7 +850,7 @@ Stores pending and historical team invitations.
 | `id` | UUID (PK) | `gen_random_uuid()` |
 | `team_id` | UUID (FK → teams) | NOT NULL |
 | `email` | TEXT | NOT NULL |
-| `role` | TEXT | NOT NULL, CHECK: `admin`, `sales` |
+| `role` | TEXT | NOT NULL, CHECK: `admin`, `sales`, `product_manager` |
 | `token` | TEXT | NOT NULL, unique. Used in invite URL. |
 | `invited_by` | UUID (FK → auth.users.id) | NOT NULL |
 | `accepted_at` | TIMESTAMPTZ | Nullable. Set when invitation is accepted. |
@@ -1277,7 +1278,7 @@ This note exists so the next implementer doesn't rediscover these costs in produ
 6. **Architecture follows code, not the other way around.** This document is updated after implementation, never speculatively. If it's in this file, it exists in the codebase.
 7. **AI prompts are DB-first with hardcoded fallback.** Active prompts are read from `prompt_versions` at runtime. If the DB is unreachable, the AI service falls back to the hardcoded constants in `lib/prompts/`.
 8. **Team workspaces with personal fallback.** Users operate in either a personal workspace (no team) or a team workspace. The `active_team_id` cookie determines context. All data tables have a nullable `team_id` column — NULL means personal workspace. Data services read the active team ID and scope queries accordingly.
-9. **Role-based access within teams.** Three roles: owner (one per team, full control), admin (manage members and content), sales (capture sessions, view data). Owner is a database concept (`teams.owner_id`), not a role value — the owner always has `role = 'admin'` in `team_members`.
+9. **Role-based access within teams.** Three member roles plus an ownership concept: owner (one per team, full control), admin (manage members and content), sales / product_manager (capture sessions, view data — same effective permissions; `product_manager` is a labelling distinction so workspaces can mirror their org structure). Owner is a database concept (`teams.owner_id`), not a role value — the owner always has `role = 'admin'` in `team_members`. The `transferOwnership` repository call auto-promotes a non-admin (sales or product_manager) target to admin so owners are always admins. Display formatting for the underscore-cased `product_manager` value goes through `formatRole()` in `lib/roles.ts` so UI/email surfaces render "Product Manager".
 10. **Team creation is a paid feature.** The `can_create_team` flag on `profiles` gates team creation. Developers enable this per user. No self-service payment gateway. **Beta override (current):** the column default is set to `true` and all existing profiles are backfilled so every user can create teams during beta testing. The gating machinery in `POST /api/teams` and `workspace-switcher.tsx` is intact — reverting is a single migration (`ALTER COLUMN ... SET DEFAULT false` + selective backfill) with no code change.
 11. **Data retention on member departure.** When a member is removed or leaves, their sessions and other data remain in the team (owned by `team_id`). The `team_members.removed_at` timestamp records the departure. Re-inviting a departed member restores full access.
 12. **Provider-agnostic email service.** Email sending is abstracted via `email-service.ts` with `resolveEmailProvider()` — supports Resend and Brevo, extensible to SMTP and others via `EMAIL_PROVIDER` env var.

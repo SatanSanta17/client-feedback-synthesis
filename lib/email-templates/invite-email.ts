@@ -1,3 +1,5 @@
+import { formatRole } from "@/lib/roles";
+
 const INVITE_EXPIRY_DAYS = 7;
 
 export function buildInviteEmailHtml(params: {
@@ -15,7 +17,7 @@ export function buildInviteEmailHtml(params: {
         ${inviterEmail} invited you to join <strong>${teamName}</strong> on Synthesiser.
       </p>
       <p style="color: #555; font-size: 15px; line-height: 1.6; margin: 0 0 24px;">
-        You've been invited as <strong>${role}</strong>.
+        You've been invited as <strong>${formatRole(role)}</strong>.
       </p>
       <a href="${inviteUrl}" style="display: inline-block; background: #4f46e5; color: #fff; text-decoration: none; padding: 12px 28px; border-radius: 6px; font-size: 15px; font-weight: 500;">
         Join Team

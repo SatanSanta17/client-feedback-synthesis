@@ -1,5 +1,6 @@
 import { type SupabaseClient } from "@supabase/supabase-js";
 
+import type { Role } from "@/lib/roles";
 import type {
   InvitationRepository,
   InvitationRow,
@@ -91,7 +92,7 @@ export function createInvitationRepository(
       invitationId: string,
       newToken: string,
       newExpiresAt: string
-    ): Promise<{ email: string; role: "admin" | "sales" } | null> {
+    ): Promise<{ email: string; role: Role } | null> {
       console.log("[supabase-invitation-repo] refreshToken — id:", invitationId);
 
       const { data, error } = await supabase

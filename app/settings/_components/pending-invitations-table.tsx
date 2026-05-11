@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { TableShell, TableHeadCell } from "@/components/settings/table-shell";
 import { formatRelativeTime } from "@/lib/utils/format-relative-time";
-import type { Role } from "@/components/settings/role-picker";
+import { formatRole, type Role } from "@/components/settings/role-picker";
 
 interface Invitation {
   id: string;
@@ -135,8 +135,8 @@ export function PendingInvitationsTable({
                   <td className="px-3 py-2 text-[var(--text-primary)]">
                     {inv.email}
                   </td>
-                  <td className="px-3 py-2 capitalize text-[var(--text-secondary)]">
-                    {inv.role}
+                  <td className="px-3 py-2 text-[var(--text-secondary)]">
+                    {formatRole(inv.role)}
                   </td>
                   <td className="px-3 py-2">
                     {status === "expired" ? (

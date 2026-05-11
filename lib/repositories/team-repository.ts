@@ -2,6 +2,8 @@
 // Team Repository Interface
 // ---------------------------------------------------------------------------
 
+import type { Role } from "@/lib/roles";
+
 export interface TeamRow {
   id: string;
   name: string;
@@ -15,7 +17,7 @@ export interface TeamMemberRow {
   id: string;
   team_id: string;
   user_id: string;
-  role: "admin" | "sales";
+  role: Role;
   joined_at: string;
   removed_at: string | null;
 }
@@ -65,7 +67,7 @@ export interface TeamRepository {
   removeMember(teamId: string, userId: string): Promise<void>;
 
   /** Change a member's role. */
-  changeMemberRole(teamId: string, userId: string, role: "admin" | "sales"): Promise<void>;
+  changeMemberRole(teamId: string, userId: string, role: Role): Promise<void>;
 
   /** Transfer team ownership to another user (promotes to admin if needed). */
   transferOwnership(teamId: string, newOwnerId: string): Promise<void>;

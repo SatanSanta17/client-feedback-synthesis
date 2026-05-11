@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { requireAuth, requireTeamAdmin } from "@/lib/api/route-auth";
+import { roleSchema } from "@/lib/roles";
 import {
   createInvitations,
   getPendingInvitations,
@@ -12,9 +13,7 @@ const createInvitationsSchema = z.object({
     .array(z.string().email("Invalid email address"))
     .min(1, "At least one email is required")
     .max(50, "Cannot invite more than 50 at once"),
-  role: z.enum(["admin", "sales"], {
-    error: "Role must be admin or sales",
-  }),
+  role: roleSchema,
 });
 
 export async function GET(
