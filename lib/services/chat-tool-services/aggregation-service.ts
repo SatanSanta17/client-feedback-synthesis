@@ -245,7 +245,7 @@ function extractDistribution(
     if (Array.isArray(v)) {
       return (v as Array<Record<string, unknown>>).map((row) => ({
         key: String(
-          row.label ?? row.key ?? row.name ?? row.client_name ?? row.theme_name ?? row.value ?? "unknown"
+          row.label ?? row.key ?? row.name ?? row.client_name ?? row.clientName ?? row.theme_name ?? row.themeName ?? row.value ?? "unknown"
         ),
         count: Number(row.count ?? row.total ?? row.value ?? 0),
       }));
@@ -287,9 +287,9 @@ function extractMultiDimDistribution(
     for (const dim of dims) {
       const candidates =
         dim === "client"
-          ? ["client_name", "client", "name"]
+          ? ["client_name", "clientName", "client", "name"]
           : dim === "theme"
-            ? ["theme_name", "theme", "name"]
+            ? ["theme_name", "themeName", "theme", "name"]
             : [dim];
       for (const c of candidates) {
         if (row[c] !== undefined) {
@@ -333,7 +333,7 @@ function reshapeTimeSeries(
     if (hasGroupBy) {
       return {
         periodStart,
-        key: String(row.theme_name ?? row.key ?? row.name ?? "unknown"),
+        key: String(row.theme_name ?? row.themeName ?? row.key ?? row.name ?? "unknown"),
         count,
       };
     }
