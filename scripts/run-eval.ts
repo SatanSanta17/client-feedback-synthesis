@@ -1,26 +1,55 @@
 /**
  * Eval runner for PRD-033 (Agentic Chat — Primitive Tool Surface).
- * Usage: npm run eval:chat -- --surface=old|new [--query=Q-001]
  *
- * Reads docs/033-agentic-chat/eval/queries.json, invokes the chat surface for
- * each query (capturing the assistant's final text + tool-call sequence),
- * scores answer correctness via LLM-as-judge, computes tool-routing accuracy
- * via subsequence matching, and writes a per-query report to
- * docs/033-agentic-chat/eval/reports/<ISO>-<surface>.json.
+ * Usage:
+ *   npm run eval:chat                                # all queries
+ *   npm run eval:chat -- --query=Q-001               # single query
+ *   npm run eval:chat -- --surface=new               # explicit surface tag (default: new)
  *
- * The actual surface invocation is deferred to a small adapter that the
- * implementer wires once the test environment (auth, supabase, AI keys) is
- * configured. This script focuses on the eval mechanics so it can be run
- * locally as soon as the integration shim is filled in.
+ * Required env (loaded from .env.local via @next/env):
+ *   EVAL_USER_ID         — the user_id to run the eval as (impersonation via service role)
+ *   EVAL_TEAM_ID         — workspace to scope to (omit or set empty for personal workspace)
+ *   NEXT_PUBLIC_SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY
+ *   AI_PROVIDER, AI_MODEL                            — chat model
+ *   SUMMARY_AI_PROVIDER, SUMMARY_AI_MODEL            — cheap model for summarise_sessions
+ *
+ * PRD-033 Part 3 cutover retired the old two-tool surface. `--surface=old` is
+ * no longer accepted (the code was deleted). The flag remains as a report tag.
+ *
+ * What the shim exercises (Path A — bypasses the HTTP route):
+ *   - resolveModel + createChatTools(ctx) + budget tracker + filter sanitiser
+ *   - same system prompt v2, same tools, same workspace scope as production
+ *   - calls generateText (non-streaming) so we can pull final text + tool-call
+ *     sequence directly from the SDK's StepResult array
+ * What it skips:
+ *   - Next.js request lifecycle, requireAuth() check, SSE encoding,
+ *     conversation/message persistence. Not what the eval measures.
  */
 
 import fs from "node:fs/promises";
 import path from "node:path";
 
-import { generateObject } from "ai";
+import { loadEnvConfig } from "@next/env";
+
+loadEnvConfig(process.cwd());
+
+import { generateObject, generateText, stepCountIs } from "ai";
+import { createClient } from "@supabase/supabase-js";
 import { z } from "zod";
 
 import { resolveModel } from "@/lib/services/ai-service";
+import { clampOutputTokens } from "@/lib/services/ai-provider-limits";
+import {
+  CHAT_MAX_TOKENS,
+  buildSystemPrompt,
+} from "@/lib/prompts/chat-prompt";
+import {
+  CHAT_PER_TURN_BUDGET,
+  createCostBudgetTracker,
+} from "@/lib/services/chat-cost-budget";
+import { createChatTools } from "@/lib/services/chat-tools";
+import { createChatQueryRepository } from "@/lib/repositories/supabase/supabase-chat-query-repository";
+import { createEmbeddingRepository } from "@/lib/repositories/supabase/supabase-embedding-repository";
 import { JUDGE_SYSTEM_PROMPT, JUDGE_PROMPT_VERSION } from "@/docs/033-agentic-chat/eval/judge-prompt";
 
 // ---------------------------------------------------------------------------
@@ -85,7 +114,7 @@ interface QueryReport {
 }
 
 interface AggregateReport {
-  surface: "old" | "new";
+  surface: "new";
   judgePromptVersion: string;
   judgeModel: string;
   generatedAt: string;
@@ -114,22 +143,24 @@ interface AggregateReport {
 // CLI parsing
 // ---------------------------------------------------------------------------
 
-function parseArgs(argv: string[]): { surface: "old" | "new"; queryId?: string } {
-  let surface: "old" | "new" | undefined;
+function parseArgs(argv: string[]): { surface: "new"; queryId?: string } {
+  let surface: "new" = "new";
   let queryId: string | undefined;
   for (const arg of argv.slice(2)) {
     if (arg.startsWith("--surface=")) {
       const v = arg.slice("--surface=".length);
-      if (v !== "old" && v !== "new") {
-        throw new Error(`--surface must be 'old' or 'new', got: ${v}`);
+      if (v === "old") {
+        throw new Error(
+          "--surface=old is no longer supported. The legacy two-tool surface (searchInsights + queryDatabase) was retired in PRD-033 Part 3 cutover (2026-05-11) and the code is deleted. Use --surface=new (the default) or omit the flag."
+        );
+      }
+      if (v !== "new") {
+        throw new Error(`--surface must be 'new' (or omit), got: ${v}`);
       }
       surface = v;
     } else if (arg.startsWith("--query=")) {
       queryId = arg.slice("--query=".length);
     }
-  }
-  if (!surface) {
-    throw new Error("--surface=old|new is required");
   }
   return { surface, queryId };
 }
@@ -148,27 +179,117 @@ function isSubsequence(expected: string[], actual: string[]): boolean {
 }
 
 // ---------------------------------------------------------------------------
-// Surface invocation adapter
+// Surface invocation adapter — Path A (bypass HTTP route)
 // ---------------------------------------------------------------------------
 
+function readEvalIdentity(): { userId: string; teamId: string | null } {
+  const userId = process.env.EVAL_USER_ID;
+  if (!userId) {
+    throw new Error(
+      "EVAL_USER_ID is required — set it in .env.local to the auth.users.id of the test account whose workspace the eval should run against."
+    );
+  }
+  const rawTeam = process.env.EVAL_TEAM_ID?.trim();
+  return {
+    userId,
+    teamId: rawTeam && rawTeam.length > 0 ? rawTeam : null,
+  };
+}
+
+function buildServiceClient() {
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!url || !key) {
+    throw new Error(
+      "NEXT_PUBLIC_SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are required in .env.local."
+    );
+  }
+  return createClient(url, key, {
+    auth: { autoRefreshToken: false, persistSession: false },
+  });
+}
+
+interface ToolCallRecord {
+  toolName: string;
+  output?: unknown;
+}
+
 /**
- * INTEGRATION SHIM — to be implemented when running the eval against a real
- * environment. The simplest path: spin up a mock conversation, post the query
- * via the existing /api/chat/send route (or a sibling fixture route), and
- * capture both the final assistant text and the sequence of tool names from
- * the SSE stream.
- *
- * For Part 1 we leave this as a stub that throws. The eval mechanics
- * (judge + scoring + report aggregation) compile and are exercised by tests
- * once the shim is filled in.
+ * Path A — bypass the Next.js route entirely. Constructs the same
+ * ChatToolContext + tool registry + system prompt v2 + budget tracker that
+ * `chat-stream-service` uses, then calls `generateText` (non-streaming,
+ * since the eval cares about the final answer + tool-call sequence, not
+ * the stream itself). Returns the same shape the previous stub did.
  */
 async function invokeSurface(
-  _surface: "old" | "new",
-  _query: string
+  _surface: "new",
+  query: string
 ): Promise<SurfaceInvocationResult> {
-  throw new Error(
-    "Surface invocation shim not yet implemented. Wire this to /api/chat/send (or a fixture handler) and return { finalAnswer, toolCalls } from the SSE stream."
+  const { userId, teamId } = readEvalIdentity();
+  const serviceClient = buildServiceClient();
+  const { model, label: modelLabel } = resolveModel();
+
+  const embeddingRepo = createEmbeddingRepository(
+    serviceClient,
+    teamId,
+    userId
   );
+  const chatQueryRepo = createChatQueryRepository(
+    serviceClient,
+    teamId,
+    userId
+  );
+
+  const budgetTracker = createCostBudgetTracker(CHAT_PER_TURN_BUDGET);
+
+  const baseTools = createChatTools({
+    workspace: { teamId, userId },
+    chatQueryRepo,
+    embeddingRepo,
+    supabaseClient: serviceClient,
+    emitStatus: () => {
+      // No-op for eval — the eval doesn't consume the SSE stream.
+    },
+    lastUserMessage: query,
+  });
+  const tools = budgetTracker.wrap(baseTools);
+
+  const systemPrompt = buildSystemPrompt({
+    date: new Date().toISOString().split("T")[0],
+  });
+
+  const result = await generateText({
+    model,
+    system: systemPrompt,
+    messages: [{ role: "user", content: query }],
+    tools,
+    stopWhen: stepCountIs(10),
+    maxOutputTokens: clampOutputTokens(CHAT_MAX_TOKENS, modelLabel),
+  });
+
+  // Pull the tool-call sequence in order from result.steps. Each step
+  // corresponds to one model→tool→result round-trip in the agentic loop.
+  const toolCalls: string[] = [];
+  for (const step of result.steps ?? []) {
+    for (const call of step.toolCalls ?? []) {
+      const rec = call as ToolCallRecord;
+      toolCalls.push(rec.toolName);
+    }
+  }
+
+  return {
+    finalAnswer: result.text,
+    toolCalls,
+    toolTelemetry: {
+      model: modelLabel,
+      totalTokens: result.usage?.totalTokens,
+      inputTokens: result.usage?.inputTokens,
+      outputTokens: result.usage?.outputTokens,
+      budgetExceeded: budgetTracker.isExceeded(),
+      toolResultTokens: budgetTracker.total(),
+      stepCount: result.steps?.length ?? 0,
+    },
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -191,6 +312,9 @@ async function judgeAnswer(
   const { model, label } = resolveModel();
   const userPrompt = JSON.stringify(
     {
+      // Judge prompt v2 expects `today` so it can evaluate temporal
+      // references (e.g. flag dates after today as "future treated as past").
+      today: new Date().toISOString().split("T")[0],
       query: query.query,
       answer: finalAnswer,
       rubric: query.rubric,

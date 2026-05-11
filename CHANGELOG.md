@@ -6,6 +6,56 @@ All notable changes to this project are documented here, grouped by PRD and part
 
 ## [Unreleased]
 
+### PRD-033 post-cutover — system prompt v4 (vocabulary mapping) — 2026-05-11
+
+Real-user bug surfaced from a daily-use prompt: asking "top complaints" returned "no specific high-severity or high-urgency complaints recorded in the sessions… maybe not tagged with a 'Complaint' theme". The model was treating "complaints" as a literal theme name, didn't find one, and gave up — instead of recognising "complaints" as a synonym for `pain_point` chunks.
+
+**Root cause**: the v3 prompt covered routing patterns and tool boundaries but didn't tell the model the **vocabulary mapping** between user-friendly terms (complaints, requests, wishes, wins, blockers, dealbreakers) and the schema's chunk-type vocabulary (`pain_point`, `requirement`, `aspiration`, `positive_signal`, `blocker`). The model had no way to know "complaint" wasn't supposed to be a theme.
+
+**Two additions in v4** at [`lib/prompts/chat-prompt.ts`](lib/prompts/chat-prompt.ts):
+
+1. **Vocabulary mapping table** under the Tools section. Explicit user-phrasing → chunk-type rows: *complaints / issues / problems / frustrations → pain_point*, *requests / asks / feature requests → requirement*, *wishes / aspirations → aspiration*, *praise / wins / positive feedback → positive_signal*, *competitor mentions → competitive_mention*, *blockers / dealbreakers → blocker*, *tools / stack / integrations → tool_and_platform*. Explicit note that "Complaint" is NOT a theme name — it's a synonym for `pain_point` chunks; theme names are extraction-time topical tags (e.g. "Pricing", "Onboarding"), a different concept.
+
+2. **Expanded mandatory chain rule** to cover **"top [chunk-type synonym]" patterns** alongside v3's synthesis verbs. The rule now triggers on: "top complaints / top pain points / top issues / top requests / top wins / top blockers / top concerns / common complaints / what's the biggest pain point". Includes a worked example for "top complaints across X clients" showing the aggregate-vs-summarise trade-off — and explicitly says: prefer the summarise chain when the user wants to know **what** the complaints are (the usual case), not just frequency counts. Final note: stopping with "no themes named 'Complaint'" when pain-point chunks exist is a routing failure.
+
+**Version bump.** `CHAT_PROMPT_VERSION = "v4"` (was `"v3"`). Eval reports from v3 runs are still valid for routing-accuracy comparison; answer-correctness numbers are not strictly comparable but should improve materially on questions that involve user-friendly vocabulary terms.
+
+\`npx tsc --noEmit\` clean.
+
+### PRD-033 post-cutover — eval judge v2 (grounding-by-design) — 2026-05-11
+
+The first eval run scored answer-correctness at 0.17/1.0 — but every "fail" had the same root cause: the judge has no access to the underlying data and was penalising every specific factual claim as "unverifiable" (Q-001 "There are 17 sessions" → 0; Q-008 listing the real client names → 0; Q-009 with a 2026-05-05 date → 0 "future date" because the judge didn't know today). The judge wasn't measuring answer quality; it was measuring "did the answer make any specific claim" and marking those down.
+
+Two paths to fix: (a) feed the judge the tool calls + tool results so it can verify against retrieved data (~1 hr work), or (b) loosen the rubric to trust grounding-by-design and only penalise things the judge CAN see (~5 min work). The chat surface has strong grounding rules in its own system prompt + the filter sanitiser layer, so plausible-but-invented content is a small surface. **Went with (b)** — quick and good enough for current scale; (a) would be the right call once the system grows past 50+ tools or onboards users at scale where deep factual auditing becomes a hard requirement.
+
+- **Judge prompt rewritten** in [`docs/033-agentic-chat/eval/judge-prompt.ts`](docs/033-agentic-chat/eval/judge-prompt.ts). Version bumped from \`v1\` to \`v2\`. File header carries inline changelog. New defaults: every dimension scores **1.0 unless** something the judge CAN see is wrong:
+  - **\`factual_correctness\`** penalised only for: self-contradictions, impossible values (negative counts, fractional sessions, dates AFTER today treated as past), leaked internal sentinels (\`__BUDGET_EXHAUSTED__\`, tool names, similarity scores, error literals), missing \`mustMention\` items, or presence of \`mustNotHallucinate\` items. **Specific names / dates / counts that the judge can't verify externally are no longer auto-failed** — that was the systemic v1 bug.
+  - **\`groundedness\`** reframed as question coherence (did the answer address what was asked, or evade / answer something else?). "No sessions matched your filter" is fully grounded when the filter is narrow.
+  - **\`citation_accuracy\`** narrowed to reference formatting (consistent date formats, well-formed client names, etc.) — not external verification.
+  - **\`list_completeness\`** unchanged in spirit; only applies to list/summarise questions.
+- **Judge payload extended** to include \`today\` so it can correctly evaluate temporal references. v1 marked Q-009 down for a "future date" of 2026-05-05 because it didn't know today is 2026-05-11. Runner now passes \`today\` alongside \`query\` / \`answer\` / \`rubric\`.
+- **What v2 still catches** (deliberately): contradictions, impossible values, sentinel/internal-detail leaks, rubric violations, off-topic answers, silent truncation of lists.
+- **What v2 deliberately misses**: plausible-but-invented content where the judge has no way to verify. Acceptable trade-off given the chat surface's structural grounding and the eval's primary purpose (routing-accuracy + sanity check, not deep auditing).
+- **Re-run required.** All v1 reports are now invalidated for answer-correctness comparison; routing-accuracy from v1 reports is still valid (the judge change doesn't affect routing). Bumping \`JUDGE_PROMPT_VERSION\` is recorded in each new report's metadata.
+
+\`npx tsc --noEmit\` clean.
+
+### PRD-033 post-cutover — system prompt v3 (routing-guidance tightening) — 2026-05-11
+
+Driven by the first eval run findings — two specific routing misses that the v2 prompt's tool descriptions invited:
+
+- **`fetch_signals` vs `semantic_search` confusion on literal-term queries.** v2 said `fetch_signals` is for "completeness questions ('every pain point about pricing', 'all blockers mentioning the API')". The model read "every X mentioning Y" as completeness even when Y was a free-text literal (e.g. "Snowflake", "API", "churn") — exactly the case `semantic_search`'s hybrid retrieval was built to handle. **v3 rewrites the distinction**: `fetch_signals` is for **structured tags that exist in our schema** (theme name from `list_themes`, `chunkTypes`, `severity`, `urgency`, `clientName`, date range); `semantic_search` is for **free-text queries** including literal phrases / product names / company names / concepts. Concrete counter-example added: "Every pain point about Snowflake" → `semantic_search` (Snowflake is a literal term, not a structured tag).
+- **Model stopping at `list_sessions` for synthesis queries** instead of chaining into `summarise_sessions`. v2's routing-patterns section listed the chain but didn't make it mandatory. Several eval queries (Q-013, Q-017, Q-018, Q-022) showed the model calling `list_sessions`, getting zero or one session because of strict filters, then synthesising from session metadata (date / sentiment / theme names) without ever fetching content. **v3 adds a mandatory chain rule**: when the user's question uses synthesis intent words (*summarise*, *summary*, *rundown*, *what changed*, *tell me everything*, *what has X said*, *how do clients feel*, *compare*, *digest*) AND `list_sessions` returns one or more session ids, the model MUST call `summarise_sessions` (or `fetch_session_content` if N ≤ ~10 with verbatim quotes needed) next. Stopping at `list_sessions` is explicitly called out as a routing failure. The only valid early-stop is when `list_sessions` returns zero — in which case the model says "no sessions matched X" and suggests broadening.
+
+**Version bump.** `CHAT_PROMPT_VERSION = "v3"` (was `"v2"`). Bumping invalidates eval reports for any query that exercised v2 — record was already invalid for the runs done today; re-run the eval after this commit lands to get clean numbers. File header in [chat-prompt.ts](lib/prompts/chat-prompt.ts) now carries the v1/v2/v3 changelog inline.
+
+**Other eval observations not addressed in this commit** (separate follow-ups):
+- The LLM-as-judge has no access to retrieved data, so it penalised factually correct answers ("There are 17 sessions" → judge marked 0 because it can't verify 17). Until the judge gets tool-call context, `answer-correctness` scores are noise.
+- A few of the eval's `expectedTrajectory` entries are arguably wrong (e.g. "Top 5 themes this month" → expected `aggregate` but `list_themes` is a valid lighter alternative). Worth revisiting the trajectory set after v3 routing settles.
+- Some "routing fails" on summarise_sessions queries are actually data mismatches (Acme has no Q2 2026 sessions, so list_sessions correctly returns zero) — v3's mandatory chain rule won't change those outcomes; the data has to match the query.
+
+`npx tsc --noEmit` clean.
+
 ### PRD-033 post-cutover — re-introduce per-tool filter sanitisation — 2026-05-11
 
 **Deviation from PRD-033 stated design intent.** The PRD argued that per-tool Zod schemas + strong "OMIT unless…" tool descriptions would make the old monolithic filter-sanitisation layer (cue-matching against the user's last message) unnecessary. That assumption held for Claude but was falsified by GPT-4o traffic immediately after the Part 3 cutover: the model invented categorical enum values (`sentiment: "neutral"`, `severity: "medium"`, `urgency: "low"`) on a "list all my sessions" prompt with zero filter intent, and passed empty strings (`clientName: ""`, `dateFrom: ""`, etc.) for every optional field. The 3-way intersection of invented filters filtered every session out — chat surface looked broken even though the workspace had 15+ sessions.

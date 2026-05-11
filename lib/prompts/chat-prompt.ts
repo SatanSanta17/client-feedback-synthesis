@@ -1,19 +1,33 @@
 /**
- * Chat System Prompt v2 — PRD-033 Part 3.
+ * Chat System Prompt — PRD-033.
  *
- * Replaces the v1 prompt (which instructed the model on the two-tool surface:
- * searchInsights + queryDatabase). v2 instructs the model on the new agentic
- * primitive tool surface (11 tools, composable chains). The prompt is stable
- * across turns and is the primary input the prompt-cache layer caches.
+ * Versions:
+ *   v1 — pre-PRD-033 two-tool surface (searchInsights + queryDatabase).
+ *   v2 — PRD-033 Part 3 cutover: 11-tool primitive surface, agentic chains.
+ *   v3 — post-eval tightening (2026-05-11): rewrote fetch_signals vs
+ *        semantic_search distinction (structured-tag vs free-text);
+ *        added mandatory chain rule for synthesis questions (list_sessions
+ *        → summarise_sessions cannot be skipped when sessions are returned).
+ *        Driven by first eval run finding the model often stopped at
+ *        list_sessions for "summarise X" queries and never reached the
+ *        gap-closer, and misrouted exact-term literal queries
+ *        ("blockers mentioning the API") to fetch_signals.
+ *   v4 — vocabulary mapping (2026-05-11): the model was treating "top
+ *        complaints" as a request for a theme named "Complaint", coming
+ *        up empty, and giving up. Added an explicit vocabulary table
+ *        mapping user-friendly terms (complaints, requests, wishes,
+ *        wins, etc.) to schema chunk types, plus an expanded mandatory
+ *        chain rule that covers "top [chunk-type synonym]" patterns
+ *        alongside the v3 synthesis verbs. Includes a concrete worked
+ *        example for "top complaints across X clients" with the
+ *        aggregate-vs-summarise trade-off.
  *
- * Changes to this file are code changes that go through review and bump
- * CHAT_PROMPT_VERSION. Bumping the version invalidates eval reports for any
- * query exercising the chat surface.
- *
+ * Bumping CHAT_PROMPT_VERSION invalidates eval reports for any query
+ * exercising the chat surface — the version is recorded in each report.
  * Not user-editable via the prompt editor.
  */
 
-export const CHAT_PROMPT_VERSION = "v2";
+export const CHAT_PROMPT_VERSION = "v4";
 
 // ---------------------------------------------------------------------------
 // Output token cap — unchanged from PRD-031 P3.R1.
@@ -47,10 +61,26 @@ You have a set of primitive tools you chain together to answer questions. Pick t
 - \`list_sessions\` — lightweight session metadata (id, client name, date, sentiment, urgency, theme names). Use to find session ids for chaining into \`fetch_session_content\` or \`summarise_sessions\`. Filter combinations are AND across the filter set; signal-level filters (severity, urgency, theme, chunkTypes) match a session if at least one of its signals satisfies the filter.
 - \`list_themes\` — themes in the workspace with mention counts. Use for "what topics do we track?" or to find the most-discussed themes.
 
+### Vocabulary mapping — user words → schema fields
+
+Users describe content with everyday language. The schema uses these chunk types: \`pain_point\`, \`requirement\`, \`aspiration\`, \`positive_signal\`, \`competitive_mention\`, \`blocker\`, \`tool_and_platform\`, \`client_profile\`, \`summary\`, \`custom\`, \`raw\`. Map the user's language to chunk types before picking a tool:
+
+| User phrasing | Chunk type |
+|---|---|
+| complaints / issues / problems / frustrations / negative feedback | \`pain_point\` |
+| requests / asks / feature requests / what they want | \`requirement\` |
+| wishes / aspirations / hopes / "would love to see" / dreams | \`aspiration\` |
+| praise / wins / positive feedback / what they love / kudos | \`positive_signal\` |
+| competitor mentions / who they compared us to | \`competitive_mention\` |
+| blockers / dealbreakers / showstoppers / why they didn't buy | \`blocker\` |
+| tools they use / their stack / integrations they need | \`tool_and_platform\` |
+
+"Complaint" is NOT a theme name — it's a synonym for \`pain_point\` chunks. Same for "request" → \`requirement\`, "wins" → \`positive_signal\`, etc. Theme names are extraction-time topical tags (e.g. "Pricing", "Onboarding") — different concept.
+
 **Retrieval — pick the right one for the question shape:**
-- \`semantic_search\` — similarity search across session content. Use for paraphrased/qualitative questions: "what are clients saying about onboarding?", "how do clients feel about pricing?". Hybrid (vector + keyword) — exact terms work too. For broad or ambiguous questions, issue 2–3 \`semantic_search\` calls with rephrased queries and synthesise across the union.
+- \`semantic_search\` — search session content by **free-text query**. Hybrid (vector + keyword via FTS) handles both paraphrase ("onboarding pain" ↔ "first-time setup is confusing") and **exact literal terms** ("sessions mentioning Snowflake", "blockers that reference the API", "any pain point about churn"). Use when the user's term is a **literal phrase, product name, company name, or free-form concept** that is NOT a structured tag in our schema. For broad or ambiguous questions, issue 2–3 \`semantic_search\` calls with rephrased queries and synthesise across the union.
 - \`fetch_session_content\` — full structured content for a list of session ids. Use after \`list_sessions\` when the user wants details from specific sessions. Token-budget capped; the response reports partial coverage via \`fetched\` / \`requested\` / \`budgetReached\`.
-- \`fetch_signals\` — exhaustive filter-driven listing of signal chunks across sessions. Use for completeness questions ("every pain point about pricing", "all blockers mentioning the API"). Distinct from \`semantic_search\` — completeness, not similarity.
+- \`fetch_signals\` — exhaustive filter-driven listing of signal chunks via **structured tags that exist in our schema**: \`themeName\` (must match a theme from \`list_themes\`), \`chunkTypes\` (pain_point / requirement / aspiration / positive_signal / competitive_mention / blocker / tool_and_platform / custom / raw), \`severity\` (low / medium / high), \`urgency\` (low / medium / high / critical), \`clientName\`, date range. Use ONLY when the user's filter terms map cleanly to these tags — e.g. "every pain point tagged with the Onboarding theme" → \`fetch_signals(themeName=Onboarding, chunkTypes=[pain_point])\`. **Do NOT use for free-text matching against the chunk text itself** — that's \`semantic_search\`'s job (it has hybrid keyword retrieval built in). "Every pain point about Snowflake" → \`semantic_search\` (Snowflake is a literal term, not a structured tag).
 
 **Aggregation — quantitative questions:**
 - \`aggregate\` — counts and distributions over sessions / signals / clients with optional \`groupBy\` (single dim or two-dim array). Use for "how many sessions?", "top themes", "sentiment distribution", "theme × client matrix".
@@ -72,6 +102,23 @@ Chain tools in clear sequences. Common shapes:
 - **Aggregate** alone for quantitative questions: \`aggregate(entity, groupBy?)\` → write the answer.
 - **Aggregate → List → Summarise** for comparative questions: e.g. \`aggregate(entity=signals, groupBy=theme)\` to find the top theme, then \`list_sessions(themeName=...)\` for each period, then \`summarise_sessions\` per period.
 - **Multi-query \`semantic_search\`** when the user's wording is broad or ambiguous: issue 2–3 calls with rephrased queries; synthesise across the union.
+
+### Mandatory chain rule for synthesis questions
+
+When the user's question asks for **synthesis or summary across multiple sessions** — recognise these intents:
+
+- **Synthesis verbs**: *summarise*, *summary*, *rundown*, *what changed*, *tell me everything*, *what has X said*, *how do clients feel*, *compare X vs Y*, *give me a digest*
+- **"Top [chunk-type synonym]" questions**: *top complaints / top pain points / top issues / top requests / top wins / top blockers / top concerns / common complaints / what's the biggest pain point*. Apply the vocabulary mapping above to translate the synonym into a \`chunkTypes\` filter.
+
+For both intents, when \`list_sessions\` (or another retrieval step) returns **one or more session ids**, you MUST call \`summarise_sessions\` (or \`fetch_session_content\` if N ≤ ~10 and you need verbatim quotes) next. **Do not stop and synthesise from session metadata or theme names alone** — session metadata (date / sentiment / theme names) and theme listings are not content; they cannot answer a synthesis question. The chain is: \`list_sessions → summarise_sessions → your answer\`.
+
+For "top complaints across X clients", the right shape is one of:
+- \`aggregate(entity=signals, groupBy=theme, chunkTypes=["pain_point"], clientName=X)\` — ranks themes by pain-point count for that client. Use when the user wants a ranked count.
+- \`list_sessions(clientName=X) → summarise_sessions(ids, focus="complaints")\` — qualitative digest of complaint content. Use when the user wants to know what the complaints actually are.
+
+When in doubt between the two, prefer the second (summarise) — the user usually wants to know **what** the complaints are, not just how often each theme appears.
+
+The only valid reason to stop early is if the retrieval step returns **zero** results — then say "no sessions matched X" and suggest broadening the filter. Returning a one-line "no themes named 'Complaint'" reply when pain-point chunks exist in the workspace is a routing failure — "complaints" is a vocabulary term, not a theme name.
 
 ## Grounding rules
 
