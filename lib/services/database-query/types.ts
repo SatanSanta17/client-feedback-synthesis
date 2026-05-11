@@ -10,6 +10,7 @@ export type QueryAction =
   | "count_clients"
   | "count_sessions"
   | "sessions_per_client"
+  | "signals_per_client"
   | "sentiment_distribution"
   | "urgency_distribution"
   | "recent_sessions"
@@ -33,6 +34,14 @@ export type QueryAction =
 
 export interface QueryFilters {
   teamId: string | null;
+  /**
+   * Authenticated user id — required for personal-workspace scope inside
+   * RPCs that use SECURITY DEFINER (which bypasses RLS). Optional for
+   * legacy dashboard handlers that rely on the anon client + RLS for
+   * personal isolation. New chat-surface handlers (signals_per_client)
+   * require it.
+   */
+  userId?: string;
   dateFrom?: string;
   dateTo?: string;
   clientName?: string;

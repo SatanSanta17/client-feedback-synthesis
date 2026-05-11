@@ -31,6 +31,10 @@ export const ACTION_METADATA: Record<QueryAction, ActionMeta> = {
     description:
       "Session count grouped by client. Honors `severity` (counts only sessions with at least one chunk of that severity).",
   },
+  signals_per_client: {
+    description:
+      "Signal-chunk count grouped by client. Honors `chunkTypes`, `severity`, `urgency`, `dateFrom`/`dateTo`, and `clientName`. Backs the chat surface's `aggregate(entity=signals, groupBy=client)` shape (PRD-033 P1.R3).",
+  },
   sentiment_distribution: {
     description:
       "Count of signals by sentiment (positive / neutral / negative). Honors `severity` (restricts to sessions with at least one chunk of that severity before aggregating).",

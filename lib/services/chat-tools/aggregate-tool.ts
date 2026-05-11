@@ -6,6 +6,7 @@ import {
   type AggregateDim,
 } from "@/lib/services/chat-tool-services/aggregation-service";
 
+import { chunkTypeEnum } from "./shared/chunk-type-enum";
 import { sanitiseAggregate } from "./shared/filter-sanitiser";
 import type { ChatToolContext } from "./shared/tool-context";
 
@@ -36,7 +37,7 @@ const inputSchema = z.object({
   dateTo: z.string().optional().describe("ISO date — end of window."),
   themeName: z.string().optional().describe("Filter by theme name."),
   chunkTypes: z
-    .array(z.string())
+    .array(chunkTypeEnum)
     .optional()
     .describe("Filter by chunk types (only valid for entity='signals')."),
   severity: z.enum(["low", "medium", "high"]).optional(),
@@ -61,7 +62,7 @@ export function createAggregateTool(ctx: ChatToolContext) {
       "  - 'Theme by client matrix' → entity=signals, groupBy=[theme, client]",
     inputSchema,
     execute: async (input) => {
-      const sanitised = sanitiseAggregate(input, ctx.lastUserMessage);
+      const sanitised = sanitiseAggregate(input, ctx.lastUserMessage, ctx.resolvedNames);
       ctx.emitStatus("Aggregating data…");
       const result = await aggregate(
         {
@@ -69,6 +70,7 @@ export function createAggregateTool(ctx: ChatToolContext) {
           groupBy: sanitised.groupBy as AggregateDim | AggregateDim[] | undefined,
           filters: {
             teamId: ctx.workspace.teamId,
+            userId: ctx.workspace.userId,
             clientName: sanitised.clientName,
             dateFrom: sanitised.dateFrom,
             dateTo: sanitised.dateTo,

@@ -40,6 +40,8 @@ export interface TimeSeriesInput {
 
 export interface AggregateFilters {
   teamId: string | null;
+  /** Required for SECURITY DEFINER RPCs that scope personal workspaces explicitly. */
+  userId?: string;
   clientName?: string;
   dateFrom?: string;
   dateTo?: string;
@@ -106,11 +108,11 @@ function resolveAggregateAction(
     return "theme_client_matrix";
   }
   if (entity === "signals" && dims.length === 1 && dims[0] === "client") {
-    // competitive_mention_frequency only when chunk_type=competitive_mention
-    // is also filtered, but the chat tool spec exposes that as a chunkTypes
-    // filter, so map at the aggregate level and let the underlying domain
-    // module honour the chunkTypes pre-filter.
-    return "competitive_mention_frequency";
+    // Generic per-client signal count, filterable by chunkTypes. The
+    // dashboard's `competitive_mention_frequency` handler counts COMPETITOR
+    // names from structured_json (a different shape) and was wrongly routed
+    // here pre-audit (2026-05-11) — see PRD-033 audit fixes.
+    return "signals_per_client";
   }
   throw new Error(
     `Unsupported aggregate(entity=${entity}, groupBy=${JSON.stringify(groupBy)}). Valid combinations are listed in PRD-033 § P1.R3.`
@@ -134,6 +136,7 @@ function toQueryFilters(
 ): QueryFilters {
   return {
     teamId: filters.teamId,
+    userId: filters.userId,
     dateFrom: filters.dateFrom,
     dateTo: filters.dateTo,
     clientName: filters.clientName,
@@ -203,24 +206,28 @@ function reshapeAggregate(
     action === "sentiment_distribution" ||
     action === "urgency_distribution" ||
     action === "sessions_per_client" ||
-    action === "top_themes" ||
-    action === "competitive_mention_frequency"
+    action === "signals_per_client" ||
+    action === "top_themes"
   ) {
-    const distribution = extractDistribution(data);
+    const distribution = extractDistribution(data, action);
     return { distribution };
   }
 
   // Multi-dim distributions
   if (action === "client_health_grid" || action === "theme_client_matrix") {
-    const distribution = extractMultiDimDistribution(data, input.groupBy);
+    const distribution = extractMultiDimDistribution(data, input.groupBy, action);
     return { distribution };
   }
 
-  return { count: 0 };
+  // No silent fallback — unknown actions are routing bugs, not "zero results".
+  throw new Error(
+    `reshapeAggregate: unhandled action "${action}". This is a routing bug — every action returned by resolveAggregateAction must have a corresponding reshape branch.`
+  );
 }
 
 function extractDistribution(
-  data: Record<string, unknown>
+  data: Record<string, unknown>,
+  action: QueryAction
 ): Array<{ key: string; count: number }> {
   // Domain modules return varying shapes — try common ones.
   for (const k of [
@@ -244,12 +251,19 @@ function extractDistribution(
       }));
     }
   }
+  // Loud warning rather than silent []. If a domain module renames its
+  // top-level key, callers see [] in production and silently report "no
+  // results" — that's the failure mode this branch flags.
+  console.warn(
+    `${LOG_PREFIX} extractDistribution — no candidate array key matched for action "${action}". Data keys: ${Object.keys(data).join(", ") || "(empty)"}. Returning empty distribution.`
+  );
   return [];
 }
 
 function extractMultiDimDistribution(
   data: Record<string, unknown>,
-  groupBy: AggregateDim | AggregateDim[] | undefined
+  groupBy: AggregateDim | AggregateDim[] | undefined,
+  action: QueryAction
 ): Array<{ dimensions: Record<string, string>; count: number }> {
   const dims = Array.isArray(groupBy) ? groupBy : groupBy ? [groupBy] : [];
   // Reuse the same array discovery
@@ -261,7 +275,12 @@ function extractMultiDimDistribution(
       break;
     }
   }
-  if (!arr) return [];
+  if (!arr) {
+    console.warn(
+      `${LOG_PREFIX} extractMultiDimDistribution — no candidate array key matched for action "${action}". Data keys: ${Object.keys(data).join(", ") || "(empty)"}. Returning empty distribution.`
+    );
+    return [];
+  }
 
   return arr.map((row) => {
     const dimensions: Record<string, string> = {};
@@ -299,7 +318,12 @@ function reshapeTimeSeries(
       break;
     }
   }
-  if (!arr) return { granularity, buckets: [] };
+  if (!arr) {
+    console.warn(
+      `${LOG_PREFIX} reshapeTimeSeries — no candidate array key matched. Data keys: ${Object.keys(data).join(", ") || "(empty)"}. Returning empty buckets.`
+    );
+    return { granularity, buckets: [] };
+  }
 
   const buckets = arr.map((row) => {
     const periodStart = String(

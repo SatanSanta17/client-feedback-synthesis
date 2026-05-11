@@ -13,6 +13,7 @@ import {
   handleCountClients,
   handleCountSessions,
   handleSessionsPerClient,
+  handleSignalsPerClient,
 } from "./domains/counts";
 import {
   handleCompetitiveMentionFrequency,
@@ -49,6 +50,7 @@ const ACTION_MAP: Record<
   count_clients: handleCountClients,
   count_sessions: handleCountSessions,
   sessions_per_client: handleSessionsPerClient,
+  signals_per_client: handleSignalsPerClient,
   sentiment_distribution: handleSentimentDistribution,
   urgency_distribution: handleUrgencyDistribution,
   recent_sessions: handleRecentSessions,

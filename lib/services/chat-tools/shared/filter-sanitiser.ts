@@ -39,16 +39,15 @@ const LOG_PREFIX = "[filter-sanitiser]";
 // justify a corresponding filter value.
 // ---------------------------------------------------------------------------
 
-const SEVERITY_CUES = ["severity", "severe", "low", "medium", "high"];
+// Field-discriminator cues only. The bare values "low", "medium", "high" are
+// deliberately NOT cues here — they overlap across severity and urgency, so
+// if the user says "high-severity items" and the model invents an
+// `urgency=high` filter, the bare-value match would let the invented filter
+// through. Requiring the field name (or a value unique to one field, like
+// "critical" for urgency) eliminates the cross-family bleed.
+const SEVERITY_CUES = ["severity", "severe"];
 
-const URGENCY_CUES = [
-  "urgency",
-  "urgent",
-  "low",
-  "medium",
-  "high",
-  "critical",
-];
+const URGENCY_CUES = ["urgency", "urgent", "critical"];
 
 const SENTIMENT_CUES = [
   "sentiment",
@@ -97,7 +96,18 @@ function isNonEmptyString(v: unknown): v is string {
 
 /**
  * Drop a categorical filter (enum value) unless the user's message contains
- * either the value itself OR a generic cue keyword for that filter family.
+ * a cue keyword for that filter family.
+ *
+ * Cues must be field-discriminating: include the field name (`severity`,
+ * `urgency`) and values that are unique to this field (e.g. `critical` for
+ * urgency). Do NOT include shared values like `low`/`medium`/`high` — they
+ * cross-pollinate across severity and urgency, and would let a model-
+ * invented `urgency=high` slip through whenever the user said
+ * "high-severity".
+ *
+ * Sentiment is the exception: every sentiment value (`positive`,
+ * `negative`, `neutral`, `mixed`) is itself a discriminating word, so
+ * `SENTIMENT_CUES` legitimately includes the values.
  */
 function keepCategorical<T extends string>(
   value: T | undefined,
@@ -105,24 +115,36 @@ function keepCategorical<T extends string>(
   userMessage: string
 ): T | undefined {
   if (!value || !isNonEmptyString(value)) return undefined;
-  if (userMessage.toLowerCase().includes(value.toLowerCase())) return value;
   if (mentions(userMessage, cues)) return value;
   return undefined;
 }
 
 /**
  * Drop a free-text filter (like clientName / themeName) unless the value
- * appears in the user's message. Casefold for comparison; whitespace-trim
- * for safety.
+ * appears in the user's message OR has been resolved earlier in this turn
+ * via list_clients / list_themes (the `resolvedNames` set on ChatToolContext).
+ *
+ * The resolved-set check closes the false-positive case where the model
+ * resolves "PT Power" → "PrudenTech Power" via list_clients and then passes
+ * the canonical name as a filter — the canonical isn't in the user's
+ * message, but it's a legitimate resolution and shouldn't be dropped.
+ *
+ * Casefold for comparison; whitespace-trim for safety.
  */
 function keepIfMentioned(
   value: string | undefined,
-  userMessage: string
+  userMessage: string,
+  resolvedSet?: Set<string>
 ): string | undefined {
   if (!isNonEmptyString(value)) return undefined;
-  return userMessage.toLowerCase().includes(value.trim().toLowerCase())
-    ? value
-    : undefined;
+  const normalised = value.trim().toLowerCase();
+  if (userMessage.toLowerCase().includes(normalised)) return value;
+  if (resolvedSet) {
+    for (const resolved of resolvedSet) {
+      if (resolved.trim().toLowerCase() === normalised) return value;
+    }
+  }
+  return undefined;
 }
 
 /**
@@ -175,7 +197,18 @@ function logIfChanged(
 
 // ---------------------------------------------------------------------------
 // Per-tool sanitisers
+//
+// Every per-tool sanitiser accepts a `resolvedNames` set populated by prior
+// `list_clients` / `list_themes` calls in the same turn. Filter values that
+// match a previously-resolved canonical name pass through even if they don't
+// appear textually in the user's most recent message. See `keepIfMentioned`
+// for the rationale.
 // ---------------------------------------------------------------------------
+
+export interface ResolvedNames {
+  clients: Set<string>;
+  themes: Set<string>;
+}
 
 export interface ListClientsRaw {
   nameSearch?: string;
@@ -187,6 +220,8 @@ export function sanitiseListClients(
   raw: ListClientsRaw,
   userMessage: string
 ): ListClientsRaw {
+  // nameSearch is a free-text substring filter, NOT a resolved canonical
+  // name — don't allow it to bypass the message check via resolvedNames.
   const kept: ListClientsRaw = {
     nameSearch: keepIfMentioned(raw.nameSearch, userMessage),
     hasSessions: raw.hasSessions, // boolean — leave alone
@@ -210,14 +245,15 @@ export interface ListSessionsRaw {
 
 export function sanitiseListSessions(
   raw: ListSessionsRaw,
-  userMessage: string
+  userMessage: string,
+  resolvedNames?: ResolvedNames
 ): ListSessionsRaw {
   const kept: ListSessionsRaw = {
-    clientName: keepIfMentioned(raw.clientName, userMessage),
+    clientName: keepIfMentioned(raw.clientName, userMessage, resolvedNames?.clients),
     dateFrom: keepIfDate(raw.dateFrom, userMessage),
     dateTo: keepIfDate(raw.dateTo, userMessage),
     sentiment: keepCategorical(raw.sentiment, SENTIMENT_CUES, userMessage),
-    themeName: keepIfMentioned(raw.themeName, userMessage),
+    themeName: keepIfMentioned(raw.themeName, userMessage, resolvedNames?.themes),
     chunkTypes: keepIfNonEmptyArray(raw.chunkTypes),
     severity: keepCategorical(raw.severity, SEVERITY_CUES, userMessage),
     urgency: keepCategorical(raw.urgency, URGENCY_CUES, userMessage),
@@ -258,11 +294,12 @@ export interface SemanticSearchRaw {
 
 export function sanitiseSemanticSearch(
   raw: SemanticSearchRaw,
-  userMessage: string
+  userMessage: string,
+  resolvedNames?: ResolvedNames
 ): SemanticSearchRaw {
   const kept: SemanticSearchRaw = {
     query: raw.query, // required — pass through
-    clientName: keepIfMentioned(raw.clientName, userMessage),
+    clientName: keepIfMentioned(raw.clientName, userMessage, resolvedNames?.clients),
     dateFrom: keepIfDate(raw.dateFrom, userMessage),
     dateTo: keepIfDate(raw.dateTo, userMessage),
     chunkTypes: keepIfNonEmptyArray(raw.chunkTypes),
@@ -284,11 +321,12 @@ export interface FetchSignalsRaw {
 
 export function sanitiseFetchSignals(
   raw: FetchSignalsRaw,
-  userMessage: string
+  userMessage: string,
+  resolvedNames?: ResolvedNames
 ): FetchSignalsRaw {
   const kept: FetchSignalsRaw = {
-    clientName: keepIfMentioned(raw.clientName, userMessage),
-    themeName: keepIfMentioned(raw.themeName, userMessage),
+    clientName: keepIfMentioned(raw.clientName, userMessage, resolvedNames?.clients),
+    themeName: keepIfMentioned(raw.themeName, userMessage, resolvedNames?.themes),
     chunkTypes: keepIfNonEmptyArray(raw.chunkTypes),
     severity: keepCategorical(raw.severity, SEVERITY_CUES, userMessage),
     urgency: keepCategorical(raw.urgency, URGENCY_CUES, userMessage),
@@ -315,15 +353,16 @@ export interface AggregateRaw {
 
 export function sanitiseAggregate(
   raw: AggregateRaw,
-  userMessage: string
+  userMessage: string,
+  resolvedNames?: ResolvedNames
 ): AggregateRaw {
   const kept: AggregateRaw = {
     entity: raw.entity, // required
     groupBy: raw.groupBy, // interpretive — leave alone
-    clientName: keepIfMentioned(raw.clientName, userMessage),
+    clientName: keepIfMentioned(raw.clientName, userMessage, resolvedNames?.clients),
     dateFrom: keepIfDate(raw.dateFrom, userMessage),
     dateTo: keepIfDate(raw.dateTo, userMessage),
-    themeName: keepIfMentioned(raw.themeName, userMessage),
+    themeName: keepIfMentioned(raw.themeName, userMessage, resolvedNames?.themes),
     chunkTypes: keepIfNonEmptyArray(raw.chunkTypes),
     severity: keepCategorical(raw.severity, SEVERITY_CUES, userMessage),
     urgency: keepCategorical(raw.urgency, URGENCY_CUES, userMessage),
@@ -345,7 +384,8 @@ export interface TimeSeriesRaw {
 
 export function sanitiseTimeSeries(
   raw: TimeSeriesRaw,
-  userMessage: string
+  userMessage: string,
+  resolvedNames?: ResolvedNames
 ): TimeSeriesRaw {
   // granularity is required and explicitly cued by the user's intent
   // (week/month). Don't drop it even if the user didn't say "weekly" —
@@ -354,10 +394,10 @@ export function sanitiseTimeSeries(
     entity: raw.entity,
     granularity: raw.granularity,
     groupBy: raw.groupBy,
-    clientName: keepIfMentioned(raw.clientName, userMessage),
+    clientName: keepIfMentioned(raw.clientName, userMessage, resolvedNames?.clients),
     dateFrom: keepIfDate(raw.dateFrom, userMessage),
     dateTo: keepIfDate(raw.dateTo, userMessage),
-    themeName: keepIfMentioned(raw.themeName, userMessage),
+    themeName: keepIfMentioned(raw.themeName, userMessage, resolvedNames?.themes),
   };
   // Granularity is a special case: GPT-4o tends to fill it with "month" by
   // default. If the user didn't mention any time bucket, force a sensible

@@ -251,6 +251,10 @@ async function invokeSurface(
       // No-op for eval — the eval doesn't consume the SSE stream.
     },
     lastUserMessage: query,
+    resolvedNames: {
+      clients: new Set<string>(),
+      themes: new Set<string>(),
+    },
   });
   const tools = budgetTracker.wrap(baseTools);
 

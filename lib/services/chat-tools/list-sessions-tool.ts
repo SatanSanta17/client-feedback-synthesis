@@ -71,7 +71,7 @@ export function createListSessionsTool(ctx: ChatToolContext) {
       "Filter combinations are AND across the filter set: severity=high AND theme=pricing means sessions that contain at least one high-severity chunk AND at least one pricing-themed chunk (possibly different chunks).",
     inputSchema,
     execute: async (input) => {
-      const sanitised = sanitiseListSessions(input, ctx.lastUserMessage);
+      const sanitised = sanitiseListSessions(input, ctx.lastUserMessage, ctx.resolvedNames);
       ctx.emitStatus("Listing sessions…");
       const result = await listSessions(sanitised, {
         chatQueryRepo: ctx.chatQueryRepo,

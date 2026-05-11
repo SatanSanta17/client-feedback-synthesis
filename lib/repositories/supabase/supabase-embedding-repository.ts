@@ -268,143 +268,60 @@ export function createEmbeddingRepository(
       const limit = filters.limit ?? 200;
 
       console.log(
-        `${LOG_PREFIX} listSignals — teamId: ${filters.teamId}, theme: ${filters.themeName ?? "any"}, chunkTypes: ${filters.chunkTypes?.join(",") ?? "all"}, severity: ${filters.severity ?? "any"}, urgency: ${filters.urgency ?? "any"}, limit: ${limit}`
+        `${LOG_PREFIX} listSignals — teamId: ${filters.teamId}, theme: ${filters.themeName ?? "any"}, chunkTypes: ${filters.chunkTypes?.join(",") ?? "all"}, severity: ${filters.severity ?? "any"}, urgency: ${filters.urgency ?? "any"}, clientName: ${filters.clientName ?? "any"}, dateFrom: ${filters.dateFrom ?? "any"}, dateTo: ${filters.dateTo ?? "any"}, limit: ${limit}`
       );
 
-      // If themeName is set we go through the signal_themes join; otherwise
-      // we query session_embeddings directly with date / client filters
-      // applied via a sessions-table EXISTS (or join) check.
-      if (filters.themeName) {
-        // signal_themes join path — fetch theme id first, then join.
-        const { data: themes, error: themeErr } = await serviceClient
-          .from("themes")
-          .select("id")
-          .ilike("name", filters.themeName)
-          .eq("is_archived", false);
-
-        if (themeErr) {
-          console.error(`${LOG_PREFIX} listSignals theme lookup — error:`, themeErr.message);
-          throw new Error(`Theme lookup failed: ${themeErr.message}`);
+      // Single RPC hop — every filter is applied at SQL level so `limit`
+      // caps the correctly-filtered set, not an arbitrary pre-filter
+      // slice. PRD-033 P1.R5 completeness guarantee. See migration 003.
+      const { data, error } = await serviceClient.rpc(
+        "match_signals_filtered",
+        {
+          filter_team_id: filters.teamId,
+          filter_user_id: !filters.teamId && filters.userId ? filters.userId : null,
+          filter_client_name: filters.clientName ?? null,
+          filter_theme_name: filters.themeName ?? null,
+          filter_chunk_types: filters.chunkTypes ?? null,
+          filter_severity: filters.severity ?? null,
+          filter_urgency: filters.urgency ?? null,
+          filter_date_from: filters.dateFrom ?? null,
+          filter_date_to: filters.dateTo ?? null,
+          match_limit: limit,
         }
+      );
 
-        const themeIds = (themes ?? []).map((t: { id: string }) => t.id);
-        if (themeIds.length === 0) {
-          return [];
-        }
-
-        const { data: junctionRows, error: jErr } = await serviceClient
-          .from("signal_themes")
-          .select("embedding_id")
-          .in("theme_id", themeIds);
-
-        if (jErr) {
-          console.error(`${LOG_PREFIX} listSignals junction — error:`, jErr.message);
-          throw new Error(`Signal-theme junction lookup failed: ${jErr.message}`);
-        }
-
-        const embeddingIds = (junctionRows ?? []).map(
-          (r: { embedding_id: string }) => r.embedding_id
-        );
-        if (embeddingIds.length === 0) return [];
-
-        let q = serviceClient
-          .from("session_embeddings")
-          .select("id, session_id, chunk_text, chunk_type, metadata")
-          .in("id", embeddingIds)
-          .limit(limit);
-
-        if (filters.teamId) {
-          q = q.eq("team_id", filters.teamId);
-        } else {
-          q = q.is("team_id", null);
-        }
-
-        if (filters.chunkTypes && filters.chunkTypes.length > 0) {
-          q = q.in("chunk_type", filters.chunkTypes);
-        }
-
-        const { data, error } = await q;
-        if (error) {
-          console.error(`${LOG_PREFIX} listSignals join — error:`, error.message);
-          throw new Error(`Signals listing failed: ${error.message}`);
-        }
-
-        return applyMetadataFilters(
-          (data ?? []).map((row) => ({
-            id: row.id as string,
-            sessionId: row.session_id as string,
-            chunkText: row.chunk_text as string,
-            chunkType: row.chunk_type as string,
-            metadata: (row.metadata ?? {}) as Record<string, unknown>,
-          })),
-          { severity: filters.severity, urgency: filters.urgency }
-        );
-      }
-
-      // No theme filter — direct query.
-      let q = serviceClient
-        .from("session_embeddings")
-        .select("id, session_id, chunk_text, chunk_type, metadata")
-        .limit(limit);
-
-      if (filters.teamId) {
-        q = q.eq("team_id", filters.teamId);
-      } else {
-        q = q.is("team_id", null);
-      }
-
-      if (filters.chunkTypes && filters.chunkTypes.length > 0) {
-        q = q.in("chunk_type", filters.chunkTypes);
-      }
-
-      const { data, error } = await q;
       if (error) {
-        console.error(`${LOG_PREFIX} listSignals direct — error:`, error.message);
+        console.error(`${LOG_PREFIX} listSignals — error:`, error.message);
         throw new Error(`Signals listing failed: ${error.message}`);
       }
 
-      return applyMetadataFilters(
-        (data ?? []).map((row) => ({
-          id: row.id as string,
-          sessionId: row.session_id as string,
-          chunkText: row.chunk_text as string,
-          chunkType: row.chunk_type as string,
-          metadata: (row.metadata ?? {}) as Record<string, unknown>,
-        })),
-        { severity: filters.severity, urgency: filters.urgency }
+      const rows: SessionChunkRow[] = (data ?? []).map(
+        (row: {
+          id: string;
+          session_id: string;
+          chunk_text: string;
+          chunk_type: string;
+          metadata: Record<string, unknown> | null;
+          client_name: string | null;
+          session_date: string | null;
+        }) => ({
+          id: row.id,
+          sessionId: row.session_id,
+          chunkText: row.chunk_text,
+          chunkType: row.chunk_type,
+          // The RPC carries client_name and session_date from the canonical
+          // sessions/clients tables. Merge them into metadata so downstream
+          // services see them at a stable key without re-querying.
+          metadata: {
+            ...(row.metadata ?? {}),
+            client_name: row.client_name ?? row.metadata?.client_name ?? null,
+            session_date: row.session_date ?? row.metadata?.session_date ?? null,
+          },
+        })
       );
+
+      console.log(`${LOG_PREFIX} listSignals — returning ${rows.length} signals`);
+      return rows;
     },
   };
-}
-
-/**
- * In-memory severity / urgency filtering applied after the SQL pull. We do
- * this in TS because severity and urgency live inside the metadata JSONB and
- * the existing severity-filter helper (database-query/shared) operates at
- * the session level, not the chunk level.
- */
-function applyMetadataFilters(
-  rows: SessionChunkRow[],
-  metaFilters: { severity?: string; urgency?: string }
-): SessionChunkRow[] {
-  if (!metaFilters.severity && !metaFilters.urgency) {
-    return rows;
-  }
-  return rows.filter((row) => {
-    if (
-      metaFilters.severity &&
-      String(row.metadata?.severity ?? "").toLowerCase() !==
-        metaFilters.severity
-    ) {
-      return false;
-    }
-    if (
-      metaFilters.urgency &&
-      String(row.metadata?.urgency ?? "").toLowerCase() !==
-        metaFilters.urgency
-    ) {
-      return false;
-    }
-    return true;
-  });
 }

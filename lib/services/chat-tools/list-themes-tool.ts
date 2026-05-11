@@ -47,6 +47,9 @@ export function createListThemesTool(ctx: ChatToolContext) {
       const result = await listThemes(sanitised, {
         chatQueryRepo: ctx.chatQueryRepo,
       });
+      // Record canonical names so later tool calls in the same turn can
+      // pass them as filters without the sanitiser dropping them.
+      for (const row of result) ctx.resolvedNames.themes.add(row.name);
       return result;
     },
   });

@@ -116,6 +116,45 @@ export async function handleSessionsPerClient(
   return { clients };
 }
 
+/**
+ * Per-client signal-chunk counts. Backs `aggregate(entity=signals,
+ * groupBy=client)` in the chat surface (PRD-033 P1.R3). Uses the
+ * `aggregate_signals_per_client` RPC so chunkType / severity / urgency /
+ * date / client filters apply at SQL — the dashboard's existing
+ * `competitive_mention_frequency` handler counts COMPETITOR names from
+ * structured_json, which is a different shape and was wrongly routed here
+ * before PRD-033 post-cutover audit (2026-05-11).
+ */
+export async function handleSignalsPerClient(
+  supabase: SupabaseClient,
+  filters: QueryFilters
+): Promise<Record<string, unknown>> {
+  const { data, error } = await supabase.rpc("aggregate_signals_per_client", {
+    filter_team_id: filters.teamId,
+    filter_user_id: filters.userId ?? null,
+    filter_chunk_types: filters.chunkTypes ?? null,
+    filter_severity: filters.severity ?? null,
+    filter_urgency: filters.urgency ?? null,
+    filter_date_from: filters.dateFrom ?? null,
+    filter_date_to: filters.dateTo ?? null,
+    filter_client_name: filters.clientName ?? null,
+  });
+
+  if (error) {
+    console.error(`${LOG_PREFIX} signals_per_client error:`, error);
+    throw new Error("Failed to aggregate signals per client");
+  }
+
+  const clients = (data ?? []).map(
+    (row: { client_name: string; signal_count: number | string }) => ({
+      name: row.client_name,
+      count: Number(row.signal_count),
+    })
+  );
+
+  return { clients };
+}
+
 export async function handleClientList(
   supabase: SupabaseClient,
   filters: QueryFilters

@@ -36,84 +36,41 @@ export function createChatQueryRepository(
     async listClients(filters: ChatClientListFilters): Promise<ChatClientRow[]> {
       const limit = filters.limit ?? DEFAULT_CLIENT_LIMIT;
       console.log(
-        `${LOG_PREFIX} listClients — teamId: ${teamId}, hasSessions: ${filters.hasSessions ?? false}, search: ${filters.nameSearch ?? ""}`
+        `${LOG_PREFIX} listClients — teamId: ${teamId}, hasSessions: ${filters.hasSessions ?? false}, search: ${filters.nameSearch ?? ""}, limit: ${limit}`
       );
 
-      // Pull sessions in scope so we can compute counts + last-session date.
-      let sessionsQuery = supabase
-        .from("sessions")
-        .select("client_id, session_date")
-        .is("deleted_at", null);
-
-      if (teamId) {
-        sessionsQuery = sessionsQuery.eq("team_id", teamId);
-      } else {
-        sessionsQuery = sessionsQuery.is("team_id", null).eq("created_by", userId);
-      }
-
-      const { data: sessionRows, error: sErr } = await sessionsQuery;
-      if (sErr) {
-        console.error(`${LOG_PREFIX} listClients sessions — error:`, sErr.message);
-        throw new Error(`listClients sessions failed: ${sErr.message}`);
-      }
-
-      const counts = new Map<string, { count: number; latest: string | null }>();
-      for (const row of sessionRows ?? []) {
-        const existing = counts.get(row.client_id as string);
-        if (!existing) {
-          counts.set(row.client_id as string, {
-            count: 1,
-            latest: row.session_date as string | null,
-          });
-        } else {
-          existing.count += 1;
-          if (
-            row.session_date &&
-            (!existing.latest || (row.session_date as string) > existing.latest)
-          ) {
-            existing.latest = row.session_date as string;
-          }
+      // Single RPC hop — GROUP BY on `sessions` happens in Postgres, not by
+      // pulling every session row into Node. PRD-033 audit fix #11.
+      const { data, error } = await supabase.rpc(
+        "list_clients_with_session_counts",
+        {
+          filter_team_id: teamId,
+          filter_user_id: !teamId ? userId : null,
+          filter_name_search:
+            filters.nameSearch && filters.nameSearch.trim().length > 0
+              ? filters.nameSearch.trim()
+              : null,
+          filter_has_sessions: filters.hasSessions ?? false,
+          match_limit: limit,
         }
+      );
+
+      if (error) {
+        console.error(`${LOG_PREFIX} listClients — error:`, error.message);
+        throw new Error(`listClients failed: ${error.message}`);
       }
 
-      // Fetch client rows. With hasSessions=true we narrow to clients with
-      // at least one session in the in-scope set above.
-      let clientsQuery = supabase
-        .from("clients")
-        .select("id, name")
-        .order("name", { ascending: true })
-        .limit(limit);
-
-      if (teamId) {
-        clientsQuery = clientsQuery.eq("team_id", teamId);
-      } else {
-        clientsQuery = clientsQuery.is("team_id", null);
-      }
-
-      if (filters.nameSearch && filters.nameSearch.trim().length > 0) {
-        clientsQuery = clientsQuery.ilike("name", `%${filters.nameSearch.trim()}%`);
-      }
-
-      if (filters.hasSessions) {
-        const ids = [...counts.keys()];
-        if (ids.length === 0) return [];
-        clientsQuery = clientsQuery.in("id", ids);
-      }
-
-      const { data: clientRows, error: cErr } = await clientsQuery;
-      if (cErr) {
-        console.error(`${LOG_PREFIX} listClients clients — error:`, cErr.message);
-        throw new Error(`listClients clients failed: ${cErr.message}`);
-      }
-
-      const out: ChatClientRow[] = (clientRows ?? []).map((row) => {
-        const meta = counts.get(row.id as string);
-        return {
-          name: row.name as string,
-          sessionCount: meta?.count ?? 0,
-          lastSessionDate: meta?.latest ?? null,
-        };
-      });
+      const out: ChatClientRow[] = (data ?? []).map(
+        (row: {
+          name: string;
+          session_count: number | string;
+          last_session_date: string | null;
+        }) => ({
+          name: row.name,
+          sessionCount: Number(row.session_count),
+          lastSessionDate: row.last_session_date,
+        })
+      );
 
       console.log(`${LOG_PREFIX} listClients — returning ${out.length} clients`);
       return out;
@@ -180,7 +137,8 @@ export function createChatQueryRepository(
       const sessionIds = (sRows ?? []).map((r) => r.id as string);
       const themesBySessionId = await fetchThemesForSessions(
         supabase,
-        sessionIds
+        sessionIds,
+        teamId
       );
 
       const out: ChatSessionRow[] = [];
@@ -320,7 +278,8 @@ export function createChatQueryRepository(
 
       const themesBySessionId = await fetchThemesForSessions(
         supabase,
-        (data ?? []).map((r) => r.id as string)
+        (data ?? []).map((r) => r.id as string),
+        teamId
       );
 
       const out: ChatSessionHeader[] = (data ?? []).map((row) => {
@@ -415,34 +374,32 @@ async function resolveSignalLevelFilters(
     );
   }
 
-  // severity / urgency — metadata JSONB filter (in-memory because nested
-  // JSONB queries don't compose well with the existing severity-filter helper)
+  // severity / urgency — push the metadata-JSONB filter into SQL via the
+  // `metadata->>'<field>'` operator. The partial indexes from migration 003
+  // (idx_session_embeddings_team_severity / _team_urgency) back this.
+  // Previously this loaded every workspace embedding into Node and filtered
+  // in-process — pathological at scale.
   if (filters.severity || filters.urgency) {
     let eq = supabase
       .from("session_embeddings")
-      .select("session_id, metadata");
+      .select("session_id");
     if (teamId) eq = eq.eq("team_id", teamId);
     else eq = eq.is("team_id", null);
-
-    const { data: eRows } = await eq;
-    const matchingSessionIds = new Set<string>();
-    for (const row of eRows ?? []) {
-      const meta = (row.metadata ?? {}) as Record<string, unknown>;
-      if (
-        filters.severity &&
-        String(meta.severity ?? "").toLowerCase() !== filters.severity
-      ) {
-        continue;
-      }
-      if (
-        filters.urgency &&
-        String(meta.urgency ?? "").toLowerCase() !== filters.urgency
-      ) {
-        continue;
-      }
-      matchingSessionIds.add(row.session_id as string);
+    if (filters.severity) {
+      eq = eq.eq("metadata->>severity", filters.severity);
     }
-    sets.push(matchingSessionIds);
+    if (filters.urgency) {
+      eq = eq.eq("metadata->>urgency", filters.urgency);
+    }
+
+    const { data: eRows, error: eErr } = await eq;
+    if (eErr) {
+      console.error(`${LOG_PREFIX} resolveSignalLevelFilters severity/urgency — error:`, eErr.message);
+      throw new Error(`Severity/urgency lookup failed: ${eErr.message}`);
+    }
+    sets.push(
+      new Set((eRows ?? []).map((r: { session_id: string }) => r.session_id))
+    );
   }
 
   if (sets.length === 0) return null;
@@ -457,16 +414,23 @@ async function resolveSignalLevelFilters(
 
 async function fetchThemesForSessions(
   supabase: SupabaseClient,
-  sessionIds: string[]
+  sessionIds: string[],
+  teamId: string | null
 ): Promise<Map<string, string[]>> {
   const result = new Map<string, string[]>();
   if (sessionIds.length === 0) return result;
 
-  // session_embeddings → signal_themes → themes
-  const { data: embRows } = await supabase
+  // session_embeddings → signal_themes → themes. team scope is applied at
+  // every layer (defense in depth): embeddings and themes both carry
+  // team_id; signal_themes inherits scope via the embedding_id join.
+  let embQ = supabase
     .from("session_embeddings")
     .select("id, session_id")
     .in("session_id", sessionIds);
+  if (teamId) embQ = embQ.eq("team_id", teamId);
+  else embQ = embQ.is("team_id", null);
+
+  const { data: embRows } = await embQ;
   const embIdToSessionId = new Map<string, string>(
     (embRows ?? []).map((r: { id: string; session_id: string }) => [
       r.id,
@@ -487,10 +451,14 @@ async function fetchThemesForSessions(
   ];
   if (themeIds.length === 0) return result;
 
-  const { data: themeRows } = await supabase
+  let themeQ = supabase
     .from("themes")
     .select("id, name")
     .in("id", themeIds);
+  if (teamId) themeQ = themeQ.eq("team_id", teamId);
+  else themeQ = themeQ.is("team_id", null);
+
+  const { data: themeRows } = await themeQ;
   const themeNameById = new Map<string, string>(
     (themeRows ?? []).map((t: { id: string; name: string }) => [t.id, t.name])
   );

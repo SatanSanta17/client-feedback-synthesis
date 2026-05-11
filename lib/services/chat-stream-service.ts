@@ -142,6 +142,15 @@ export function createChatStream(deps: ChatStreamDeps): ReadableStream {
       // Build the tool registry, then wrap each tool's execute() with the
       // per-turn cost budget guard. Tool factories never see the budget
       // logic — the wrapper records tool-result tokens internally.
+      // Per-turn resolved-names accumulator. list_clients / list_themes
+      // mutate these sets; the filter sanitiser consults them so a model-
+      // resolved canonical name (e.g. "Acme Corporation" from list_clients)
+      // doesn't get dropped just because the user only typed "Acme".
+      const resolvedNames = {
+        clients: new Set<string>(),
+        themes: new Set<string>(),
+      };
+
       const baseTools = createChatTools({
         workspace: { teamId, userId },
         chatQueryRepo,
@@ -149,6 +158,7 @@ export function createChatStream(deps: ChatStreamDeps): ReadableStream {
         supabaseClient: anonClient,
         emitStatus,
         lastUserMessage,
+        resolvedNames,
       });
       const tools = budgetTracker.wrap(baseTools);
 

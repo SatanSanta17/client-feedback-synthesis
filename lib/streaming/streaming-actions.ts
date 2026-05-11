@@ -51,9 +51,13 @@ export function startStream(args: StartStreamArgs): void {
     `${LOG_PREFIX} startStream conversation=${conversationId} team=${teamId ?? "personal"}`
   );
 
-  // Defensive cap. The UI gate in chat-input is the primary enforcement
-  // (Part 3); this guard catches any caller that bypasses the gate so we
-  // never silently exceed the documented cap.
+  // Best-effort defensive cap. The UI gate in chat-input is the primary
+  // enforcement (Part 3); this guard catches any caller that bypasses the
+  // gate. The check-then-act here is NOT atomic — two startStream calls
+  // dispatched in the same React batch can both observe count < cap and
+  // both proceed. Acceptable trade-off given the UI gate is the real
+  // backstop; if this ever needs hard guarantees, lift the check into
+  // setSlice as an atomic compare-and-write.
   const activeForTeam = countActiveStreams(teamId);
   if (activeForTeam >= MAX_CONCURRENT_STREAMS) {
     console.warn(

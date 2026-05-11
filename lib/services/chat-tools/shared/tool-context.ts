@@ -33,4 +33,19 @@ export interface ChatToolContext {
    * per-tool Zod schemas couldn't catch. Provider-agnostic defence.
    */
   lastUserMessage: string;
+  /**
+   * Per-turn accumulator of client / theme names returned by `list_clients`
+   * and `list_themes`. The filter sanitiser consults this set when deciding
+   * whether to keep a `clientName` / `themeName` filter whose literal value
+   * doesn't appear in the user message — common when the model resolves
+   * "PT Power" via `list_clients` and then passes the canonical
+   * "PrudenTech Power" as the filter. Without this, the sanitiser would
+   * drop a legitimately-resolved name. Lifecycle: created fresh by
+   * `chat-stream-service` per turn; mutated by `list_clients` and
+   * `list_themes` execute paths.
+   */
+  resolvedNames: {
+    clients: Set<string>;
+    themes: Set<string>;
+  };
 }

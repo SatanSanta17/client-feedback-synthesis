@@ -56,7 +56,7 @@ export function createFetchSignalsTool(ctx: ChatToolContext) {
       "Do NOT use for similarity / paraphrase questions ('what are clients saying about onboarding') — use semantic_search for those.",
     inputSchema,
     execute: async (input) => {
-      const sanitised = sanitiseFetchSignals(input, ctx.lastUserMessage);
+      const sanitised = sanitiseFetchSignals(input, ctx.lastUserMessage, ctx.resolvedNames);
       ctx.emitStatus("Fetching signals…");
       const result = await fetchSignals(
         {

@@ -33,7 +33,7 @@ export function createTimeSeriesTool(ctx: ChatToolContext) {
       "Returns periodStart + count per bucket; with groupBy=theme each bucket also has a key (theme name).",
     inputSchema,
     execute: async (input) => {
-      const sanitised = sanitiseTimeSeries(input, ctx.lastUserMessage);
+      const sanitised = sanitiseTimeSeries(input, ctx.lastUserMessage, ctx.resolvedNames);
       ctx.emitStatus("Computing time series…");
       const result = await timeSeries(
         {
@@ -42,6 +42,7 @@ export function createTimeSeriesTool(ctx: ChatToolContext) {
           groupBy: sanitised.groupBy as AggregateDim | undefined,
           filters: {
             teamId: ctx.workspace.teamId,
+            userId: ctx.workspace.userId,
             clientName: sanitised.clientName,
             dateFrom: sanitised.dateFrom,
             dateTo: sanitised.dateTo,

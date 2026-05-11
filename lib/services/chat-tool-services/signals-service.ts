@@ -33,39 +33,24 @@ export async function fetchSignals(
 ): Promise<SignalResult[]> {
   console.log(`${LOG_PREFIX} fetchSignals — ${JSON.stringify(filters)}`);
 
+  // All filters (client / date / theme / chunkTypes / severity / urgency)
+  // are applied at SQL by the repo's RPC. No post-filtering needed —
+  // the result is already complete and capped at `limit`. PRD-033 P1.R5.
   const rows = await deps.embeddingRepo.listSignals(filters);
 
-  // Date filtering and client name resolution happen via metadata since
-  // listSignals returns chunks; we promote the relevant fields out for the
-  // model.
-  const out: SignalResult[] = [];
-  for (const row of rows as SessionChunkRow[]) {
+  const out: SignalResult[] = (rows as SessionChunkRow[]).map((row) => {
     const meta = row.metadata ?? {};
-    const sessionDate = (meta.session_date as string | undefined) ?? "";
-    if (filters.dateFrom && sessionDate && sessionDate < filters.dateFrom) {
-      continue;
-    }
-    if (filters.dateTo && sessionDate && sessionDate > filters.dateTo) {
-      continue;
-    }
-    const clientName = (meta.client_name as string | undefined) ?? "Unknown";
-    if (
-      filters.clientName &&
-      clientName.toLowerCase() !== filters.clientName.toLowerCase()
-    ) {
-      continue;
-    }
     const result: SignalResult = {
       sessionId: row.sessionId,
-      clientName,
-      sessionDate,
+      clientName: (meta.client_name as string | undefined) ?? "Unknown",
+      sessionDate: (meta.session_date as string | undefined) ?? "",
       chunkType: row.chunkType,
       text: row.chunkText,
     };
     if (typeof meta.severity === "string") result.severity = meta.severity;
     if (typeof meta.urgency === "string") result.urgency = meta.urgency;
-    out.push(result);
-  }
+    return result;
+  });
 
   console.log(`${LOG_PREFIX} fetchSignals — returning ${out.length} signals`);
   return out;

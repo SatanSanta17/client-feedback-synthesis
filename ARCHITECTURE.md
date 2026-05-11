@@ -470,7 +470,7 @@ synthesiser/
 │   │   │   │   ├── row-helpers.ts        # extractClientName (joined-row name extractor), aggregateJsonField (bucketed distribution), dateTrunc (week/month bucket)
 │   │   │   │   └── theme-helpers.ts      # fetchActiveThemeMap, fetchSignalThemeRows (signal_themes ⨝ session_embeddings ⨝ sessions), applyThemeJoinFilters (team/date/clientIds chain shared by theme widgets and theme drill-down)
 │   │   │   └── domains/
-│   │   │       ├── counts.ts             # count_clients, count_sessions, sessions_per_client, client_list
+│   │   │       ├── counts.ts             # count_clients, count_sessions, sessions_per_client, signals_per_client (PRD-033 audit — RPC-backed), client_list
 │   │   │       ├── distributions.ts      # sentiment_distribution, urgency_distribution, competitive_mention_frequency
 │   │   │       ├── sessions.ts           # recent_sessions, sessions_over_time (RPC), client_health_grid (severity/urgency post-filters)
 │   │   │       ├── themes.ts             # top_themes, theme_trends, theme_client_matrix
@@ -568,6 +568,7 @@ synthesiser/
         ├── trd.md
         ├── 001-fts-on-session-embeddings.sql      # **PRD-033 Part 1** migration — adds chunk_text_tsv (generated tsvector) + GIN index + composite (team_id, session_id) index on session_embeddings
         ├── 002-match-session-embeddings-fts-rpc.sql  # **PRD-033 Part 1** migration — match_session_embeddings_fts RPC mirroring the vector RPC's signature; uses websearch_to_tsquery + ts_rank_cd
+        ├── 003-chat-tool-rpcs.sql                 # **PRD-033 post-cutover audit fix** — three RPCs (match_signals_filtered, aggregate_signals_per_client, list_clients_with_session_counts) that move chat-tool filter logic into SQL + two partial indexes on session_embeddings (metadata->>'severity', metadata->>'urgency')
         └── eval/
             ├── queries.json                       # **PRD-033 Part 1** — frozen test set for the chat eval harness (16 queries: quantitative / qualitative / discovery / hybrid / exact-term)
             ├── judge-prompt.ts                    # **PRD-033 Part 1** — LLM-as-judge system prompt (versioned v1)
@@ -664,9 +665,14 @@ Stores vector embeddings of chunked session extraction data for semantic similar
 | `schema_version` | INTEGER | NOT NULL, default `1`. Matches extraction schema version for schema-aware retrieval. |
 | `created_at` | TIMESTAMPTZ | Default `now()` |
 
-**Indexes:** `session_embeddings_embedding_hnsw_idx` — HNSW index on `embedding` using `vector_cosine_ops` for cosine similarity search. `session_embeddings_session_id_idx` — on `session_id` for cascade deletes and re-extraction cleanup. `session_embeddings_team_chunk_type_idx` — on `(team_id, chunk_type)` for filtered similarity searches. **PRD-033 Part 1**: `idx_session_embeddings_tsv` — GIN index on `chunk_text_tsv` for FTS matching; `idx_session_embeddings_team_session` — composite on `(team_id, session_id)` for the chat `fetch_session_content` bulk fetch path.
+**Indexes:** `session_embeddings_embedding_hnsw_idx` — HNSW index on `embedding` using `vector_cosine_ops` for cosine similarity search. `session_embeddings_session_id_idx` — on `session_id` for cascade deletes and re-extraction cleanup. `session_embeddings_team_chunk_type_idx` — on `(team_id, chunk_type)` for filtered similarity searches. **PRD-033 Part 1**: `idx_session_embeddings_tsv` — GIN index on `chunk_text_tsv` for FTS matching; `idx_session_embeddings_team_session` — composite on `(team_id, session_id)` for the chat `fetch_session_content` bulk fetch path. **PRD-033 post-cutover audit (migration 003):** `idx_session_embeddings_team_severity` and `idx_session_embeddings_team_urgency` — composite `(team_id, (metadata->>'<field>'))` partial indexes backing the SQL-level severity/urgency predicates used by `list_sessions` signal-level filters and the new `match_signals_filtered` / `aggregate_signals_per_client` RPCs.
 
 **RPCs (PRD-033 Part 1):** `match_session_embeddings_fts(query_text, match_count, filter_team_id, filter_user_id, filter_chunk_types, filter_client_name, filter_date_from, filter_date_to)` — FTS counterpart to the existing `match_session_embeddings` (vector RPC). Uses `websearch_to_tsquery('english', ...)` (handles quoted phrases, OR, `-term`) and `ts_rank_cd` for scoring. Returns rows in the same `(id, session_id, chunk_text, chunk_type, metadata, fts_rank)` shape so RRF fusion in TS is a simple keyed join on `id`. Workspace scoping mirrors `match_session_embeddings` exactly.
+
+**RPCs (PRD-033 post-cutover audit, migration 003):** Three SECURITY DEFINER RPCs moving chat-tool filter logic from in-process TS into SQL — consistent with the FTS / vector RPC pattern and joining to the canonical `sessions` / `clients` tables instead of the denormalised metadata copy on `session_embeddings`.
+- `match_signals_filtered(filter_team_id, filter_user_id, filter_client_name, filter_theme_name, filter_chunk_types, filter_severity, filter_urgency, filter_date_from, filter_date_to, match_limit)` — backs the chat surface's `fetch_signals` tool. Every filter applies at SQL so `match_limit` caps the correctly-filtered set (PRD § P1.R5 completeness). Joins to `sessions` for date, `clients` for client-name, `signal_themes` ⨝ `themes` for theme; severity/urgency match `metadata->>'<field>'` case-insensitively.
+- `aggregate_signals_per_client(filter_team_id, filter_user_id, filter_chunk_types, filter_severity, filter_urgency, filter_date_from, filter_date_to, filter_client_name)` — backs `aggregate(entity=signals, groupBy=client)`. GROUP BY runs in Postgres on `clients.name`.
+- `list_clients_with_session_counts(filter_team_id, filter_user_id, filter_name_search, filter_has_sessions, match_limit)` — backs `list_clients`. Subquery aggregates `sessions` per client; LEFT JOIN to `clients` returns name/session_count/last_session_date in one round-trip.
 **RLS:** Personal: users SELECT/INSERT/UPDATE/DELETE embeddings for their own sessions. Team: members SELECT/INSERT/UPDATE/DELETE team embeddings via `is_team_member()`.
 
 ### `themes`

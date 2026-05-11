@@ -49,7 +49,7 @@ export function createSemanticSearchTool(ctx: ChatToolContext) {
       "Do NOT use for completeness questions ('list every pain point about pricing') — use fetch_signals for those.",
     inputSchema,
     execute: async (input) => {
-      const sanitised = sanitiseSemanticSearch(input, ctx.lastUserMessage);
+      const sanitised = sanitiseSemanticSearch(input, ctx.lastUserMessage, ctx.resolvedNames);
       ctx.emitStatus("Searching across sessions…");
       const results = await retrieveRelevantChunks(
         sanitised.query,
