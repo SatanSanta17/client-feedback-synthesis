@@ -5,6 +5,7 @@ import { fetchSignals } from "@/lib/services/chat-tool-services/signals-service"
 import type { ChunkType } from "@/lib/types/embedding-chunk";
 
 import { chunkTypeEnum } from "./shared/chunk-type-enum";
+import { sanitiseFetchSignals } from "./shared/filter-sanitiser";
 import type { ChatToolContext } from "./shared/tool-context";
 
 const inputSchema = z.object({
@@ -55,19 +56,20 @@ export function createFetchSignalsTool(ctx: ChatToolContext) {
       "Do NOT use for similarity / paraphrase questions ('what are clients saying about onboarding') — use semantic_search for those.",
     inputSchema,
     execute: async (input) => {
+      const sanitised = sanitiseFetchSignals(input, ctx.lastUserMessage);
       ctx.emitStatus("Fetching signals…");
       const result = await fetchSignals(
         {
           teamId: ctx.workspace.teamId,
           userId: ctx.workspace.userId,
-          clientName: input.clientName,
-          themeName: input.themeName,
-          chunkTypes: input.chunkTypes as ChunkType[] | undefined,
-          severity: input.severity,
-          urgency: input.urgency,
-          dateFrom: input.dateFrom,
-          dateTo: input.dateTo,
-          limit: input.limit,
+          clientName: sanitised.clientName,
+          themeName: sanitised.themeName,
+          chunkTypes: sanitised.chunkTypes as ChunkType[] | undefined,
+          severity: sanitised.severity,
+          urgency: sanitised.urgency,
+          dateFrom: sanitised.dateFrom,
+          dateTo: sanitised.dateTo,
+          limit: sanitised.limit,
         },
         { embeddingRepo: ctx.embeddingRepo }
       );

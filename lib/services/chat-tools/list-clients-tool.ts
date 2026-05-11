@@ -3,6 +3,7 @@ import { z } from "zod";
 
 import { listClients } from "@/lib/services/chat-tool-services/discovery-service";
 
+import { sanitiseListClients } from "./shared/filter-sanitiser";
 import type { ChatToolContext } from "./shared/tool-context";
 
 const inputSchema = z.object({
@@ -28,8 +29,9 @@ export function createListClientsTool(ctx: ChatToolContext) {
       "Does NOT return session content; use fetch_session_content for that.",
     inputSchema,
     execute: async (input) => {
+      const sanitised = sanitiseListClients(input, ctx.lastUserMessage);
       ctx.emitStatus("Looking up clients…");
-      const result = await listClients(input, {
+      const result = await listClients(sanitised, {
         chatQueryRepo: ctx.chatQueryRepo,
       });
       return result;

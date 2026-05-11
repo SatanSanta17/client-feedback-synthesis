@@ -6,6 +6,7 @@ import {
   type AggregateDim,
 } from "@/lib/services/chat-tool-services/aggregation-service";
 
+import { sanitiseAggregate } from "./shared/filter-sanitiser";
 import type { ChatToolContext } from "./shared/tool-context";
 
 const dimEnum = z.enum([
@@ -60,21 +61,22 @@ export function createAggregateTool(ctx: ChatToolContext) {
       "  - 'Theme by client matrix' → entity=signals, groupBy=[theme, client]",
     inputSchema,
     execute: async (input) => {
+      const sanitised = sanitiseAggregate(input, ctx.lastUserMessage);
       ctx.emitStatus("Aggregating data…");
       const result = await aggregate(
         {
-          entity: input.entity,
-          groupBy: input.groupBy as AggregateDim | AggregateDim[] | undefined,
+          entity: sanitised.entity,
+          groupBy: sanitised.groupBy as AggregateDim | AggregateDim[] | undefined,
           filters: {
             teamId: ctx.workspace.teamId,
-            clientName: input.clientName,
-            dateFrom: input.dateFrom,
-            dateTo: input.dateTo,
-            themeName: input.themeName,
-            chunkTypes: input.chunkTypes,
-            severity: input.severity,
-            urgency: input.urgency,
-            confidenceMin: input.confidenceMin,
+            clientName: sanitised.clientName,
+            dateFrom: sanitised.dateFrom,
+            dateTo: sanitised.dateTo,
+            themeName: sanitised.themeName,
+            chunkTypes: sanitised.chunkTypes,
+            severity: sanitised.severity,
+            urgency: sanitised.urgency,
+            confidenceMin: sanitised.confidenceMin,
           },
         },
         { supabase: ctx.supabaseClient }

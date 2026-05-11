@@ -104,6 +104,14 @@ export function createChatStream(deps: ChatStreamDeps): ReadableStream {
   const encoder = new TextEncoder();
   const collectedSources: ChatSource[] = [];
 
+  // Most recent user message — passed into the ChatToolContext so each
+  // tool's filter sanitiser can drop categorical/free-text filter values
+  // the model invented without textual support in the user's prompt
+  // (post-PRD-033-cutover defence; see shared/filter-sanitiser.ts).
+  const lastUserMessage =
+    [...contextMessages].reverse().find((m) => m.role === "user")?.content ??
+    "";
+
   return new ReadableStream({
     async start(controller) {
       // Lifted to outer scope so the catch can preserve partial content when
@@ -140,6 +148,7 @@ export function createChatStream(deps: ChatStreamDeps): ReadableStream {
         embeddingRepo,
         supabaseClient: anonClient,
         emitStatus,
+        lastUserMessage,
       });
       const tools = budgetTracker.wrap(baseTools);
 

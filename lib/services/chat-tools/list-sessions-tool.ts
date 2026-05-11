@@ -4,6 +4,7 @@ import { z } from "zod";
 import { listSessions } from "@/lib/services/chat-tool-services/discovery-service";
 
 import { chunkTypeEnum } from "./shared/chunk-type-enum";
+import { sanitiseListSessions } from "./shared/filter-sanitiser";
 import type { ChatToolContext } from "./shared/tool-context";
 
 const inputSchema = z.object({
@@ -70,8 +71,9 @@ export function createListSessionsTool(ctx: ChatToolContext) {
       "Filter combinations are AND across the filter set: severity=high AND theme=pricing means sessions that contain at least one high-severity chunk AND at least one pricing-themed chunk (possibly different chunks).",
     inputSchema,
     execute: async (input) => {
+      const sanitised = sanitiseListSessions(input, ctx.lastUserMessage);
       ctx.emitStatus("Listing sessions…");
-      const result = await listSessions(input, {
+      const result = await listSessions(sanitised, {
         chatQueryRepo: ctx.chatQueryRepo,
       });
       return result;

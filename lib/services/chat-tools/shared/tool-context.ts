@@ -25,4 +25,12 @@ export interface ChatToolContext {
   supabaseClient: SupabaseClient;
   // Streaming-side
   emitStatus: (message: string) => void;
+  /**
+   * The user's most recent message text — threaded into the context so each
+   * tool's `execute()` can run the filter sanitiser (`shared/filter-
+   * sanitiser.ts`) against it. Re-introduced post-PRD-033-cutover when
+   * GPT-4o was observed inventing categorical filter values that the
+   * per-tool Zod schemas couldn't catch. Provider-agnostic defence.
+   */
+  lastUserMessage: string;
 }

@@ -5,6 +5,7 @@ import { retrieveRelevantChunks } from "@/lib/services/retrieval-service";
 import type { ChunkType } from "@/lib/types/embedding-chunk";
 
 import { chunkTypeEnum } from "./shared/chunk-type-enum";
+import { sanitiseSemanticSearch } from "./shared/filter-sanitiser";
 import type { ChatToolContext } from "./shared/tool-context";
 
 const inputSchema = z.object({
@@ -48,15 +49,16 @@ export function createSemanticSearchTool(ctx: ChatToolContext) {
       "Do NOT use for completeness questions ('list every pain point about pricing') — use fetch_signals for those.",
     inputSchema,
     execute: async (input) => {
+      const sanitised = sanitiseSemanticSearch(input, ctx.lastUserMessage);
       ctx.emitStatus("Searching across sessions…");
       const results = await retrieveRelevantChunks(
-        input.query,
+        sanitised.query,
         {
           teamId: ctx.workspace.teamId,
-          clientName: input.clientName,
-          dateFrom: input.dateFrom,
-          dateTo: input.dateTo,
-          chunkTypes: input.chunkTypes as ChunkType[] | undefined,
+          clientName: sanitised.clientName,
+          dateFrom: sanitised.dateFrom,
+          dateTo: sanitised.dateTo,
+          chunkTypes: sanitised.chunkTypes as ChunkType[] | undefined,
         },
         ctx.embeddingRepo
       );

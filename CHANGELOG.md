@@ -6,6 +6,27 @@ All notable changes to this project are documented here, grouped by PRD and part
 
 ## [Unreleased]
 
+### PRD-033 post-cutover — re-introduce per-tool filter sanitisation — 2026-05-11
+
+**Deviation from PRD-033 stated design intent.** The PRD argued that per-tool Zod schemas + strong "OMIT unless…" tool descriptions would make the old monolithic filter-sanitisation layer (cue-matching against the user's last message) unnecessary. That assumption held for Claude but was falsified by GPT-4o traffic immediately after the Part 3 cutover: the model invented categorical enum values (`sentiment: "neutral"`, `severity: "medium"`, `urgency: "low"`) on a "list all my sessions" prompt with zero filter intent, and passed empty strings (`clientName: ""`, `dateFrom: ""`, etc.) for every optional field. The 3-way intersection of invented filters filtered every session out — chat surface looked broken even though the workspace had 15+ sessions.
+
+The fix is provider-agnostic by design (PRD's "use Claude" wasn't acceptable — would have made the system Anthropic-dependent), so the cue-matching defence is back, but cleaner than before:
+
+- **New shared module** [`lib/services/chat-tools/shared/filter-sanitiser.ts`](lib/services/chat-tools/shared/filter-sanitiser.ts) — cue dictionaries (`SEVERITY_CUES`, `URGENCY_CUES`, `SENTIMENT_CUES`, `GRANULARITY_CUES`, `CONFIDENCE_CUES`, `DATE_CUE_REGEX`) + primitive helpers (`keepCategorical`, `keepIfMentioned`, `keepIfDate`, `keepConfidenceMin`, `keepIfNonEmptyArray`) + seven per-tool sanitisers (`sanitiseListClients`, `sanitiseListSessions`, `sanitiseListThemes`, `sanitiseSemanticSearch`, `sanitiseFetchSignals`, `sanitiseAggregate`, `sanitiseTimeSeries`). Each per-tool function returns a kept-filters object and logs `[filter-sanitiser] <tool> — sanitised filters; raw: ..., kept: ...` on every change so we have observability into how often each model invents which filter.
+- **`ChatToolContext` extended** with `lastUserMessage: string` — re-introduces the field that Part 3's cutover removed. Threaded into context from `chat-stream-service.ts` (same computation pattern as pre-cutover: `[...contextMessages].reverse().find((m) => m.role === "user")?.content ?? ""`).
+- **Seven tool factories wired** — each tool's `execute()` calls the matching sanitiser before invoking its service. Tools without filterable inputs (`fetch_session_content`, `summarise_sessions`, `insights_latest`, `insights_history`) are unchanged.
+- **What the sanitiser drops**:
+  - **Empty strings and empty arrays** unconditionally on any optional field (e.g. `clientName: ""` → `undefined`, `chunkTypes: []` → `undefined`).
+  - **Categorical filters** (`sentiment`, `severity`, `urgency`) whose value is not in the user message AND the message has no generic cue keyword.
+  - **Free-text filters** (`clientName`, `themeName`, `nameSearch`) whose value doesn't appear textually in the user message.
+  - **Date filters** when the message has no date cue.
+  - **`confidenceMin`** when it's ≤ 0 or the user didn't mention confidence.
+- **What it doesn't touch**: required fields (e.g. `query` on `semantic_search`, `entity` on `aggregate`, `granularity` on `time_series`), `groupBy` (interpretive — the model has to infer "top themes" → `groupBy=theme`), boolean fields (`hasSessions` — hard to invent meaningfully), and the `focus` parameter on `summarise_sessions` (open-ended user-supplied focus).
+- **Known trade-off**: false-positives possible when the model resolves an abbreviated reference (e.g. user says "PT Power" → model passes `clientName: "PrudenTech Power"`). The literal resolved name isn't in the message, so the sanitiser drops it. The old surface accepted this same risk. Mitigation: the model's system prompt instructs it to use the exact name the user gave, so abbreviation resolution is uncommon.
+- **TypeScript clean.** `npx tsc --noEmit` passes.
+
+**Why this isn't a Part 4** — the PRD never anticipated this scenario, so there's no PRD requirement to point to. Treated as a post-cutover fix recorded against the closed PRD-033 with a clear deviation note. If we ever revisit the PRD, the "retire cue matching" claim under § Purpose should be softened to "retire monolithic cue matching" — the per-tool defence ended up genuinely needed for provider-agnostic operation.
+
 ### PRD-033 Part 3 — Agentic Chat: cutover, ripout, production readiness — 2026-05-11
 
 The cutover commit. The chat surface is now the 11-tool primitive registry built in Parts 1 and 2; the legacy two-tool surface (`searchInsights` + `queryDatabase`) plus its defensive scaffolding is deleted.

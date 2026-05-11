@@ -6,6 +6,7 @@ import {
   type AggregateDim,
 } from "@/lib/services/chat-tool-services/aggregation-service";
 
+import { sanitiseTimeSeries } from "./shared/filter-sanitiser";
 import type { ChatToolContext } from "./shared/tool-context";
 
 const dimEnum = z.enum(["theme"]);
@@ -32,18 +33,19 @@ export function createTimeSeriesTool(ctx: ChatToolContext) {
       "Returns periodStart + count per bucket; with groupBy=theme each bucket also has a key (theme name).",
     inputSchema,
     execute: async (input) => {
+      const sanitised = sanitiseTimeSeries(input, ctx.lastUserMessage);
       ctx.emitStatus("Computing time series…");
       const result = await timeSeries(
         {
-          entity: input.entity,
-          granularity: input.granularity,
-          groupBy: input.groupBy as AggregateDim | undefined,
+          entity: sanitised.entity,
+          granularity: sanitised.granularity,
+          groupBy: sanitised.groupBy as AggregateDim | undefined,
           filters: {
             teamId: ctx.workspace.teamId,
-            clientName: input.clientName,
-            dateFrom: input.dateFrom,
-            dateTo: input.dateTo,
-            themeName: input.themeName,
+            clientName: sanitised.clientName,
+            dateFrom: sanitised.dateFrom,
+            dateTo: sanitised.dateTo,
+            themeName: sanitised.themeName,
           },
         },
         { supabase: ctx.supabaseClient }

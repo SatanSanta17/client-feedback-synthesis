@@ -3,6 +3,7 @@ import { z } from "zod";
 
 import { listThemes } from "@/lib/services/chat-tool-services/discovery-service";
 
+import { sanitiseListThemes } from "./shared/filter-sanitiser";
 import type { ChatToolContext } from "./shared/tool-context";
 
 const inputSchema = z.object({
@@ -41,8 +42,9 @@ export function createListThemesTool(ctx: ChatToolContext) {
       "Date filters narrow the mention-count window without affecting which themes are returned.",
     inputSchema,
     execute: async (input) => {
+      const sanitised = sanitiseListThemes(input, ctx.lastUserMessage);
       ctx.emitStatus("Listing themes…");
-      const result = await listThemes(input, {
+      const result = await listThemes(sanitised, {
         chatQueryRepo: ctx.chatQueryRepo,
       });
       return result;
