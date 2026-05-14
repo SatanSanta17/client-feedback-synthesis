@@ -199,6 +199,9 @@ export async function transcribeChunkedAudio(
       // A silent chunk is not a fatal error — the all-empty guard after
       // stitching still fails the video if *every* chunk came back empty.
       if (err instanceof TranscriptionEmptyChunkError) {
+        console.warn(
+          `[transcribeChunkedAudio] chunk ${chunk.index} returned empty transcript — substituting empty string`,
+        );
         result = {
           parsed_content: "",
           file_name: meta.videoFileName,
