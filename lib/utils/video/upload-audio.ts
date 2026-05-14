@@ -25,6 +25,16 @@ export interface UploadAudioOptions {
   signal?: AbortSignal;
 }
 
+// Thrown when the transcribe route returns 422 for an individual chunk that
+// contained no speech. Callers treat this as an empty transcript rather than
+// a fatal error so a single silent segment doesn't abort the whole batch.
+export class TranscriptionEmptyChunkError extends Error {
+  constructor(message = "Empty transcript for chunk") {
+    super(message);
+    this.name = "TranscriptionEmptyChunkError";
+  }
+}
+
 // Single-chunk POST to /api/files/transcribe. The route is now stateless —
 // persistence (if any) happens via /api/files/transcribe/finalize after all
 // chunks return. XMLHttpRequest (not fetch) because fetch does not expose
@@ -55,6 +65,10 @@ function uploadChunkForTranscription(
         return;
       }
       const body = xhr.response as { message?: string } | null;
+      if (xhr.status === 422) {
+        reject(new TranscriptionEmptyChunkError(body?.message));
+        return;
+      }
       reject(new Error(body?.message ?? "Transcription failed"));
     });
 
@@ -158,27 +172,45 @@ export async function transcribeChunkedAudio(
   const transcribeOne = async (
     chunk: ExtractedAudioChunk,
   ): Promise<UploadAudioChunkResult> => {
-    const result = await uploadChunkForTranscription(
-      {
-        audio: chunk.blob,
-        audioFileName: `chunk-${String(chunk.index).padStart(3, "0")}-${crypto.randomUUID()}${chunk.extension}`,
-        videoFileName: meta.videoFileName,
-        videoFileType: meta.videoFileType,
-        videoFileSize: meta.videoFileSize,
-        // We report the *full video* duration to each chunk POST because the
-        // route's metadata schema enforces it equals the original recording's
-        // duration. The Whisper call itself doesn't use this field — it just
-        // rides along for the eventual finalize payload.
-        durationSeconds: meta.durationSeconds,
-      },
-      {
-        onUploadProgress: (fraction) => {
-          perChunkProgress[chunk.index] = fraction;
-          reportAggregate();
+    let result: UploadAudioChunkResult;
+    try {
+      result = await uploadChunkForTranscription(
+        {
+          audio: chunk.blob,
+          audioFileName: `chunk-${String(chunk.index).padStart(3, "0")}-${crypto.randomUUID()}${chunk.extension}`,
+          videoFileName: meta.videoFileName,
+          videoFileType: meta.videoFileType,
+          videoFileSize: meta.videoFileSize,
+          // We report the *full video* duration to each chunk POST because the
+          // route's metadata schema enforces it equals the original recording's
+          // duration. The Whisper call itself doesn't use this field — it just
+          // rides along for the eventual finalize payload.
+          durationSeconds: meta.durationSeconds,
         },
-        signal: internalCtrl.signal,
-      },
-    );
+        {
+          onUploadProgress: (fraction) => {
+            perChunkProgress[chunk.index] = fraction;
+            reportAggregate();
+          },
+          signal: internalCtrl.signal,
+        },
+      );
+    } catch (err) {
+      // A silent chunk is not a fatal error — the all-empty guard after
+      // stitching still fails the video if *every* chunk came back empty.
+      if (err instanceof TranscriptionEmptyChunkError) {
+        result = {
+          parsed_content: "",
+          file_name: meta.videoFileName,
+          file_type: meta.videoFileType,
+          file_size: meta.videoFileSize,
+          duration_seconds: meta.durationSeconds,
+          source_format: "video_transcript",
+        };
+      } else {
+        throw err;
+      }
+    }
 
     // Mark this chunk's upload phase complete so the aggregate doesn't get
     // stuck below 1.0 even after Whisper returns.
