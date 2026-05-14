@@ -6,6 +6,29 @@ All notable changes to this project are documented here, grouped by PRD and part
 
 ## [Unreleased]
 
+### Trivial fix — Video transcription works on Vercel Hobby via client-side chunking — 2026-05-13
+
+Direct-user bug: uploading a 48 min video on the capture page failed with `FUNCTION_PAYLOAD_TOO_LARGE` (Vercel's 4.5 MB serverless function-body cap). The client extracted audio at 24 kbps mono MP3 and POSTed the whole blob to [`/api/files/transcribe`](app/api/files/transcribe/route.ts); at that bitrate, ~25 min of audio already hits the ceiling and Vercel rejected the request before the handler ran. The original design assumed Whisper's 25 MB per-request limit was the binding constraint and missed the platform-level body cap. The project is on Vercel Hobby, where `maxDuration` is also pinned at 60 s — so even after lifting the body limit (e.g., via direct-to-Storage upload), a 48 min Whisper call (~1.5–3 min wall-clock) would still time out. Upgrading the Vercel tier was not on the table.
+
+**Fix.** Chunk the audio client-side into ~12-minute MP3 segments and POST each chunk to a stateless transcribe route in parallel (max 3 concurrent), then stitch the per-chunk transcripts in order. At 720 s × 24 kbps each chunk is ~2.16 MB (well under 4.5 MB) and finishes in Whisper in ~30 s (well under 60 s `maxDuration`). 48 min → 4 chunks → ~30–45 s end-to-end wall-clock. Quality is preserved — every chunk is at full bitrate; the only artifact is the rare boundary-word glitch at the 3 chunk seams (no overlap/dedup in v1).
+
+**Changes:**
+
+- [`lib/utils/video/extract-audio.ts`](lib/utils/video/extract-audio.ts) now returns `ExtractedAudioChunk[]` via a single ffmpeg pass using `-f segment -segment_time 720 -reset_timestamps 1`. Single-chunk videos return an array of length 1; no special-case code path. Caller passes `totalDurationSeconds` so the segmenter knows how many output files to enumerate.
+- [`lib/utils/video/upload-audio.ts`](lib/utils/video/upload-audio.ts) gains `transcribeChunkedAudio(chunks, meta, callbacks)` — orchestrator with concurrency 3 (`MAX_TRANSCRIPTION_CONCURRENCY`). Uses an internal `AbortController` so a single chunk failure aborts siblings instead of paying for transcription that's about to be discarded. Aggregate upload progress and per-chunk transcription completion surface through callbacks; the parent's `signal` propagates to every in-flight XHR and to the finalize fetch.
+- New route `app/api/files/transcribe/finalize/route.ts` — persist-only. Validates auth + session access, enforces `MAX_ATTACHMENTS` and `MAX_COMBINED_CHARS`, calls [`createTranscriptAttachment`](lib/services/attachment-service.ts) and `sessionRepo.markStale`. No Whisper call here, so the function is bounded by DB/Storage I/O only. `maxDuration = 60`.
+- [`/api/files/transcribe`](app/api/files/transcribe/route.ts) is now stateless. The `session_id` / auto-persist branch (lines previously handling pre-flight attachment-count, `createTranscriptAttachment`, and `markStale`) was removed in favour of the new finalize route. `maxDuration = 60` is now explicit.
+- [`lib/types/video-attachment.ts`](lib/types/video-attachment.ts) — `VideoUploadState` gains `chunksDone` / `totalChunks` on the `uploading` and `transcribing` variants. Both fields are absent in the single-chunk case so the UI suppresses the `1/1` counter.
+- [`lib/hooks/use-video-attachment.ts`](lib/hooks/use-video-attachment.ts) now calls `transcribeChunkedAudio` instead of the single-call helper. The `onCompleted` vs `onAutoPersisted` routing at the end is unchanged — `result.attachment` is populated iff finalize ran successfully.
+- [`app/capture/_components/video-attachment-card.tsx`](app/capture/_components/video-attachment-card.tsx) — `StatusLine` shows "Transcribing chunk X/Y…" when `totalChunks > 1`, otherwise the existing single-line "Transcribing…".
+- [`lib/constants.ts`](lib/constants.ts) — added `TRANSCRIPTION_CHUNK_SECONDS = 720` and `MAX_TRANSCRIPTION_CONCURRENCY = 3` next to the existing `AUDIO_EXTRACTION_PARAMS`. The bitrate-budget comment was updated to reflect that chunking, not the 24 kbps choice, is what now keeps each request inside Vercel's limits.
+
+**Known v1 limitations:**
+
+- Chunk boundaries are hard cuts (no overlap). For a 48 min video that's 3 chunk seams; expect at most 3 word-level glitches. If real complaints surface, add 2 s overlap + suffix-prefix dedup as a follow-up.
+- Hobby-tier ceiling per chunk: a single Whisper call must finish in 60 s. At 12 min/chunk we have ~2× headroom; raising `TRANSCRIPTION_CHUNK_SECONDS` past ~24 min would erase it.
+- Skipped PRD/TRD docs per user instruction — the diagnostic context lives here in CHANGELOG only.
+
 ### PRD-033 post-cutover — aggregate / time-series reshape correctness — 2026-05-11
 
 Follow-up audit triggered by a real-user bug: asking "top pain points across all clients" surfaced as the agent reporting *"signals are associated with an 'unknown' theme — could indicate a data issue."* No data issue existed. The reshape layer between the chat tool surface and the dashboard query domains was silently emitting `"unknown"` labels (and elsewhere, empty arrays) when a domain handler's output shape didn't match the reshaper's key heuristics.

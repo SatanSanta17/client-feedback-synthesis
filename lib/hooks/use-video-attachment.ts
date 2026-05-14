@@ -8,7 +8,7 @@ import {
 } from "@/lib/constants"
 import { extractAudioFromVideo } from "@/lib/utils/video/extract-audio"
 import { probeVideoMetadata } from "@/lib/utils/video/probe-video-metadata"
-import { uploadAudioForTranscription } from "@/lib/utils/video/upload-audio"
+import { transcribeChunkedAudio } from "@/lib/utils/video/upload-audio"
 import type { SessionAttachment } from "@/lib/services/attachment-service"
 import type {
   VideoTranscriptAttachment,
@@ -18,8 +18,8 @@ import type {
 
 export interface UseVideoAttachmentOptions {
   // PRD-032 Part 2 — when set, the server auto-persists the transcript and
-  // the response includes a SessionAttachment row. The hook routes to
-  // onAutoPersisted in that case; onCompleted otherwise.
+  // the hook routes to onAutoPersisted with the saved row. Otherwise
+  // onCompleted fires with the in-memory transcript.
   sessionId?: string
   onCompleted: (attachment: VideoTranscriptAttachment) => void
   onAutoPersisted?: (attachment: SessionAttachment) => void
@@ -90,21 +90,34 @@ export function useVideoAttachment(
         }
 
         setState({ status: "extracting", progress: 0 })
-        const audio = await extractAudioFromVideo(file, {
-          onProgress: (p) =>
-            setState((prev) =>
-              prev.status === "extracting"
-                ? { status: "extracting", progress: p }
-                : prev,
-            ),
-          signal: ctrl.signal,
+        const chunks = await extractAudioFromVideo(
+          file,
+          meta.duration_seconds,
+          {
+            onProgress: (p) =>
+              setState((prev) =>
+                prev.status === "extracting"
+                  ? { status: "extracting", progress: p }
+                  : prev,
+              ),
+            signal: ctrl.signal,
+          },
+        )
+
+        const totalChunks = chunks.length
+
+        // Counters live in refs so the parallel-chunk callbacks don't race
+        // setState's batching. They feed the next state render synchronously.
+        setState({
+          status: "uploading",
+          progress: 0,
+          chunksDone: totalChunks > 1 ? 0 : undefined,
+          totalChunks: totalChunks > 1 ? totalChunks : undefined,
         })
 
-        setState({ status: "uploading", progress: 0 })
-        const result = await uploadAudioForTranscription(
+        const result = await transcribeChunkedAudio(
+          chunks,
           {
-            audio: audio.blob,
-            audioFileName: `${crypto.randomUUID()}${audio.extension}`,
             videoFileName: file.name,
             videoFileType: file.type,
             videoFileSize: file.size,
@@ -112,24 +125,31 @@ export function useVideoAttachment(
             sessionId: sessionIdRef.current,
           },
           {
-            onUploadProgress: (p) => {
-              if (p >= 1) {
-                setState({ status: "transcribing" })
-              } else {
-                setState((prev) =>
-                  prev.status === "uploading"
-                    ? { status: "uploading", progress: p }
-                    : prev,
-                )
-              }
+            onAggregateUploadProgress: (fraction) => {
+              setState((prev) => {
+                // Once the first chunk transitions to transcribing we stop
+                // back-rendering upload state, otherwise a late progress
+                // event would clobber the transcribing status.
+                if (prev.status !== "uploading") return prev
+                return {
+                  status: "uploading",
+                  progress: fraction,
+                  chunksDone: prev.chunksDone,
+                  totalChunks: prev.totalChunks,
+                }
+              })
+            },
+            onChunkTranscribed: (chunksDone, total) => {
+              setState({
+                status: "transcribing",
+                chunksDone,
+                totalChunks: total,
+              })
             },
             signal: ctrl.signal,
           },
         )
 
-        // is_edited is reserved on the type for PRD-032 P3.R7 — omitted here
-        // because Part 1 has no editing surface; the optional field is the
-        // placeholder, no need to populate it with a literal default.
         const completed: VideoTranscriptAttachment = {
           kind: "video_transcript",
           parsed_content: result.parsed_content,
@@ -142,7 +162,7 @@ export function useVideoAttachment(
 
         setState({ status: "completed", attachment: completed })
 
-        // Server auto-persisted (sessionId path) — surface the saved row.
+        // Finalize succeeded (sessionId path) — surface the saved row.
         // Otherwise fall back to client-held transcript (manual save flow).
         if (result.attachment && onAutoPersistedRef.current) {
           onAutoPersistedRef.current(result.attachment)
