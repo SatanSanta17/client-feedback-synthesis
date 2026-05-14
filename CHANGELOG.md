@@ -6,6 +6,32 @@ All notable changes to this project are documented here, grouped by PRD and part
 
 ## [Unreleased]
 
+### Chat latency — summarise-sessions tuning — 2026-05-14
+
+Real-user report: chat hit Vercel's 60s function timeout when summarising ~38 sessions. The MAP step in [`summarise-sessions-service.ts`](lib/services/chat-tool-services/summarise-sessions-service.ts) was the bottleneck — `SUMMARY_AI_CONCURRENCY=5` runs 38 leaves in ~8 waves, and each leaf received the full `SessionContent` JSON (including `rawNotes`, by far the largest field). No PRD; config-level tuning pass to keep `summarise_sessions` inside the existing 60s envelope at 50–60 session workloads. Telemetry, caching, and signals-first prompting are tracked separately.
+
+**Changes — defaults only, all reversible via env vars:**
+
+- **Concurrency:** `SUMMARY_AI_CONCURRENCY` default raised `5 → 20`. 38-session workloads collapse from ~8 waves to ~2; cheap models (Haiku 4.5 / Gemini Flash 2.x) tolerate this rate easily. The env var still wins if set.
+- **Per-leaf payload shrink:** new env `SUMMARY_AI_LEAF_INCLUDE_RAW_NOTES` (default `"false"`). When false, the leaf payload passed to `renderSummariseSessionUser` is built explicitly from `{sessionId, clientName, sessionDate, sentiment, urgency, themes, chunks}` — `rawNotes` is dropped. Chunks already carry the extracted text (themes, quotes, observations, blockers, etc.), and `rawNotes` is the single largest field; dropping it materially shrinks the cheap model's input and per-leaf latency. Set `SUMMARY_AI_LEAF_INCLUDE_RAW_NOTES=true` to restore the legacy full-content payload if summary quality regresses.
+- **Output cap, prompt version:** unchanged. `SUMMARY_AI_MAX_OUTPUT_TOKENS` stays at 200 and the system prompt's "3 sentences default / 4 in focus mode" constraint already keeps generation short. `SUMMARISE_SESSION_PROMPT_VERSION` stays at `v1` — the prompt template did not change, only the data shape passed in.
+- **Cheap model recommendation (operator config, no code change):** for `SUMMARY_AI_MODEL`, Haiku 4.5 (`claude-haiku-4-5-20251001`) or Gemini Flash 2.x are the right defaults for this workload. The chat-model `AI_MODEL` is deliberately independent.
+
+**Touch list:**
+
+- [`lib/services/chat-tool-services/summarise-sessions-service.ts`](lib/services/chat-tool-services/summarise-sessions-service.ts) — `CONCURRENCY` default updated; new `INCLUDE_RAW_NOTES` constant; leaf payload built explicitly before `renderSummariseSessionUser`.
+- [`lib/prompts/summarise-session-prompt.ts`](lib/prompts/summarise-session-prompt.ts) — docstring on `renderSummariseSessionUser` notes that upstream callers may strip heavy fields; signature unchanged.
+- [`ARCHITECTURE.md`](ARCHITECTURE.md) — env-var table: `SUMMARY_AI_CONCURRENCY` default updated; new row for `SUMMARY_AI_LEAF_INCLUDE_RAW_NOTES`.
+
+**Out of scope / follow-ups (tracked separately):**
+
+- Timeout telemetry — near-timeout server log + `durationMs` + `outcome` field in `messages.metadata`, so we have a real distribution before deciding whether to raise the 60s ceiling.
+- `session_summaries` cache keyed by `(session_id, prompt_version, focus_hash)` — the structural fix for 200–300 session workloads.
+- Chat prompt nudge to prefer `fetch_signals` over `summarise_sessions` when the question is answerable from structured signals.
+- Resumable streams via a background worker for truly long-running summarisations.
+
+**Verification.** `npx tsc --noEmit` clean. End-to-end latency check pending real-traffic measurement against the prior baseline.
+
 ### PRD-033 post-cutover — aggregate / time-series reshape correctness — 2026-05-11
 
 Follow-up audit triggered by a real-user bug: asking "top pain points across all clients" surfaced as the agent reporting *"signals are associated with an 'unknown' theme — could indicate a data issue."* No data issue existed. The reshape layer between the chat tool surface and the dashboard query domains was silently emitting `"unknown"` labels (and elsewhere, empty arrays) when a domain handler's output shape didn't match the reshaper's key heuristics.

@@ -1252,7 +1252,8 @@ lib/hooks/
 | `SUMMARY_AI_MODEL` | Server only | **PRD-033 Part 2** — cheap-model id (e.g. `claude-haiku-4-5-20251001`, `gpt-4o-mini`, `gemini-flash-2.0`). Required when summarise_sessions is invoked |
 | `SUMMARY_AI_MAX_OUTPUT_TOKENS` | Server only | **PRD-033 Part 2** — per-leaf cap (default 200; ~3 sentences) |
 | `SUMMARY_AI_FANOUT_CAP` | Server only | **PRD-033 Part 2** — max session ids per summarise_sessions call (default 50, count-cap not budget-cap) |
-| `SUMMARY_AI_CONCURRENCY` | Server only | **PRD-033 Part 2** — parallel leaves in flight at once (default 5) |
+| `SUMMARY_AI_CONCURRENCY` | Server only | **PRD-033 Part 2** — parallel leaves in flight at once (default 20; raised from 5 on 2026-05-14 to keep `summarise_sessions` inside the 60s function timeout at 50–60 session workloads) |
+| `SUMMARY_AI_LEAF_INCLUDE_RAW_NOTES` | Server only | **Chat latency tuning (2026-05-14)** — when `"false"` (default) the per-leaf payload omits `rawNotes` because chunks already carry the extracted text and `rawNotes` dominates leaf input size. Set to `"true"` to restore the legacy full-content payload if summary quality regresses |
 | `CHAT_PER_TURN_BUDGET` | Server only | **PRD-033 Part 3** — per-turn tool-result token budget for the cost circuit breaker (default 100,000; chars/4 proxy ±20%). Tuned upward from production telemetry once real workloads are observed |
 | `EVAL_USER_ID` | Eval script only | **PRD-033 eval runner** — `auth.users.id` of the test account whose workspace the eval should run against (`scripts/run-eval.ts` Path A bypasses the HTTP route and uses service-role impersonation) |
 | `EVAL_TEAM_ID` | Eval script only | **PRD-033 eval runner** — workspace to scope the eval to (team UUID, or omit/empty for the personal workspace of `EVAL_USER_ID`) |

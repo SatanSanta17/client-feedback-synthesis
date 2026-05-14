@@ -21,7 +21,11 @@ import type { Message, StreamState } from "@/lib/types/chat";
 // Constants
 // ---------------------------------------------------------------------------
 
-/** Virtual index offset — starts high so prepended items get lower indices. */
+/** Virtual index offset — starts high so prepended items get lower indices.
+ *  Decreased only when older messages are genuinely prepended via
+ *  `fetchMoreMessages` (infinite scroll up), tracked via `prependCount` state.
+ *  Stable on append so Virtuoso treats new messages at the bottom as appends
+ *  (and `followOutput` triggers correctly). */
 const FIRST_ITEM_INDEX_BASE = 100_000;
 
 /** Loading spinner shown at the top of the list during infinite scroll fetch. */
@@ -114,8 +118,40 @@ export function MessageThread({
     return messages;
   }, [messages, isStreaming]);
 
-  // firstItemIndex shifts as we prepend older messages
-  const firstItemIndex = FIRST_ITEM_INDEX_BASE - items.length;
+  // Virtuoso treats a decrease in firstItemIndex as "items prepended at the
+  // top." We only want that on genuine prepends (older messages loaded via
+  // `fetchMoreMessages`) — appends (optimistic user msg, streaming sentinel,
+  // fold-on-completion) must leave firstItemIndex stable so `followOutput`
+  // correctly auto-scrolls to the bottom.
+  //
+  // Detection: track the previous first message id. If it's still at index 0,
+  // the array grew at the end (append). If it moved to index N > 0, N older
+  // messages were prepended. If it's gone entirely, the conversation switched
+  // or messages were cleared — reset.
+  const [prependCount, setPrependCount] = useState(0);
+  const prevFirstMessageIdRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    const currentFirstId = messages[0]?.id ?? null;
+    const prevFirstId = prevFirstMessageIdRef.current;
+
+    if (prevFirstId === currentFirstId) return;
+
+    if (currentFirstId === null || prevFirstId === null) {
+      setPrependCount(0);
+    } else {
+      const idxOfPrev = messages.findIndex((m) => m.id === prevFirstId);
+      if (idxOfPrev > 0) {
+        setPrependCount((c) => c + idxOfPrev);
+      } else if (idxOfPrev === -1) {
+        setPrependCount(0);
+      }
+    }
+
+    prevFirstMessageIdRef.current = currentFirstId;
+  }, [messages]);
+
+  const firstItemIndex = FIRST_ITEM_INDEX_BASE - prependCount;
 
   // Scroll to a specific message index when search navigation changes
   useEffect(() => {
@@ -165,7 +201,7 @@ export function MessageThread({
       }
 
       // Regular message
-      const realIndex = virtualIndex - (FIRST_ITEM_INDEX_BASE - items.length);
+      const realIndex = virtualIndex - firstItemIndex;
       // isLatest considers only real messages (not streaming sentinel)
       const isLatestMessage = realIndex === messages.length - 1 && !isStreaming;
       const canRetry =
@@ -194,7 +230,7 @@ export function MessageThread({
         />
       );
     },
-    [items, messages.length, isStreaming, streamingContent, statusText, onRetry, latestFollowUps, onSendFollowUp, searchQuery]
+    [firstItemIndex, messages.length, isStreaming, streamingContent, statusText, onRetry, latestFollowUps, onSendFollowUp, searchQuery]
   );
 
   if (isLoadingMessages) {
