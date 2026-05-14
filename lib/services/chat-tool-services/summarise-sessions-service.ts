@@ -30,12 +30,19 @@ import { fetchSessionContent } from "./session-content-service";
 const LOG_PREFIX = "[summarise-sessions-service]";
 
 const FANOUT_CAP = parseInt(process.env.SUMMARY_AI_FANOUT_CAP ?? "50", 10);
-const CONCURRENCY = parseInt(process.env.SUMMARY_AI_CONCURRENCY ?? "5", 10);
+const CONCURRENCY = parseInt(process.env.SUMMARY_AI_CONCURRENCY ?? "20", 10);
 const MAX_OUTPUT = parseInt(
   process.env.SUMMARY_AI_MAX_OUTPUT_TOKENS ??
     String(SUMMARISE_SESSION_MAX_OUTPUT_TOKENS_DEFAULT),
   10
 );
+// When false (default), drop `rawNotes` from the per-leaf payload — chunks
+// already carry the extracted text and rawNotes is by far the biggest field.
+// Set to "true" to restore the legacy full-content payload if summary quality
+// regresses. Tuning lever: smaller leaf input → faster cheap-model latency.
+const INCLUDE_RAW_NOTES =
+  (process.env.SUMMARY_AI_LEAF_INCLUDE_RAW_NOTES ?? "false").toLowerCase() ===
+  "true";
 
 export interface SummariseInput {
   sessionIds: string[];
@@ -116,7 +123,22 @@ export async function summariseSessions(
   let outputTokens = 0;
 
   const tasks = contentResult.sessions.map((session) => async () => {
-    const userMsg = renderSummariseSessionUser(session, input.focus);
+    // Default: drop `rawNotes` from the leaf payload. Chunks already carry
+    // the extracted text; rawNotes is the largest field and dominates
+    // per-leaf input size. Set SUMMARY_AI_LEAF_INCLUDE_RAW_NOTES=true to
+    // restore the full payload if summary quality regresses.
+    const leafPayload: unknown = INCLUDE_RAW_NOTES
+      ? session
+      : {
+          sessionId: session.sessionId,
+          clientName: session.clientName,
+          sessionDate: session.sessionDate,
+          sentiment: session.sentiment,
+          urgency: session.urgency,
+          themes: session.themes,
+          chunks: session.chunks,
+        };
+    const userMsg = renderSummariseSessionUser(leafPayload, input.focus);
     inputTokens += estimateTokens(userMsg);
     const { text, usage } = await withCheapModelRetry(
       `summarise-session ${session.sessionId}`,

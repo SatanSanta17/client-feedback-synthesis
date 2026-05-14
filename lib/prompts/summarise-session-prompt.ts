@@ -25,7 +25,9 @@ export const SUMMARISE_SESSION_MAX_OUTPUT_TOKENS_DEFAULT = 200;
  * `sessionContent` is the SessionContent object produced by Part 1's
  * fetch_session_content service — passed through verbatim as JSON so the
  * cheap model has the same structured view of the session that the chat
- * model would have via fetch_session_content.
+ * model would have via fetch_session_content. Upstream callers may strip
+ * heavy fields (e.g. `rawNotes`) before passing — see
+ * SUMMARY_AI_LEAF_INCLUDE_RAW_NOTES in summarise-sessions-service.ts.
  */
 export function renderSummariseSessionUser(
   sessionContent: unknown,
