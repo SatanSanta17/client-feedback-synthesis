@@ -34,10 +34,12 @@ export const VIDEO_EXTENSIONS = [".mp4", ".mov", ".webm"];
 export const MAX_VIDEO_FILE_SIZE_BYTES = 500 * 1024 * 1024;
 export const MAX_VIDEO_DURATION_SECONDS = 2 * 60 * 60;
 
-// Tuned for speech-to-text, not playback. Mono / 16 kHz / 24 kbps keeps a
-// 2-hour session under Whisper's 25 MB per-request hard limit without
-// chunking (24 kbps × 7200 s ≈ 22 MB). Bitrate dropped from 32 kbps in PRD-032
-// Part 2 (Increment 2.4) when the real Whisper call replaced the stub.
+// Tuned for speech-to-text, not playback. Mono / 16 kHz / 24 kbps balances
+// Whisper accuracy against Vercel's per-request body limit. The audio is
+// chunked client-side (see TRANSCRIPTION_CHUNK_SECONDS) so each POST stays
+// under Hobby's 4.5 MB body cap and each Whisper call finishes inside the
+// 60 s function-duration cap. Bitrate dropped from 32 kbps in PRD-032 Part 2
+// when the real Whisper call replaced the stub.
 export const AUDIO_EXTRACTION_PARAMS = {
   sampleRate: 16_000,
   channels: 1,
@@ -46,6 +48,16 @@ export const AUDIO_EXTRACTION_PARAMS = {
   mimeType: "audio/mpeg",
   extension: ".mp3",
 } as const;
+
+// 12 minutes per chunk: 720 s × 24 kbps / 8 ≈ 2.16 MB per chunk (safe under
+// Vercel Hobby's 4.5 MB request-body limit) and Whisper finishes each chunk
+// in ~30 s (safe under the 60 s maxDuration cap). 48 min → 4 chunks; 2 h → 10.
+export const TRANSCRIPTION_CHUNK_SECONDS = 720;
+
+// Parallel chunk uploads per video. Above 3 we risk Whisper rate limits on
+// free-tier OpenAI keys and the browser's per-host connection ceiling starts
+// to matter. Each wave is bounded by a single chunk's 60 s ceiling.
+export const MAX_TRANSCRIPTION_CONCURRENCY = 3;
 
 // Self-hosted under /public/ffmpeg/ so the WASM core is served from our origin
 // (no third-party CDN at runtime). Copied during postinstall.

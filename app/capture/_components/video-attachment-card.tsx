@@ -130,20 +130,30 @@ function StatusLine({ state }: { state: VideoUploadState }) {
           fraction={state.progress}
         />
       )
-    case "uploading":
+    case "uploading": {
+      const chunkSuffix =
+        state.totalChunks && state.totalChunks > 1
+          ? ` (chunk ${(state.chunksDone ?? 0) + 1}/${state.totalChunks})`
+          : ""
       return (
         <ProgressLine
-          label={`Uploading audio — ${Math.round(state.progress * 100)}%`}
+          label={`Uploading audio — ${Math.round(state.progress * 100)}%${chunkSuffix}`}
           fraction={state.progress}
         />
       )
-    case "transcribing":
+    }
+    case "transcribing": {
+      const label =
+        state.totalChunks > 1
+          ? `Transcribing chunk ${state.chunksDone}/${state.totalChunks}…`
+          : "Transcribing…"
       return (
         <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
           <Loader2 className="size-3 animate-spin" />
-          Transcribing…
+          {label}
         </p>
       )
+    }
     case "error":
       return null
     default:

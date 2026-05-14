@@ -37,8 +37,16 @@ export type VideoUploadState =
   | { status: "queued" }
   | { status: "probing" }
   | { status: "extracting"; progress: number }
-  | { status: "uploading"; progress: number }
-  | { status: "transcribing" }
+  // `progress` is the aggregate fraction across all chunks. `chunksDone` /
+  // `totalChunks` are absent for the single-chunk case so the StatusLine can
+  // suppress the counter and avoid a "1/1" UX wart on short videos.
+  | {
+      status: "uploading";
+      progress: number;
+      chunksDone?: number;
+      totalChunks?: number;
+    }
+  | { status: "transcribing"; chunksDone: number; totalChunks: number }
   | { status: "completed"; attachment: VideoTranscriptAttachment }
   | { status: "cancelled" }
   | { status: "error"; error: VideoUploadError };
