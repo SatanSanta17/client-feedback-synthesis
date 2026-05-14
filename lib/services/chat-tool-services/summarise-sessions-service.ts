@@ -125,19 +125,15 @@ export async function summariseSessions(
   const tasks = contentResult.sessions.map((session) => async () => {
     // Default: drop `rawNotes` from the leaf payload. Chunks already carry
     // the extracted text; rawNotes is the largest field and dominates
-    // per-leaf input size. Set SUMMARY_AI_LEAF_INCLUDE_RAW_NOTES=true to
-    // restore the full payload if summary quality regresses.
+    // per-leaf input size. Rest-destructure (instead of an explicit field
+    // pick) so any future SessionContent fields flow through automatically
+    // — only `rawNotes` is the deliberate drop. Set
+    // SUMMARY_AI_LEAF_INCLUDE_RAW_NOTES=true to restore the full payload
+    // if summary quality regresses.
+    const { rawNotes: _rawNotes, ...leafWithoutRawNotes } = session;
     const leafPayload: unknown = INCLUDE_RAW_NOTES
       ? session
-      : {
-          sessionId: session.sessionId,
-          clientName: session.clientName,
-          sessionDate: session.sessionDate,
-          sentiment: session.sentiment,
-          urgency: session.urgency,
-          themes: session.themes,
-          chunks: session.chunks,
-        };
+      : leafWithoutRawNotes;
     const userMsg = renderSummariseSessionUser(leafPayload, input.focus);
     inputTokens += estimateTokens(userMsg);
     const { text, usage } = await withCheapModelRetry(
